@@ -1,0 +1,8 @@
+MODULE    = winlogon.exe
+IMPORTS   = user32 advapi32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Windows Logon Application"
+
+SOURCES = \
+	main.c

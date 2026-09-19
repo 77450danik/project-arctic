@@ -37,11 +37,17 @@ struct dwm_set_windows_params
     const struct dwm_window *windows;  /* topmost first */
 };
 
+struct dwm_set_cursor_params
+{
+    INT32 x, y;  /* screen coordinates */
+};
+
 enum dwm_funcs
 {
     unix_dwm_start,        /* take the display, start serving buffers */
     unix_dwm_dispatch,     /* serve clients and compose, for up to timeout_ms */
     unix_dwm_set_windows,  /* the toplevel windows, from wineserver */
+    unix_dwm_set_cursor,   /* the cursor position, from wineserver */
     unix_funcs_count
 };
 

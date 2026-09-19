@@ -2,7 +2,8 @@
  *
  * Starts the hardware side (udevd), prepares the NT world (registry from C:,
  * dosdevices without Z:) and runs it as the single user "nt": wineserver as the
- * NT executive, then wineboot, which brings up services.exe.
+ * NT executive, wineboot, which brings up services.exe, then wininit.exe, which
+ * brings up the session.
  *
  * Output of every NT process goes to C:\Windows\Logs\Arctic\nt.log; own
  * messages go to host.log, the kernel log and, in development builds, the
@@ -41,7 +42,7 @@ static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
 static int dev_mode, splash = -1, stopped;
 static uid_t nt_uid;
 static gid_t nt_gid;
-static pid_t udevd_pid, wineserver_pid, shell_pid;
+static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid;
 
 static double uptime(void)
 {
@@ -149,6 +150,13 @@ static void child_exited(pid_t pid, int status)
         say("wineserver exited (status %d)", status);
         wineserver_pid = 0;
         nt_stop("CRITICAL_PROCESS_DIED", "wineserver");
+    } else if (pid == wininit_pid) {
+        int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+        say("wininit.exe exited (status %d)", status);
+        wininit_pid = 0;
+        /* 1: dwm.exe could not take the display; otherwise the session is gone */
+        nt_stop(code == 1 ? "VIDEO_DWM_INIT_ERROR" : "CRITICAL_PROCESS_DIED", code == 2 ? "csrss.exe" : "wininit.exe");
     } else if (pid == udevd_pid) {
         say("udevd exited (status %d)", status);
         udevd_pid = 0;
@@ -414,14 +422,16 @@ int main(void)
     if (strstr(cmdline_buf, "arctic.stoptest=nt"))
         nt_stop("MANUALLY_INITIATED_CRASH", "arctic.stoptest");
 
-    /* The display now belongs to dwm.exe: releasing the logo fd drops DRM
+    /* The session: wininit.exe starts dwm.exe, csrss.exe and winlogon.exe.
+     * The display now belongs to dwm.exe: releasing the logo fd drops DRM
      * master, and dwm becomes master by opening the card first. */
     if (!stopped) {
-        char *dwm[] = {"/usr/bin/wine", "dwm.exe", NULL};
+        char *wininit[] = {"/usr/bin/wine", "wininit.exe", NULL};
         if (splash >= 0)
             close(splash);
         splash = -1;
-        say("dwm.exe pid %d", spawn(dwm, 1, ntlog));
+        wininit_pid = spawn(wininit, 1, ntlog);
+        say("wininit.exe pid %d", wininit_pid);
 
         /* windows can only appear once dwm serves buffers */
         int served = 0;

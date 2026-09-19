@@ -19,7 +19,7 @@ if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
     pacman -Syu --noconfirm --needed base-devel git rsync mingw-w64-gcc \
         freetype2 gnutls alsa-lib vulkan-icd-loader vulkan-headers systemd-libs libusb \
-        wayland libxkbcommon
+        wayland libxkbcommon libinput
 fi
 
 # Pristine upstream, fetched once per tag
@@ -30,7 +30,9 @@ if [ "$(cat "$WORK/upstream.tag" 2>/dev/null)" != "$TAG" ]; then
     echo "$TAG" > "$WORK/upstream.tag"
 fi
 
-# Arctic modules and patches on top of upstream (docs/M1-display.md)
+# Arctic modules and patches on top of upstream (docs/M1-display.md).
+# The trees belong to another user in containers; git must work in them anyway.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
 rm -rf "$WORK/stage"
 cp -a "$WORK/upstream" "$WORK/stage"
 cd "$WORK/stage"

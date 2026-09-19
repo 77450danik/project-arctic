@@ -1,0 +1,30 @@
+From 79d339e38fe21476a98f6dc21298e6cfbb220d38 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 19 Sep 2026 22:16:27 +0300
+Subject: [PATCH] win32u: Bring a window to the top when it becomes active.
+
+Windows raises the active window in win32k; Wine leaves it to the host
+window manager, and Arctic has none: dwm.exe stacks windows as wineserver
+has them.
+---
+ dlls/win32u/input.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index c24bbab1..84d398f7 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2165,6 +2165,10 @@ BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new
+             send_message_timeout( HWND_BROADCAST, WM_PALETTEISCHANGING, (WPARAM)hwnd, 0,
+                                   SMTO_ABORTIFHUNG, 2000, FALSE );
+         if (!is_window(hwnd)) return FALSE;
++
++        /* the active window comes to the top, as in Windows: there is no window manager to raise it */
++        if (!(get_window_long( hwnd, GWL_STYLE ) & WS_CHILD))
++            NtUserSetWindowPos( hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE );
+     }
+ 
+     old_thread = previous ? get_window_thread( previous, NULL ) : 0;
+-- 
+2.53.0.windows.2
+

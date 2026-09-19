@@ -1,6 +1,7 @@
 """Takes a QEMU screenshot over QMP and saves it as PNG (standard library only).
 
 usage: qmp-shot.py <qmp socket> <tmp.ppm> <out.png>
+       qmp-shot.py --convert <in.ppm> <out.png>
 """
 import json
 import socket
@@ -62,6 +63,10 @@ def ppm_to_png(ppm_path, png_path):
     open(png_path, "wb").write(png)
 
 
-qmp(sys.argv[1], sys.argv[2])
-time.sleep(1)
-ppm_to_png(sys.argv[2], sys.argv[3])
+if __name__ == "__main__":
+    if sys.argv[1] == "--convert":  # a screendump taken elsewhere
+        ppm_to_png(sys.argv[2], sys.argv[3])
+    else:
+        qmp(sys.argv[1], sys.argv[2])
+        time.sleep(1)
+        ppm_to_png(sys.argv[2], sys.argv[3])

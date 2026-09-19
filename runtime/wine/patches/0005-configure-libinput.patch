@@ -1,0 +1,29 @@
+From 40cad022954670e3e44cf040bef3fba5b005bdb5 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 19 Sep 2026 19:35:03 +0300
+Subject: [PATCH] configure: Check for libinput.
+
+winsrv.dll (Arctic's Raw Input Thread) reads host input devices through
+libinput.
+---
+ configure.ac | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/configure.ac b/configure.ac
+index 26c5edfa..b85edb7f 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1817,6 +1817,10 @@ then
+                 [AC_DEFINE(HAVE_UDEV,1,[Define to 1 if you have the 'udev' library (-ludev).])],
+                 [UDEV_LIBS=""])],
+             [UDEV_LIBS=""])])
++    WINE_PACKAGE_FLAGS(LIBINPUT,[libinput],[-linput],,,
++        [AC_CHECK_HEADER([libinput.h],
++            [AC_CHECK_FUNC(libinput_udev_create_context,[:],[LIBINPUT_LIBS=""])],
++            [LIBINPUT_LIBS=""])])
+ fi
+ WINE_NOTICE_WITH(udev,[test "x$UDEV_LIBS" = "x"],
+                  [libudev ${notice_platform}development files not found, plug and play won't be supported.])
+-- 
+2.53.0.windows.2
+

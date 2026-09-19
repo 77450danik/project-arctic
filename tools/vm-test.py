@@ -1,10 +1,12 @@
 """Boots an Arctic ISO in the local QEMU (WHPX) in a visible window, waits for
 the NT world, and saves the serial log and a screenshot.
 
-usage: python tools/vm-test.py [iso] [--wait SECONDS] [--append "kernel params"] [--headless] [--keep]
+usage: python tools/vm-test.py [iso] [--wait SECONDS] [--append "kernel params"] [--script FILE]
+                               [--headless] [--keep]
 
 --append boots the kernel directly (taken from the ISO) with extra parameters,
-e.g. --append arctic.stoptest=nt. Results go to out/test-local/.
+e.g. --append arctic.stoptest=nt. --script runs input steps (tools/vmscript.py)
+once the desktop is up. Results go to out/test-local/.
 """
 import argparse
 import os
@@ -25,6 +27,7 @@ parser.add_argument("--append", default="")
 parser.add_argument("--timeout", type=int, default=240)
 parser.add_argument("--headless", action="store_true", help="no window (the screenshot is still taken)")
 parser.add_argument("--keep", action="store_true", help="leave the VM running after the test")
+parser.add_argument("--script", help="input steps to run once the desktop is up (tools/vmscript.py)")
 args = parser.parse_args()
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -37,7 +40,7 @@ for path in (serial, shot):
 
 cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
        "-cdrom", args.iso, "-vga", "std", "-display", "none" if args.headless else "gtk",
-       "-name", "Arctic",
+       "-name", "Arctic", "-device", "qemu-xhci", "-device", "usb-tablet",
        "-serial", "file:" + serial, "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]
 if args.append:
     kernel_dir = os.path.join(RES, "kernel")
@@ -67,6 +70,10 @@ try:
                     break
     print(f"markers after {time.time() - start:.0f} s: {sorted(seen) or 'none'}")
     time.sleep(args.wait)
+    if args.script and "dwm ready" in seen:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import vmscript
+        vmscript.run(vmscript.Qmp(), open(args.script, encoding="utf-8").read().splitlines())
     subprocess.run([sys.executable, os.path.join(ROOT, "ci", "qmp-shot.py"), "tcp:127.0.0.1:4455",
                     os.path.join(RES, "screen.ppm"), shot], check=False)
 finally:
@@ -77,7 +84,7 @@ finally:
         os.remove(ppm)
 
 for line in open(serial, encoding="utf-8", errors="replace"):
-    if "ARCTIC:" in line or "arctic-init" in line or "dwm" in line.lower():
+    if "ARCTIC:" in line or "arctic-init" in line or "dwm" in line.lower() or "csrss" in line:
         print(line.rstrip()[:200])
 print("screenshot:", shot if os.path.exists(shot) else "none")
 if vm.poll() is not None and vm.returncode:

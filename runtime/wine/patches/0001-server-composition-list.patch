@@ -1,4 +1,4 @@
-From cc3796b4713c870d25f4355bda4b8afad7e363fe Mon Sep 17 00:00:00 2001
+From abcf690830b0a65cb73ca4765bc6742294cdae42 Mon Sep 17 00:00:00 2001
 From: 77450danik <ddziuba1@stu.vistula.edu.pl>
 Date: Sat, 19 Sep 2026 15:36:07 +0300
 Subject: [PATCH] server: Composition list and serial for the compositor.
@@ -8,13 +8,13 @@ server: desktop_shm_t.composition_serial moves whenever a toplevel
 window moves, resizes, shows, hides, restacks, changes style or goes
 away, and get_composition_list returns the toplevel windows in z-order.
 ---
- server/protocol.def | 19 +++++++++++++++
- server/trace.c      | 18 +++++++++++++++
- server/window.c     | 56 +++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 93 insertions(+)
+ server/protocol.def | 21 ++++++++++++++++
+ server/trace.c      | 18 ++++++++++++++
+ server/window.c     | 58 +++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 97 insertions(+)
 
 diff --git a/server/protocol.def b/server/protocol.def
-index 59aaa22..a941d13 100644
+index 59aaa22b..f82d6861 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
 @@ -287,6 +287,15 @@ struct rectangle
@@ -41,7 +41,7 @@ index 59aaa22..a941d13 100644
  } desktop_shm_t;
  
  typedef volatile struct
-@@ -2792,6 +2802,15 @@ enum message_type
+@@ -2792,6 +2802,17 @@ enum message_type
  @END
  
  
@@ -50,6 +50,8 @@ index 59aaa22..a941d13 100644
 +@REPLY
 +    unsigned __int64 serial;      /* composition serial the list matches */
 +    int            count;         /* total count of toplevel windows */
++    int            cursor_x;      /* cursor position, in screen coordinates */
++    int            cursor_y;
 +    VARARG(windows,composition_windows); /* windows, topmost first */
 +@END
 +
@@ -58,7 +60,7 @@ index 59aaa22..a941d13 100644
  @REQ(get_window_tree)
      user_handle_t  handle;        /* handle to the window */
 diff --git a/server/trace.c b/server/trace.c
-index b6c2f27..0eee2e6 100644
+index b6c2f27a..0eee2e61 100644
 --- a/server/trace.c
 +++ b/server/trace.c
 @@ -1052,6 +1052,24 @@ static void dump_varargs_rectangles( const char *prefix, data_size_t size )
@@ -87,7 +89,7 @@ index b6c2f27..0eee2e6 100644
  {
      const struct cursor_pos *pos = cur_data;
 diff --git a/server/window.c b/server/window.c
-index 3cd82b0..48b7253 100644
+index 3cd82b0c..7b3d2726 100644
 --- a/server/window.c
 +++ b/server/window.c
 @@ -1929,6 +1929,21 @@ static struct region *expose_window( struct window *win, const struct rectangle
@@ -166,7 +168,7 @@ index 3cd82b0..48b7253 100644
  }
  
  
-@@ -2657,6 +2680,39 @@ DECL_HANDLER(get_window_children_from_point)
+@@ -2657,6 +2680,41 @@ DECL_HANDLER(get_window_children_from_point)
  }
  
  
@@ -179,7 +181,9 @@ index 3cd82b0..48b7253 100644
 +    int count = 0, max;
 +
 +    if (!desktop) return;
-+    reply->serial = desktop->shared->composition_serial;
++    reply->serial   = desktop->shared->composition_serial;
++    reply->cursor_x = desktop->shared->cursor.x;
++    reply->cursor_y = desktop->shared->cursor.y;
 +    if (desktop->top_window)
 +    {
 +        LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry ) count++;

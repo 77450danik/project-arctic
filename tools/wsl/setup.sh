@@ -21,7 +21,7 @@ sed -i 's/^#\?ParallelDownloads.*/ParallelDownloads = 8/' /etc/pacman.conf
 # incremental rebuilds
 pacman -Syu --noconfirm --needed base-devel git ccache rsync mingw-w64-gcc perl \
     freetype2 gnutls alsa-lib vulkan-icd-loader vulkan-headers systemd-libs libusb \
-    wayland libxkbcommon \
+    wayland libxkbcommon libinput \
     arch-install-scripts squashfs-tools xorriso limine cpio zstd python-pillow noto-fonts ntfs-3g ntfsprogs
 
 echo "cpus=$(nproc)"

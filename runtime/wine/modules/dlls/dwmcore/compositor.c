@@ -102,6 +102,7 @@ static bool                    dirty = true;
 static int                     cascade;
 static struct dwm_window      *windows;      /* from wineserver, topmost first */
 static uint32_t                window_count;
+static int                     cursor_x, cursor_y;
 
 static uint32_t now_ms(void)
 {
@@ -187,6 +188,48 @@ static void draw_tree( const struct surface *s, int x, int y )
     }
 }
 
+/* the standard arrow, until cursor shapes come from win32u */
+static const char arrow[][13] =
+{
+    "B           ",
+    "BB          ",
+    "BWB         ",
+    "BWWB        ",
+    "BWWWB       ",
+    "BWWWWB      ",
+    "BWWWWWB     ",
+    "BWWWWWWB    ",
+    "BWWWWWWWB   ",
+    "BWWWWWWWWB  ",
+    "BWWWWWWWWWB ",
+    "BWWWWWWBBBBB",
+    "BWWWBWWB    ",
+    "BWWB BWWB   ",
+    "BWB  BWWB   ",
+    "BB    BWWB  ",
+    "B     BWWB  ",
+    "       BWWB ",
+    "       BWWB ",
+    "        BB  ",
+};
+
+static void draw_cursor(void)
+{
+    for (int y = 0; y < (int)ARRAY_SIZE(arrow); y++)
+    {
+        int py = cursor_y + y;
+
+        if (py < 0 || py >= (int)kms.height) continue;
+        for (int x = 0; arrow[y][x]; x++)
+        {
+            int px = cursor_x + x;
+
+            if (px < 0 || px >= (int)kms.width || arrow[y][x] == ' ') continue;
+            shadow[(size_t)py * kms.width + px] = arrow[y][x] == 'B' ? 0xff000000 : 0xffffffff;
+        }
+    }
+}
+
 static struct surface *surface_for_hwnd( uint32_t hwnd )
 {
     struct surface *s;
@@ -213,6 +256,7 @@ static void compose(void)
     }
     wl_list_for_each( s, &toplevels, stack_link )
         if (!s->hwnd) draw_tree( s, s->x, s->y );
+    draw_cursor();
     for (uint32_t y = 0; y < kms.height; y++)
         memcpy( (uint8_t *)kms.pixels + (size_t)y * kms.pitch, shadow + (size_t)y * kms.width, kms.width * 4 );
     kms_flush();
@@ -1058,11 +1102,22 @@ static NTSTATUS dwm_set_windows( void *args )
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS dwm_set_cursor( void *args )
+{
+    const struct dwm_set_cursor_params *params = args;
+
+    cursor_x = params->x;
+    cursor_y = params->y;
+    dirty = true;
+    return STATUS_SUCCESS;
+}
+
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     dwm_start,
     dwm_dispatch,
     dwm_set_windows,
+    dwm_set_cursor,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );

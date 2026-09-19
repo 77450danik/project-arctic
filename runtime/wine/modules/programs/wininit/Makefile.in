@@ -1,0 +1,7 @@
+MODULE    = wininit.exe
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Windows Start-Up Application"
+
+SOURCES = \
+	main.c

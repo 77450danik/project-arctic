@@ -58,6 +58,7 @@ static struct composition_window *list;
 static struct dwm_window           *windows;
 static int                          capacity;
 static UINT64                       serial = ~(UINT64)0;
+static POINT                        cursor = { -1, -1 };
 
 static BOOL grow( int count )
 {
@@ -74,10 +75,11 @@ static BOOL grow( int count )
     return TRUE;
 }
 
-/* the toplevel windows of our desktop, topmost first, as wineserver has them */
+/* the toplevel windows of our desktop, topmost first, and the cursor, as wineserver has them */
 static void update_windows(void)
 {
     struct dwm_set_windows_params params;
+    struct dwm_set_cursor_params pos;
     UINT64 new_serial;
     int count, got;
     NTSTATUS status;
@@ -90,12 +92,21 @@ static void update_windows(void)
             status = wine_server_call( req );
             new_serial = reply->serial;
             count = reply->count;
+            pos.x = reply->cursor_x;
+            pos.y = reply->cursor_y;
             got = wine_server_reply_size( reply ) / sizeof(*list);
         }
         SERVER_END_REQ;
         if (status || count <= got || !grow( count )) break;
     }
-    if (status || new_serial == serial) return;
+    if (status) return;
+    if (pos.x != cursor.x || pos.y != cursor.y)
+    {
+        cursor.x = pos.x;
+        cursor.y = pos.y;
+        WINE_UNIX_CALL( unix_dwm_set_cursor, &pos );
+    }
+    if (new_serial == serial) return;
     serial = new_serial;
 
     for (int i = 0; i < got; i++)
@@ -125,6 +136,8 @@ DWORD WINAPI DwmCoreRun(void)
         ERR( "cannot take the display: %#lx\n", status );
         return status;
     }
+    /* wininit.exe starts csrss.exe on this: the display driver connects as it loads */
+    SetEvent( CreateEventW( NULL, TRUE, FALSE, L"__arctic_dwm_ready" ) );
     grow( 256 );
     for (;;)
     {

@@ -1,0 +1,8 @@
+MODULE    = csrss.exe
+IMPORTS   = user32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Client Server Runtime Process"
+
+SOURCES = \
+	main.c

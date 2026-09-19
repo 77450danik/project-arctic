@@ -1,0 +1,25 @@
+# M1: the pointer moves windows, clicks raise and focus, keys type.
+# At start the shell's window (explorer) lies over Notepad, both at 0,0.
+sleep 3
+move 640 400
+shot 1-cursor
+drag 300 14 500 214          # the shell window's title bar: to 200,200
+sleep 1
+shot 2-moved
+move 100 300
+click                         # Notepad's text: Notepad comes to the front
+type Hello, Arctic!
+key ret
+type 0123456789
+sleep 1
+shot 3-typed
+drag 300 14 400 64            # Notepad's title bar: to 100,50, still in front
+sleep 1
+shot 4-notepad-moved
+move 700 450
+click                         # the shell window: it comes to the front
+sleep 1
+shot 5-raised
+key ctrl-shift-esc            # winlogon's hotkey: Task Manager
+sleep 4
+shot 6-taskmgr

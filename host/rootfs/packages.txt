@@ -22,6 +22,7 @@ libusb
 vulkan-icd-loader
 wayland
 libxkbcommon
+libinput
 
 # GPU and network firmware (the drivers come with the kernel)
 linux-firmware-amdgpu
