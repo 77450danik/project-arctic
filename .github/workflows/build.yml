@@ -83,7 +83,7 @@ jobs:
 
       - name: Host root filesystem and NT prefix
         run: docker run --rm --privileged -v "$PWD:/work" archlinux:latest bash /work/ci/build-rootfs.sh
-      - name: C: image (NTFS)
+      - name: "C: image (NTFS)"
         run: bash ci/make-windows-img.sh
       - name: ISO
         run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/build-image.sh
