@@ -10,7 +10,7 @@
 # Output: $WINE_OUT (default out/wine)/usr/{bin,lib/wine,share/wine}
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=${ARCTIC_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 TAG=$(cat "$ROOT/runtime/WINE_VERSION")
 OUT=${WINE_OUT:-$ROOT/out/wine}
 WORK=${WINE_WORK:-/tmp/winebuild}
