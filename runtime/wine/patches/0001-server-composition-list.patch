@@ -1,0 +1,211 @@
+From cc3796b4713c870d25f4355bda4b8afad7e363fe Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sat, 19 Sep 2026 15:36:07 +0300
+Subject: [PATCH] server: Composition list and serial for the compositor.
+
+dwm.exe reads toplevel window geometry and z-order straight from the
+server: desktop_shm_t.composition_serial moves whenever a toplevel
+window moves, resizes, shows, hides, restacks, changes style or goes
+away, and get_composition_list returns the toplevel windows in z-order.
+---
+ server/protocol.def | 19 +++++++++++++++
+ server/trace.c      | 18 +++++++++++++++
+ server/window.c     | 56 +++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 93 insertions(+)
+
+diff --git a/server/protocol.def b/server/protocol.def
+index 59aaa22..a941d13 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -287,6 +287,15 @@ struct rectangle
+     int  bottom;
+ };
+ 
++/* a toplevel window as the compositor sees it, see get_composition_list */
++struct composition_window
++{
++    user_handle_t    handle;       /* window handle */
++    unsigned int     style;        /* window style */
++    unsigned int     ex_style;     /* window extended style */
++    struct rectangle visible_rect; /* visible rectangle, in screen coordinates */
++};
++
+ /* structure for parameters of async I/O calls */
+ struct async_data
+ {
+@@ -1021,6 +1030,7 @@ typedef volatile struct
+     unsigned char        keystate[256];    /* asynchronous key state */
+     unsigned __int64     monitor_serial;   /* winstation monitor update counter */
+     unsigned __int64     keystate_serial;  /* keystate update counter */
++    unsigned __int64     composition_serial; /* bumped when a toplevel window moves, resizes, shows, hides, restacks or goes away */
+ } desktop_shm_t;
+ 
+ typedef volatile struct
+@@ -2792,6 +2802,15 @@ enum message_type
+ @END
+ 
+ 
++/* Get the toplevel windows of the thread desktop in z-order, for the compositor */
++@REQ(get_composition_list)
++@REPLY
++    unsigned __int64 serial;      /* composition serial the list matches */
++    int            count;         /* total count of toplevel windows */
++    VARARG(windows,composition_windows); /* windows, topmost first */
++@END
++
++
+ /* Get window tree information from a window handle */
+ @REQ(get_window_tree)
+     user_handle_t  handle;        /* handle to the window */
+diff --git a/server/trace.c b/server/trace.c
+index b6c2f27..0eee2e6 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -1052,6 +1052,24 @@ static void dump_varargs_rectangles( const char *prefix, data_size_t size )
+     remove_data( size );
+ }
+ 
++static void dump_varargs_composition_windows( const char *prefix, data_size_t size )
++{
++    const struct composition_window *win = cur_data;
++    data_size_t len = size / sizeof(*win);
++
++    fprintf( stderr, "%s{", prefix );
++    while (len > 0)
++    {
++        fprintf( stderr, "{win=%08x,style=%08x,ex_style=%08x", win->handle, win->style, win->ex_style );
++        dump_rectangle( ",visible_rect=", &win->visible_rect );
++        fputc( '}', stderr );
++        win++;
++        if (--len) fputc( ',', stderr );
++    }
++    fputc( '}', stderr );
++    remove_data( size );
++}
++
+ static void dump_varargs_cursor_positions( const char *prefix, data_size_t size )
+ {
+     const struct cursor_pos *pos = cur_data;
+diff --git a/server/window.c b/server/window.c
+index 3cd82b0..48b7253 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -1929,6 +1929,21 @@ static struct region *expose_window( struct window *win, const struct rectangle
+ 
+ 
+ /* set the window and client rectangles, updating the update region if necessary */
++/* the compositor (dwm.exe) re-reads the toplevel list whenever this serial moves */
++static void bump_composition_serial( struct desktop *desktop )
++{
++    SHARED_WRITE_BEGIN( desktop->shared, desktop_shm_t )
++    {
++        shared->composition_serial++;
++    }
++    SHARED_WRITE_END;
++}
++
++static void composition_changed( struct window *win )
++{
++    if (win->parent && win->parent == win->desktop->top_window) bump_composition_serial( win->desktop );
++}
++
+ static void set_window_pos( struct window *win, struct window *previous,
+                             unsigned int swp_flags, const struct rectangle *window_rect,
+                             const struct rectangle *client_rect, const struct rectangle *visible_rect,
+@@ -1956,6 +1971,7 @@ static void set_window_pos( struct window *win, struct window *previous,
+     if (!(swp_flags & SWP_NOZORDER) && win->parent) zorder_changed |= link_window( win, previous );
+     if (swp_flags & SWP_SHOWWINDOW) win->style |= WS_VISIBLE;
+     else if (swp_flags & SWP_HIDEWINDOW) win->style &= ~WS_VISIBLE;
++    composition_changed( win );
+ 
+     /* update window monitor dpi for toplevel windows */
+     if (is_toplevel( win )) set_window_monitor_dpi( win );
+@@ -2140,6 +2156,7 @@ void free_window_handle( struct window *win )
+     struct window *child, *next;
+ 
+     assert( win->handle );
++    composition_changed( win );
+ 
+     /* hide the window */
+     if (is_visible(win))
+@@ -2326,6 +2343,7 @@ DECL_HANDLER(set_parent)
+     reply->old_parent  = win->parent->handle;
+     reply->full_parent = parent ? parent->handle : 0;
+     set_parent_window( win, parent );
++    bump_composition_serial( win->desktop );
+ }
+ 
+ 
+@@ -2458,6 +2476,7 @@ DECL_HANDLER(set_window_info)
+ {
+     struct window *win;
+     bool ansi;
++    int restyled = 0;
+ 
+     if (!(win = get_window( req->handle ))) return;
+     if (is_desktop_window( win ) && win->thread != current)
+@@ -2476,10 +2495,12 @@ DECL_HANDLER(set_window_info)
+             fix_window_ex_style( win );
+             /* changing window style triggers a non-client paint */
+             win->paint_flags |= PAINT_NONCLIENT;
++            restyled = 1;
+             break;
+         case GWL_EXSTYLE:
+             reply->old_info = win->ex_style;
+             set_window_ex_style( win, req->new_info );
++            restyled = 1;
+             break;
+         case GWLP_ID:
+             reply->old_info = shared->info.id;
+@@ -2515,6 +2536,8 @@ DECL_HANDLER(set_window_info)
+         }
+     }
+     SHARED_WRITE_END;
++
++    if (restyled) composition_changed( win );
+ }
+ 
+ 
+@@ -2657,6 +2680,39 @@ DECL_HANDLER(get_window_children_from_point)
+ }
+ 
+ 
++/* get the toplevel windows of the thread desktop in z-order, for the compositor */
++DECL_HANDLER(get_composition_list)
++{
++    struct desktop *desktop = get_thread_desktop( current, 0 );
++    struct composition_window *data;
++    struct window *win;
++    int count = 0, max;
++
++    if (!desktop) return;
++    reply->serial = desktop->shared->composition_serial;
++    if (desktop->top_window)
++    {
++        LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry ) count++;
++        max = min( count, get_reply_max_size() / sizeof(*data) );
++        if (max && (data = set_reply_data_size( max * sizeof(*data) )))
++        {
++            int i = 0;
++            LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry )
++            {
++                if (i++ == max) break;
++                data->handle       = win->handle;
++                data->style        = win->style;
++                data->ex_style     = win->ex_style;
++                data->visible_rect = win->visible_rect;
++                data++;
++            }
++        }
++    }
++    reply->count = count;
++    release_object( desktop );
++}
++
++
+ /* get window tree information from a window handle */
+ DECL_HANDLER(get_window_tree)
+ {
+-- 
+2.53.0.windows.2
+

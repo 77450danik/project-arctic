@@ -17,6 +17,20 @@ rm -rf "$OUT" "$WORK"
 mkdir -p "$OUT" "$WORK/build"
 git clone --depth 1 --branch "$TAG" https://github.com/wine-mirror/wine.git "$WORK/src"
 
+# Arctic modules and patches on top of upstream (docs/M1-display.md)
+cd "$WORK/src"
+cp -a "$ROOT/runtime/wine/modules/." . && rm -f .keep
+for patch in "$ROOT"/runtime/wine/patches/*.patch; do
+    [ -e "$patch" ] || continue
+    echo "applying $(basename "$patch")"
+    git apply --whitespace=nowarn "$patch"
+done
+perl tools/make_requests
+if [ -n "$(find "$ROOT/runtime/wine/modules" -mindepth 1 ! -name .keep -print -quit)" ]; then
+    perl tools/make_makefiles
+    autoreconf -fi
+fi
+
 cd "$WORK/build"
 ../src/configure \
     --prefix=/usr --libdir=/usr/lib \
@@ -32,6 +46,8 @@ cd "$WORK/build"
 
 make -j"$(nproc)"
 make install-lib DESTDIR="$OUT"
+# for compile checks of runtime changes on the build machine
+cp include/config.h "$OUT/build-config.h"
 
 find "$OUT/usr/lib/wine" -name '*.so' -exec strip --strip-unneeded {} +
 find "$OUT/usr/bin" -type f -exec sh -c 'file -b "$1" | grep -q ELF && strip --strip-unneeded "$1"' _ {} \;
