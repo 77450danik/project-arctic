@@ -4,12 +4,14 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-source "$ROOT/ci/arch-prep.sh"
-OUT="$ROOT/out"
+OUT=${ARCTIC_OUT:-$ROOT/out}
 RFS="$OUT/rootfs"
 ISO="$OUT/iso"
 
-pacman -Syu --noconfirm --needed squashfs-tools xorriso limine cpio zstd
+if [ -z "${SKIP_DEPS:-}" ]; then
+    source "$ROOT/ci/arch-prep.sh"
+    pacman -Syu --noconfirm --needed squashfs-tools xorriso limine cpio zstd
+fi
 
 cp "$OUT/windows.img" "$RFS/usr/share/arctic/windows.img"
 

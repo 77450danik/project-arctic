@@ -5,11 +5,13 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-source "$ROOT/ci/arch-prep.sh"
-OUT="$ROOT/out"
+OUT=${ARCTIC_OUT:-$ROOT/out}
 RFS="$OUT/rootfs"
 
-pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts
+if [ -z "${SKIP_DEPS:-}" ]; then
+    source "$ROOT/ci/arch-prep.sh"
+    pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts
+fi
 
 # The container's NoExtract rules drop the locale sources we need
 sed '/^NoExtract/d' /etc/pacman.conf > /tmp/pacman.conf
