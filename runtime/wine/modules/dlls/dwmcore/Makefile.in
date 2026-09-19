@@ -1,12 +1,13 @@
 MODULE    = dwmcore.dll
 UNIXLIB   = dwmcore.so
-IMPORTS   = advapi32
+IMPORTS   = advapi32 ntdll
 UNIX_CFLAGS = $(WAYLAND_SERVER_CFLAGS)
 UNIX_LIBS   = $(WAYLAND_SERVER_LIBS)
 
 VER_FILEDESCRIPTION_STR = "Arctic desktop composition engine"
 
 SOURCES = \
+	arctic-shell-v1-protocol.c \
 	compositor.c \
 	dwmcore.c \
 	kms.c \

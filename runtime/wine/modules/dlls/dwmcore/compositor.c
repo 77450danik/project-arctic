@@ -5,9 +5,11 @@
  * $XDG_RUNTIME_DIR/arctic-0 and composes them on the CPU into the KMS
  * framebuffer. This step speaks the standard protocols Wine's own Wayland
  * driver needs (wl_compositor, wl_shm, wl_subcompositor, xdg_wm_base,
- * wp_viewporter, wl_output), so the compositor can be tested before
- * winearctic.drv exists. Toplevels are cascaded for now; with
- * winearctic.drv their places come from wineserver (patch 0001).
+ * wp_viewporter, wl_output), plus arctic_shell_v1, through which a client
+ * says which Win32 window a surface shows. Where those windows are, whether
+ * they are visible and how they are stacked comes from wineserver (patch
+ * 0001, read by the PE side), never from the client. Surfaces without a
+ * window keep a simple cascade.
  *
  * Buffers are copied at commit and released at once, so clients never wait
  * on the compositor; the copy is what the next frame is composed from.
@@ -34,11 +36,14 @@
 
 #include "xdg-shell-server-protocol.h"
 #include "viewporter-server-protocol.h"
+#include "arctic-shell-v1-server-protocol.h"
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
+#include "winbase.h"
+#include "winuser.h"
 #include "wine/debug.h"
 
 #include "dwmcore_private.h"
@@ -75,9 +80,14 @@ struct surface
     int                 sub_x, sub_y;
     struct wl_list      children;            /* bottom to top */
 
+    /* the Win32 window it shows, 0 if none (arctic_shell_v1) */
+    uint32_t            hwnd;
+    struct wl_resource *arctic_window;
+
     /* toplevel role */
     struct wl_resource *xdg_surface, *xdg_toplevel;
     bool                configured, mapped;
+    bool                maximized, fullscreen;
     int                 x, y;
     struct wl_list      stack_link;          /* toplevels, bottom to top */
 };
@@ -90,6 +100,8 @@ static uint32_t                background;   /* XRGB */
 static uint32_t               *shadow;       /* frame composed in RAM, then copied out */
 static bool                    dirty = true;
 static int                     cascade;
+static struct dwm_window      *windows;      /* from wineserver, topmost first */
+static uint32_t                window_count;
 
 static uint32_t now_ms(void)
 {
@@ -169,7 +181,19 @@ static void draw_tree( const struct surface *s, int x, int y )
 
     if (s->pixels) blit( s, x, y );
     wl_list_for_each( child, &s->children, child_link )
+    {
+        if (child->hwnd) continue; /* a window of its own: placed by wineserver, not by its parent */
         draw_tree( child, x + child->sub_x, y + child->sub_y );
+    }
+}
+
+static struct surface *surface_for_hwnd( uint32_t hwnd )
+{
+    struct surface *s;
+
+    wl_list_for_each( s, &all_surfaces, all_link )
+        if (s->hwnd == hwnd) return s;
+    return NULL;
 }
 
 static void compose(void)
@@ -178,7 +202,17 @@ static void compose(void)
     size_t count = (size_t)kms.width * kms.height;
 
     for (size_t i = 0; i < count; i++) shadow[i] = background;
-    wl_list_for_each( s, &toplevels, stack_link ) draw_tree( s, s->x, s->y );
+
+    /* Win32 windows, bottom to top, where wineserver has them */
+    for (uint32_t i = window_count; i--;)
+    {
+        const struct dwm_window *w = &windows[i];
+
+        if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE)) continue;
+        if ((s = surface_for_hwnd( w->hwnd ))) draw_tree( s, w->left, w->top );
+    }
+    wl_list_for_each( s, &toplevels, stack_link )
+        if (!s->hwnd) draw_tree( s, s->x, s->y );
     for (uint32_t y = 0; y < kms.height; y++)
         memcpy( (uint8_t *)kms.pixels + (size_t)y * kms.pitch, shadow + (size_t)y * kms.width, kms.width * 4 );
     kms_flush();
@@ -234,8 +268,11 @@ static void unmap_toplevel( struct surface *s )
 static void send_configure( struct surface *s )
 {
     struct wl_array states;
+    uint32_t *state;
 
     wl_array_init( &states );
+    if (s->maximized && (state = wl_array_add( &states, sizeof(*state) ))) *state = XDG_TOPLEVEL_STATE_MAXIMIZED;
+    if (s->fullscreen && (state = wl_array_add( &states, sizeof(*state) ))) *state = XDG_TOPLEVEL_STATE_FULLSCREEN;
     xdg_toplevel_send_configure( s->xdg_toplevel, 0, 0, &states );
     wl_array_release( &states );
     xdg_surface_send_configure( s->xdg_surface, wl_display_next_serial( display ) );
@@ -407,6 +444,7 @@ static void surface_destroyed( struct wl_resource *resource )
     if (s->xdg_surface) wl_resource_set_user_data( s->xdg_surface, NULL );
     if (s->xdg_toplevel) wl_resource_set_user_data( s->xdg_toplevel, NULL );
     if (s->viewport) wl_resource_set_user_data( s->viewport, NULL );
+    if (s->arctic_window) wl_resource_set_user_data( s->arctic_window, NULL );
     free( s->pixels );
     free( s );
     dirty = true;
@@ -714,9 +752,41 @@ static void toplevel_void( struct wl_client *client, struct wl_resource *resourc
 {
 }
 
+/* Win32 decides whether a window is maximized or fullscreen; the state is
+ * only confirmed back, at the size the window already has (0x0) */
+static void toplevel_set_state( struct wl_resource *resource, bool maximized, bool fullscreen )
+{
+    struct surface *s = get_surface( resource );
+
+    if (!s) return;
+    s->maximized = maximized;
+    s->fullscreen = fullscreen;
+    if (s->configured) send_configure( s );
+}
+
+static void toplevel_set_maximized( struct wl_client *client, struct wl_resource *resource )
+{
+    struct surface *s = get_surface( resource );
+    if (s) toplevel_set_state( resource, true, s->fullscreen );
+}
+
+static void toplevel_unset_maximized( struct wl_client *client, struct wl_resource *resource )
+{
+    struct surface *s = get_surface( resource );
+    if (s) toplevel_set_state( resource, false, s->fullscreen );
+}
+
 static void toplevel_set_fullscreen( struct wl_client *client, struct wl_resource *resource,
                                      struct wl_resource *output )
 {
+    struct surface *s = get_surface( resource );
+    if (s) toplevel_set_state( resource, s->maximized, true );
+}
+
+static void toplevel_unset_fullscreen( struct wl_client *client, struct wl_resource *resource )
+{
+    struct surface *s = get_surface( resource );
+    if (s) toplevel_set_state( resource, s->maximized, false );
 }
 
 static const struct xdg_toplevel_interface toplevel_impl =
@@ -730,10 +800,10 @@ static const struct xdg_toplevel_interface toplevel_impl =
     .resize = toplevel_resize,
     .set_max_size = toplevel_size,
     .set_min_size = toplevel_size,
-    .set_maximized = toplevel_void,
-    .unset_maximized = toplevel_void,
+    .set_maximized = toplevel_set_maximized,
+    .unset_maximized = toplevel_unset_maximized,
     .set_fullscreen = toplevel_set_fullscreen,
-    .unset_fullscreen = toplevel_void,
+    .unset_fullscreen = toplevel_unset_fullscreen,
     .set_minimized = toplevel_void,
 };
 
@@ -763,6 +833,7 @@ static void xdg_surface_get_toplevel( struct wl_client *client, struct wl_resour
     if (!s) return;
     s->xdg_toplevel = toplevel;
     s->configured = false;
+    s->maximized = s->fullscreen = false;
 }
 
 static void xdg_surface_get_popup( struct wl_client *client, struct wl_resource *resource, uint32_t id,
@@ -852,6 +923,54 @@ static void bind_wm_base( struct wl_client *client, void *data, uint32_t version
 }
 
 /**********************************************************************
+ *          arctic_shell_v1
+ */
+
+static const struct arctic_window_v1_interface arctic_window_impl =
+{
+    .destroy = resource_destroy,
+};
+
+static void arctic_window_destroyed( struct wl_resource *resource )
+{
+    struct surface *s = get_surface( resource );
+
+    if (!s) return;
+    s->hwnd = 0;
+    s->arctic_window = NULL;
+    dirty = true;
+}
+
+static void shell_get_window( struct wl_client *client, struct wl_resource *resource, uint32_t id,
+                              struct wl_resource *surface, uint32_t hwnd )
+{
+    struct surface *s = get_surface( surface );
+    struct wl_resource *window = wl_resource_create( client, &arctic_window_v1_interface, 1, id );
+
+    if (!window)
+    {
+        wl_client_post_no_memory( client );
+        return;
+    }
+    wl_resource_set_implementation( window, &arctic_window_impl, s, arctic_window_destroyed );
+    s->hwnd = hwnd;
+    s->arctic_window = window;
+    dirty = true;
+}
+
+static const struct arctic_shell_v1_interface shell_impl =
+{
+    .destroy = resource_destroy,
+    .get_window = shell_get_window,
+};
+
+static void bind_shell( struct wl_client *client, void *data, uint32_t version, uint32_t id )
+{
+    struct wl_resource *resource = wl_resource_create( client, &arctic_shell_v1_interface, version, id );
+    if (resource) wl_resource_set_implementation( resource, &shell_impl, NULL, NULL );
+}
+
+/**********************************************************************
  *          wl_output
  */
 
@@ -900,6 +1019,7 @@ static NTSTATUS dwm_start( void *args )
     wl_global_create( display, &wp_viewporter_interface, 1, NULL, bind_viewporter );
     wl_global_create( display, &xdg_wm_base_interface, 2, NULL, bind_wm_base );
     wl_global_create( display, &wl_output_interface, 2, NULL, bind_output );
+    wl_global_create( display, &arctic_shell_v1_interface, 1, NULL, bind_shell );
 
     if (wl_display_add_socket( display, SOCKET_NAME ))
     {
@@ -913,17 +1033,36 @@ static NTSTATUS dwm_start( void *args )
     return STATUS_SUCCESS;
 }
 
-/* never returns: the calling thread becomes the compositor's event loop */
-static NTSTATUS dwm_run( void *args )
+/* serves clients and composes (on the frame timer) for up to timeout_ms;
+ * between calls the PE side asks wineserver about the windows */
+static NTSTATUS dwm_dispatch( void *args )
 {
-    wl_display_run( display );
+    const struct dwm_dispatch_params *params = args;
+
+    wl_event_loop_dispatch( wl_display_get_event_loop( display ), (int)params->timeout_ms );
+    wl_display_flush_clients( display );
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS dwm_set_windows( void *args )
+{
+    const struct dwm_set_windows_params *params = args;
+    struct dwm_window *copy = NULL;
+
+    if (params->count && !(copy = malloc( params->count * sizeof(*copy) ))) return STATUS_NO_MEMORY;
+    if (copy) memcpy( copy, params->windows, params->count * sizeof(*copy) );
+    free( windows );
+    windows = copy;
+    window_count = params->count;
+    dirty = true;
     return STATUS_SUCCESS;
 }
 
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     dwm_start,
-    dwm_run,
+    dwm_dispatch,
+    dwm_set_windows,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );

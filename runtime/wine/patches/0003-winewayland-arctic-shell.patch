@@ -1,0 +1,158 @@
+From 9c31fb7bb96c98fb3ad3056df437d86ab74d0ba3 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 19 Sep 2026 19:17:23 +0300
+Subject: [PATCH] winewayland.drv: Tell dwm.exe which window each surface
+ shows.
+
+With arctic_shell_v1 present, dwm.exe places windows where wineserver
+has them, so moving and sizing stay with win32u.
+---
+ dlls/winewayland.drv/Makefile.in         |  1 +
+ dlls/winewayland.drv/arctic-shell-v1.xml | 33 ++++++++++++++++++++++++
+ dlls/winewayland.drv/wayland.c           |  5 ++++
+ dlls/winewayland.drv/wayland_surface.c   | 10 +++++++
+ dlls/winewayland.drv/waylanddrv.h        |  3 +++
+ dlls/winewayland.drv/window.c            |  3 +++
+ 6 files changed, 55 insertions(+)
+ create mode 100644 dlls/winewayland.drv/arctic-shell-v1.xml
+
+diff --git a/dlls/winewayland.drv/Makefile.in b/dlls/winewayland.drv/Makefile.in
+index 00dd005..e1b3b0b 100644
+--- a/dlls/winewayland.drv/Makefile.in
++++ b/dlls/winewayland.drv/Makefile.in
+@@ -8,6 +8,7 @@ VER_FILEDESCRIPTION_STR = "Wine Wayland driver"
+ 
+ SOURCES = \
+ 	alpha-modifier-v1.xml \
++	arctic-shell-v1.xml \
+ 	cursor-shape-v1.xml \
+ 	display.c \
+ 	dllmain.c \
+diff --git a/dlls/winewayland.drv/arctic-shell-v1.xml b/dlls/winewayland.drv/arctic-shell-v1.xml
+new file mode 100644
+index 0000000..a07ca2b
+--- /dev/null
++++ b/dlls/winewayland.drv/arctic-shell-v1.xml
+@@ -0,0 +1,33 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="arctic_shell_v1">
++  <copyright>
++    Copyright Project Arctic contributors.
++
++    This library is free software; you can redistribute it and/or
++    modify it under the terms of the GNU Lesser General Public
++    License as published by the Free Software Foundation; either
++    version 2.1 of the License, or (at your option) any later version.
++  </copyright>
++
++  <interface name="arctic_shell_v1" version="1">
++    <description summary="ties surfaces to Win32 windows">
++      Offered by dwm.exe. A client only says which Win32 window a surface
++      shows. Where windows are, which are visible and how they are stacked,
++      dwm.exe reads from wineserver itself, never from the client.
++    </description>
++
++    <request name="destroy" type="destructor"/>
++
++    <request name="get_window">
++      <arg name="id" type="new_id" interface="arctic_window_v1"/>
++      <arg name="surface" type="object" interface="wl_surface"/>
++      <arg name="hwnd" type="uint" summary="window handle, as wineserver knows it"/>
++    </request>
++  </interface>
++
++  <interface name="arctic_window_v1" version="1">
++    <description summary="a surface that shows a Win32 window"/>
++
++    <request name="destroy" type="destructor"/>
++  </interface>
++</protocol>
+diff --git a/dlls/winewayland.drv/wayland.c b/dlls/winewayland.drv/wayland.c
+index 52ba39c..98cf5c2 100644
+--- a/dlls/winewayland.drv/wayland.c
++++ b/dlls/winewayland.drv/wayland.c
+@@ -215,6 +215,11 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
+         process_wayland.wp_fractional_scale_manager_v1 =
+             wl_registry_bind(registry, id, &wp_fractional_scale_manager_v1_interface, 1);
+     }
++    else if (strcmp(interface, "arctic_shell_v1") == 0)
++    {
++        process_wayland.arctic_shell_v1 =
++            wl_registry_bind(registry, id, &arctic_shell_v1_interface, 1);
++    }
+ #ifdef WL_FIXES_ACK_GLOBAL_REMOVE
+     else if (strcmp(interface, "wl_fixes") == 0)
+     {
+diff --git a/dlls/winewayland.drv/wayland_surface.c b/dlls/winewayland.drv/wayland_surface.c
+index bcaa8c0..4d7b780 100644
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -204,6 +204,10 @@ struct wayland_surface *wayland_surface_create(HWND hwnd)
+     }
+     wl_surface_set_user_data(surface->wl_surface, hwnd);
+ 
++    if (process_wayland.arctic_shell_v1)
++        surface->arctic_window_v1 = arctic_shell_v1_get_window(process_wayland.arctic_shell_v1,
++                                                               surface->wl_surface, HandleToUlong(hwnd));
++
+     surface->wp_viewport =
+         wp_viewporter_get_viewport(process_wayland.wp_viewporter,
+                                    surface->wl_surface);
+@@ -275,6 +279,12 @@ void wayland_surface_destroy(struct wayland_surface *surface)
+         surface->wp_viewport = NULL;
+     }
+ 
++    if (surface->arctic_window_v1)
++    {
++        arctic_window_v1_destroy(surface->arctic_window_v1);
++        surface->arctic_window_v1 = NULL;
++    }
++
+     if (surface->wl_surface)
+     {
+         wl_surface_destroy(surface->wl_surface);
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index c776675..4af851a 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -41,6 +41,7 @@
+ #include "pointer-warp-v1-client-protocol.h"
+ #include "alpha-modifier-v1-client-protocol.h"
+ #include "fractional-scale-v1-client-protocol.h"
++#include "arctic-shell-v1-client-protocol.h"
+ 
+ #include "windef.h"
+ #include "winbase.h"
+@@ -185,6 +186,7 @@ struct wayland
+     struct wp_cursor_shape_manager_v1 *wp_cursor_shape_manager_v1;
+     struct wp_pointer_warp_v1 *wp_pointer_warp_v1;
+     struct wp_alpha_modifier_v1 *wp_alpha_modifier_v1;
++    struct arctic_shell_v1 *arctic_shell_v1;
+     struct wayland_seat seat;
+     struct wayland_keyboard keyboard;
+     struct wayland_pointer pointer;
+@@ -299,6 +301,7 @@ struct wayland_surface
+         };
+     };
+     struct wp_alpha_modifier_surface_v1 *wp_alpha_modifier_surface_v1;
++    struct arctic_window_v1 *arctic_window_v1;
+ 
+     struct wayland_surface_config pending, requested, processing, current;
+     BOOL resizing;
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 270fdfb..0321acf 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -755,6 +755,9 @@ LRESULT WAYLAND_SysCommand(HWND hwnd, WPARAM wparam, LPARAM lparam, const POINT
+     TRACE("cmd=%lx hwnd=%p, %lx, %lx\n",
+           (long)command, hwnd, (long)wparam, lparam);
+ 
++    /* dwm.exe places windows where wineserver has them, so win32u moves and sizes them itself */
++    if (process_wayland.arctic_shell_v1) return -1;
++
+     pthread_mutex_lock(&process_wayland.pointer.mutex);
+     if (process_wayland.pointer.focused_hwnd == hwnd)
+         button_serial = process_wayland.pointer.button_serial;
+-- 
+2.53.0.windows.2
+

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="arctic_shell_v1">
+  <copyright>
+    Copyright Project Arctic contributors.
+
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 2.1 of the License, or (at your option) any later version.
+  </copyright>
+
+  <interface name="arctic_shell_v1" version="1">
+    <description summary="ties surfaces to Win32 windows">
+      Offered by dwm.exe. A client only says which Win32 window a surface
+      shows. Where windows are, which are visible and how they are stacked,
+      dwm.exe reads from wineserver itself, never from the client.
+    </description>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="get_window">
+      <arg name="id" type="new_id" interface="arctic_window_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="hwnd" type="uint" summary="window handle, as wineserver knows it"/>
+    </request>
+  </interface>
+
+  <interface name="arctic_window_v1" version="1">
+    <description summary="a surface that shows a Win32 window"/>
+
+    <request name="destroy" type="destructor"/>
+  </interface>
+</protocol>

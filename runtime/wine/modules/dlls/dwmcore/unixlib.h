@@ -17,10 +17,31 @@ struct dwm_start_params
     UINT32 background;  /* COLORREF of the desktop */
 };
 
+struct dwm_dispatch_params
+{
+    UINT32 timeout_ms;
+};
+
+/* a toplevel window as wineserver sees it */
+struct dwm_window
+{
+    UINT32 hwnd;
+    UINT32 style;
+    UINT32 ex_style;
+    INT32  left, top, right, bottom;  /* visible rectangle, screen coordinates */
+};
+
+struct dwm_set_windows_params
+{
+    UINT32                   count;
+    const struct dwm_window *windows;  /* topmost first */
+};
+
 enum dwm_funcs
 {
-    unix_dwm_start,     /* take the display, start serving buffers */
-    unix_dwm_run,       /* the calling thread becomes the event loop; never returns */
+    unix_dwm_start,        /* take the display, start serving buffers */
+    unix_dwm_dispatch,     /* serve clients and compose, for up to timeout_ms */
+    unix_dwm_set_windows,  /* the toplevel windows, from wineserver */
     unix_funcs_count
 };
 

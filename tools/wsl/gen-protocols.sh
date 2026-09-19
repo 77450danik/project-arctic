@@ -12,11 +12,14 @@ DST=$ROOT/runtime/wine/modules/dlls/dwmcore
 # headers, so the libwayland headers are included with <angle brackets>
 fix_includes() { sed -E 's/#include "(wayland-[a-z-]+\.h)"/#include <\1>/'; }
 
-for proto in xdg-shell viewporter; do
-    wayland-scanner server-header "$XML/$proto.xml" /dev/stdout | fix_includes > "$DST/$proto-server-protocol.h"
+# standard protocols come from Wine's tree, ours (arctic-*) live next to dwmcore
+for proto in xdg-shell viewporter arctic-shell-v1; do
+    src=$XML/$proto.xml
+    case $proto in arctic-*) src=$DST/$proto.xml ;; esac
+    wayland-scanner server-header "$src" /dev/stdout | fix_includes > "$DST/$proto-server-protocol.h"
     {
         printf '#if 0\n#pragma makedep unix\n#endif\n\n'
-        wayland-scanner private-code "$XML/$proto.xml" /dev/stdout | fix_includes
+        wayland-scanner private-code "$src" /dev/stdout | fix_includes
     } > "$DST/$proto-protocol.c"
 done
 wayland-scanner --version
