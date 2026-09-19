@@ -3,3 +3,4 @@
 *.iso
 *.log
 /tools/zig/
+/wsl/
