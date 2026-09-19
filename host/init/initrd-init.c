@@ -230,7 +230,7 @@ static void setup_c_drive(void)
     say("C: mounted (ntfs3)");
 }
 
-static void move_mount(const char *from, const char *to)
+static void move_into(const char *from, const char *to)
 {
     if (mount(from, to, NULL, MS_MOVE, NULL))
         fatal("PHASE1_INITIALIZATION_FAILED", "initrd", to);
@@ -274,13 +274,13 @@ int main(void)
         fatal("PHASE1_INITIALIZATION_FAILED", "tmpfs", "tmpfs");
     mkdir(NEWROOT "/run/arctic", 0755);
     mkdir(NEWROOT "/run/arctic/media", 0755);
-    move_mount(MEDIA, NEWROOT "/run/arctic/media");
+    move_into(MEDIA, NEWROOT "/run/arctic/media");
 
     setup_c_drive();
 
-    move_mount("/dev", NEWROOT "/dev");
-    move_mount("/proc", NEWROOT "/proc");
-    move_mount("/sys", NEWROOT "/sys");
+    move_into("/dev", NEWROOT "/dev");
+    move_into("/proc", NEWROOT "/proc");
+    move_into("/sys", NEWROOT "/sys");
 
     if (chdir(NEWROOT) || mount(".", "/", NULL, MS_MOVE, NULL) || chroot(".") || chdir("/"))
         fatal("PHASE1_INITIALIZATION_FAILED", "initrd", "switch root");
