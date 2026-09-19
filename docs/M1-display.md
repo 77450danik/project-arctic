@@ -65,6 +65,27 @@ GL/Vulkan-поверхні — `wl_subsurface`, пристрої дисплея 
 - `ci/build-wine.sh` бере тег upstream, накладає модулі й патчі, запускає `tools/make_makefiles`
   та `autoreconf` і збирає. Ребейз на новий upstream = зміна тегу + правка патчів, що не наклались.
 
+## dwm.exe і dwmcore.dll
+
+Як у Windows: рушій композиції — `dwmcore.dll`, процес — тонкий `dwm.exe`, що його хостить.
+
+- `dlls/dwmcore`: PE-частина + `UNIXLIB = dwmcore.so` (KMS, сервер буферів, композиція).
+  Шаблон — `dlls/winewayland.drv/Makefile.in` (`UNIXLIB`, `UNIX_CFLAGS`, `UNIX_LIBS`).
+- `programs/dwm`: запускається з `wininit.exe`, викликає `dwmcore` і живе, поки живе сеанс.
+- DRM master: `arctic-init` тримає fd заставки; перед стартом dwm він його закриває, і dwm стає
+  першим відкривачем картки (або отримує fd у спадок — вибрати під час реалізації).
+- **libwayland-server** у `configure.ac` поки немає — додаємо `WINE_PACKAGE_FLAGS(WAYLAND_SERVER, ...)`
+  патчем. makedep генерує з `.xml` лише клієнтські заголовки, тож серверні
+  (`*-server-protocol.h` + код) робить `wayland-scanner` у `ci/build-wine.sh` перед configure.
+- Ядро протоколу (`wl_compositor`, `wl_shm`, `wl_subcompositor`) вже є в `wayland-server-protocol.h`
+  з libwayland; через scanner ідуть лише розширення (dmabuf, syncobj, presentation, viewporter, наші).
+
+Кроки, кожен з перевіркою в QEMU:
+1. `dwm.exe` бере KMS і заливає екран кольором фону з `HKCU\Control Panel\Colors\Background`.
+2. Сервер буферів + `wl_shm`: показує одну тестову поверхню.
+3. `winearctic.drv` віддає DIB-поверхні вікон → видно explorer і Блокнот.
+4. Список вікон з wineserver (патч 0001) задає положення й порядок.
+
 ## Порядок робіт у M1
 
 1. Патч wineserver: `zorder_serial` + запит списку вікон.
