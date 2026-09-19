@@ -50,12 +50,15 @@ export WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
 mkdir -p "$HOME"
 wine wineboot.exe --init
 wine winecfg.exe -v win11
+wine reg.exe add 'HKCU\Control Panel\Desktop' /v Wallpaper /d 'C:\Windows\Web\Wallpaper\Arctic\img0.jpg' /f
 wineserver -w
 EOF
 timeout 900 arch-chroot "$RFS" /usr/bin/busybox sh /var/tmp/mkprefix.sh
 
 PFX="$RFS/var/tmp/prefix"
 rm -f "$PFX/dosdevices/z:"
+mkdir -p "$PFX/drive_c/windows/Web/Wallpaper/Arctic"
+cp "$ROOT/WALLPAPER.jpg" "$PFX/drive_c/windows/Web/Wallpaper/Arctic/img0.jpg"
 mkdir -p "$PFX/drive_c/windows/system32/config"
 cp "$PFX/system.reg" "$PFX/user.reg" "$PFX/userdef.reg" "$PFX/.update-timestamp" "$PFX/drive_c/windows/system32/config/"
 mv "$PFX" "$OUT/prefix"
