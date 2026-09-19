@@ -74,4 +74,7 @@ GL/Vulkan-поверхні — `wl_subsurface`, пристрої дисплея 
 4. `csrss.exe`: власник root-робочого столу + RIT на libinput.
 5. `wininit.exe` / `winlogon.exe` / `userinit.exe` і порядок старту з arctic-init.
 6. Реєстр за замовчуванням: `Graphics=arctic`, uk-UA, розкладки, Mizu.
-7. ReactOS explorer як оболонка (перевірка сумісності на самому початку).
+   MUI-завантаження ресурсів у рантаймі (`<тека модуля>\uk-UA\<модуль>.mui`) і винесення перекладів
+   Wine та ReactOS у MUI-файли під час збірки.
+7. Оболонка з ReactOS: explorer + shell32/browseui/shdocvw. Сумісність перевіряємо на самому початку
+   й виправляємо; explorer Wine не використовуємо.

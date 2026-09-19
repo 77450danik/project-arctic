@@ -24,14 +24,17 @@
 #include <unistd.h>
 
 #include "splash.h"
+#include "stop.h"
 
 #define NEWROOT "/newroot"
 #define MEDIA "/media"
 #define WINDOWS_IMG NEWROOT "/usr/share/arctic/windows.img"
 #define C_DEV "/dev/arctic-c"
 #define NT_OPTS "uid=1000,gid=1000,umask=022"
+#define FONT "/bsod.font"
 
-static int kmsg = -1;
+static int kmsg = -1, splash = -1, dev_mode;
+static char cmdline[4096];
 
 static void say(const char *fmt, ...)
 {
@@ -46,11 +49,27 @@ static void say(const char *fmt, ...)
         write(kmsg, buf, strlen(buf));
 }
 
-static void fatal(const char *what)
+/* Stop codes follow Windows: INACCESSIBLE_BOOT_DEVICE when the medium is
+ * missing, UNMOUNTABLE_BOOT_VOLUME when C: fails, and so on. */
+static void fatal(const char *code, const char *what, const char *detail)
 {
-    say("FATAL: %s: %s", what, strerror(errno));
+    say("%s: %s", detail, strerror(errno));
+    if (kmsg >= 0)
+        dprintf(kmsg, "<3>ARCTIC: STOP %s (%s)", code, what);
+    stop_screen(splash, FONT, code, what, dev_mode);
     for (;;)
         pause();
+}
+
+static void read_cmdline(void)
+{
+    int fd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
+
+    if (fd >= 0) {
+        read(fd, cmdline, sizeof(cmdline) - 1);
+        close(fd);
+    }
+    dev_mode = strstr(cmdline, "arctic.dev=1") != NULL;
 }
 
 static int write_file(const char *path, const char *value)
@@ -98,7 +117,7 @@ static void find_media(void)
         usleep(200000);
     }
     errno = ENOENT;
-    fatal("boot medium not found");
+    fatal("INACCESSIBLE_BOOT_DEVICE", "ARCTIC", "boot medium not found");
 }
 
 static int loop_attach(const char *file, char *dev, size_t len)
@@ -181,10 +200,10 @@ static void setup_c_drive(void)
     int fd;
 
     if (loop_attach(WINDOWS_IMG, loop, sizeof(loop)))
-        fatal("attach windows.img");
+        fatal("UNMOUNTABLE_BOOT_VOLUME", "windows.img", "attach windows.img");
     fd = open(loop, O_RDONLY | O_CLOEXEC);
     if (fd < 0 || ioctl(fd, BLKGETSIZE64, &bytes))
-        fatal("size of windows.img");
+        fatal("UNMOUNTABLE_BOOT_VOLUME", "windows.img", "size of windows.img");
     close(fd);
 
     /* The zram disk is only as big as the RAM, and it only uses RAM for what is written */
@@ -192,14 +211,14 @@ static void setup_c_drive(void)
     write_file("/sys/block/zram0/comp_algorithm", "zstd");
     snprintf(size, sizeof(size), "%llu", (unsigned long long)si.totalram * si.mem_unit);
     if (write_file("/sys/block/zram0/disksize", size))
-        fatal("zram disksize");
+        fatal("UNMOUNTABLE_BOOT_VOLUME", "zram", "zram disksize");
 
     if (stat(loop, &st_loop) || stat("/dev/zram0", &st_zram))
-        fatal("stat loop/zram");
+        fatal("UNMOUNTABLE_BOOT_VOLUME", "zram", "stat loop/zram");
     if (dm_snapshot("arctic-c", st_loop.st_rdev, st_zram.st_rdev, bytes / 512, &cdev))
-        fatal("device-mapper snapshot");
+        fatal("UNMOUNTABLE_BOOT_VOLUME", "dm-snapshot", "device-mapper snapshot");
     if (mknod(C_DEV, S_IFBLK | 0600, cdev) && errno != EEXIST)
-        fatal("mknod C:");
+        fatal("UNMOUNTABLE_BOOT_VOLUME", "dm-snapshot", "mknod C:");
 
     if (!mount(C_DEV, NEWROOT "/mnt/c", "ntfs", 0, "nocase=1,windows_names=1," NT_OPTS)) {
         say("C: mounted (ntfs, nocase)");
@@ -207,27 +226,27 @@ static void setup_c_drive(void)
     }
     say("ntfs mount failed (%s), trying ntfs3", strerror(errno));
     if (mount(C_DEV, NEWROOT "/mnt/c", "ntfs3", 0, NT_OPTS))
-        fatal("mount C:");
+        fatal("UNMOUNTABLE_BOOT_VOLUME", "ntfs", "mount C:");
     say("C: mounted (ntfs3)");
 }
 
 static void move_mount(const char *from, const char *to)
 {
     if (mount(from, to, NULL, MS_MOVE, NULL))
-        fatal(to);
+        fatal("PHASE1_INITIALIZATION_FAILED", "initrd", to);
 }
 
 int main(void)
 {
     char loop[64];
-    int splash = -1;
     char fdenv[32];
 
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
     mount("proc", "/proc", "proc", 0, NULL);
     mount("sysfs", "/sys", "sysfs", 0, NULL);
     kmsg = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
-    say("start");
+    read_cmdline();
+    say("start (dev=%d)", dev_mode);
 
     for (int i = 0; i < 20 && splash < 0; i++) {
         splash = splash_show("/dev/dri/card0", "/logo.bgra");
@@ -236,17 +255,23 @@ int main(void)
     }
     say(splash >= 0 ? "logo on /dev/dri/card0" : "no framebuffer for the logo");
 
+    if (strstr(cmdline, "arctic.stoptest=initrd")) {
+        sleep(1);
+        errno = 0;
+        fatal("MANUALLY_INITIATED_CRASH", "arctic.stoptest", "stop screen test");
+    }
+
     mkdir(MEDIA, 0755);
     mkdir(NEWROOT, 0755);
     find_media();
 
     if (loop_attach(MEDIA "/arctic/host.sqfs", loop, sizeof(loop)))
-        fatal("attach host.sqfs");
+        fatal("INACCESSIBLE_BOOT_DEVICE", "host.sqfs", "attach host.sqfs");
     if (mount(loop, NEWROOT, "squashfs", MS_RDONLY, NULL))
-        fatal("mount host.sqfs");
+        fatal("INACCESSIBLE_BOOT_DEVICE", "host.sqfs", "mount host.sqfs");
     if (mount("tmpfs", NEWROOT "/run", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") ||
         mount("tmpfs", NEWROOT "/tmp", "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777"))
-        fatal("tmpfs");
+        fatal("PHASE1_INITIALIZATION_FAILED", "tmpfs", "tmpfs");
     mkdir(NEWROOT "/run/arctic", 0755);
     mkdir(NEWROOT "/run/arctic/media", 0755);
     move_mount(MEDIA, NEWROOT "/run/arctic/media");
@@ -258,13 +283,13 @@ int main(void)
     move_mount("/sys", NEWROOT "/sys");
 
     if (chdir(NEWROOT) || mount(".", "/", NULL, MS_MOVE, NULL) || chroot(".") || chdir("/"))
-        fatal("switch root");
+        fatal("PHASE1_INITIALIZATION_FAILED", "initrd", "switch root");
 
     snprintf(fdenv, sizeof(fdenv), "ARCTIC_SPLASH_FD=%d", splash);
     char *argv[] = {"/usr/bin/arctic-init", NULL};
     char *envp[] = {"PATH=/usr/bin", fdenv, NULL};
     say("handing over to arctic-init");
     execve(argv[0], argv, envp);
-    fatal("exec arctic-init");
+    fatal("CRITICAL_PROCESS_DIED", "arctic-init", "exec arctic-init");
     return 1;
 }

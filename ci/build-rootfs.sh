@@ -9,7 +9,7 @@ source "$ROOT/ci/arch-prep.sh"
 OUT="$ROOT/out"
 RFS="$OUT/rootfs"
 
-pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow
+pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts
 
 # The container's NoExtract rules drop the locale sources we need
 sed '/^NoExtract/d' /etc/pacman.conf > /tmp/pacman.conf
@@ -32,12 +32,15 @@ mkdir -p "$RFS/mnt/c" "$RFS/usr/share/arctic"
 cp -a "$OUT/kernel/lib/modules" "$RFS/usr/lib/"
 cp -a "$OUT/wine/usr/." "$RFS/usr/"
 
-gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "$ROOT/host/init/splash.c"
+INIT_SRC=("$ROOT"/host/init/{splash,screen,stop}.c)
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}"
 mkdir -p "$OUT/initrd/dev" "$OUT/initrd/proc" "$OUT/initrd/sys"
-gcc -static -Os -Wall -o "$OUT/initrd/init" "$ROOT/host/init/initrd-init.c" "$ROOT/host/init/splash.c"
+gcc -static -Os -Wall -o "$OUT/initrd/init" "$ROOT/host/init/initrd-init.c" "${INIT_SRC[@]}"
 mknod -m 600 "$OUT/initrd/dev/console" c 5 1
 python "$ROOT/ci/logo2raw.py" "$ROOT/ARCTIC.png" "$OUT/initrd/logo.bgra"
 cp "$OUT/initrd/logo.bgra" "$RFS/usr/share/arctic/logo.bgra"
+python "$ROOT/ci/mkfont.py" /usr/share/fonts/noto/NotoSans-Light.ttf "$OUT/initrd/bsod.font"
+cp "$OUT/initrd/bsod.font" "$RFS/usr/share/arctic/bsod.font"
 
 # NT prefix, created by the Wine that ships in this very image
 cat > "$RFS/var/tmp/mkprefix.sh" <<'EOF'

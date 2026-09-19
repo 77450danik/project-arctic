@@ -2,3 +2,4 @@
 /tools/qemu/
 *.iso
 *.log
+/tools/zig/

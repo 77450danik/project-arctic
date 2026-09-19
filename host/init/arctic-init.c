@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include "splash.h"
+#include "stop.h"
 
 #define NT_USER "nt"
 #define PREFIX "/run/nt"
@@ -33,9 +34,10 @@
 #define REG_DIR C_DRIVE "/Windows/System32/config"
 #define LOG_DIR C_DRIVE "/Windows/Logs/Arctic"
 #define LOGO "/usr/share/arctic/logo.bgra"
+#define FONT "/usr/share/arctic/bsod.font"
 
 static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
-static int dev_mode;
+static int dev_mode, splash = -1, stopped;
 static uid_t nt_uid;
 static gid_t nt_gid;
 static pid_t udevd_pid, wineserver_pid, shell_pid;
@@ -88,6 +90,17 @@ static void announce(const char *fmt, ...)
     }
 }
 
+/* A dead NT world is a stop screen, as in Windows. Development builds keep
+ * running afterwards so the serial shell stays usable. */
+static void nt_stop(const char *code, const char *what)
+{
+    if (stopped)
+        return;
+    stopped = 1;
+    announce("STOP %s (%s)", code, what);
+    stop_screen(splash, FONT, code, what, dev_mode);
+}
+
 static char *const nt_env[] = {
     "WINEPREFIX=" PREFIX,
     "HOME=" PREFIX "/home",
@@ -133,6 +146,7 @@ static void child_exited(pid_t pid, int status)
     if (pid == wineserver_pid) {
         say("wineserver exited (status %d)", status);
         wineserver_pid = 0;
+        nt_stop("CRITICAL_PROCESS_DIED", "wineserver");
     } else if (pid == udevd_pid) {
         say("udevd exited (status %d)", status);
         udevd_pid = 0;
@@ -309,23 +323,25 @@ static int redraw_logo(int old_fd)
     return old_fd;
 }
 
+static char cmdline_buf[4096];
+
 static void read_cmdline(void)
 {
-    char buf[4096] = {0};
     int fd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
 
     if (fd >= 0) {
-        read(fd, buf, sizeof(buf) - 1);
+        read(fd, cmdline_buf, sizeof(cmdline_buf) - 1);
         close(fd);
     }
-    dev_mode = strstr(buf, "arctic.dev=1") != NULL;
+    dev_mode = strstr(cmdline_buf, "arctic.dev=1") != NULL;
 }
 
 int main(void)
 {
     const char *splash_env = getenv("ARCTIC_SPLASH_FD");
-    int splash = splash_env ? atoi(splash_env) : -1;
     struct passwd *pw;
+
+    splash = splash_env ? atoi(splash_env) : -1;
 
     signal(SIGPIPE, SIG_IGN);
     mkdir("/dev/pts", 0755);
@@ -340,10 +356,12 @@ int main(void)
     read_cmdline();
     open_logs();
     say("start (dev=%d)", dev_mode);
+    start_shell();
 
     pw = getpwnam(NT_USER);
     if (!pw) {
         say("no user %s", NT_USER);
+        nt_stop("SESSION1_INITIALIZATION_FAILED", NT_USER);
         for (;;)
             pause();
     }
@@ -369,8 +387,10 @@ int main(void)
     say("wineserver pid %d", wineserver_pid);
 
     char *wineboot[] = {"/usr/bin/wine", "wineboot.exe", NULL};
-    run(wineboot, 1, ntlog, 300);
+    int rc = run(wineboot, 1, ntlog, 300);
     mirror_ntlog();
+    if (rc == 126 || rc == 127)
+        nt_stop("SESSION3_INITIALIZATION_FAILED", "wineboot");
 
     char *ver[] = {"/usr/bin/wine", "cmd.exe", "/c", "ver", NULL};
     char *out = capture(ver, 120);
@@ -383,6 +403,9 @@ int main(void)
     out = capture(tasklist, 120);
     for (char *line = strtok(out, "\r\n"); line; line = strtok(NULL, "\r\n"))
         announce("  %s", line);
+
+    if (strstr(cmdline_buf, "arctic.stoptest=nt"))
+        nt_stop("MANUALLY_INITIATED_CRASH", "arctic.stoptest");
 
     for (;;) {
         int status;
