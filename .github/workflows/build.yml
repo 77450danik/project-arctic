@@ -5,9 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# A new push waits for the running build instead of cancelling it: a kernel
+# or Wine build that finishes leaves its cache for the next one.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -62,6 +64,48 @@ jobs:
         with:
           path: out/wine
           key: ${{ steps.key.outputs.key }}
+
+  reactos:
+    runs-on: ubuntu-22.04 # the runner ReactOS's own CI builds RosBE on
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - id: key
+        run: echo "key=reactos-${{ hashFiles('runtime/reactos/**', 'ci/build-reactos.sh') }}" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: out/reactos
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        id: rosbe
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/reactos/RosBE
+          key: rosbe-${{ runner.os }}-ea42b03 # ROSBE_SCRIPT_SHA256 in ci/build-reactos.sh
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get install -y ninja-build texinfo
+      - if: steps.cache.outputs.cache-hit != 'true' && steps.rosbe.outputs.cache-hit != 'true'
+        run: bash ci/build-reactos.sh toolchain
+      - if: steps.cache.outputs.cache-hit != 'true' && steps.rosbe.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/reactos/RosBE
+          key: rosbe-${{ runner.os }}-ea42b03
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: bash ci/build-reactos.sh
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: out/reactos
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reactos-shell
+          path: out/reactos/
+          retention-days: 14
+          if-no-files-found: ignore
 
   image:
     needs: [kernel, wine]

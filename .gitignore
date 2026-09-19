@@ -4,3 +4,4 @@
 *.log
 /tools/zig/
 /wsl/
+__pycache__/
