@@ -14,7 +14,7 @@ used=$(sudo du -sm "$DRIVE_C" | cut -f1)
 size=$((used * 13 / 10 + 512))
 sudo rm -f "$IMG"
 sudo truncate -s "${size}M" "$IMG"
-sudo mkntfs -F -Q -q -L ARCTIC -c 4096 "$IMG"
+sudo mkntfs -F -Q -q -L ARCTIC -s 4096 -c 4096 "$IMG"
 
 MNT=$(mktemp -d)
 sudo ntfs-3g "$IMG" "$MNT"
