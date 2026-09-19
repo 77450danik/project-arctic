@@ -156,3 +156,10 @@ int screen_show(struct screen *s)
     };
     return ioctl(s->fd, DRM_IOCTL_MODE_SETCRTC, &set);
 }
+
+int screen_flush(struct screen *s)
+{
+    struct drm_mode_fb_dirty_cmd dirty = {.fb_id = s->fb_id};
+
+    return ioctl(s->fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
+}

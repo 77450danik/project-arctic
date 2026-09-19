@@ -287,6 +287,7 @@ void stop_screen(int drm_fd, const char *font_path, const char *code, const char
             if (i == 1)
                 sync();
             stop_draw_progress(&s, &font, &l, steps[i]);
+            screen_flush(&s);
         }
     } else {
         sleep(5);

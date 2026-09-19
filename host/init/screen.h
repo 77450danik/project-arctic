@@ -29,4 +29,8 @@ void screen_fill(struct screen *s, int x, int y, int w, int h, uint32_t xrgb);
 /* Puts the framebuffer on screen. */
 int screen_show(struct screen *s);
 
+/* Tells the driver the framebuffer changed after it went on screen. Drivers
+ * that scan out from a shadow copy (simpledrm, virtual GPUs) need this. */
+int screen_flush(struct screen *s);
+
 #endif
