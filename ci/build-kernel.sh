@@ -37,6 +37,7 @@ while IFS= read -r line; do
 done < "$ROOT/kernel/arctic.config"
 [ "$missing" = 0 ] || exit 1
 
+echo "building with $(nproc) CPUs"
 make -j"$(nproc)" bzImage modules
 make INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
 cp arch/x86/boot/bzImage "$OUT/vmlinuz"
