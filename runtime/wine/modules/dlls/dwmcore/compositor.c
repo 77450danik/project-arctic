@@ -64,6 +64,7 @@ struct surface
     uint32_t           *pixels;
     int                 width, height;
     bool                alpha;               /* premultiplied ARGB */
+    int                 src_x, src_y, src_width, src_height; /* wp_viewport source, width 0 if unset */
     int                 dst_width, dst_height; /* wp_viewport destination, 0 if unset */
     struct wl_resource *viewport;
 
@@ -124,10 +125,21 @@ static uint32_t over( uint32_t src, uint32_t dst )
     return out;
 }
 
+/* the part of the buffer shown (viewport source) scaled to the viewport destination */
 static void blit( const struct surface *s, int x0, int y0 )
 {
-    int dw = s->dst_width ? s->dst_width : s->width;
-    int dh = s->dst_height ? s->dst_height : s->height;
+    int sx0 = 0, sy0 = 0, sw = s->width, sh = s->height, dw, dh;
+
+    if (s->src_width > 0 && s->src_height > 0)
+    {
+        sx0 = s->src_x;
+        sy0 = s->src_y;
+        sw = s->src_width < s->width - sx0 ? s->src_width : s->width - sx0;
+        sh = s->src_height < s->height - sy0 ? s->src_height : s->height - sy0;
+        if (sw <= 0 || sh <= 0) return;
+    }
+    dw = s->dst_width ? s->dst_width : sw;
+    dh = s->dst_height ? s->dst_height : sh;
 
     for (int y = 0; y < dh; y++)
     {
@@ -136,7 +148,7 @@ static void blit( const struct surface *s, int x0, int y0 )
         uint32_t *dst;
 
         if (py < 0 || py >= (int)kms.height) continue;
-        src = s->pixels + (size_t)(dh == s->height ? y : s->height * y / dh) * s->width;
+        src = s->pixels + (size_t)(sy0 + (dh == sh ? y : sh * y / dh)) * s->width + sx0;
         dst = shadow + (size_t)py * kms.width;
         for (int x = 0; x < dw; x++)
         {
@@ -144,7 +156,7 @@ static void blit( const struct surface *s, int x0, int y0 )
             uint32_t p;
 
             if (px < 0 || px >= (int)kms.width) continue;
-            p = src[dw == s->width ? x : s->width * x / dw];
+            p = src[dw == sw ? x : sw * x / dw];
             if (!s->alpha || (p >> 24) == 0xff) dst[px] = p | 0xff000000;
             else if (p >> 24) dst[px] = over( p, dst[px] );
         }
@@ -546,6 +558,21 @@ static void bind_subcompositor( struct wl_client *client, void *data, uint32_t v
 static void viewport_set_source( struct wl_client *client, struct wl_resource *resource,
                                  wl_fixed_t x, wl_fixed_t y, wl_fixed_t width, wl_fixed_t height )
 {
+    struct surface *s = get_surface( resource );
+
+    if (!s) return;
+    if (width == wl_fixed_from_int( -1 )) /* all -1: unset */
+    {
+        s->src_x = s->src_y = s->src_width = s->src_height = 0;
+    }
+    else
+    {
+        s->src_x = wl_fixed_to_int( x );
+        s->src_y = wl_fixed_to_int( y );
+        s->src_width = wl_fixed_to_int( width );
+        s->src_height = wl_fixed_to_int( height );
+    }
+    dirty = true;
 }
 
 static void viewport_set_destination( struct wl_client *client, struct wl_resource *resource,
@@ -572,6 +599,7 @@ static void viewport_destroyed( struct wl_resource *resource )
 
     if (!s) return;
     s->viewport = NULL;
+    s->src_x = s->src_y = s->src_width = s->src_height = 0;
     s->dst_width = s->dst_height = 0;
     dirty = true;
 }

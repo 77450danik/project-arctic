@@ -23,7 +23,7 @@ $qargs = $accel + @(
     '-cdrom', $iso,
     '-vga', 'std',
     '-serial', "file:$serial",
-    '-display', 'sdl'
+    '-display', 'gtk'
 )
 if ($Uefi) { $qargs += @('-bios', (Join-Path $qemuDir 'share\edk2-x86_64-code.fd')) }
 

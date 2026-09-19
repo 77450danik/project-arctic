@@ -316,6 +316,7 @@ static int redraw_logo(int old_fd)
             continue;
         int fd = splash_show(card, LOGO);
         if (fd >= 0) {
+            fcntl(fd, F_SETFD, FD_CLOEXEC);
             say("logo on %s", card);
             if (old_fd >= 0)
                 close(old_fd);
@@ -344,6 +345,10 @@ int main(void)
     struct passwd *pw;
 
     splash = splash_env ? atoi(splash_env) : -1;
+    /* The logo fd came from the initrd across exec on purpose, but no child may
+     * inherit it: while any process holds it, dwm.exe cannot become DRM master. */
+    if (splash >= 0)
+        fcntl(splash, F_SETFD, FD_CLOEXEC);
 
     signal(SIGPIPE, SIG_IGN);
     mkdir("/dev/pts", 0755);

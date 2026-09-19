@@ -10,9 +10,14 @@ import time
 import zlib
 
 
-def qmp(sock_path, ppm_path):
-    sock = socket.socket(socket.AF_UNIX)
-    sock.connect(sock_path)
+def qmp(address, ppm_path):
+    # "tcp:HOST:PORT" (QEMU on Windows) or a unix socket path
+    if address.startswith("tcp:"):
+        host, port = address[4:].rsplit(":", 1)
+        sock = socket.create_connection((host, int(port)))
+    else:
+        sock = socket.socket(socket.AF_UNIX)
+        sock.connect(address)
     stream = sock.makefile("rw")
     stream.readline()  # greeting
 
