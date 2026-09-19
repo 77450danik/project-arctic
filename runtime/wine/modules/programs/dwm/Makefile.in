@@ -1,0 +1,7 @@
+MODULE    = dwm.exe
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Arctic Desktop Window Manager"
+
+SOURCES = \
+	main.c

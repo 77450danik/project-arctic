@@ -407,6 +407,16 @@ int main(void)
     if (strstr(cmdline_buf, "arctic.stoptest=nt"))
         nt_stop("MANUALLY_INITIATED_CRASH", "arctic.stoptest");
 
+    /* The display now belongs to dwm.exe: releasing the logo fd drops DRM
+     * master, and dwm becomes master by opening the card first. */
+    if (!stopped) {
+        char *dwm[] = {"/usr/bin/wine", "dwm.exe", NULL};
+        if (splash >= 0)
+            close(splash);
+        splash = -1;
+        say("dwm.exe pid %d", spawn(dwm, 1, ntlog));
+    }
+
     for (;;) {
         int status;
         pid_t r;

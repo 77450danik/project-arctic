@@ -27,6 +27,7 @@ for patch in "$ROOT"/runtime/wine/patches/*.patch; do
 done
 perl tools/make_requests
 if [ -n "$(find "$ROOT/runtime/wine/modules" -mindepth 1 ! -name .keep -print -quit)" ]; then
+    git add -A . # make_makefiles only sees files git knows about
     perl tools/make_makefiles
     autoreconf -fi
 fi
