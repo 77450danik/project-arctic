@@ -34,6 +34,7 @@
 #define REG_DIR C_DRIVE "/Windows/System32/config"
 #define LOG_DIR C_DRIVE "/Windows/Logs/Arctic"
 #define LOGO "/usr/share/arctic/logo.bgra"
+#define WAYLAND_SOCKET "arctic-0" /* served by dwmcore.dll */
 #define FONT "/usr/share/arctic/bsod.font"
 
 static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
@@ -110,6 +111,7 @@ static char *const nt_env[] = {
     "PATH=/usr/bin",
     "WINEDEBUG=fixme-all",
     "XDG_RUNTIME_DIR=" PREFIX "/xdg",
+    "WAYLAND_DISPLAY=" WAYLAND_SOCKET,
     NULL,
 };
 static char *const host_env[] = {"PATH=/usr/bin", "LANG=C.UTF-8", NULL};
@@ -415,6 +417,21 @@ int main(void)
             close(splash);
         splash = -1;
         say("dwm.exe pid %d", spawn(dwm, 1, ntlog));
+
+        /* windows can only appear once dwm serves buffers */
+        int served = 0;
+        for (int i = 0; i < 200 && !(served = !access(PREFIX "/xdg/" WAYLAND_SOCKET, F_OK)); i++)
+            usleep(50000);
+        if (served)
+            announce("dwm ready in %.1f s", uptime());
+        else
+            say("dwm.exe did not start serving");
+
+        /* development builds show a window, so a screenshot tells whether composition works */
+        if (served && dev_mode) {
+            char *notepad[] = {"/usr/bin/wine", "notepad.exe", NULL};
+            say("notepad.exe pid %d", spawn(notepad, 1, ntlog));
+        }
     }
 
     for (;;) {

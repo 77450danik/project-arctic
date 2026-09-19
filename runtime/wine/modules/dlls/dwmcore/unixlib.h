@@ -19,7 +19,8 @@ struct dwm_start_params
 
 enum dwm_funcs
 {
-    unix_dwm_start,
+    unix_dwm_start,     /* take the display, start serving buffers */
+    unix_dwm_run,       /* the calling thread becomes the event loop; never returns */
     unix_funcs_count
 };
 

@@ -1,0 +1,29 @@
+From fc8bab3accb57ff89d34dbe7de6e84c5fccb6a8f Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sat, 19 Sep 2026 17:16:40 +0300
+Subject: [PATCH] configure: Check for wayland-server.
+
+dwmcore.dll (Arctic's compositor) serves window buffers to the display
+driver over the Wayland wire protocol.
+---
+ configure.ac | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/configure.ac b/configure.ac
+index b415d1c..26c5edf 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1447,6 +1447,10 @@ then
+               [WAYLAND_CLIENT_LIBS=""])])])
+     WINE_PACKAGE_FLAGS(XKBCOMMON,[xkbcommon],,,,
+         [AC_CHECK_FUNC(xkb_context_new,[:],[XKBCOMMON_LIBS=""])])
++    WINE_PACKAGE_FLAGS(WAYLAND_SERVER,[wayland-server],,,,
++        [AC_CHECK_HEADER([wayland-server.h],
++           [AC_CHECK_FUNC(wl_display_create,[:],[WAYLAND_SERVER_LIBS=""])],
++           [WAYLAND_SERVER_LIBS=""])])
+     if test "x$with_opengl" != "xno"
+     then
+         WINE_PACKAGE_FLAGS(WAYLAND_EGL,[wayland-egl],,,,
+-- 
+2.53.0.windows.2
+
