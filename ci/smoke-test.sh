@@ -48,7 +48,12 @@ boot() {
     kill "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
     rm -f "$RES/$name.ppm" "$qmp"
-    if grep -q "$want" "$log" && { [ "$want" = "$STOP" ] || ! grep -q "$STOP" "$log"; }; then
+    local ok=0
+    case "$want" in
+        "$STOP"*) grep -q "$want" "$log" && ok=1 ;;                          # the stop screen we asked for
+        *) grep -q "$want" "$log" && ! grep -q "$STOP" "$log" && ok=1 ;;    # a normal boot, no stop screen
+    esac
+    if [ "$ok" = 1 ]; then
         echo "== $name: OK after $((SECONDS - start)) s"
         grep -a "ARCTIC:" "$log"
         return 0
@@ -68,7 +73,7 @@ rc=0
 boot bios "$READY" || rc=1
 boot uefi "$READY" -bios /usr/share/ovmf/OVMF.fd || rc=1
 direct arctic.stoptest=initrd
-boot stop-initrd "$STOP" "${DIRECT[@]}" || rc=1
+boot stop-initrd "$STOP MANUALLY_INITIATED_CRASH" "${DIRECT[@]}" || rc=1
 direct arctic.stoptest=nt
-boot stop-nt "$STOP" "${DIRECT[@]}" || rc=1
+boot stop-nt "$STOP MANUALLY_INITIATED_CRASH" "${DIRECT[@]}" || rc=1
 exit $rc

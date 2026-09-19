@@ -220,7 +220,7 @@ static void setup_c_drive(void)
     if (mknod(C_DEV, S_IFBLK | 0600, cdev) && errno != EEXIST)
         fatal("UNMOUNTABLE_BOOT_VOLUME", "dm-snapshot", "mknod C:");
 
-    if (!mount(C_DEV, NEWROOT "/mnt/c", "ntfs", 0, "nocase=1,windows_names=1," NT_OPTS)) {
+    if (!mount(C_DEV, NEWROOT "/mnt/c", "ntfs", 0, "nocase,windows_names," NT_OPTS)) {
         say("C: mounted (ntfs, nocase)");
         return;
     }
