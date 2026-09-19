@@ -1,0 +1,30 @@
+# Arch packages the host image is assembled from. This is a source of files,
+# not a distribution: nothing here is visible to the user.
+
+# Base
+filesystem
+glibc
+gcc-libs
+tzdata
+kmod
+
+# Hardware manager: only udevd, udevadm, sysusers and hwdb are used
+systemd
+
+# Serial shell in development builds
+busybox
+
+# Libraries the Wine unix side loads
+freetype2
+gnutls
+alsa-lib
+libusb
+vulkan-icd-loader
+wayland
+libxkbcommon
+
+# GPU and network firmware (the drivers come with the kernel)
+linux-firmware-amdgpu
+linux-firmware-radeon
+linux-firmware-intel
+linux-firmware-realtek

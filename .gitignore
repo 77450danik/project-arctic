@@ -1,0 +1,4 @@
+/out/
+/tools/qemu/
+*.iso
+*.log

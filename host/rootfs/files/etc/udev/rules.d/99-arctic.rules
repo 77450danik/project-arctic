@@ -1,0 +1,7 @@
+# The whole NT world runs as the single user "nt"
+KERNEL=="ntsync", MODE="0666"
+SUBSYSTEM=="drm", KERNEL=="card*|renderD*", OWNER="nt"
+SUBSYSTEM=="input", KERNEL=="event*", OWNER="nt"
+SUBSYSTEM=="sound", OWNER="nt"
+SUBSYSTEM=="hidraw", OWNER="nt"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", OWNER="nt"
