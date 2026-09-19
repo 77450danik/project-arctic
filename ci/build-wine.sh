@@ -1,24 +1,39 @@
 #!/bin/bash
-# Builds Wine inside an archlinux container (new WoW64: 64-bit unix side only).
-# Output: out/wine/usr/{bin,lib/wine,share/wine}
+# Builds Wine: the upstream tag plus Arctic modules and patches, new WoW64
+# (64-bit unix side only).
+#
+# CI runs it once in a clean archlinux container. tools/wsl/build-wine.sh runs
+# it locally with a persistent WINE_WORK, and then only what changed gets
+# rebuilt: files are synced into the build tree by content, so an untouched
+# file keeps its timestamp even when it was regenerated.
+#
+# Output: $WINE_OUT (default out/wine)/usr/{bin,lib/wine,share/wine}
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-source "$ROOT/ci/arch-prep.sh"
 TAG=$(cat "$ROOT/runtime/WINE_VERSION")
-OUT="$ROOT/out/wine"
-WORK=/tmp/winebuild
+OUT=${WINE_OUT:-$ROOT/out/wine}
+WORK=${WINE_WORK:-/tmp/winebuild}
 
-pacman -Syu --noconfirm --needed base-devel git mingw-w64-gcc \
-    freetype2 gnutls alsa-lib vulkan-icd-loader vulkan-headers systemd-libs libusb \
-    wayland libxkbcommon
+if [ -z "${SKIP_DEPS:-}" ]; then
+    source "$ROOT/ci/arch-prep.sh"
+    pacman -Syu --noconfirm --needed base-devel git rsync mingw-w64-gcc \
+        freetype2 gnutls alsa-lib vulkan-icd-loader vulkan-headers systemd-libs libusb \
+        wayland libxkbcommon
+fi
 
-rm -rf "$OUT" "$WORK"
-mkdir -p "$OUT" "$WORK/build"
-git clone --depth 1 --branch "$TAG" https://github.com/wine-mirror/wine.git "$WORK/src"
+# Pristine upstream, fetched once per tag
+if [ "$(cat "$WORK/upstream.tag" 2>/dev/null)" != "$TAG" ]; then
+    rm -rf "$WORK"
+    mkdir -p "$WORK"
+    git clone --depth 1 --branch "$TAG" https://github.com/wine-mirror/wine.git "$WORK/upstream"
+    echo "$TAG" > "$WORK/upstream.tag"
+fi
 
 # Arctic modules and patches on top of upstream (docs/M1-display.md)
-cd "$WORK/src"
+rm -rf "$WORK/stage"
+cp -a "$WORK/upstream" "$WORK/stage"
+cd "$WORK/stage"
 cp -a "$ROOT/runtime/wine/modules/." . && rm -f .keep
 for patch in "$ROOT"/runtime/wine/patches/*.patch; do
     [ -e "$patch" ] || continue
@@ -32,20 +47,31 @@ if [ -n "$(find "$ROOT/runtime/wine/modules" -mindepth 1 ! -name .keep -print -q
     autoreconf -fi
 fi
 
+# Only files whose content changed get a new timestamp in the build tree
+mkdir -p "$WORK/src" "$WORK/build"
+rsync -rlc --delete --exclude=.git --exclude=autom4te.cache "$WORK/stage/" "$WORK/src/"
+
 cd "$WORK/build"
-../src/configure \
-    --prefix=/usr --libdir=/usr/lib \
-    --enable-archs=i386,x86_64 \
-    --with-alsa --with-freetype --with-gnutls --with-udev --with-usb \
-    --with-vulkan --with-wayland \
-    --without-x --without-opengl --without-fontconfig --without-dbus \
-    --without-cups --without-pulse --without-oss --without-sdl \
-    --without-gphoto --without-sane --without-v4l2 --without-pcap \
-    --without-netapi --without-gssapi --without-krb5 --without-capi \
-    --without-opencl --without-pcsclite --without-gstreamer --without-ffmpeg \
-    CFLAGS="-O2 -pipe" CROSSCFLAGS="-O2 -pipe"
+if [ ! -f Makefile ]; then
+    cc=() # ccache when available: fast rebuilds after a reconfigure
+    if command -v ccache >/dev/null; then
+        cc=(CC="ccache gcc" x86_64_CC="ccache x86_64-w64-mingw32-gcc" i386_CC="ccache i686-w64-mingw32-gcc")
+    fi
+    ../src/configure \
+        --prefix=/usr --libdir=/usr/lib \
+        --enable-archs=i386,x86_64 \
+        --with-alsa --with-freetype --with-gnutls --with-udev --with-usb \
+        --with-vulkan --with-wayland \
+        --without-x --without-opengl --without-fontconfig --without-dbus \
+        --without-cups --without-pulse --without-oss --without-sdl \
+        --without-gphoto --without-sane --without-v4l2 --without-pcap \
+        --without-netapi --without-gssapi --without-krb5 --without-capi \
+        --without-opencl --without-pcsclite --without-gstreamer --without-ffmpeg \
+        CFLAGS="-O2 -pipe" CROSSCFLAGS="-O2 -pipe" "${cc[@]}"
+fi
 
 make -j"$(nproc)"
+rm -rf "$OUT"
 make install-lib DESTDIR="$OUT"
 # for compile checks of runtime changes on the build machine
 cp include/config.h "$OUT/build-config.h"
