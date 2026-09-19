@@ -1,0 +1,121 @@
+From: Project Arctic
+Subject: [PATCH] drm/panic: Windows-style stop screen
+
+The user panic screen shows a Windows 10 style stop screen in Ukrainian,
+pre-rendered into drivers/gpu/drm/drm_panic_arctic.h at build time
+(ci/mkpanic.py), with the panic reason after the "what failed" label.
+The stock screen stays as the fallback for screens too small for it.
+---
+--- a/drivers/gpu/drm/drm_panic.c
++++ b/drivers/gpu/drm/drm_panic.c
+@@ -34,6 +34,7 @@
+ 
+ #include "drm_crtc_internal.h"
+ #include "drm_draw_internal.h"
++#include "drm_panic_arctic.h"
+ 
+ MODULE_AUTHOR("Jocelyn Falempe");
+ MODULE_DESCRIPTION("DRM panic handler");
+@@ -476,7 +477,7 @@
+ 				   fg_color);
+ }
+ 
+-static void draw_panic_screen_user(struct drm_scanout_buffer *sb)
++static void draw_panic_screen_user_linux(struct drm_scanout_buffer *sb)
+ {
+ 	u32 fg_color = drm_draw_color_from_xrgb8888(CONFIG_DRM_PANIC_FOREGROUND_COLOR,
+ 						    sb->format->format);
+@@ -509,6 +510,93 @@
+ }
+ 
+ /*
++ * Project Arctic: a Windows-style stop screen. The kernel fonts have no
++ * Cyrillic, so the text is pre-rendered from Noto Sans Light into
++ * drm_panic_arctic.h as run-length encoded 4-bit alpha; only the panic
++ * reason is drawn with the kernel font, after the "what failed" label.
++ */
++static void arctic_panic_blit(struct drm_scanout_buffer *sb, const struct arctic_panic_image *img,
++			      unsigned int x0, unsigned int y0, unsigned int scale, const u32 *colors)
++{
++	const u8 *p = img->rle;
++	unsigned int x = 0, y = 0;
++
++	while (y < img->height) {
++		unsigned int value = *p >> 4, run;
++
++		if (value) {
++			run = (*p++ & 0xf) + 1;
++		} else {
++			run = (((*p & 0xf) << 8) | p[1]) + 1;
++			p += 2;
++		}
++		while (run--) {
++			if (value) {
++				struct drm_rect r = DRM_RECT_INIT(x0 + x * scale, y0 + y * scale,
++								  scale, scale);
++
++				drm_panic_fill(sb, &r, colors[value]);
++			}
++			if (++x == img->width) {
++				x = 0;
++				y++;
++			}
++		}
++	}
++}
++
++static void draw_panic_screen_user(struct drm_scanout_buffer *sb)
++{
++	const struct font_desc *font = get_default_font(sb->width, sb->height, NULL, NULL);
++	const struct drm_panic_line *reason = &panic_msg[panic_msg_lines - 1];
++	const struct arctic_panic_image *img = NULL;
++	unsigned int scale = sb->height >= 2000 ? 2 : 1;
++	unsigned int i, x0, y0;
++	struct drm_rect r;
++	u32 colors[16];
++
++	for (i = 0; i < ARRAY_SIZE(arctic_panic_images); i++) {
++		const struct arctic_panic_image *cand = &arctic_panic_images[i];
++
++		if (sb->height >= cand->min_height &&
++		    cand->width * scale <= sb->width * 8 / 10 &&
++		    cand->height * scale <= sb->height * 7 / 10)
++			img = cand;
++	}
++	if (!img || !font) {
++		draw_panic_screen_user_linux(sb);
++		return;
++	}
++
++	/* the 16 alpha levels, blended between background and foreground */
++	for (i = 0; i < 16; i++) {
++		u32 xrgb = 0;
++		unsigned int shift;
++
++		for (shift = 0; shift <= 16; shift += 8) {
++			int bg = (CONFIG_DRM_PANIC_BACKGROUND_COLOR >> shift) & 0xff;
++			int fg = (CONFIG_DRM_PANIC_FOREGROUND_COLOR >> shift) & 0xff;
++
++			xrgb |= (u32)(bg + (fg - bg) * (int)i / 15) << shift;
++		}
++		colors[i] = drm_draw_color_from_xrgb8888(xrgb, sb->format->format);
++	}
++
++	r = DRM_RECT_INIT(0, 0, sb->width, sb->height);
++	drm_panic_fill(sb, &r, colors[0]);
++
++	x0 = sb->width / 10;
++	y0 = sb->height / 6;
++	arctic_panic_blit(sb, img, x0, y0, scale, colors);
++
++	if (reason->len) {
++		r = DRM_RECT_INIT(x0 + img->what_x * scale, y0 + img->what_y * scale,
++				  sb->width - x0 - img->what_x * scale, font->height);
++		draw_txt_rectangle(sb, font, reason, 1, false, &r, colors[15]);
++	}
++}
++
++/*
+  * Draw one line of kmsg, and handle wrapping if it won't fit in the screen width.
+  * Return the y-offset of the next line.
+  */

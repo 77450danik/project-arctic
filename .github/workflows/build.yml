@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: key
-        run: echo "key=kernel-${{ hashFiles('kernel/**', 'ci/build-kernel.sh', 'ci/arch-prep.sh') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=kernel-${{ hashFiles('kernel/**', 'ci/build-kernel.sh', 'ci/arch-prep.sh', 'ci/mkpanic.py') }}" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache/restore@v4
         with:
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: out/kernel
-          key: kernel-${{ hashFiles('kernel/**', 'ci/build-kernel.sh', 'ci/arch-prep.sh') }}
+          key: kernel-${{ hashFiles('kernel/**', 'ci/build-kernel.sh', 'ci/arch-prep.sh', 'ci/mkpanic.py') }}
           fail-on-cache-miss: true
       - uses: actions/cache/restore@v4
         with:

@@ -9,7 +9,8 @@ VER=$(cat "$ROOT/kernel/VERSION")
 OUT="$ROOT/out/kernel"
 WORK=/tmp/kbuild
 
-pacman -Syu --noconfirm --needed base-devel bc cpio kmod libelf openssl pahole perl python tar xz zstd curl linux-headers
+pacman -Syu --noconfirm --needed base-devel bc cpio kmod libelf openssl pahole perl python tar xz zstd curl linux-headers \
+    python-pillow noto-fonts
 
 rm -rf "$OUT" "$WORK"
 mkdir -p "$OUT" "$WORK"
@@ -17,6 +18,14 @@ cd "$WORK"
 curl -fL --retry 5 -o linux.tar.xz "https://cdn.kernel.org/pub/linux/kernel/v${VER%%.*}.x/linux-$VER.tar.xz"
 tar xf linux.tar.xz
 cd "linux-$VER"
+
+# Arctic patches (kernel/patches) and the generated stop screen text for drm_panic
+for patch in "$ROOT"/kernel/patches/*.patch; do
+    [ -e "$patch" ] || continue
+    echo "applying $(basename "$patch")"
+    patch -p1 --no-backup-if-mismatch < "$patch"
+done
+python "$ROOT/ci/mkpanic.py" /usr/share/fonts/noto/NotoSans-Light.ttf drivers/gpu/drm/drm_panic_arctic.h
 
 # Arch's own config ships in linux-headers
 ARCH_CONFIG=$(ls /usr/lib/modules/*/build/.config | head -n1)
