@@ -42,3 +42,34 @@ REGEDIT4
 
 [HKEY_CURRENT_USER\Software\Wine\WineDbg]
 "ShowCrashDialog"=dword:00000000
+
+[HKEY_CLASSES_ROOT\Folder]
+@="Folder"
+
+[HKEY_CLASSES_ROOT\Folder\shell\open]
+"BrowserFlags"=dword:00000010
+"ExplorerFlags"=dword:00000012
+
+[HKEY_CLASSES_ROOT\Folder\shell\open\command]
+@="explorer.exe \"%1\""
+
+[HKEY_CLASSES_ROOT\Folder\shell\explore]
+"BrowserFlags"=dword:00000022
+"ExplorerFlags"=dword:00000021
+
+[HKEY_CLASSES_ROOT\Folder\shell\explore\command]
+@="explorer.exe /e,\"%1\""
+
+[HKEY_CLASSES_ROOT\Directory]
+@="File Folder"
+"AlwaysShowExt"=""
+"NoRecentDocs"=""
+
+[HKEY_CLASSES_ROOT\Directory\shell\cmd\command]
+@="cmd.exe /s /k pushd \"%V\""
+
+[HKEY_CLASSES_ROOT\Drive]
+@="Drive"
+
+[HKEY_CLASSES_ROOT\Drive\shell\cmd\command]
+@="cmd.exe /s /k pushd \"%V\""

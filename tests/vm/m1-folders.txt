@@ -1,0 +1,10 @@
+# Which desktop items open: a file system folder, then the Recycle Bin
+sleep 6
+move 36 40
+dblclick                      # Мої документи
+sleep 5
+shot f1-documents
+move 36 400
+dblclick                      # Кошик
+sleep 5
+shot f2-recyclebin
