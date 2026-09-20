@@ -1,4 +1,4 @@
-From 5eb02adeb3b83121b4d836e47b32b0f654411669 Mon Sep 17 00:00:00 2001
+From 197544ba2457c02cf0a3b630b07da8144a1ebf12 Mon Sep 17 00:00:00 2001
 From: 77450danik <dnsystems@email.ua>
 Date: Sun, 20 Sep 2026 11:20:52 +0300
 Subject: [PATCH] server, win32u, user32: Shell hook messages, as win32k sends
@@ -8,17 +8,18 @@ RegisterShellHookWindow was a stub, so the taskbar never heard about
 windows that appear, go away or become active. wineserver keeps the list
 for the desktop and posts the messages, the way win32k does.
 ---
- dlls/user32/misc.c      |  8 ++--
- dlls/win32u/win32u.spec |  2 +-
- dlls/win32u/window.c    | 26 +++++++++++++
- dlls/wow64win/user.c    |  8 ++++
- include/ntuser.h        |  1 +
- server/protocol.def     |  9 +++++
- server/queue.c          |  2 +
- server/user.h           |  3 ++
- server/window.c         | 83 ++++++++++++++++++++++++++++++++++++++++-
- server/winstation.c     |  2 +
- 10 files changed, 137 insertions(+), 7 deletions(-)
+ dlls/user32/misc.c          |  8 ++--
+ dlls/win32u/win32syscalls.h |  5 +--
+ dlls/win32u/win32u.spec     |  2 +-
+ dlls/win32u/window.c        | 26 +++++++++++
+ dlls/wow64win/user.c        |  8 ++++
+ include/ntuser.h            |  1 +
+ server/protocol.def         |  9 ++++
+ server/queue.c              |  2 +
+ server/user.h               |  3 ++
+ server/window.c             | 90 ++++++++++++++++++++++++++++++++++++-
+ server/winstation.c         |  2 +
+ 11 files changed, 146 insertions(+), 10 deletions(-)
 
 diff --git a/dlls/user32/misc.c b/dlls/user32/misc.c
 index 0fa04b85..f65ae56a 100644
@@ -46,6 +47,36 @@ index 0fa04b85..f65ae56a 100644
  }
  
  
+diff --git a/dlls/win32u/win32syscalls.h b/dlls/win32u/win32syscalls.h
+index 132ac478..0be5ef10 100644
+--- a/dlls/win32u/win32syscalls.h
++++ b/dlls/win32u/win32syscalls.h
+@@ -1278,7 +1278,7 @@
+     SYSCALL_ENTRY( 0x14fa, NtUserRegisterRawInputDevices, 12 ) \
+     SYSCALL_ENTRY( 0x14fb, NtUserRegisterServicesProcess, 0 ) \
+     SYSCALL_ENTRY( 0x14fc, NtUserRegisterSessionPort, 0 ) \
+-    SYSCALL_ENTRY( 0x14fd, NtUserRegisterShellHookWindow, 0 ) \
++    SYSCALL_ENTRY( 0x14fd, NtUserRegisterShellHookWindow, 8 ) \
+     SYSCALL_ENTRY( 0x14fe, NtUserRegisterShellPTPListener, 0 ) \
+     SYSCALL_ENTRY( 0x14ff, NtUserRegisterSiblingFrostWindow, 0 ) \
+     SYSCALL_ENTRY( 0x1500, NtUserRegisterSystemThread, 0 ) \
+@@ -2820,7 +2820,7 @@
+     SYSCALL_ENTRY( 0x14fa, NtUserRegisterRawInputDevices, 24 ) \
+     SYSCALL_ENTRY( 0x14fb, NtUserRegisterServicesProcess, 0 ) \
+     SYSCALL_ENTRY( 0x14fc, NtUserRegisterSessionPort, 0 ) \
+-    SYSCALL_ENTRY( 0x14fd, NtUserRegisterShellHookWindow, 0 ) \
++    SYSCALL_ENTRY( 0x14fd, NtUserRegisterShellHookWindow, 16 ) \
+     SYSCALL_ENTRY( 0x14fe, NtUserRegisterShellPTPListener, 0 ) \
+     SYSCALL_ENTRY( 0x14ff, NtUserRegisterSiblingFrostWindow, 0 ) \
+     SYSCALL_ENTRY( 0x1500, NtUserRegisterSystemThread, 0 ) \
+@@ -3970,7 +3970,6 @@
+     SYSCALL_STUB( NtUserRegisterPrecisionTouchpadWindow ) \
+     SYSCALL_STUB( NtUserRegisterServicesProcess ) \
+     SYSCALL_STUB( NtUserRegisterSessionPort ) \
+-    SYSCALL_STUB( NtUserRegisterShellHookWindow ) \
+     SYSCALL_STUB( NtUserRegisterShellPTPListener ) \
+     SYSCALL_STUB( NtUserRegisterSiblingFrostWindow ) \
+     SYSCALL_STUB( NtUserRegisterSystemThread ) \
 diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
 index 2c409010..06b3c6a0 100644
 --- a/dlls/win32u/win32u.spec
@@ -189,10 +220,10 @@ index f1a1f07d..a3c2e725 100644
                            lparam_t wparam, lparam_t lparam );
  extern void send_notify_message( user_handle_t win, unsigned int message,
 diff --git a/server/window.c b/server/window.c
-index 7b3d2726..7d7cd9e3 100644
+index 7b3d2726..569a59a5 100644
 --- a/server/window.c
 +++ b/server/window.c
-@@ -1930,6 +1930,41 @@ static struct region *expose_window( struct window *win, const struct rectangle
+@@ -1930,6 +1930,45 @@ static struct region *expose_window( struct window *win, const struct rectangle
  
  /* set the window and client rectangles, updating the update region if necessary */
  /* the compositor (dwm.exe) re-reads the toplevel list whenever this serial moves */
@@ -225,16 +256,20 @@ index 7b3d2726..7d7cd9e3 100644
 +    }
 +}
 +
-+/* the shell hears about a toplevel window with no owner, as in Windows */
++/* the shell hears about a toplevel window with no owner, but not about its own */
 +static int is_shell_hook_window( struct window *win )
 +{
-+    return win->parent && win->parent == win->desktop->top_window && !win->owner;
++    struct desktop *desktop = win->desktop;
++
++    if (!win->parent || win->parent != desktop->top_window || win->owner) return 0;
++    return win != desktop->shell_window && win != desktop->shell_listview &&
++           win != desktop->progman_window && win != desktop->taskman_window;
 +}
 +
  static void bump_composition_serial( struct desktop *desktop )
  {
      SHARED_WRITE_BEGIN( desktop->shared, desktop_shm_t )
-@@ -1969,8 +2004,18 @@ static void set_window_pos( struct window *win, struct window *previous,
+@@ -1969,8 +2008,18 @@ static void set_window_pos( struct window *win, struct window *previous,
      win->surface_rect = *surface_rect;
      win->client_rect  = *client_rect;
      if (!(swp_flags & SWP_NOZORDER) && win->parent) zorder_changed |= link_window( win, previous );
@@ -255,7 +290,7 @@ index 7b3d2726..7d7cd9e3 100644
      composition_changed( win );
  
      /* update window monitor dpi for toplevel windows */
-@@ -2157,6 +2202,8 @@ void free_window_handle( struct window *win )
+@@ -2157,6 +2206,8 @@ void free_window_handle( struct window *win )
  
      assert( win->handle );
      composition_changed( win );
@@ -264,7 +299,7 @@ index 7b3d2726..7d7cd9e3 100644
  
      /* hide the window */
      if (is_visible(win))
-@@ -2680,6 +2727,38 @@ DECL_HANDLER(get_window_children_from_point)
+@@ -2680,6 +2731,38 @@ DECL_HANDLER(get_window_children_from_point)
  }
  
  
@@ -303,6 +338,16 @@ index 7b3d2726..7d7cd9e3 100644
  /* get the toplevel windows of the thread desktop in z-order, for the compositor */
  DECL_HANDLER(get_composition_list)
  {
+@@ -2920,6 +3003,9 @@ DECL_HANDLER(set_window_text)
+     free( win->text );
+     win->text = text;
+     win->text_len = len;
++    /* the shell shows the title of the window, so it has to hear about it */
++    if (is_visible( win ) && is_shell_hook_window( win ))
++        shell_hook_notify( win->desktop, HSHELL_REDRAW, win->handle );
+ }
+ 
+ 
 diff --git a/server/winstation.c b/server/winstation.c
 index e2aad1ed..21103a7c 100644
 --- a/server/winstation.c

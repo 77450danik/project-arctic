@@ -1,6 +1,6 @@
-From cdc23ddf1e44a6d5820265ac76db78c77f021500 Mon Sep 17 00:00:00 2001
+From 6f7f23a372a13c329985232253576149dd64310f Mon Sep 17 00:00:00 2001
 From: 77450danik <dnsystems@email.ua>
-Date: Sun, 20 Sep 2026 11:27:20 +0300
+Date: Sun, 20 Sep 2026 11:32:08 +0300
 Subject: [PATCH] user32: ExitWindowsEx asks winlogon to end the session.
 
 As in Windows, where it reaches winlogon through csrss; wineboot only
