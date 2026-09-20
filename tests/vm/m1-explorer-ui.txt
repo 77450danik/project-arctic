@@ -1,0 +1,10 @@
+# Панель інструментів і меню Інструменти (для калібрування координат)
+sleep 6
+move 36 40
+dblclick
+sleep 5
+shot u1-window
+move 281 41
+click
+sleep 2
+shot u2-tools-menu

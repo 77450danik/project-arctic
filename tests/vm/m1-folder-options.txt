@@ -1,9 +1,16 @@
-# Параметри папки: третя вкладка (краш)
+# Опції папки: відкрити діалог
 sleep 6
 move 36 40
-dblclick                      # Мої документи
+dblclick
 sleep 5
 move 281 41
-click                         # меню Інструменти
+click
 sleep 2
-shot o1-tools-menu
+move 300 122
+click                         # Опції папки...
+sleep 5
+shot o1-options
+move 160 48
+click                         # Типи файлів (падає)
+sleep 6
+shot o2-filetypes

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Builds the parts of ReactOS that Arctic takes: the shell (explorer.exe,
-# shell32, browseui, shdocvw, uxtheme), the Mizu theme and the keyboard layouts. They are built with
+# shell32, browseui, shdocvw, shlwapi, comctl32, uxtheme), the Mizu theme and
+# the keyboard layouts. They are built with
 # ReactOS's own toolchain (RosBE), the way ReactOS's CI builds them, and go
 # to C: as native Windows binaries. Output: out/reactos, laid out as on C:.
 #
@@ -15,7 +16,8 @@ OUT=${REACTOS_OUT:-$ROOT/out/reactos}
 COMMIT=$(cat "$ROOT/runtime/reactos/COMMIT")
 ARCH=amd64
 KEYBOARDS="kbdus kbdur kbdru"
-TARGETS="explorer shell32 browseui shdocvw uxtheme mizu.msstyles $KEYBOARDS"
+SHELL_DLLS="shell32 browseui shdocvw shlwapi comctl32 uxtheme"
+TARGETS="explorer $SHELL_DLLS mizu.msstyles $KEYBOARDS"
 
 ROSBE_SCRIPT=https://gist.githubusercontent.com/zefklop/b2d6a0b470c70183e93d5285a03f5899/raw/build_rosbe_ci.sh
 ROSBE_SCRIPT_SHA256=ea42b032fdf9b8b51e993ebe0d1aedc8714f7eff522f4a2fbac7b9aa32a9263c
@@ -59,7 +61,7 @@ EOF
 rm -rf "$OUT"
 mkdir -p "$OUT/Windows/System32" "$OUT/Windows/Resources/Themes/Mizu"
 cp build/base/shell/explorer/explorer.exe "$OUT/Windows/"
-for dll in shell32 browseui shdocvw uxtheme; do
+for dll in $SHELL_DLLS; do
     cp "build/dll/win32/$dll/$dll.dll" "$OUT/Windows/System32/"
 done
 for kbd in $KEYBOARDS; do
