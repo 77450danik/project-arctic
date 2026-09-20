@@ -197,9 +197,15 @@ static BOOL CALLBACK end_session_window( HWND hwnd, LPARAM lparam )
     return TRUE;
 }
 
-static void end_session( int exit_code )
+/* ends the session and tells wininit.exe what to do with the machine */
+void end_session( int exit_code )
 {
     EnumWindows( end_session_window, 0 );
+    if (exit_code == WINLOGON_EXIT_LOGOFF)
+    {
+        run_userinit(); /* one user and no logon screen: the shell starts again */
+        return;
+    }
     ExitProcess( exit_code );
 }
 

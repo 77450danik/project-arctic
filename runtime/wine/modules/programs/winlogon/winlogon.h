@@ -19,9 +19,12 @@
 /* exit codes: how the session ended, for wininit.exe and arctic-init */
 #define WINLOGON_EXIT_RESTART  3
 #define WINLOGON_EXIT_SHUTDOWN 4
+#define WINLOGON_EXIT_LOGOFF   0 /* the session starts again, the machine stays on */
 
 #ifndef RC_INVOKED
 void run( WCHAR *cmdline );
+void run_userinit(void);
+void end_session( int exit_code );
 void show_security_options(void);
 #endif
 

@@ -1,0 +1,328 @@
+From 5eb02adeb3b83121b4d836e47b32b0f654411669 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 20 Sep 2026 11:20:52 +0300
+Subject: [PATCH] server, win32u, user32: Shell hook messages, as win32k sends
+ them.
+
+RegisterShellHookWindow was a stub, so the taskbar never heard about
+windows that appear, go away or become active. wineserver keeps the list
+for the desktop and posts the messages, the way win32k does.
+---
+ dlls/user32/misc.c      |  8 ++--
+ dlls/win32u/win32u.spec |  2 +-
+ dlls/win32u/window.c    | 26 +++++++++++++
+ dlls/wow64win/user.c    |  8 ++++
+ include/ntuser.h        |  1 +
+ server/protocol.def     |  9 +++++
+ server/queue.c          |  2 +
+ server/user.h           |  3 ++
+ server/window.c         | 83 ++++++++++++++++++++++++++++++++++++++++-
+ server/winstation.c     |  2 +
+ 10 files changed, 137 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/user32/misc.c b/dlls/user32/misc.c
+index 0fa04b85..f65ae56a 100644
+--- a/dlls/user32/misc.c
++++ b/dlls/user32/misc.c
+@@ -243,8 +243,8 @@ void WINAPI RegisterSystemThread(DWORD flags, DWORD reserved)
+  */
+ BOOL WINAPI RegisterShellHookWindow(HWND hWnd)
+ {
+-    FIXME("(%p): stub\n", hWnd);
+-    return FALSE;
++    TRACE("(%p)\n", hWnd);
++    return NtUserRegisterShellHookWindow( hWnd, TRUE );
+ }
+ 
+ 
+@@ -253,8 +253,8 @@ BOOL WINAPI RegisterShellHookWindow(HWND hWnd)
+  */
+ BOOL WINAPI DeregisterShellHookWindow(HWND hWnd)
+ {
+-    FIXME("(%p): stub\n", hWnd);
+-    return FALSE;
++    TRACE("(%p)\n", hWnd);
++    return NtUserRegisterShellHookWindow( hWnd, FALSE );
+ }
+ 
+ 
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index 2c409010..06b3c6a0 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -1276,7 +1276,7 @@
+ @ stdcall -syscall NtUserRegisterRawInputDevices(ptr long long)
+ @ stub -syscall NtUserRegisterServicesProcess
+ @ stub -syscall NtUserRegisterSessionPort
+-@ stub -syscall NtUserRegisterShellHookWindow
++@ stdcall -syscall NtUserRegisterShellHookWindow(long long)
+ @ stub -syscall NtUserRegisterShellPTPListener
+ @ stub -syscall NtUserRegisterSiblingFrostWindow
+ @ stub -syscall NtUserRegisterSystemThread
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 9a57c00c..e7e4ccaa 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -6460,6 +6460,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
+         return set_window_long_internal( hwnd, params->offset, params->size, params->value, FALSE, TRUE );
+     }
+ 
++
+     default:
+         FIXME( "invalid code %u\n", code );
+         return 0;
+@@ -6525,6 +6526,31 @@ DWORD WINAPI NtUserDragObject( HWND parent, HWND hwnd, UINT fmt, ULONG_PTR data,
+ }
+ 
+ 
++/***********************************************************************
++ *           NtUserRegisterShellHookWindow    (win32u.@)
++ *
++ * The shell asks for the messages win32k sends about windows.
++ */
++BOOL WINAPI NtUserRegisterShellHookWindow( HWND hwnd, BOOL register_window )
++{
++    static const WCHAR shell_hookW[] = {'S','H','E','L','L','H','O','O','K'};
++    UNICODE_STRING name = { sizeof(shell_hookW), sizeof(shell_hookW), (WCHAR *)shell_hookW };
++    UINT message = NtUserRegisterWindowMessage( &name );
++    BOOL ret = FALSE;
++
++    TRACE( "hwnd %p, register %u, message %#x\n", hwnd, register_window, message );
++    if (!message) return FALSE;
++
++    SERVER_START_REQ( register_shell_hook_window )
++    {
++        req->window = wine_server_user_handle( hwnd );
++        req->message = register_window ? message : 0;
++        if (!wine_server_call( req )) ret = register_window || reply->previous;
++    }
++    SERVER_END_REQ;
++    return ret;
++}
++
+ HWND get_shell_window(void)
+ {
+     HWND hwnd = 0;
+diff --git a/dlls/wow64win/user.c b/dlls/wow64win/user.c
+index 92c18775..5a1b3865 100644
+--- a/dlls/wow64win/user.c
++++ b/dlls/wow64win/user.c
+@@ -4155,6 +4155,14 @@ NTSTATUS WINAPI wow64_NtUserRedrawWindow( UINT *args )
+     return NtUserRedrawWindow( hwnd, rect, hrgn, flags );
+ }
+ 
++NTSTATUS WINAPI wow64_NtUserRegisterShellHookWindow( UINT *args )
++{
++    HWND hwnd = get_handle( &args );
++    BOOL register_window = get_ulong( &args );
++
++    return NtUserRegisterShellHookWindow( hwnd, register_window );
++}
++
+ NTSTATUS WINAPI wow64_NtUserRegisterHotKey( UINT *args )
+ {
+     HWND hwnd = get_handle( &args );
+diff --git a/include/ntuser.h b/include/ntuser.h
+index be41b33a..598949c4 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -957,6 +957,7 @@ W32KAPI BOOL    WINAPI NtUserRedrawWindow( HWND hwnd, const RECT *rect, HRGN hrg
+ W32KAPI ATOM    WINAPI NtUserRegisterClassExWOW( const WNDCLASSEXW *wc, UNICODE_STRING *name, UNICODE_STRING *version,
+                                                  struct client_menu_name *menu_name, DWORD fnid, DWORD flags, DWORD *wow );
+ W32KAPI BOOL    WINAPI NtUserRegisterHotKey( HWND hwnd, INT id, UINT modifiers, UINT vk );
++W32KAPI BOOL    WINAPI NtUserRegisterShellHookWindow( HWND hwnd, BOOL register_window );
+ W32KAPI BOOL    WINAPI NtUserRegisterRawInputDevices( const RAWINPUTDEVICE *devices, UINT device_count, UINT size );
+ W32KAPI BOOL    WINAPI NtUserRegisterTouchPadCapable( BOOL capable );
+ W32KAPI ATOM    WINAPI NtUserRegisterWindowMessage( UNICODE_STRING *name );
+diff --git a/server/protocol.def b/server/protocol.def
+index f82d6861..ce154915 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2802,6 +2802,15 @@ enum message_type
+ @END
+ 
+ 
++/* Register a window to receive shell hook messages */
++@REQ(register_shell_hook_window)
++    user_handle_t  window;        /* handle to the window */
++    unsigned int   message;       /* message to post to it, 0 to deregister */
++@REPLY
++    int            previous;      /* was it registered before */
++@END
++
++
+ /* Get the toplevel windows of the thread desktop in z-order, for the compositor */
+ @REQ(get_composition_list)
+ @REPLY
+diff --git a/server/queue.c b/server/queue.c
+index b1f367e1..fedcba10 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -3819,6 +3819,8 @@ DECL_HANDLER(set_foreground_window)
+     reply->send_msg_old = (reply->previous && desktop->foreground_input != queue->input);
+     set_foreground_input( desktop, thread->process, req->internal || !is_desktop ? thread->queue->input : NULL );
+     reply->send_msg_new = (desktop->foreground_input != queue->input);
++    /* the shell follows the active window, as in Windows */
++    shell_hook_notify( desktop, HSHELL_WINDOWACTIVATED, req->handle );
+ 
+ done:
+     if (thread) release_object( thread );
+diff --git a/server/user.h b/server/user.h
+index f1a1f07d..a3c2e725 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -76,6 +76,7 @@ struct desktop
+     struct window       *taskman_window;   /* taskman window for this desktop */
+     struct hook_table   *global_hooks;     /* table of global hooks on this desktop */
+     struct list          hotkeys;          /* list of registered hotkeys */
++    struct list          shell_hooks;      /* list of windows that get shell hook messages */
+     struct list          pointers;         /* list of active pointers */
+     struct timeout_user *close_timeout;    /* timeout before closing the desktop */
+     struct thread_input *foreground_input; /* thread input of foreground thread */
+@@ -124,6 +125,8 @@ extern void detach_thread_input( struct msg_queue *queue_from, struct msg_queue
+ extern void set_clip_rectangle( struct desktop *desktop, const struct rectangle *rect,
+                                 unsigned int flags, int reset );
+ extern void update_cursor_pos( struct desktop *desktop );
++extern void shell_hook_notify( struct desktop *desktop, unsigned int code, user_handle_t window );
++extern void free_shell_hooks( struct desktop *desktop );
+ extern void post_message( user_handle_t win, unsigned int message,
+                           lparam_t wparam, lparam_t lparam );
+ extern void send_notify_message( user_handle_t win, unsigned int message,
+diff --git a/server/window.c b/server/window.c
+index 7b3d2726..7d7cd9e3 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -1930,6 +1930,41 @@ static struct region *expose_window( struct window *win, const struct rectangle
+ 
+ /* set the window and client rectangles, updating the update region if necessary */
+ /* the compositor (dwm.exe) re-reads the toplevel list whenever this serial moves */
++/* a window that asked for shell hook messages (RegisterShellHookWindow) */
++struct shell_hook
++{
++    struct list   entry;
++    user_handle_t window;
++    unsigned int  message;
++};
++
++/* Tells the shell what happened to a window, as win32k does in Windows */
++void shell_hook_notify( struct desktop *desktop, unsigned int code, user_handle_t window )
++{
++    struct shell_hook *hook;
++
++    if (!desktop) return;
++    LIST_FOR_EACH_ENTRY( hook, &desktop->shell_hooks, struct shell_hook, entry )
++        post_message( hook->window, hook->message, code, window );
++}
++
++void free_shell_hooks( struct desktop *desktop )
++{
++    struct shell_hook *hook, *next;
++
++    LIST_FOR_EACH_ENTRY_SAFE( hook, next, &desktop->shell_hooks, struct shell_hook, entry )
++    {
++        list_remove( &hook->entry );
++        free( hook );
++    }
++}
++
++/* the shell hears about a toplevel window with no owner, as in Windows */
++static int is_shell_hook_window( struct window *win )
++{
++    return win->parent && win->parent == win->desktop->top_window && !win->owner;
++}
++
+ static void bump_composition_serial( struct desktop *desktop )
+ {
+     SHARED_WRITE_BEGIN( desktop->shared, desktop_shm_t )
+@@ -1969,8 +2004,18 @@ static void set_window_pos( struct window *win, struct window *previous,
+     win->surface_rect = *surface_rect;
+     win->client_rect  = *client_rect;
+     if (!(swp_flags & SWP_NOZORDER) && win->parent) zorder_changed |= link_window( win, previous );
+-    if (swp_flags & SWP_SHOWWINDOW) win->style |= WS_VISIBLE;
+-    else if (swp_flags & SWP_HIDEWINDOW) win->style &= ~WS_VISIBLE;
++    if (swp_flags & SWP_SHOWWINDOW)
++    {
++        if (!(win->style & WS_VISIBLE) && is_shell_hook_window( win ))
++            shell_hook_notify( win->desktop, HSHELL_WINDOWCREATED, win->handle );
++        win->style |= WS_VISIBLE;
++    }
++    else if (swp_flags & SWP_HIDEWINDOW)
++    {
++        if ((win->style & WS_VISIBLE) && is_shell_hook_window( win ))
++            shell_hook_notify( win->desktop, HSHELL_WINDOWDESTROYED, win->handle );
++        win->style &= ~WS_VISIBLE;
++    }
+     composition_changed( win );
+ 
+     /* update window monitor dpi for toplevel windows */
+@@ -2157,6 +2202,8 @@ void free_window_handle( struct window *win )
+ 
+     assert( win->handle );
+     composition_changed( win );
++    if (is_visible( win ) && is_shell_hook_window( win ))
++        shell_hook_notify( win->desktop, HSHELL_WINDOWDESTROYED, win->handle );
+ 
+     /* hide the window */
+     if (is_visible(win))
+@@ -2680,6 +2727,38 @@ DECL_HANDLER(get_window_children_from_point)
+ }
+ 
+ 
++/* register a window to receive shell hook messages */
++DECL_HANDLER(register_shell_hook_window)
++{
++    struct desktop *desktop = get_thread_desktop( current, 0 );
++    struct shell_hook *hook, *next;
++
++    if (!desktop) return;
++
++    LIST_FOR_EACH_ENTRY_SAFE( hook, next, &desktop->shell_hooks, struct shell_hook, entry )
++    {
++        if (hook->window != req->window) continue;
++        reply->previous = 1;
++        if (req->message) hook->message = req->message;
++        else
++        {
++            list_remove( &hook->entry );
++            free( hook );
++        }
++        release_object( desktop );
++        return;
++    }
++
++    if (req->message && (hook = mem_alloc( sizeof(*hook) )))
++    {
++        hook->window = req->window;
++        hook->message = req->message;
++        list_add_tail( &desktop->shell_hooks, &hook->entry );
++    }
++    release_object( desktop );
++}
++
++
+ /* get the toplevel windows of the thread desktop in z-order, for the compositor */
+ DECL_HANDLER(get_composition_list)
+ {
+diff --git a/server/winstation.c b/server/winstation.c
+index e2aad1ed..21103a7c 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -286,6 +286,7 @@ static bool desktop_init( struct object *obj, const void *init_data )
+     memset( &desktop->key_repeat, 0, sizeof(desktop->key_repeat) );
+     list_init( &desktop->threads );
+     list_init( &desktop->hotkeys );
++    list_init( &desktop->shell_hooks );
+     list_init( &desktop->pointers );
+     list_add_tail( &winstation->desktops, &desktop->entry );
+ 
+@@ -368,6 +369,7 @@ static void desktop_destroy( struct object *obj )
+     }
+ 
+     free_hotkeys( desktop, 0 );
++    free_shell_hooks( desktop );
+     free_pointers( desktop );
+     if (desktop->top_window) free_window_handle( desktop->top_window );
+     if (desktop->msg_window) free_window_handle( desktop->msg_window );
+-- 
+2.53.0.windows.2
+

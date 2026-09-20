@@ -1,0 +1,45 @@
+From cdc23ddf1e44a6d5820265ac76db78c77f021500 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 20 Sep 2026 11:27:20 +0300
+Subject: [PATCH] user32: ExitWindowsEx asks winlogon to end the session.
+
+As in Windows, where it reaches winlogon through csrss; wineboot only
+runs when there is no winlogon.
+---
+ dlls/user32/user_main.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index ebd83737..01f2bd39 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -256,17 +256,26 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+ }
+ 
+ 
++/* the messages winlogon's SAS window takes, as in Windows */
++#define WM_LOGONNOTIFY 0x004c
++#define LN_LOGOFF      0x0
++
+ /***********************************************************************
+  *		ExitWindowsEx (USER32.@)
+  */
+ BOOL WINAPI ExitWindowsEx( UINT flags, DWORD reason )
+ {
+     WCHAR app[MAX_PATH];
++    HWND winlogon;
+     WCHAR cmdline[MAX_PATH + 64];
+     PROCESS_INFORMATION pi;
+     STARTUPINFOW si;
+     void *redir;
+ 
++    /* winlogon ends the session, as in Windows; wineboot only when it is not there */
++    if ((winlogon = FindWindowW( L"SAS window class", NULL )))
++        return PostMessageW( winlogon, WM_LOGONNOTIFY, LN_LOGOFF, flags );
++
+     GetSystemDirectoryW( app, MAX_PATH - ARRAY_SIZE( L"\\wineboot.exe" ));
+     lstrcatW( app, L"\\wineboot.exe" );
+     lstrcpyW( cmdline, app );
+-- 
+2.53.0.windows.2
+

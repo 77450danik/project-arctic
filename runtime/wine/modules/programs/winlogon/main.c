@@ -28,6 +28,10 @@ WINE_DEFAULT_DEBUG_CHANNEL(winlogon);
 #define MOD_NOREPEAT 0x4000
 #endif
 
+/* what user32 sends when a program calls ExitWindowsEx, as in Windows */
+#define WM_LOGONNOTIFY 0x004c
+#define LN_LOGOFF      0x0
+
 static const WCHAR winlogon_key[] = L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon";
 
 void run( WCHAR *cmdline )
@@ -47,7 +51,7 @@ void run( WCHAR *cmdline )
 }
 
 /* Winlogon\Userinit is a comma-separated list, "userinit.exe," by default */
-static void run_userinit(void)
+void run_userinit(void)
 {
     WCHAR list[1024] = L"C:\\Windows\\system32\\userinit.exe,", *item, *next;
     DWORD size = sizeof(list);
@@ -65,6 +69,16 @@ static LRESULT WINAPI sas_window_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 {
     WCHAR taskmgr[] = L"taskmgr.exe";
 
+    if (msg == WM_LOGONNOTIFY && wp == LN_LOGOFF)
+    {
+        UINT flags = (UINT)lp;
+
+        /* EWX_REBOOT restarts the machine, EWX_SHUTDOWN and EWX_POWEROFF stop it */
+        if (flags & EWX_REBOOT) end_session( WINLOGON_EXIT_RESTART );
+        else if (flags & (EWX_SHUTDOWN | EWX_POWEROFF)) end_session( WINLOGON_EXIT_SHUTDOWN );
+        else end_session( WINLOGON_EXIT_LOGOFF );
+        return 0;
+    }
     if (msg != WM_HOTKEY) return DefWindowProcW( hwnd, msg, wp, lp );
     if (wp == HOTKEY_SECURITY_OPTIONS) show_security_options();
     else if (wp == HOTKEY_TASK_MANAGER) run( taskmgr );
