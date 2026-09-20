@@ -508,13 +508,13 @@ push → GitHub Actions, контейнер archlinux:latest
 | Етап | Оцінка | Стан | Готово |
 |---|---|---|---|
 | M0 Інфраструктура | 1–2 тиж. | ✅ пройдено в CI і локальному QEMU; тест на RX 580 ще попереду | 100% |
-| M1 Перші пікселі | 4–8 тиж. | 🔨 іде: вікна, миша, клавіатура, сеанс; далі розкладки, оболонка ReactOS, Mizu, Vulkan | ~55% |
+| M1 Перші пікселі | 4–8 тиж. | 🔨 іде: вікна, ввід, сеанс, розкладки, оболонка ReactOS; лишились рамки Mizu (uxtheme), Vulkan-тест, MUI | ~80% |
 | M2 Екран у Панелі керування | 2–3 тиж. | ⏳ | 0% |
 | M3 GPU | 4–8 тиж. | ⏳ | 0% |
 | M4 Звук | 3–5 тиж. | ⏳ | 0% |
 | M5 Мережа | 3–5 тиж. | ⏳ | 0% |
 | M6 v0.1 | 2–4 тиж. | ⏳ | 0% |
-| **Разом до v0.1** | **5–9 міс.** | | **~18%** |
+| **Разом до v0.1** | **5–9 міс.** | | **~23%** |
 
 Поза списком етапів уже зроблено: BSOD у стилі Windows 10 (і для помилок завантаження/NT, і для
 паніки ядра), шпалери за замовчуванням, локальний цикл збірки (WSL2 + zig + QEMU з WHPX).
@@ -542,8 +542,8 @@ NT-світ (services.exe, plugplay, svchost, winedevice) готовий за ~4
 | 4 | `csrss.exe`: власник робочого столу + ввід (libinput → wineserver) | ✅ `csrss.exe` + `winsrv.dll`: робочий стіл, RIT на libinput, повтор клавіш; win32u запускає csrss замість explorer (`0004`) і піднімає активне вікно (`0006`) |
 | 5 | `wininit` / `winlogon` / `userinit`, порядок старту | ✅ arctic-init → wininit → dwm, csrss, winlogon → userinit → оболонка; Ctrl+Shift+Esc — Диспетчер завдань; Ctrl+Alt+Del — екран безпеки як у Windows 10 |
 | 6 | Реєстр: драйвер `arctic`, uk-UA, розкладки, Mizu; MUI-ресурси | 🔨 `runtime/registry/arctic.reg`: драйвер, розкладки EN/UA/RU (Alt+Shift у RIT, таблиці з `kbd*.dll` — патч `0007`), тема Mizu; MUI ⏳ |
-| 7 | Оболонка ReactOS: explorer + shell32/browseui/shdocvw | 🔨 збірка в CI інструментами ReactOS (RosBE) |
-| 8 | Ранній тест Vulkan-вікна через lavapipe | ⏳ |
+| 7 | Оболонка ReactOS: explorer + shell32/browseui/shdocvw | ✅ працює: робочий стіл, панель задач, «Пуск», вікна провідника; один explorer.exe у `C:\Windows`. Патчі до Wine: `0008` shlwapi, `0011` shlwapi+cfgmgr32, `0012` повідомлення оболонці (shell hook), `0013` ExitWindowsEx → winlogon |
+| 8 | Ранній тест Vulkan-вікна через lavapipe | 🔨 `vktest.exe` написано, lavapipe в образі; запуск попереду |
 
 - `winearctic.drv`, `dwm.exe` у базовому режимі, `csrss.exe`, `wininit` / `winlogon` / `userinit`.
 - ReactOS explorer + shell32/browseui як оболонка — сумісність перевіряємо й виправляємо на старті етапу;

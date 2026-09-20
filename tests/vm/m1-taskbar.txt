@@ -1,0 +1,10 @@
+# A window that appears gets a task button, as in Windows
+sleep 6
+shot t1-desktop
+move 36 40
+dblclick                      # Мої документи: a folder window appears
+sleep 5
+shot t2-folder-open
+key alt-f4                    # and goes away again
+sleep 3
+shot t3-folder-closed

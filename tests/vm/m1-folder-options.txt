@@ -1,0 +1,9 @@
+# Параметри папки: третя вкладка (краш)
+sleep 6
+move 36 40
+dblclick                      # Мої документи
+sleep 5
+move 281 41
+click                         # меню Інструменти
+sleep 2
+shot o1-tools-menu

@@ -1,0 +1,11 @@
+# Start -> Завершення роботи...: the shell asks winlogon, the machine goes off
+sleep 6
+move 27 789
+click
+sleep 2
+move 120 757
+click                         # Завершення роботи...
+sleep 3
+shot d1-shutdown-dialog
+key ret
+sleep 12
