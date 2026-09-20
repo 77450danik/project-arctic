@@ -1,0 +1,30 @@
+From a65354e6d19e9df59a5d277d5192c36883a5627a Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 20 Sep 2026 10:03:13 +0300
+Subject: [PATCH] win32u: Keep the shell's window under every program.
+
+The shell's desktop window is activated like any other, but it belongs at
+the bottom: raising it hid the programs behind it.
+---
+ dlls/win32u/input.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 089fee81..2a26c88c 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2496,8 +2496,9 @@ BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new
+                                   SMTO_ABORTIFHUNG, 2000, FALSE );
+         if (!is_window(hwnd)) return FALSE;
+ 
+-        /* the active window comes to the top, as in Windows: there is no window manager to raise it */
+-        if (!(get_window_long( hwnd, GWL_STYLE ) & WS_CHILD))
++        /* the active window comes to the top, as in Windows: there is no window manager
++         * to raise it. The shell's own window stays at the bottom, under every program. */
++        if (!(get_window_long( hwnd, GWL_STYLE ) & WS_CHILD) && hwnd != get_shell_window())
+             NtUserSetWindowPos( hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE );
+     }
+ 
+-- 
+2.53.0.windows.2
+

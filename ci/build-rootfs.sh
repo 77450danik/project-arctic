@@ -71,6 +71,22 @@ if [ -d "$REACTOS/Windows" ]; then
     find "$REACTOS/Windows" -maxdepth 1 -type f -exec cp -a {} "$PFX/drive_c/windows/" \;
     [ -d "$REACTOS/Windows/Resources" ] && cp -a "$REACTOS/Windows/Resources" "$PFX/drive_c/windows/"
 fi
+# The classes of the ReactOS shell, registered by the DLLs themselves
+if [ -d "$REACTOS/Windows" ]; then
+    cat > "$RFS/var/tmp/register.sh" <<'EOF'
+set -e
+# in C: ReactOS's DllRegisterServer fails under uk_UA (to be looked into);
+# what it writes does not depend on the locale
+export WINEPREFIX=/var/tmp/prefix HOME=/var/tmp/home USER=User LOGNAME=User LANG=C
+export WINEDEBUG=-all
+for dll in shell32 browseui shdocvw; do
+    wine regsvr32.exe /s "$dll.dll"
+done
+wineserver -w
+EOF
+    timeout 900 arch-chroot "$RFS" /usr/bin/busybox sh /var/tmp/register.sh
+fi
+
 mkdir -p "$PFX/drive_c/windows/system32/config"
 cp "$PFX/system.reg" "$PFX/user.reg" "$PFX/userdef.reg" "$PFX/.update-timestamp" "$PFX/drive_c/windows/system32/config/"
 mv "$PFX" "$OUT/prefix"

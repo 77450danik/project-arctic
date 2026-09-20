@@ -1,0 +1,350 @@
+From a9041b68a56c3731f720d7d8007a880068a6c1b1 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 20 Sep 2026 10:03:14 +0300
+Subject: [PATCH] user32: Let the visual style draw windows, as in Windows.
+
+A theme fills the user api hook table in its ThemeInitApiHook, and
+user32 sends DefWindowProc and the window procedures through it, so the
+style draws the frames, the menus and the scroll bars. ReactOS's uxtheme
+uses this, and a theme can also register itself by name as in Windows.
+---
+ dlls/user32/defwnd.c       | 32 +++++++++++--
+ dlls/user32/hook.c         | 85 +++++++++++++++++++++++++++++++++
+ dlls/user32/uahook.h       | 96 ++++++++++++++++++++++++++++++++++++++
+ dlls/user32/user_private.h |  5 ++
+ dlls/user32/winproc.c      | 29 +++++++++++-
+ 5 files changed, 242 insertions(+), 5 deletions(-)
+ create mode 100644 dlls/user32/uahook.h
+
+diff --git a/dlls/user32/defwnd.c b/dlls/user32/defwnd.c
+index fd45c784..a90f51d1 100644
+--- a/dlls/user32/defwnd.c
++++ b/dlls/user32/defwnd.c
+@@ -80,11 +80,11 @@ static void default_ime_compositionA( HWND hwnd, WPARAM wparam, LPARAM lparam )
+ }
+ 
+ /***********************************************************************
+- *              DefWindowProcA (USER32.@)
++ *              USER_DefWindowProcA
+  *
+- * See DefWindowProcW.
++ * DefWindowProcA without the theme's hook, which the theme itself calls.
+  */
+-LRESULT WINAPI DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
++LRESULT WINAPI USER_DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
+ {
+     LRESULT result = 0;
+     HWND full_handle;
+@@ -146,7 +146,7 @@ LRESULT WINAPI DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
+  *  RETURNS
+  *     Return value is dependent upon the message.
+ */
+-LRESULT WINAPI DefWindowProcW(
++LRESULT WINAPI USER_DefWindowProcW(
+     HWND hwnd,      /* [in] window procedure receiving message */
+     UINT msg,       /* [in] message identifier */
+     WPARAM wParam,  /* [in] first message parameter */
+@@ -198,3 +198,27 @@ LRESULT WINAPI DefWindowProcW(
+     SPY_ExitMessage( SPY_RESULT_DEFWND, hwnd, msg, result, wParam, lParam );
+     return result;
+ }
++
++/***********************************************************************
++ *              DefWindowProcA (USER32.@)
++ */
++LRESULT WINAPI DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
++{
++    USERAPIHOOK *hook = get_theme_api_hook();
++
++    if (hook && UAH_IS_MESSAGE_HOOKED( hook->DefWndProcArray, msg ))
++        return hook->DefWindowProcA( hwnd, msg, wParam, lParam );
++    return USER_DefWindowProcA( hwnd, msg, wParam, lParam );
++}
++
++/***********************************************************************
++ *              DefWindowProcW (USER32.@)
++ */
++LRESULT WINAPI DefWindowProcW( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
++{
++    USERAPIHOOK *hook = get_theme_api_hook();
++
++    if (hook && UAH_IS_MESSAGE_HOOKED( hook->DefWndProcArray, msg ))
++        return hook->DefWindowProcW( hwnd, msg, wParam, lParam );
++    return USER_DefWindowProcW( hwnd, msg, wParam, lParam );
++}
+diff --git a/dlls/user32/hook.c b/dlls/user32/hook.c
+index 6961040b..631a5dd6 100644
+--- a/dlls/user32/hook.c
++++ b/dlls/user32/hook.c
+@@ -541,9 +541,87 @@ BOOL WINAPI IsWinEventHookInstalled(DWORD dwEvent)
+     return TRUE;
+ }
+ 
++/**********************************************************************
++ *           The theme's user api hook
++ *
++ * A visual style draws the frames, the menus and the scroll bars of every
++ * window. It gets them through the table it fills in its ThemeInitApiHook,
++ * as in Windows, where the theme is loaded into each process and hooks
++ * DefWindowProc and the window procedures.
++ */
++
++static USERAPIHOOK theme_api;
++static LONG theme_api_state; /* 0: not tried, 1: loading, 2: in use, 3: none */
++
++static BOOL theme_is_active(void)
++{
++    WCHAR value[8];
++    DWORD size = sizeof(value);
++
++    return !RegGetValueW( HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ThemeManager",
++                          L"ThemeActive", RRF_RT_REG_SZ, NULL, value, &size ) && !wcscmp( value, L"1" );
++}
++
++static BOOL init_theme_api_hook( const WCHAR *dll_name, const WCHAR *func_name )
++{
++    char name[64];
++    USERAPIHOOKPROC init;
++    HMODULE module;
++
++    if (!(module = LoadLibraryW( dll_name ))) return FALSE;
++    if (!WideCharToMultiByte( CP_ACP, 0, func_name, -1, name, sizeof(name), NULL, NULL )) return FALSE;
++    if (!(init = (USERAPIHOOKPROC)GetProcAddress( module, name ))) return FALSE;
++
++    memset( &theme_api, 0, sizeof(theme_api) );
++    theme_api.size = sizeof(theme_api);
++    theme_api.DefWindowProcA = USER_DefWindowProcA;
++    theme_api.DefWindowProcW = USER_DefWindowProcW;
++    theme_api.GetScrollInfo = GetScrollInfo;
++    theme_api.SetScrollInfo = SetScrollInfo;
++    theme_api.EnableScrollBar = EnableScrollBar;
++    theme_api.AdjustWindowRectEx = AdjustWindowRectEx;
++    theme_api.SetWindowRgn = SetWindowRgn;
++    theme_api.GetSystemMetrics = GetSystemMetrics;
++    theme_api.SystemParametersInfoA = SystemParametersInfoA;
++    theme_api.SystemParametersInfoW = SystemParametersInfoW;
++    theme_api.DrawFrameControl = DrawFrameControl;
++    theme_api.DrawCaption = DrawCaption;
++
++    if (!init( uahLoadInit, &theme_api )) return FALSE;
++    TRACE( "%s draws windows now\n", debugstr_w(dll_name) );
++    return TRUE;
++}
++
++/* the table the theme filled, or NULL while there is none */
++USERAPIHOOK *get_theme_api_hook(void)
++{
++    if (theme_api_state == 2) return &theme_api;
++    if (theme_api_state) return NULL;
++    /* the theme's own windows must not come back through the hook while it loads */
++    if (InterlockedCompareExchange( &theme_api_state, 1, 0 )) return NULL;
++
++    if (theme_is_active() && init_theme_api_hook( L"uxtheme.dll", L"ThemeInitApiHook" ))
++    {
++        InterlockedExchange( &theme_api_state, 2 );
++        return &theme_api;
++    }
++    InterlockedExchange( &theme_api_state, 3 );
++    return NULL;
++}
++
+ /* Undocumented RegisterUserApiHook() */
+ BOOL WINAPI RegisterUserApiHook(const struct user_api_hook *new_hook, struct user_api_hook *old_hook)
+ {
++    const USERAPIHOOKINFO *info = (const USERAPIHOOKINFO *)new_hook;
++
++    /* a theme registers itself by name, as in Windows */
++    if (info && info->m_size == sizeof(*info) && info->m_dllname1 && info->m_funname1)
++    {
++        if (!init_theme_api_hook( info->m_dllname1, info->m_funname1 )) return FALSE;
++        InterlockedExchange( &theme_api_state, 2 );
++        return TRUE;
++    }
++
+     if (!new_hook)
+         return FALSE;
+ 
+@@ -559,5 +637,12 @@ BOOL WINAPI RegisterUserApiHook(const struct user_api_hook *new_hook, struct use
+ /* Undocumented UnregisterUserApiHook() */
+ void WINAPI UnregisterUserApiHook(void)
+ {
++    if (InterlockedExchange( &theme_api_state, 3 ) == 2)
++    {
++        USERAPIHOOKPROC init = (USERAPIHOOKPROC)GetProcAddress( GetModuleHandleW( L"uxtheme.dll" ),
++                                                                "ThemeInitApiHook" );
++        if (init) init( uahStop, NULL );
++        memset( &theme_api, 0, sizeof(theme_api) );
++    }
+     InterlockedExchangePointer((void **)&user_api, &original_user_api);
+ }
+diff --git a/dlls/user32/uahook.h b/dlls/user32/uahook.h
+new file mode 100644
+index 00000000..762856f4
+--- /dev/null
++++ b/dlls/user32/uahook.h
+@@ -0,0 +1,96 @@
++/*
++ * The user api hook a theme installs, as in Windows
++ *
++ * Copyright 2026 Project Arctic contributors
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __WINE_USER32_UAHOOK_H
++#define __WINE_USER32_UAHOOK_H
++
++typedef LRESULT (CALLBACK *WNDPROC_OWP)(HWND,UINT,WPARAM,LPARAM,ULONG_PTR,DWORD*);
++typedef int (WINAPI *SETWINDOWRGN)(HWND,HRGN,BOOL);
++typedef BOOL (WINAPI *GETSCROLLINFO)(HWND,INT,LPSCROLLINFO);
++typedef INT (WINAPI *SETSCROLLINFO)(HWND,int,LPCSCROLLINFO,BOOL);
++typedef BOOL (WINAPI *ENABLESCROLLBAR)(HWND,UINT,UINT);
++typedef BOOL (WINAPI *ADJUSTWINDOWRECTEX)(LPRECT,DWORD,BOOL,DWORD);
++typedef int (WINAPI *GETSYSTEMMETRICS)(int);
++typedef BOOL (WINAPI *SYSTEMPARAMETERSINFOA)(UINT,UINT,PVOID,UINT);
++typedef BOOL (WINAPI *SYSTEMPARAMETERSINFOW)(UINT,UINT,PVOID,UINT);
++typedef BOOL (WINAPI *FORCERESETUSERAPIHOOK)(HINSTANCE);
++typedef BOOL (WINAPI *DRAWFRAMECONTROL)(HDC,LPRECT,UINT,UINT);
++typedef BOOL (WINAPI *DRAWCAPTION)(HWND,HDC,LPCRECT,UINT);
++typedef BOOL (WINAPI *MDIREDRAWFRAME)(HWND,DWORD);
++typedef DWORD (WINAPI *GETREALWINDOWOWNER)(HWND);
++
++typedef struct tagUAHOWP
++{
++    BYTE  *MsgBitArray;
++    DWORD  Size;
++} UAHOWP, *PUAHOWP;
++
++#define UAHOWP_MAX_SIZE (WM_USER / 8)
++#define UAH_IS_MESSAGE_HOOKED(uahowp, msg) \
++    ((msg) < (uahowp).Size * 8 && (uahowp).MsgBitArray && ((uahowp).MsgBitArray[(msg) / 8] & (1 << ((msg) % 8))))
++
++typedef struct tagUSERAPIHOOK
++{
++    DWORD                 size;
++    WNDPROC               DefWindowProcA;
++    WNDPROC               DefWindowProcW;
++    UAHOWP                DefWndProcArray;
++    GETSCROLLINFO         GetScrollInfo;
++    SETSCROLLINFO         SetScrollInfo;
++    ENABLESCROLLBAR       EnableScrollBar;
++    ADJUSTWINDOWRECTEX    AdjustWindowRectEx;
++    SETWINDOWRGN          SetWindowRgn;
++    WNDPROC_OWP           PreWndProc;
++    WNDPROC_OWP           PostWndProc;
++    UAHOWP                WndProcArray;
++    WNDPROC_OWP           PreDefDlgProc;
++    WNDPROC_OWP           PostDefDlgProc;
++    UAHOWP                DlgProcArray;
++    GETSYSTEMMETRICS      GetSystemMetrics;
++    SYSTEMPARAMETERSINFOA SystemParametersInfoA;
++    SYSTEMPARAMETERSINFOW SystemParametersInfoW;
++    FORCERESETUSERAPIHOOK ForceResetUserApiHook;
++    DRAWFRAMECONTROL      DrawFrameControl;
++    DRAWCAPTION           DrawCaption;
++    MDIREDRAWFRAME        MDIRedrawFrame;
++    GETREALWINDOWOWNER    GetRealWindowOwner;
++} USERAPIHOOK, *PUSERAPIHOOK;
++
++typedef enum tagUAPIHK
++{
++    uahLoadInit,
++    uahStop,
++    uahShutdown
++} UAPIHK, *PUAPIHK;
++
++typedef BOOL (CALLBACK *USERAPIHOOKPROC)(UAPIHK,PUSERAPIHOOK);
++
++typedef struct tagUSERAPIHOOKINFO
++{
++    DWORD   m_size;
++    LPCWSTR m_dllname1;
++    LPCWSTR m_funname1;
++    LPCWSTR m_dllname2;
++    LPCWSTR m_funname2;
++} USERAPIHOOKINFO, *PUSERAPIHOOKINFO;
++
++extern USERAPIHOOK *get_theme_api_hook(void);
++
++#endif
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index abb84b0e..5f4a2a22 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -162,6 +162,11 @@ extern int bitmap_info_size( const BITMAPINFO * info, WORD coloruse );
+ extern BOOL get_icon_size( HICON handle, SIZE *size );
+ 
+ extern struct user_api_hook *user_api;
++
++#include "uahook.h"
++
++extern LRESULT WINAPI USER_DefWindowProcA(HWND,UINT,WPARAM,LPARAM);
++extern LRESULT WINAPI USER_DefWindowProcW(HWND,UINT,WPARAM,LPARAM);
+ LRESULT WINAPI USER_DefDlgProc(HWND, UINT, WPARAM, LPARAM, BOOL);
+ LRESULT WINAPI USER_ScrollBarProc(HWND, UINT, WPARAM, LPARAM, BOOL);
+ void WINAPI USER_NonClientButtonDraw(HWND, HDC, enum NONCLIENT_BUTTON_TYPE, RECT, BOOL, BOOL);
+diff --git a/dlls/user32/winproc.c b/dlls/user32/winproc.c
+index 9745c4ba..b1114e25 100644
+--- a/dlls/user32/winproc.c
++++ b/dlls/user32/winproc.c
+@@ -695,9 +695,36 @@ static LRESULT WINPROC_CallProcWtoA( winproc_callback_t callback, HWND hwnd, UIN
+ }
+ 
+ 
++static LRESULT dispatch_win_proc( struct win_proc_params *params, LRESULT *result );
++
+ LRESULT dispatch_win_proc_params( struct win_proc_params *params )
+ {
+     DPI_AWARENESS_CONTEXT context = SetThreadDpiAwarenessContext( ULongToHandle( params->dpi_context ) );
++    USERAPIHOOK *hook = get_theme_api_hook();
++    LRESULT result = 0;
++
++    if (hook && UAH_IS_MESSAGE_HOOKED( hook->WndProcArray, params->msg ))
++    {
++        DWORD data = 0;
++
++        if (!hook->PreWndProc( params->hwnd, params->msg, params->wparam, params->lparam,
++                               (ULONG_PTR)&result, &data ))
++        {
++            dispatch_win_proc( params, &result );
++            hook->PostWndProc( params->hwnd, params->msg, params->wparam, params->lparam,
++                               (ULONG_PTR)&result, &data );
++        }
++        SetThreadDpiAwarenessContext( context );
++        return result;
++    }
++
++    dispatch_win_proc( params, &result );
++    SetThreadDpiAwarenessContext( context );
++    return result;
++}
++
++static LRESULT dispatch_win_proc( struct win_proc_params *params, LRESULT *result_ptr )
++{
+     LRESULT result = 0;
+ 
+     if (!params->ansi)
+@@ -725,7 +752,7 @@ LRESULT dispatch_win_proc_params( struct win_proc_params *params )
+                               &result, params->procA );
+     }
+ 
+-    SetThreadDpiAwarenessContext( context );
++    *result_ptr = result;
+     return result;
+ }
+ 
+-- 
+2.53.0.windows.2
+

@@ -1,0 +1,8 @@
+MODULE    = vktest.exe
+IMPORTS   = user32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Vulkan test window"
+
+SOURCES = \
+	main.c

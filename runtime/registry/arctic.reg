@@ -30,3 +30,12 @@ REGEDIT4
 "DllName"="C:\\Windows\\Resources\\Themes\\Mizu\\mizu.msstyles"
 "ColorName"=""
 "SizeName"=""
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Winlogon]
+"Shell"="C:\\Windows\\explorer.exe"
+
+[HKEY_CURRENT_USER\Software\Wine\DllOverrides]
+"shell32"="native,builtin"
+"browseui"="native,builtin"
+"shdocvw"="native,builtin"
+"uxtheme"="native,builtin"

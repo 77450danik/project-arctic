@@ -1,0 +1,82 @@
+From a2368aeae00968c5e468fa4e1290a861d0e23c09 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 20 Sep 2026 09:41:41 +0300
+Subject: [PATCH] shlwapi: Implement IUnknown_QueryServicePropertyBag.
+
+ReactOS's shell asks the top level browser for its view state property
+bags through it.
+---
+ dlls/shlwapi/ordinal.c    | 43 +++++++++++++++++++++++++++++++++++++++
+ dlls/shlwapi/shlwapi.spec |  2 +-
+ 2 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/shlwapi/ordinal.c b/dlls/shlwapi/ordinal.c
+index 4a00c6fb..722914f7 100644
+--- a/dlls/shlwapi/ordinal.c
++++ b/dlls/shlwapi/ordinal.c
+@@ -4403,6 +4403,49 @@ INT WINAPI SHVerbExistsNA(LPSTR verb, PVOID pUnknown, PVOID pUnknown2, DWORD dwU
+     return 0;
+ }
+ 
++/* the interface the top level browser answers with, for its property bags */
++typedef struct IShellBrowserService IShellBrowserService;
++typedef struct IShellBrowserServiceVtbl
++{
++    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IShellBrowserService *, REFIID, void **);
++    ULONG (STDMETHODCALLTYPE *AddRef)(IShellBrowserService *);
++    ULONG (STDMETHODCALLTYPE *Release)(IShellBrowserService *);
++    HRESULT (STDMETHODCALLTYPE *GetPropertyBag)(IShellBrowserService *, LONG, REFIID, void **);
++} IShellBrowserServiceVtbl;
++struct IShellBrowserService { const IShellBrowserServiceVtbl *lpVtbl; };
++
++/*************************************************************************
++ *      @	[SHLWAPI.536]
++ *
++ * Gets a view state property bag from the top level browser of an object.
++ *
++ * PARAMS
++ *  lpUnknown [I] Object to get the top level browser from
++ *  flags     [I] SHGVSPB_ flags, as for SHGetViewStatePropertyBag
++ *  riid      [I] Interface of the property bag requested
++ *  lppOut    [O] Destination for the property bag
++ *
++ * RETURNS
++ *  Success: S_OK. lppOut contains the property bag
++ *  Failure: An HRESULT error code
++ */
++HRESULT WINAPI IUnknown_QueryServicePropertyBag(IUnknown *lpUnknown, LONG flags, REFIID riid, void **lppOut)
++{
++    static const GUID IID_IShellBrowserService =
++        {0xdfbc7e30,0xf9e5,0x455f,{0x88,0xf8,0xfa,0x98,0xc1,0xe4,0x94,0xca}};
++    IShellBrowserService *service;
++    HRESULT hr;
++
++    TRACE("(%p,%ld,%s,%p)\n", lpUnknown, flags, debugstr_guid(riid), lppOut);
++
++    hr = iunknown_query_service(lpUnknown, &SID_STopLevelBrowser, &IID_IShellBrowserService, (void **)&service);
++    if (FAILED(hr)) return hr;
++
++    hr = service->lpVtbl->GetPropertyBag(service, flags, riid, lppOut);
++    service->lpVtbl->Release(service);
++    return hr;
++}
++
+ /*************************************************************************
+  *      @	[SHLWAPI.538]
+  *
+diff --git a/dlls/shlwapi/shlwapi.spec b/dlls/shlwapi/shlwapi.spec
+index 853a9388..38f56691 100644
+--- a/dlls/shlwapi/shlwapi.spec
++++ b/dlls/shlwapi/shlwapi.spec
+@@ -529,7 +529,7 @@
+ 533 stub -noname SHGetPerScreenResName
+ 534 stub -noname SHPropertyBag_ReadBOOL
+ 535 stub -noname SHPropertyBag_Delete
+-536 stub -noname IUnknown_QueryServicePropertyBag
++536 stdcall -noname IUnknown_QueryServicePropertyBag(ptr long ptr ptr)
+ 537 stub -noname SHBoolSystemParametersInfo
+ 538 stdcall -noname IUnknown_QueryServiceForWebBrowserApp(ptr ptr ptr)
+ 539 stub -noname IUnknown_ShowBrowserBar
+-- 
+2.53.0.windows.2
+
