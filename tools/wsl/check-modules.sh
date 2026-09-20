@@ -43,5 +43,5 @@ pe dlls/winsrv desktop.c rit.c
 pe programs/csrss main.c
 pe programs/dwm main.c
 pe programs/wininit main.c
-pe programs/winlogon main.c
+pe programs/winlogon main.c security.c
 pe programs/userinit main.c

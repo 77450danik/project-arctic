@@ -1,4 +1,4 @@
-From fe1b30c110154c077e701239b1755f28e0f2b28b Mon Sep 17 00:00:00 2001
+From bb248208454873d1b481001eebde51e767d41a22 Mon Sep 17 00:00:00 2001
 From: 77450danik <dnsystems@email.ua>
 Date: Sat, 19 Sep 2026 22:49:20 +0300
 Subject: [PATCH] win32u: Keyboard layouts from their layout files, and the
@@ -14,7 +14,7 @@ input language can be activated, and HKL_NEXT/HKL_PREV go through them.
  2 files changed, 354 insertions(+), 22 deletions(-)
 
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
-index 84d398f7..65a9c59b 100644
+index 84d398f7..089fee81 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
 @@ -30,6 +30,7 @@
@@ -229,7 +229,7 @@ index 84d398f7..65a9c59b 100644
 +
 +    snprintf( klid_str, sizeof(klid_str), "\\%08X", klid );
 +    memcpy( keyW, keyboard_layouts_keyW, sizeof(keyboard_layouts_keyW) );
-+    asciiz_to_unicode( keyW + ARRAY_SIZE(keyboard_layouts_keyW) - 1, klid_str );
++    asciiz_to_unicode( keyW + ARRAY_SIZE(keyboard_layouts_keyW), klid_str );
 +    if (!(hkey = reg_open_key( NULL, keyW, wcslen( keyW ) * sizeof(WCHAR) ))) return NULL;
 +    if (query_reg_ascii_value( hkey, "Layout File", value, sizeof(buffer) - sizeof(WCHAR) ) &&
 +        value->Type == REG_SZ && value->DataLength < sizeof(name))
@@ -322,7 +322,7 @@ index 84d398f7..65a9c59b 100644
 +    {
 +        snprintf( klid_str, sizeof(klid_str), "\\%08X", klid );
 +        memcpy( keyW, keyboard_layouts_keyW, sizeof(keyboard_layouts_keyW) );
-+        asciiz_to_unicode( keyW + ARRAY_SIZE(keyboard_layouts_keyW) - 1, klid_str );
++        asciiz_to_unicode( keyW + ARRAY_SIZE(keyboard_layouts_keyW), klid_str );
 +        if ((hkey = reg_open_key( NULL, keyW, wcslen( keyW ) * sizeof(WCHAR) )))
 +        {
 +            if (query_reg_ascii_value( hkey, "Layout Id", value, sizeof(buffer) - sizeof(WCHAR) ) &&
