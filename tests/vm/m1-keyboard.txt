@@ -1,0 +1,14 @@
+# Input languages EN, UA, RU in Preload order; Alt+Shift moves to the next.
+# Expected in Notepad: "abc привіт привет xyz"
+sleep 3
+move 700 300
+click                         # Notepad, visible right of the shell window
+type abc 
+key alt-shift
+type ghbdsn 
+key alt-shift
+type ghbdtn 
+key alt-shift
+type xyz
+sleep 1
+shot k1-typed

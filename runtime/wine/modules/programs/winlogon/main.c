@@ -3,7 +3,9 @@
  *
  * There is one user and no logon screen: winlogon runs the Userinit
  * programs for that user at once, then stays for the keys only the system
- * handles.
+ * handles: Ctrl+Alt+Del (security options) and Ctrl+Shift+Esc (Task
+ * Manager). The session cannot go on without it: wininit.exe stops the
+ * system when it ends other than by restart or shut down.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -15,9 +17,12 @@
 
 #include "wine/debug.h"
 
+#include "winlogon.h"
+
 WINE_DEFAULT_DEBUG_CHANNEL(winlogon);
 
-#define HOTKEY_TASKMGR 1
+#define HOTKEY_SECURITY_OPTIONS 1
+#define HOTKEY_TASK_MANAGER     2
 
 #ifndef MOD_NOREPEAT
 #define MOD_NOREPEAT 0x4000
@@ -25,13 +30,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(winlogon);
 
 static const WCHAR winlogon_key[] = L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon";
 
-static void run( WCHAR *cmdline )
+void run( WCHAR *cmdline )
 {
     STARTUPINFOW si = { .cb = sizeof(si) };
     PROCESS_INFORMATION pi;
     WCHAR dir[MAX_PATH];
 
-    GetSystemDirectoryW( dir, MAX_PATH );
+    if (!GetEnvironmentVariableW( L"USERPROFILE", dir, MAX_PATH )) GetSystemDirectoryW( dir, MAX_PATH );
     if (!CreateProcessW( NULL, cmdline, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi ))
     {
         ERR( "cannot start %s: %lu\n", debugstr_w(cmdline), GetLastError() );
@@ -56,18 +61,46 @@ static void run_userinit(void)
     }
 }
 
-int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int show )
+static LRESULT WINAPI sas_window_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
     WCHAR taskmgr[] = L"taskmgr.exe";
+
+    if (msg != WM_HOTKEY) return DefWindowProcW( hwnd, msg, wp, lp );
+    if (wp == HOTKEY_SECURITY_OPTIONS) show_security_options();
+    else if (wp == HOTKEY_TASK_MANAGER) run( taskmgr );
+    return 0;
+}
+
+/* receives the secure attention keys, as Windows' "SAS window" does */
+static void create_sas_window(void)
+{
+    WNDCLASSW class = { .lpfnWndProc = sas_window_proc, .hInstance = GetModuleHandleW( NULL ),
+                        .lpszClassName = L"SAS window class" };
+    HWND hwnd;
+
+    RegisterClassW( &class );
+    if (!(hwnd = CreateWindowW( class.lpszClassName, L"SAS window", WS_POPUP, 0, 0, 0, 0, 0, 0,
+                                class.hInstance, NULL )))
+    {
+        ERR( "cannot create the SAS window: %lu\n", GetLastError() );
+        return;
+    }
+    if (!RegisterHotKey( hwnd, HOTKEY_SECURITY_OPTIONS, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_DELETE ))
+        ERR( "Ctrl+Alt+Del is taken: %lu\n", GetLastError() );
+    if (!RegisterHotKey( hwnd, HOTKEY_TASK_MANAGER, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_ESCAPE ))
+        ERR( "Ctrl+Shift+Esc is taken: %lu\n", GetLastError() );
+}
+
+int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int show )
+{
     MSG msg;
 
-    if (!RegisterHotKey( NULL, HOTKEY_TASKMGR, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_ESCAPE ))
-        WARN( "Ctrl+Shift+Esc is taken: %lu\n", GetLastError() );
+    create_sas_window();
     run_userinit();
 
     while (GetMessageW( &msg, 0, 0, 0 ))
     {
-        if (msg.message == WM_HOTKEY && msg.wParam == HOTKEY_TASKMGR) run( taskmgr );
+        TranslateMessage( &msg );
         DispatchMessageW( &msg );
     }
     return 0;

@@ -101,7 +101,8 @@ class Qmp:
 
 def run(qmp, steps):
     for raw in steps:
-        line = raw.split("#", 1)[0].strip() if not raw.strip().startswith("type ") else raw.strip()
+        # "type" keeps its text as written, spaces at the end included
+        line = raw.split("#", 1)[0].strip() if not raw.lstrip().startswith("type ") else raw.lstrip().rstrip("\r\n")
         if not line:
             continue
         cmd, _, rest = line.partition(" ")

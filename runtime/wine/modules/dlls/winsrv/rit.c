@@ -30,6 +30,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(winsrv);
 
+#ifndef INPUTLANGCHANGE_FORWARD
+#define INPUTLANGCHANGE_FORWARD 0x0002
+#endif
+
 /* evdev codes (linux/input-event-codes.h) */
 #define KEY_KPDOT        83
 #define KEY_102ND        86
@@ -212,6 +216,68 @@ static DWORD repeat_interval(void)
     return 400 - 367 * min( speed, 31 ) / 31;
 }
 
+/* The input language is one for the whole session, as in Windows 10: Alt+Shift
+ * moves it to the next of the user's layouts, and a program that gets the
+ * keyboard is moved to it. win32k does this in Windows, so the RIT does here. */
+static HKL input_language;
+static DWORD language_thread;  /* the thread last moved to it */
+
+static void request_language( HWND hwnd, HKL layout )
+{
+    GUITHREADINFO info = { .cbSize = sizeof(info) };
+    DWORD tid = GetWindowThreadProcessId( hwnd, NULL );
+
+    if (GetGUIThreadInfo( tid, &info ) && info.hwndFocus) hwnd = info.hwndFocus;
+    PostMessageW( hwnd, WM_INPUTLANGCHANGEREQUEST, INPUTLANGCHANGE_FORWARD, (LPARAM)layout );
+    language_thread = tid;
+}
+
+static void next_input_language(void)
+{
+    HKL layouts[32];
+    UINT count = GetKeyboardLayoutList( ARRAY_SIZE(layouts), layouts ), i;
+    HWND hwnd;
+
+    if (count < 2) return;
+    if (!input_language) input_language = GetKeyboardLayout( 0 );
+    for (i = 0; i < count; i++) if (layouts[i] == input_language) break;
+    input_language = layouts[i < count ? (i + 1) % count : 0];
+    ActivateKeyboardLayout( input_language, 0 ); /* scan codes map to keys by the language */
+    if ((hwnd = GetForegroundWindow())) request_language( hwnd, input_language );
+}
+
+/* before a key goes to a program the language has not reached yet */
+static void follow_input_language(void)
+{
+    HWND hwnd;
+
+    if (!input_language || !(hwnd = GetForegroundWindow())) return;
+    if (GetWindowThreadProcessId( hwnd, NULL ) != language_thread) request_language( hwnd, input_language );
+}
+
+/* Left Alt with Shift, and nothing else between: the language hotkey */
+static BOOL language_chord( UINT key, BOOL pressed )
+{
+    static BOOL alt, shift, armed;
+    BOOL is_alt = key == 56 /* KEY_LEFTALT */, is_shift = key == 42 || key == 54 /* KEY_LEFTSHIFT, KEY_RIGHTSHIFT */;
+
+    if (!is_alt && !is_shift)
+    {
+        if (pressed) armed = FALSE;
+        return FALSE;
+    }
+    if (pressed)
+    {
+        if (is_alt) alt = TRUE; else shift = TRUE;
+        armed = alt && shift;
+        return FALSE;
+    }
+    if (is_alt) alt = FALSE; else shift = FALSE;
+    if (!armed) return FALSE;
+    armed = FALSE;
+    return TRUE;
+}
+
 static DWORD WINAPI raw_input_thread( void *arg )
 {
     struct rit_event events[64];
@@ -249,7 +315,9 @@ static DWORD WINAPI raw_input_thread( void *arg )
             switch (event->type)
             {
             case RIT_KEY:
+                if (event->value) follow_input_language();
                 send_key( event->code, event->value );
+                if (language_chord( event->code, event->value )) next_input_language();
                 if (event->value)
                 {
                     repeat_key = event->code;

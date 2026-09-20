@@ -19,6 +19,7 @@
 
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -158,25 +159,49 @@ static BOOL show_framebuffer( int fd )
     return !ioctl( fd, DRM_IOCTL_MODE_SETCRTC, &set );
 }
 
-int kms_init(void)
+/* one pass over the cards; with report, says why each one did not do */
+static BOOL try_cards( BOOL report )
 {
     for (int i = 0; i < 8; i++)
     {
         int fd;
 
         snprintf( kms.name, sizeof(kms.name), "/dev/dri/card%d", i );
-        if ((fd = open( kms.name, O_RDWR | O_CLOEXEC )) < 0) continue;
-        if (pick_output( fd ) && create_framebuffer( fd ))
+        if ((fd = open( kms.name, O_RDWR | O_CLOEXEC )) < 0)
         {
-            if (show_framebuffer( fd ))
-            {
-                kms.fd = fd;
-                MESSAGE( "dwm: display %s, %ux%u@%u\n", kms.name, kms.width, kms.height, kms.refresh_mhz / 1000 );
-                return 0;
-            }
-            ERR( "%s: cannot set the mode (DRM master held elsewhere?)\n", kms.name );
+            if (report && errno != ENOENT) ERR( "%s: %s\n", kms.name, strerror( errno ) );
+            continue;
+        }
+        if (!pick_output( fd ))
+        {
+            if (report) ERR( "%s: no connected output\n", kms.name );
+        }
+        else if (!create_framebuffer( fd ))
+        {
+            if (report) ERR( "%s: cannot create a framebuffer: %s\n", kms.name, strerror( errno ) );
+        }
+        else if (!show_framebuffer( fd ))
+        {
+            if (report) ERR( "%s: cannot set the mode (DRM master held elsewhere?)\n", kms.name );
+        }
+        else
+        {
+            kms.fd = fd;
+            MESSAGE( "dwm: display %s, %ux%u@%u\n", kms.name, kms.width, kms.height, kms.refresh_mhz / 1000 );
+            return TRUE;
         }
         close( fd );
+    }
+    return FALSE;
+}
+
+/* a GPU driver may still be probing its outputs: up to 10 s of retries */
+int kms_init(void)
+{
+    for (int attempt = 0; attempt < 40; attempt++)
+    {
+        if (try_cards( attempt == 39 )) return 0;
+        usleep( 250000 );
     }
     return -1;
 }

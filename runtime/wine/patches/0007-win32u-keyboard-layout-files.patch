@@ -1,0 +1,519 @@
+From fe1b30c110154c077e701239b1755f28e0f2b28b Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 19 Sep 2026 22:49:20 +0300
+Subject: [PATCH] win32u: Keyboard layouts from their layout files, and the
+ user's layouts in Preload order.
+
+As win32k does, win32u maps the kbd*.dll that the registry names for a
+layout and takes its tables, for every process. The layouts, and the
+first one for new threads, come from HKCU\Keyboard Layout\Preload, any
+input language can be activated, and HKL_NEXT/HKL_PREV go through them.
+---
+ dlls/win32u/input.c     | 372 +++++++++++++++++++++++++++++++++++++---
+ dlls/win32u/sysparams.c |   4 +-
+ 2 files changed, 354 insertions(+), 22 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 84d398f7..65a9c59b 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -30,6 +30,7 @@
+ #pragma makedep unix
+ #endif
+ 
++#include <sys/mman.h>
+ #include "ntstatus.h"
+ #include "win32u_private.h"
+ #include "ntuser_private.h"
+@@ -407,6 +408,278 @@ static const KBDTABLES kbdus_tables =
+     .fLocaleFlags = MAKELONG(0, KBD_VERSION),
+ };
+ 
++/**********************************************************************
++ *           Keyboard layout files
++ *
++ * As win32k does, win32u maps the layout DLL (kbd*.dll) that the registry
++ * names for a layout and asks it for its tables. This side of win32u is
++ * always 64-bit, so the 64-bit file serves every process.
++ */
++
++struct kbd_layout_file
++{
++    UINT             klid;    /* 0x00000422, 0x00020409, ... */
++    const KBDTABLES *tables;  /* NULL: no usable file */
++    void            *image;
++    SIZE_T           size;
++};
++
++static struct kbd_layout_file kbd_layout_files[32];
++static unsigned int kbd_layout_file_count;
++static pthread_mutex_t kbd_layout_files_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++/* the KLID of a layout: its layout id, or the key with that "Layout Id" */
++static UINT layout_klid( HKL layout )
++{
++    char buffer[4096];
++    KEY_NODE_INFORMATION *key = (KEY_NODE_INFORMATION *)buffer;
++    KEY_VALUE_PARTIAL_INFORMATION *value = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
++    UINT id = HIWORD( layout ), klid = id;
++    ULONG len, i = 0;
++    HKEY hkey, subkey;
++
++    if ((id & 0xf000) != 0xf000) return id;
++    if (!(hkey = reg_open_key( NULL, keyboard_layouts_keyW, sizeof(keyboard_layouts_keyW) ))) return id;
++    while (!NtEnumerateKey( hkey, i++, KeyNodeInformation, key, sizeof(buffer) - sizeof(WCHAR), &len ))
++    {
++        WCHAR name[KL_NAMELENGTH];
++        UINT candidate;
++
++        if (key->NameLength >= sizeof(name)) continue;
++        memcpy( name, key->Name, key->NameLength );
++        name[key->NameLength / sizeof(WCHAR)] = 0;
++        candidate = wcstoul( name, NULL, 16 );
++        if (!(subkey = reg_open_key( hkey, key->Name, key->NameLength ))) continue;
++        if (query_reg_ascii_value( subkey, "Layout Id", value, sizeof(buffer) ) && value->Type == REG_SZ &&
++            (0xf000 | (wcstoul( (const WCHAR *)value->Data, NULL, 16 ) & 0xfff)) == id)
++            klid = candidate;
++        NtClose( subkey );
++        if (klid != id) break;
++    }
++    NtClose( hkey );
++    return klid;
++}
++
++static void *read_system_file( const WCHAR *name, SIZE_T *size )
++{
++    static const WCHAR system_dirW[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\',
++                                        's','y','s','t','e','m','3','2','\\',0};
++    WCHAR path[MAX_PATH];
++    UNICODE_STRING str;
++    OBJECT_ATTRIBUTES attr;
++    IO_STATUS_BLOCK io;
++    FILE_STANDARD_INFORMATION info;
++    HANDLE file;
++    void *data = NULL;
++
++    if (wcslen( system_dirW ) + wcslen( name ) >= ARRAY_SIZE(path)) return NULL;
++    wcscpy( path, system_dirW );
++    wcscat( path, name );
++    RtlInitUnicodeString( &str, path );
++    InitializeObjectAttributes( &attr, &str, OBJ_CASE_INSENSITIVE, 0, NULL );
++    if (NtCreateFile( &file, GENERIC_READ | SYNCHRONIZE, &attr, &io, NULL, 0, FILE_SHARE_READ, FILE_OPEN,
++                      FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0 ))
++        return NULL;
++    if (!NtQueryInformationFile( file, &io, &info, sizeof(info), FileStandardInformation ) &&
++        info.EndOfFile.QuadPart > 0 && info.EndOfFile.QuadPart < 0x100000 &&
++        (data = malloc( info.EndOfFile.QuadPart )))
++    {
++        *size = info.EndOfFile.QuadPart;
++        if (NtReadFile( file, 0, NULL, NULL, &io, data, *size, NULL, NULL ) || io.Information != *size)
++        {
++            free( data );
++            data = NULL;
++        }
++    }
++    NtClose( file );
++    return data;
++}
++
++typedef const KBDTABLES *(WINAPI *kbd_layer_descriptor_func)(void);
++
++/* maps a 64-bit layout DLL, relocated, and calls its KbdLayerDescriptor */
++static const KBDTABLES *map_layout_file( const BYTE *data, SIZE_T size, void **image_ret, SIZE_T *image_size )
++{
++    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)data;
++    const IMAGE_NT_HEADERS64 *nt;
++    const IMAGE_SECTION_HEADER *sec;
++    const IMAGE_DATA_DIRECTORY *dir;
++    const IMAGE_EXPORT_DIRECTORY *exports;
++    kbd_layer_descriptor_func descriptor = NULL;
++    const KBDTABLES *tables;
++    BYTE *image;
++    INT_PTR delta;
++    SIZE_T len;
++
++    if (size < sizeof(*dos) || dos->e_magic != IMAGE_DOS_SIGNATURE ||
++        dos->e_lfanew + sizeof(*nt) > size) return NULL;
++    nt = (const IMAGE_NT_HEADERS64 *)(data + dos->e_lfanew);
++    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
++        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return NULL;
++    len = nt->OptionalHeader.SizeOfImage;
++    if (!len || len > 0x100000 || nt->OptionalHeader.SizeOfHeaders > min( size, len )) return NULL;
++
++    image = mmap( NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
++    if (image == MAP_FAILED) return NULL;
++    memcpy( image, data, nt->OptionalHeader.SizeOfHeaders );
++    sec = IMAGE_FIRST_SECTION( nt );
++    for (UINT i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
++    {
++        SIZE_T raw = min( sec->SizeOfRawData, max( sec->Misc.VirtualSize, sec->SizeOfRawData ) );
++        if (sec->VirtualAddress + raw > len || sec->PointerToRawData + raw > size) goto fail;
++        memcpy( image + sec->VirtualAddress, data + sec->PointerToRawData, raw );
++    }
++
++    delta = (INT_PTR)image - (INT_PTR)nt->OptionalHeader.ImageBase;
++    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
++    if (delta && dir->Size)
++    {
++        const BYTE *pos = image + dir->VirtualAddress, *end = pos + dir->Size;
++
++        if (dir->VirtualAddress + dir->Size > len) goto fail;
++        while (pos + sizeof(IMAGE_BASE_RELOCATION) <= end)
++        {
++            const IMAGE_BASE_RELOCATION *block = (const IMAGE_BASE_RELOCATION *)pos;
++            const USHORT *entry = (const USHORT *)(block + 1);
++            UINT count;
++
++            if (block->SizeOfBlock < sizeof(*block) || pos + block->SizeOfBlock > end) break;
++            count = (block->SizeOfBlock - sizeof(*block)) / sizeof(USHORT);
++            for (UINT i = 0; i < count; i++)
++            {
++                UINT offset = block->VirtualAddress + (entry[i] & 0xfff);
++                switch (entry[i] >> 12)
++                {
++                case IMAGE_REL_BASED_ABSOLUTE:
++                    break;
++                case IMAGE_REL_BASED_DIR64:
++                    if (offset + sizeof(ULONGLONG) > len) goto fail;
++                    *(ULONGLONG *)(image + offset) += delta;
++                    break;
++                case IMAGE_REL_BASED_HIGHLOW:
++                    if (offset + sizeof(DWORD) > len) goto fail;
++                    *(DWORD *)(image + offset) += (DWORD)delta;
++                    break;
++                default:
++                    goto fail;
++                }
++            }
++            pos += block->SizeOfBlock;
++        }
++    }
++
++    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
++    if (!dir->Size || dir->VirtualAddress + sizeof(*exports) > len) goto fail;
++    exports = (const IMAGE_EXPORT_DIRECTORY *)(image + dir->VirtualAddress);
++    for (UINT i = 0; i < exports->NumberOfNames; i++)
++    {
++        const DWORD *names = (const DWORD *)(image + exports->AddressOfNames);
++        const WORD *ordinals = (const WORD *)(image + exports->AddressOfNameOrdinals);
++        const DWORD *functions = (const DWORD *)(image + exports->AddressOfFunctions);
++
++        if (names[i] >= len || strcmp( (const char *)image + names[i], "KbdLayerDescriptor" )) continue;
++        if (ordinals[i] < exports->NumberOfFunctions && functions[ordinals[i]] < len)
++            descriptor = (kbd_layer_descriptor_func)(image + functions[ordinals[i]]);
++        break;
++    }
++    if (!descriptor || mprotect( image, len, PROT_READ | PROT_EXEC )) goto fail;
++
++    tables = descriptor();
++    if ((const BYTE *)tables < image || (const BYTE *)tables + sizeof(*tables) > image + len) goto fail;
++    *image_ret = image;
++    *image_size = len;
++    return tables;
++
++fail:
++    munmap( image, len );
++    return NULL;
++}
++
++static const KBDTABLES *load_layout_file( UINT klid, void **image, SIZE_T *image_size )
++{
++    char buffer[4096];
++    KEY_VALUE_PARTIAL_INFORMATION *value = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
++    WCHAR name[MAX_PATH], keyW[ARRAY_SIZE(keyboard_layouts_keyW) + 10];
++    const KBDTABLES *tables = NULL;
++    char klid_str[16];
++    SIZE_T size;
++    HKEY hkey;
++    void *data;
++
++    snprintf( klid_str, sizeof(klid_str), "\\%08X", klid );
++    memcpy( keyW, keyboard_layouts_keyW, sizeof(keyboard_layouts_keyW) );
++    asciiz_to_unicode( keyW + ARRAY_SIZE(keyboard_layouts_keyW) - 1, klid_str );
++    if (!(hkey = reg_open_key( NULL, keyW, wcslen( keyW ) * sizeof(WCHAR) ))) return NULL;
++    if (query_reg_ascii_value( hkey, "Layout File", value, sizeof(buffer) - sizeof(WCHAR) ) &&
++        value->Type == REG_SZ && value->DataLength < sizeof(name))
++    {
++        memcpy( name, value->Data, value->DataLength );
++        name[value->DataLength / sizeof(WCHAR)] = 0;
++        if ((data = read_system_file( name, &size )))
++        {
++            tables = map_layout_file( data, size, image, image_size );
++            if (!tables) ERR_(keyboard)( "cannot use the layout file %s\n", debugstr_w(name) );
++            free( data );
++        }
++    }
++    NtClose( hkey );
++    return tables;
++}
++
++/* the tables of a layout from its file, loaded once per process */
++static const KBDTABLES *kbd_layout_file_tables( HKL layout )
++{
++    UINT klid = layout_klid( layout );
++    const KBDTABLES *tables = NULL;
++    void *image = NULL;
++    SIZE_T size = 0;
++    unsigned int i;
++
++    pthread_mutex_lock( &kbd_layout_files_mutex );
++    for (i = 0; i < kbd_layout_file_count; i++)
++        if (kbd_layout_files[i].klid == klid) break;
++    if (i < kbd_layout_file_count) tables = kbd_layout_files[i].tables;
++    else if (i < ARRAY_SIZE(kbd_layout_files))
++    {
++        tables = load_layout_file( klid, &image, &size );
++        TRACE_(keyboard)( "layout %p klid %08x tables %p\n", layout, klid, tables );
++        kbd_layout_files[i].klid = klid;
++        kbd_layout_files[i].tables = tables;
++        kbd_layout_files[i].image = image;
++        kbd_layout_files[i].size = size;
++        kbd_layout_file_count++;
++    }
++    pthread_mutex_unlock( &kbd_layout_files_mutex );
++    return tables;
++}
++
++static BOOL is_kbd_layout_file_tables( const KBDTABLES *tables )
++{
++    BOOL ret = FALSE;
++
++    pthread_mutex_lock( &kbd_layout_files_mutex );
++    for (unsigned int i = 0; i < kbd_layout_file_count && !ret; i++)
++        ret = kbd_layout_files[i].tables == tables;
++    pthread_mutex_unlock( &kbd_layout_files_mutex );
++    return ret;
++}
++
++/* the driver's tables first, then the layout file, then US */
++static const KBDTABLES *get_kbd_tables( HKL layout )
++{
++    const KBDTABLES *tables;
++
++    if ((tables = user_driver->pKbdLayerDescriptor( layout ))) return tables;
++    if ((tables = kbd_layout_file_tables( layout ))) return tables;
++    return &kbdus_tables;
++}
++
++static void release_kbd_tables( const KBDTABLES *tables )
++{
++    if (tables == &kbdus_tables || is_kbd_layout_file_tables( tables )) return;
++    user_driver->pReleaseKbdTables( tables );
++}
++
+ static LONG clipping_cursor; /* clipping thread counter */
+ static LONG enable_mouse_in_pointer = -1;
+ static LONG last_frame = 0;
+@@ -1079,10 +1352,69 @@ DWORD get_last_input_time(void)
+ /***********************************************************************
+  *           get_locale_kbd_layout
+  */
++/* the HKL for a KLID: 00000422 is 04220422, a variant uses its "Layout Id" */
++static HKL klid_to_hkl( UINT klid )
++{
++    char buffer[4096];
++    KEY_VALUE_PARTIAL_INFORMATION *value = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
++    WCHAR keyW[ARRAY_SIZE(keyboard_layouts_keyW) + 10];
++    UINT id = LOWORD( klid );
++    char klid_str[16];
++    HKEY hkey;
++
++    if (HIWORD( klid ))
++    {
++        snprintf( klid_str, sizeof(klid_str), "\\%08X", klid );
++        memcpy( keyW, keyboard_layouts_keyW, sizeof(keyboard_layouts_keyW) );
++        asciiz_to_unicode( keyW + ARRAY_SIZE(keyboard_layouts_keyW) - 1, klid_str );
++        if ((hkey = reg_open_key( NULL, keyW, wcslen( keyW ) * sizeof(WCHAR) )))
++        {
++            if (query_reg_ascii_value( hkey, "Layout Id", value, sizeof(buffer) - sizeof(WCHAR) ) &&
++                value->Type == REG_SZ)
++            {
++                ((WCHAR *)value->Data)[value->DataLength / sizeof(WCHAR)] = 0;
++                id = 0xf000 | (wcstoul( (const WCHAR *)value->Data, NULL, 16 ) & 0xfff);
++            }
++            NtClose( hkey );
++        }
++    }
++    return UlongToHandle( MAKELONG( LOWORD( klid ), id ) );
++}
++
++/* HKCU\Keyboard Layout\Preload: "1", "2", ... name the user's layouts in order, as in Windows */
++static UINT get_preload_layouts( HKL *layouts, UINT size )
++{
++    static const WCHAR preloadW[] = {'K','e','y','b','o','a','r','d',' ','L','a','y','o','u','t',
++                                     '\\','P','r','e','l','o','a','d'};
++    char buffer[4096];
++    KEY_VALUE_PARTIAL_INFORMATION *value = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
++    UINT count = 0;
++    char name[16];
++    HKEY hkey;
++
++    if (!(hkey = reg_open_key( hkcu_key, preloadW, sizeof(preloadW) ))) return 0;
++    for (;;)
++    {
++        snprintf( name, sizeof(name), "%u", count + 1 );
++        if (!query_reg_ascii_value( hkey, name, value, sizeof(buffer) - sizeof(WCHAR) ) || value->Type != REG_SZ)
++            break;
++        ((WCHAR *)value->Data)[value->DataLength / sizeof(WCHAR)] = 0;
++        if (layouts && count < size) layouts[count] = klid_to_hkl( wcstoul( (const WCHAR *)value->Data, NULL, 16 ) );
++        count++;
++        if (layouts && count == size) break;
++    }
++    NtClose( hkey );
++    return count;
++}
++
+ static HKL get_locale_kbd_layout(void)
+ {
++    static HKL preload_first;
+     LCID layout;
+ 
++    /* threads start with the first of the user's layouts */
++    if (preload_first || get_preload_layouts( &preload_first, 1 )) return preload_first;
++
+     /* FIXME:
+      *
+      * layout = main_key_tab[kbd_layout].lcid;
+@@ -1222,9 +1554,9 @@ WORD WINAPI NtUserVkKeyScanEx( WCHAR chr, HKL layout )
+ 
+     if ((ret = user_driver->pVkKeyScanEx( chr, layout )) != -256) return ret;
+ 
+-    if (!(kbd_tables = user_driver->pKbdLayerDescriptor( layout ))) kbd_tables = &kbdus_tables;
++    kbd_tables = get_kbd_tables( layout );
+     ret = kbd_tables_wchar_to_vkey( kbd_tables, chr );
+-    if (kbd_tables != &kbdus_tables) user_driver->pReleaseKbdTables( kbd_tables );
++    release_kbd_tables( kbd_tables );
+ 
+     TRACE_(keyboard)( "ret %04x\n", ret );
+     return ret;
+@@ -1245,7 +1577,7 @@ UINT WINAPI NtUserMapVirtualKeyEx( UINT code, UINT type, HKL layout )
+ 
+     if ((ret = user_driver->pMapVirtualKeyEx( code, type, layout )) != -1) return ret;
+ 
+-    if (!(kbd_tables = user_driver->pKbdLayerDescriptor( layout ))) kbd_tables = &kbdus_tables;
++    kbd_tables = get_kbd_tables( layout );
+ 
+     switch (type)
+     {
+@@ -1309,7 +1641,7 @@ UINT WINAPI NtUserMapVirtualKeyEx( UINT code, UINT type, HKL layout )
+         break;
+     }
+ 
+-    if (kbd_tables != &kbdus_tables) user_driver->pReleaseKbdTables( kbd_tables );
++    release_kbd_tables( kbd_tables );
+ 
+     TRACE_(keyboard)( "returning 0x%04x\n", ret );
+     return ret;
+@@ -1328,14 +1660,14 @@ USHORT map_scan_to_kbd_vkey( USHORT scan, HKL layout, UINT *mapped )
+ 
+     if ((vkey = user_driver->pMapVirtualKeyEx( scan, MAPVK_VSC_TO_VK_EX, layout )) != -1) goto done;
+ 
+-    if (!(kbd_tables = user_driver->pKbdLayerDescriptor( layout ))) kbd_tables = &kbdus_tables;
++    kbd_tables = get_kbd_tables( layout );
+ 
+     kbd_tables_init_vsc2vk( kbd_tables, vsc2vk );
+     if (scan & 0xe000) scan -= 0xdf00;
+     if (scan >= ARRAY_SIZE(vsc2vk)) vkey = 0;
+     else vkey = vsc2vk[scan];
+ 
+-    if (kbd_tables != &kbdus_tables) user_driver->pReleaseKbdTables( kbd_tables );
++    release_kbd_tables( kbd_tables );
+ 
+     /* remap some scancodes as native does */
+ done:
+@@ -1364,7 +1696,7 @@ INT WINAPI NtUserGetKeyNameText( LONG lparam, WCHAR *buffer, INT size )
+     if (!buffer || !size) return 0;
+     if ((len = user_driver->pGetKeyNameText( lparam, buffer, size )) >= 0) return len;
+ 
+-    if (!(kbd_tables = user_driver->pKbdLayerDescriptor( layout ))) kbd_tables = &kbdus_tables;
++    kbd_tables = get_kbd_tables( layout );
+ 
+     if (lparam & 0x2000000)
+     {
+@@ -1399,7 +1731,7 @@ INT WINAPI NtUserGetKeyNameText( LONG lparam, WCHAR *buffer, INT size )
+     }
+     buffer[len] = 0;
+ 
+-    if (kbd_tables != &kbdus_tables) user_driver->pReleaseKbdTables( kbd_tables );
++    release_kbd_tables( kbd_tables );
+ 
+     TRACE_(keyboard)( "ret %d, str %s.\n", len, debugstr_w(buffer) );
+     return len;
+@@ -1420,7 +1752,7 @@ INT WINAPI NtUserToUnicodeEx( UINT virt, UINT scan, const BYTE *state,
+     if (!state || !size) return 0;
+     if ((len = user_driver->pToUnicodeEx( virt, scan, state, str, size, flags, layout )) >= -1) return len;
+ 
+-    if (!(kbd_tables = user_driver->pKbdLayerDescriptor( layout ))) kbd_tables = &kbdus_tables;
++    kbd_tables = get_kbd_tables( layout );
+     if (scan & 0x8000) str[0] = 0; /* key up */
+     else str[0] = kbd_tables_vkey_to_wchar( kbd_tables, virt, state );
+     if (size > 1) str[1] = 0;
+@@ -1428,7 +1760,7 @@ INT WINAPI NtUserToUnicodeEx( UINT virt, UINT scan, const BYTE *state,
+     if (str[0] != WCH_NONE) len = 1;
+     else str[0] = len = 0;
+ 
+-    if (kbd_tables != &kbdus_tables) user_driver->pReleaseKbdTables( kbd_tables );
++    release_kbd_tables( kbd_tables );
+ 
+     TRACE_(keyboard)( "ret %d, str %s.\n", len, debugstr_wn(str, len) );
+     return len;
+@@ -1441,7 +1773,6 @@ HKL WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags )
+ {
+     struct user_thread_info *info = get_user_thread_info();
+     HKL old_layout;
+-    LCID locale;
+     HWND focus;
+ 
+     TRACE_(keyboard)( "layout %p, flags %x\n", layout, flags );
+@@ -1450,17 +1781,15 @@ HKL WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags )
+ 
+     if (layout == (HKL)HKL_NEXT || layout == (HKL)HKL_PREV)
+     {
+-        RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
+-        FIXME_(keyboard)( "HKL_NEXT and HKL_PREV not supported\n" );
+-        return 0;
+-    }
++        HKL layouts[32], current = NtUserGetKeyboardLayout( 0 );
++        UINT count = NtUserGetKeyboardLayoutList( ARRAY_SIZE(layouts), layouts ), i;
+ 
+-    if (LOWORD(layout) != MAKELANGID(LANG_INVARIANT, SUBLANG_DEFAULT) &&
+-        (NtQueryDefaultLocale( TRUE, &locale ) || LOWORD(layout) != locale))
+-    {
+-        RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
+-        FIXME_(keyboard)( "Changing user locale is not supported\n" );
+-        return 0;
++        if (!count) return 0;
++        for (i = 0; i < count; i++) if (layouts[i] == current) break;
++        if (i == count) i = 0;
++        else if (layout == (HKL)HKL_NEXT) i = (i + 1) % count;
++        else i = (i + count - 1) % count;
++        layout = layouts[i];
+     }
+ 
+     if (!user_driver->pActivateKeyboardLayout( layout, flags ))
+@@ -1515,6 +1844,7 @@ UINT WINAPI NtUserGetKeyboardLayoutList( INT size, HKL *layouts )
+     TRACE_(keyboard)( "size %d, layouts %p.\n", size, layouts );
+ 
+     if ((count = user_driver->pGetKeyboardLayoutList( size, layouts )) != ~0) return count;
++    if ((count = get_preload_layouts( size ? layouts : NULL, size ))) return count;
+ 
+     layout = get_locale_kbd_layout();
+     count = 0;
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 6ed5b772..a70f5d13 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -5995,7 +5995,9 @@ void sysparams_init(void)
+ 
+     if ((hkey = reg_create_ascii_key( hkcu_key, "Keyboard Layout\\Preload", 0, NULL )))
+     {
+-        if (NtUserGetKeyboardLayoutName( layout ))
++        /* the user's first layout stays as they chose it */
++        if (!query_reg_value( hkey, oneW, (KEY_VALUE_PARTIAL_INFORMATION *)buffer, sizeof(buffer) ) &&
++            NtUserGetKeyboardLayoutName( layout ))
+             set_reg_value( hkey, oneW, REG_SZ, (const BYTE *)layout,
+                            (lstrlenW(layout) + 1) * sizeof(WCHAR) );
+         NtClose( hkey );
+-- 
+2.53.0.windows.2
+

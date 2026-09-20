@@ -1,0 +1,22 @@
+# Ctrl+Alt+Del: the security options of winlogon.exe (1280x800: items at y 330..470)
+sleep 3
+key ctrl-alt-delete
+sleep 2
+shot s1-options
+move 640 382                  # the pointer over the second item
+sleep 1
+shot s2-hover
+key esc                       # Cancel: back to the desktop
+sleep 1
+shot s3-cancelled
+key ctrl-alt-delete
+sleep 2
+move 640 347
+click                         # Command Prompt
+sleep 4
+shot s4-cmd
+key ctrl-alt-delete
+sleep 2
+move 640 452
+click                         # Shut down: the VM powers off
+sleep 8

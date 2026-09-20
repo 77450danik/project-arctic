@@ -1,0 +1,32 @@
+REGEDIT4
+
+[HKEY_CURRENT_USER\Software\Wine\Drivers]
+"Graphics"="wayland"
+
+[HKEY_CURRENT_USER\Keyboard Layout\Preload]
+"1"="00000409"
+"2"="00000422"
+"3"="00000419"
+
+[HKEY_CURRENT_USER\Keyboard Layout\Toggle]
+"Hotkey"="1"
+"Language Hotkey"="1"
+"Layout Hotkey"="2"
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Keyboard Layouts\00000409]
+"Layout File"="KBDUS.DLL"
+"Layout Text"="US"
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Keyboard Layouts\00000422]
+"Layout File"="KBDUR.DLL"
+"Layout Text"="Ukrainian"
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Keyboard Layouts\00000419]
+"Layout File"="KBDRU.DLL"
+"Layout Text"="Russian"
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\ThemeManager]
+"ThemeActive"="1"
+"DllName"="C:\\Windows\\Resources\\Themes\\Mizu\\mizu.msstyles"
+"ColorName"=""
+"SizeName"=""

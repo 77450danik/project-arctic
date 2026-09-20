@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -103,6 +104,8 @@ static void nt_stop(const char *code, const char *what)
     stop_screen(splash, FONT, code, what, dev_mode);
 }
 
+static char winedebug[256] = "WINEDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
+
 static char *const nt_env[] = {
     "WINEPREFIX=" PREFIX,
     "HOME=" PREFIX "/home",
@@ -110,7 +113,7 @@ static char *const nt_env[] = {
     "LOGNAME=User",
     "LANG=uk_UA.UTF-8",
     "PATH=/usr/bin",
-    "WINEDEBUG=fixme-all",
+    winedebug,
     "XDG_RUNTIME_DIR=" PREFIX "/xdg",
     "WAYLAND_DISPLAY=" WAYLAND_SOCKET,
     NULL,
@@ -144,6 +147,19 @@ static pid_t spawn(char *const argv[], int as_nt, int out)
     _exit(127);
 }
 
+/* The session asked for it (winlogon.exe): every process goes, then the machine */
+static void power_off(int restart)
+{
+    announce("%s", restart ? "restart" : "shut down");
+    kill(-1, SIGTERM);
+    sleep(2);
+    kill(-1, SIGKILL);
+    sync();
+    umount2(C_DRIVE, MNT_DETACH);
+    sync();
+    reboot(restart ? RB_AUTOBOOT : RB_POWER_OFF);
+}
+
 static void child_exited(pid_t pid, int status)
 {
     if (pid == wineserver_pid) {
@@ -155,8 +171,14 @@ static void child_exited(pid_t pid, int status)
 
         say("wininit.exe exited (status %d)", status);
         wininit_pid = 0;
-        /* 1: dwm.exe could not take the display; otherwise the session is gone */
-        nt_stop(code == 1 ? "VIDEO_DWM_INIT_ERROR" : "CRITICAL_PROCESS_DIED", code == 2 ? "csrss.exe" : "wininit.exe");
+        /* its exit codes: 1 dwm.exe could not take the display, 2 csrss.exe
+         * ended, 3 restart, 4 shut down, 5 winlogon.exe ended */
+        if (code == 3 || code == 4)
+            power_off(code == 3);
+        else if (code == 1)
+            nt_stop("VIDEO_DWM_INIT_ERROR", "dwm.exe");
+        else
+            nt_stop("CRITICAL_PROCESS_DIED", code == 2 ? "csrss.exe" : code == 5 ? "winlogon.exe" : "wininit.exe");
     } else if (pid == udevd_pid) {
         say("udevd exited (status %d)", status);
         udevd_pid = 0;
@@ -345,6 +367,12 @@ static void read_cmdline(void)
         close(fd);
     }
     dev_mode = strstr(cmdline_buf, "arctic.dev=1") != NULL;
+
+    const char *debug = strstr(cmdline_buf, "arctic.winedebug=");
+    if (debug) {
+        size_t n = strcspn(debug += strlen("arctic.winedebug="), " \t\n");
+        snprintf(winedebug, sizeof(winedebug), "WINEDEBUG=%.*s", (int)n, debug);
+    }
 }
 
 int main(void)
@@ -389,7 +417,9 @@ int main(void)
     char *trig_dev[] = {"/usr/bin/udevadm", "trigger", "--type=devices", "--action=add", NULL};
     char *settle[] = {"/usr/bin/udevadm", "settle", "--timeout=60", NULL};
     udevd_pid = spawn(udevd, 0, hostlog);
-    usleep(200000);
+    /* events triggered before udevd listens are lost: no modules, no device owners */
+    for (int i = 0; i < 100 && access("/run/udev/control", F_OK); i++)
+        usleep(50000);
     run(trig_sub, 0, hostlog, 60);
     run(trig_dev, 0, hostlog, 60);
     run(settle, 0, hostlog, 90);

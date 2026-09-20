@@ -1,0 +1,48 @@
+/*
+ * Windows Logon Application resources
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winnls.h"
+#include "winlogon.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_COMMAND_PROMPT "Command Prompt"
+    IDS_TASK_MANAGER   "Task Manager"
+    IDS_RESTART        "Restart"
+    IDS_SHUT_DOWN      "Shut down"
+    IDS_CANCEL         "Cancel"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_COMMAND_PROMPT "Командний рядок"
+    IDS_TASK_MANAGER   "Диспетчер завдань"
+    IDS_RESTART        "Перезавантажити"
+    IDS_SHUT_DOWN      "Завершити роботу"
+    IDS_CANCEL         "Скасувати"
+}
+
+LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_COMMAND_PROMPT "Командная строка"
+    IDS_TASK_MANAGER   "Диспетчер задач"
+    IDS_RESTART        "Перезагрузка"
+    IDS_SHUT_DOWN      "Завершение работы"
+    IDS_CANCEL         "Отмена"
+}
