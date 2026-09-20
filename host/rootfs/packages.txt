@@ -20,6 +20,7 @@ gnutls
 alsa-lib
 libusb
 vulkan-icd-loader
+vulkan-swrast
 wayland
 libxkbcommon
 libinput

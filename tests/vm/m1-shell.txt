@@ -1,0 +1,13 @@
+# The ReactOS shell: desktop, Start menu, an explorer window
+sleep 6
+shot sh1-desktop
+move 27 789
+click                         # Start
+sleep 2
+shot sh2-start
+key esc
+sleep 1
+move 36 105
+dblclick                      # "Мій комп'ютер"
+sleep 5
+shot sh3-computer

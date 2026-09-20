@@ -3,6 +3,7 @@
 Steps, one per line ('#' starts a comment):
     move X Y              pointer to screen pixel X, Y (needs the usb-tablet)
     click [left|right|middle]
+    dblclick              two left clicks in a row
     down [BUTTON] / up [BUTTON]
     drag X1 Y1 X2 Y2      left button from one point to the other
     type TEXT             keys for the letters of TEXT (US layout)
@@ -115,6 +116,12 @@ def run(qmp, steps):
             qmp.button(button, True)
             time.sleep(0.08)
             qmp.button(button, False)
+        elif cmd == "dblclick":
+            for _ in range(2):
+                qmp.button("left", True)
+                time.sleep(0.05)
+                qmp.button("left", False)
+                time.sleep(0.05)
         elif cmd in ("down", "up"):
             qmp.button(words[0] if words else "left", cmd == "down")
         elif cmd == "drag":

@@ -51,7 +51,7 @@ done
 cat > build-steps.sh <<EOF
 set -e
 cmake -S "$WORK/src" -B "$WORK/build" -G Ninja -DCMAKE_TOOLCHAIN_FILE:FILEPATH=toolchain-gcc.cmake \
-    -DARCH:STRING=$ARCH -DCMAKE_BUILD_TYPE=Release -DDLL_EXPORT_VERSION=0x600
+    -DARCH:STRING=$ARCH -DCMAKE_BUILD_TYPE=Release -DDLL_EXPORT_VERSION=0x600 -DSEPARATE_DBG=1
 cmake --build "$WORK/build" --target $TARGETS
 EOF
 "$ROSBE/RosBE.sh" . 0 "$ARCH" < build-steps.sh
@@ -66,5 +66,10 @@ for kbd in $KEYBOARDS; do
     cp "build/dll/keyboard/$kbd/$kbd.dll" "$OUT/Windows/System32/"
 done
 cp build/media/themes/Mizu/mizu.msstyles/mizu.msstyles "$OUT/Windows/Resources/Themes/Mizu/"
+# the debug files stay out of the image; they turn a crash address into a line
+if [ -d "$WORK/build/symbols" ]; then
+    mkdir -p "$OUT/symbols"
+    find "$WORK/build/symbols" -name '*.dbg' -exec cp {} "$OUT/symbols/" \;
+fi
 echo "$COMMIT" > "$OUT/commit"
 find "$OUT" -type f -exec ls -l {} +

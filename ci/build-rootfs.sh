@@ -69,6 +69,9 @@ REACTOS=${REACTOS_OUT:-$ROOT/out/reactos}
 if [ -d "$REACTOS/Windows" ]; then
     cp -a "$REACTOS/Windows/System32/." "$PFX/drive_c/windows/system32/"
     find "$REACTOS/Windows" -maxdepth 1 -type f -exec cp -a {} "$PFX/drive_c/windows/" \;
+    # C:\Windows\explorer.exe is the shell; system32 keeps a copy, so that
+    # "explorer" from anywhere is the same one and never Wine's
+    cp -a "$REACTOS/Windows/explorer.exe" "$PFX/drive_c/windows/system32/"
     [ -d "$REACTOS/Windows/Resources" ] && cp -a "$REACTOS/Windows/Resources" "$PFX/drive_c/windows/"
 fi
 # The classes of the ReactOS shell, registered by the DLLs themselves

@@ -1,0 +1,130 @@
+From fe27c684749b7a81d24267b1d5f80c06c92c57f6 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 20 Sep 2026 10:09:31 +0300
+Subject: [PATCH] shlwapi, cfgmgr32: Implement SHLockSharedEx and
+ CM_Is_Dock_Station_Present.
+
+ReactOS's Start menu calls both.
+---
+ dlls/cfgmgr32/cfgmgr32.c    | 21 +++++++++++++++++++++
+ dlls/cfgmgr32/cfgmgr32.spec |  4 ++--
+ dlls/setupapi/setupapi.spec |  2 +-
+ dlls/shlwapi/ordinal.c      | 31 +++++++++++++++++++++++++++++++
+ dlls/shlwapi/shlwapi.spec   |  2 +-
+ 5 files changed, 56 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/cfgmgr32/cfgmgr32.c b/dlls/cfgmgr32/cfgmgr32.c
+index 648c1542..d16bd678 100644
+--- a/dlls/cfgmgr32/cfgmgr32.c
++++ b/dlls/cfgmgr32/cfgmgr32.c
+@@ -2199,3 +2199,24 @@ WORD WINAPI CM_Get_Version( void )
+     TRACE( "\n" );
+     return 0x0400;
+ }
++
++/***********************************************************************
++ *      CM_Is_Dock_Station_Present (cfgmgr32.@)
++ */
++CONFIGRET WINAPI CM_Is_Dock_Station_Present( BOOL *present )
++{
++    TRACE( "%p\n", present );
++
++    if (!present) return CR_INVALID_POINTER;
++    *present = FALSE;
++    return CR_SUCCESS;
++}
++
++/***********************************************************************
++ *      CM_Is_Dock_Station_Present_Ex (cfgmgr32.@)
++ */
++CONFIGRET WINAPI CM_Is_Dock_Station_Present_Ex( BOOL *present, HMACHINE machine )
++{
++    TRACE( "%p %p\n", present, machine );
++    return CM_Is_Dock_Station_Present( present );
++}
+diff --git a/dlls/cfgmgr32/cfgmgr32.spec b/dlls/cfgmgr32/cfgmgr32.spec
+index 7a0063f2..69d0528c 100644
+--- a/dlls/cfgmgr32/cfgmgr32.spec
++++ b/dlls/cfgmgr32/cfgmgr32.spec
+@@ -160,8 +160,8 @@
+ @ stub CM_Install_DevNode_ExW
+ @ stub CM_Intersect_Range_List
+ @ stub CM_Invert_Range_List
+-@ stub CM_Is_Dock_Station_Present
+-@ stub CM_Is_Dock_Station_Present_Ex
++@ stdcall CM_Is_Dock_Station_Present(ptr)
++@ stdcall CM_Is_Dock_Station_Present_Ex(ptr ptr)
+ @ stub CM_Is_Version_Available
+ @ stub CM_Is_Version_Available_Ex
+ @ stdcall CM_Locate_DevNodeA(ptr str long)
+diff --git a/dlls/setupapi/setupapi.spec b/dlls/setupapi/setupapi.spec
+index bb0bdb34..c2dd05bd 100644
+--- a/dlls/setupapi/setupapi.spec
++++ b/dlls/setupapi/setupapi.spec
+@@ -131,7 +131,7 @@
+ @ stub CM_Get_Version_Ex
+ @ stub CM_Intersect_Range_List
+ @ stub CM_Invert_Range_List
+-@ stub CM_Is_Dock_Station_Present
++@ stdcall CM_Is_Dock_Station_Present(ptr) cfgmgr32.CM_Is_Dock_Station_Present
+ @ stdcall CM_Locate_DevNodeA(ptr str long) cfgmgr32.CM_Locate_DevNodeA
+ @ stdcall CM_Locate_DevNodeW(ptr wstr long) cfgmgr32.CM_Locate_DevNodeW
+ @ stdcall CM_Locate_DevNode_ExA(ptr str long long) cfgmgr32.CM_Locate_DevNode_ExA
+diff --git a/dlls/shlwapi/ordinal.c b/dlls/shlwapi/ordinal.c
+index 722914f7..e36379be 100644
+--- a/dlls/shlwapi/ordinal.c
++++ b/dlls/shlwapi/ordinal.c
+@@ -221,6 +221,37 @@ PVOID WINAPI SHLockShared(HANDLE hShared, DWORD dwProcId)
+   return NULL;
+ }
+ 
++/*************************************************************************
++ * @ [SHLWAPI.510]
++ *
++ * Get a pointer to a block of shared memory, for reading or for writing.
++ *
++ * PARAMS
++ * hShared  [I] Shared memory handle
++ * dwProcId [I] ID of process owning hShared
++ * bWrite   [I] Whether the memory is written through the pointer
++ *
++ * RETURNS
++ * Success: A pointer to the shared memory
++ * Failure: NULL
++ */
++PVOID WINAPI SHLockSharedEx(HANDLE hShared, DWORD dwProcId, BOOL bWrite)
++{
++  DWORD access = bWrite ? FILE_MAP_READ | FILE_MAP_WRITE : FILE_MAP_READ;
++  HANDLE hDup;
++  LPVOID pMapped;
++
++  TRACE("(%p %ld %d)\n", hShared, dwProcId, bWrite);
++
++  hDup = SHMapHandle(hShared, dwProcId, GetCurrentProcessId(), access, 0);
++  pMapped = MapViewOfFile(hDup, access, 0, 0, 0);
++  CloseHandle(hDup);
++
++  if (pMapped)
++    return (char *) pMapped + sizeof(DWORD); /* Hide size */
++  return NULL;
++}
++
+ /*************************************************************************
+  * @ [SHLWAPI.9]
+  *
+diff --git a/dlls/shlwapi/shlwapi.spec b/dlls/shlwapi/shlwapi.spec
+index 38f56691..63dd3d11 100644
+--- a/dlls/shlwapi/shlwapi.spec
++++ b/dlls/shlwapi/shlwapi.spec
+@@ -503,7 +503,7 @@
+ 507 stub -noname SHPropertyBag_ReadDWORD
+ 508 stub -noname SHPropertyBag_WriteDWORD
+ 509 stdcall -noname IUnknown_OnFocusChangeIS(ptr ptr long)
+-510 stub -noname SHLockSharedEx
++510 stdcall -noname SHLockSharedEx(long long long)
+ 511 stub -noname PathFileExistsDefExtAndAttributesW
+ 512 stub -ordinal IStream_ReadPidl
+ 513 stub -ordinal IStream_WritePidl
+-- 
+2.53.0.windows.2
+

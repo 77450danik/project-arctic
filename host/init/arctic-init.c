@@ -105,6 +105,7 @@ static void nt_stop(const char *code, const char *what)
 }
 
 static char winedebug[256] = "WINEDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
+static char dev_program[128] = "notepad.exe";        /* arctic.run= */
 
 static char *const nt_env[] = {
     "WINEPREFIX=" PREFIX,
@@ -373,6 +374,12 @@ static void read_cmdline(void)
         size_t n = strcspn(debug += strlen("arctic.winedebug="), " \t\n");
         snprintf(winedebug, sizeof(winedebug), "WINEDEBUG=%.*s", (int)n, debug);
     }
+
+    const char *run = strstr(cmdline_buf, "arctic.run=");
+    if (run) {
+        size_t n = strcspn(run += strlen("arctic.run="), " \t\n");
+        snprintf(dev_program, sizeof(dev_program), "%.*s", (int)n, run);
+    }
 }
 
 int main(void)
@@ -474,8 +481,8 @@ int main(void)
 
         /* development builds show a window, so a screenshot tells whether composition works */
         if (served && dev_mode) {
-            char *notepad[] = {"/usr/bin/wine", "notepad.exe", NULL};
-            say("notepad.exe pid %d", spawn(notepad, 1, ntlog));
+            char *program[] = {"/usr/bin/wine", dev_program, NULL};
+            say("%s pid %d", dev_program, spawn(program, 1, ntlog));
         }
     }
 

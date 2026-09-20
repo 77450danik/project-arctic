@@ -1,0 +1,13 @@
+# Start -> Run -> explorer C:\  : does a folder window open at all?
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+shot r1-run
+type explorer C:\
+key ret
+sleep 6
+shot r2-explorer

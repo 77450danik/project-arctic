@@ -1,0 +1,8 @@
+# A Vulkan window on lavapipe, through winevulkan and the compositor
+sleep 5
+move 27 789
+click                         # Start
+sleep 2
+key esc
+sleep 1
+shot v1-desktop
