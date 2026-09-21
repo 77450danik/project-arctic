@@ -5,17 +5,19 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# A new push waits for the running build instead of cancelling it: a kernel
-# or Wine build that finishes leaves its cache for the next one.
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: false
+# Each kind of job waits for the same job of an earlier push instead of
+# cancelling it, so a kernel or Wine build that finishes leaves its cache for
+# the next one; different kinds run side by side, so a ReactOS change is built
+# while Wine still is.
 
 permissions:
   contents: write
 
 jobs:
   kernel:
+    concurrency:
+      group: kernel-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -41,6 +43,9 @@ jobs:
           key: ${{ steps.key.outputs.key }}
 
   wine:
+    concurrency:
+      group: wine-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -66,6 +71,9 @@ jobs:
           key: ${{ steps.key.outputs.key }}
 
   reactos:
+    concurrency:
+      group: reactos-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-22.04 # the runner ReactOS's own CI builds RosBE on
     timeout-minutes: 350
     steps:
@@ -109,7 +117,10 @@ jobs:
           if-no-files-found: ignore
 
   image:
-    needs: [kernel, wine]
+    needs: [kernel, wine, reactos]
+    concurrency:
+      group: image-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -124,6 +135,12 @@ jobs:
         with:
           path: out/wine
           key: wine-${{ hashFiles('runtime/WINE_VERSION', 'runtime/wine/**', 'ci/build-wine.sh', 'ci/arch-prep.sh') }}
+          fail-on-cache-miss: true
+      # the shell, the theme and the keyboard layouts of C:
+      - uses: actions/cache/restore@v4
+        with:
+          path: out/reactos
+          key: reactos-${{ hashFiles('runtime/reactos/**', 'ci/build-reactos.sh') }}
           fail-on-cache-miss: true
 
       - name: Host root filesystem and NT prefix

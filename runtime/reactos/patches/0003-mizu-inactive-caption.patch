@@ -1,0 +1,60 @@
+--- a/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI
++++ b/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI
+@@ -21,14 +21,14 @@
+ DkShadow3d = 162 162 162
+ FlatMenus = true
+ GradientActiveCaption = 255 255 255
+-GradientInactiveCaption = 240 240 240
++GradientInactiveCaption = 255 255 255
+ GrayText = 172 168 153
+ Highlight = 230 230 230
+ HighlightText = 0 0 0
+ HotTracking = 0 0 128
+ IconTitleFont = Source Sans Pro, 9
+-InactiveCaption = 65 65 65
+-InactiveCaptionText = 180 180 180
++InactiveCaption = 255 255 255
++InactiveCaptionText = 153 153 153
+ Light3d = 241 239 226
+ Menu = 255 255 255
+ MenuBar = 239 238 243
+--- a/media/themes/Mizu/mizu.msstyles/textfiles/LargeFontsNormal.INI
++++ b/media/themes/Mizu/mizu.msstyles/textfiles/LargeFontsNormal.INI
+@@ -21,14 +21,14 @@
+ DkShadow3d = 162 162 162
+ FlatMenus = true
+ GradientActiveCaption = 255 255 255
+-GradientInactiveCaption = 240 240 240
++GradientInactiveCaption = 255 255 255
+ GrayText = 172 168 153
+ Highlight = 230 230 230
+ HighlightText = 0 0 0
+ HotTracking = 0 0 128
+ IconTitleFont = Source Sans Pro, 9
+-InactiveCaption = 65 65 65
+-InactiveCaptionText = 180 180 180
++InactiveCaption = 255 255 255
++InactiveCaptionText = 153 153 153
+ Light3d = 241 239 226
+ Menu = 255 255 255
+ MenuBar = 239 238 243
+--- a/media/themes/Mizu/mizu.msstyles/textfiles/ExtraLargeNormal.INI
++++ b/media/themes/Mizu/mizu.msstyles/textfiles/ExtraLargeNormal.INI
+@@ -21,14 +21,14 @@
+ DkShadow3d = 162 162 162
+ FlatMenus = true
+ GradientActiveCaption = 255 255 255
+-GradientInactiveCaption = 240 240 240
++GradientInactiveCaption = 255 255 255
+ GrayText = 172 168 153
+ Highlight = 230 230 230
+ HighlightText = 0 0 0
+ HotTracking = 0 0 128
+ IconTitleFont = Source Sans Pro, 9
+-InactiveCaption = 65 65 65
+-InactiveCaptionText = 180 180 180
++InactiveCaption = 255 255 255
++InactiveCaptionText = 153 153 153
+ Light3d = 241 239 226
+ Menu = 255 255 255
+ MenuBar = 239 238 243

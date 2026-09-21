@@ -84,14 +84,15 @@ REGEDIT4
 [-HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\Namespace\{9D20AAE8-0625-44B0-9CA7-71889C2254D9}]
 
 ; The system colours and sizes of the Mizu visual style ([SysMetrics] in
-; mizu.msstyles), set as Windows sets them when it applies the style
+; mizu.msstyles), set as Windows sets them when it applies the style; inactive
+; captions are white with grey text, as in Windows 10
 [HKEY_CURRENT_USER\Control Panel\Colors]
 "ActiveTitle"="255 255 255"
 "GradientActiveTitle"="255 255 255"
 "TitleText"="0 0 0"
-"InactiveTitle"="65 65 65"
-"GradientInactiveTitle"="240 240 240"
-"InactiveTitleText"="180 180 180"
+"InactiveTitle"="255 255 255"
+"GradientInactiveTitle"="255 255 255"
+"InactiveTitleText"="153 153 153"
 "Background"="33 87 141"
 "ButtonFace"="240 240 240"
 "ButtonHilight"="255 255 255"
@@ -115,3 +116,21 @@ REGEDIT4
 "SmCaptionWidth"="-315"
 "ScrollHeight"="-225"
 "ScrollWidth"="-225"
+
+; Source Sans Pro, the font of the Mizu visual style (SIL Open Font License, runtime/fonts)
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Fonts]
+"Source Sans Pro (TrueType)"="SourceSansPro-Regular.ttf"
+"Source Sans Pro Italic (TrueType)"="SourceSansPro-It.ttf"
+"Source Sans Pro Semibold (TrueType)"="SourceSansPro-Semibold.ttf"
+"Source Sans Pro Semibold Italic (TrueType)"="SourceSansPro-SemiboldIt.ttf"
+"Source Sans Pro Bold (TrueType)"="SourceSansPro-Bold.ttf"
+"Source Sans Pro Bold Italic (TrueType)"="SourceSansPro-BoldIt.ttf"
+
+; the interface fonts of Mizu's [SysMetrics]
+[HKEY_CURRENT_USER\Control Panel\Desktop\WindowMetrics]
+"CaptionFont"=hex:f3,ff,ff,ff,00,00,00,00,00,00,00,00,00,00,00,00,90,01,00,00,00,00,00,01,00,00,05,00,53,00,6f,00,75,00,72,00,63,00,65,00,20,00,53,00,61,00,6e,00,73,00,20,00,50,00,72,00,6f,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+"SmCaptionFont"=hex:f4,ff,ff,ff,00,00,00,00,00,00,00,00,00,00,00,00,bc,02,00,00,00,00,00,01,00,00,05,00,53,00,6f,00,75,00,72,00,63,00,65,00,20,00,53,00,61,00,6e,00,73,00,20,00,50,00,72,00,6f,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+"MenuFont"=hex:f4,ff,ff,ff,00,00,00,00,00,00,00,00,00,00,00,00,90,01,00,00,00,00,00,01,00,00,05,00,53,00,6f,00,75,00,72,00,63,00,65,00,20,00,53,00,61,00,6e,00,73,00,20,00,50,00,72,00,6f,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+"StatusFont"=hex:f4,ff,ff,ff,00,00,00,00,00,00,00,00,00,00,00,00,90,01,00,00,00,00,00,01,00,00,05,00,53,00,6f,00,75,00,72,00,63,00,65,00,20,00,53,00,61,00,6e,00,73,00,20,00,50,00,72,00,6f,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+"MessageFont"=hex:f4,ff,ff,ff,00,00,00,00,00,00,00,00,00,00,00,00,90,01,00,00,00,00,00,01,00,00,05,00,53,00,6f,00,75,00,72,00,63,00,65,00,20,00,53,00,61,00,6e,00,73,00,20,00,50,00,72,00,6f,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+"IconFont"=hex:f4,ff,ff,ff,00,00,00,00,00,00,00,00,00,00,00,00,90,01,00,00,00,00,00,01,00,00,05,00,53,00,6f,00,75,00,72,00,63,00,65,00,20,00,53,00,61,00,6e,00,73,00,20,00,50,00,72,00,6f,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00

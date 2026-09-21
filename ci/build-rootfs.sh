@@ -73,6 +73,8 @@ if [ -d "$REACTOS/Windows" ]; then
     # never runs, so it is not in the image at all
     rm -f "$PFX/drive_c/windows/system32/explorer.exe" "$RFS"/usr/lib/wine/*-windows/explorer.exe
     [ -d "$REACTOS/Windows/Resources" ] && cp -a "$REACTOS/Windows/Resources" "$PFX/drive_c/windows/"
+    # the font of the visual style
+    cp "$ROOT"/runtime/fonts/*.ttf "$PFX/drive_c/windows/Fonts/"
     # The shell's manifest asks for common controls 6.0, so what it loads is the
     # side-by-side copy, not the one in system32
     for sxs in "$PFX"/drive_c/windows/winsxs/amd64_microsoft.windows.common-controls_*/comctl32.dll; do

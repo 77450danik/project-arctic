@@ -1,0 +1,63 @@
+diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -771,7 +771,7 @@
+ 
+     /* special folders */
+     IDS_DESKTOP "Робочий стіл"
+-    IDS_MYCOMPUTER "Мій комп'ютер"
++    IDS_MYCOMPUTER "Цей ПК"
+     IDS_RECYCLEBIN_FOLDER_NAME "Кошик"
+     IDS_CONTROLPANEL "Панель керування"
+     IDS_ADMINISTRATIVETOOLS "Адміністрування"
+@@ -895,7 +895,7 @@
+     IDS_COMMON_PICTURES "Загальні документи\\Мої малюнки"
+     IDS_COMMON_VIDEO "Загальні документи\\Мої відеозаписи"
+     IDS_CDBURN_AREA "Local Settings\\Application Data\\Microsoft\\CD Burning"
+-    IDS_NETWORKPLACE "Мережне оточення"
++    IDS_NETWORKPLACE "Мережа"
+ 
+     IDS_NEWFOLDER "Нова папка"
+     IDS_NEWITEMFORMAT "New %s"
+diff --git a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -771,7 +771,7 @@
+ 
+     /* special folders */
+     IDS_DESKTOP "Desktop"
+-    IDS_MYCOMPUTER "My Computer"
++    IDS_MYCOMPUTER "This PC"
+     IDS_RECYCLEBIN_FOLDER_NAME "Recycle Bin"
+     IDS_CONTROLPANEL "Control Panel"
+     IDS_ADMINISTRATIVETOOLS "Administrative Tools"
+@@ -895,7 +895,7 @@
+     IDS_COMMON_PICTURES "Documents\\My Pictures"
+     IDS_COMMON_VIDEO "Documents\\My Videos"
+     IDS_CDBURN_AREA "Local Settings\\Application Data\\Microsoft\\CD Burning"
+-    IDS_NETWORKPLACE "My Network Places"
++    IDS_NETWORKPLACE "Network"
+ 
+     IDS_NEWFOLDER "New Folder"
+     IDS_NEWITEMFORMAT "New %s"
+diff --git a/dll/win32/shell32/lang/ru-RU.rc b/dll/win32/shell32/lang/ru-RU.rc
+--- a/dll/win32/shell32/lang/ru-RU.rc
++++ b/dll/win32/shell32/lang/ru-RU.rc
+@@ -780,7 +780,7 @@
+ 
+     /* special folders */
+     IDS_DESKTOP "Рабочий стол"
+-    IDS_MYCOMPUTER "Мой компьютер"
++    IDS_MYCOMPUTER "Этот компьютер"
+     IDS_RECYCLEBIN_FOLDER_NAME "Корзина"
+     IDS_CONTROLPANEL "Панель управления"
+     IDS_ADMINISTRATIVETOOLS "Администрирование"
+@@ -904,7 +904,7 @@
+     IDS_COMMON_PICTURES "Общие документы\\Мои рисунки"
+     IDS_COMMON_VIDEO "Общие документы\\Мои видеозаписи"
+     IDS_CDBURN_AREA "Local Settings\\Application Data\\Microsoft\\CD Burning"
+-    IDS_NETWORKPLACE "Сетевое окружение"
++    IDS_NETWORKPLACE "Сеть"
+ 
+     IDS_NEWFOLDER "Новая папка"
+     IDS_NEWITEMFORMAT "Новый %s"

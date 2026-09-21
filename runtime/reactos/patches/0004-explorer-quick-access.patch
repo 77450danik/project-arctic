@@ -1,0 +1,475 @@
+diff --git a/dll/win32/shdocvw/CNSCBand.h b/dll/win32/shdocvw/CNSCBand.h
+--- a/dll/win32/shdocvw/CNSCBand.h
++++ b/dll/win32/shdocvw/CNSCBand.h
+@@ -218,7 +218,7 @@
+     HRESULT _UpdateBrowser(LPCITEMIDLIST pidlGoto, BOOL IgnoreSelfNavigation = FALSE, UINT SBSP = 0);
+     HRESULT _GetCurrentLocation(_Out_ PIDLIST_ABSOLUTE *ppidl);
+     HRESULT _IsCurrentLocation(_In_ PCIDLIST_ABSOLUTE pidl);
+-    void _Refresh();
++    virtual void _Refresh();
+     void _RefreshRecurse(_In_ HTREEITEM hItem);
+     BOOL _IsTreeItemInEnum(_In_ HTREEITEM hItem, _In_ IEnumIDList *pEnum);
+     BOOL _TreeItemHasThisChild(_In_ HTREEITEM hItem, _In_ PCITEMID_CHILD pidlChild);
+diff --git a/dll/win32/shdocvw/resource.h b/dll/win32/shdocvw/resource.h
+--- a/dll/win32/shdocvw/resource.h
++++ b/dll/win32/shdocvw/resource.h
+@@ -12,3 +12,4 @@
+ #define IDS_ADD             1000
+ #define IDS_ORGANIZE        1001
+ #define IDS_FOLDERSLABEL    1002
++#define IDS_QUICKACCESS     1003
+diff --git a/dll/win32/shdocvw/lang/bg-BG.rc b/dll/win32/shdocvw/lang/bg-BG.rc
+--- a/dll/win32/shdocvw/lang/bg-BG.rc
++++ b/dll/win32/shdocvw/lang/bg-BG.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Папки"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/de-DE.rc b/dll/win32/shdocvw/lang/de-DE.rc
+--- a/dll/win32/shdocvw/lang/de-DE.rc
++++ b/dll/win32/shdocvw/lang/de-DE.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Ordner"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/en-US.rc b/dll/win32/shdocvw/lang/en-US.rc
+--- a/dll/win32/shdocvw/lang/en-US.rc
++++ b/dll/win32/shdocvw/lang/en-US.rc
+@@ -13,4 +13,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Folders"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/es-ES.rc b/dll/win32/shdocvw/lang/es-ES.rc
+--- a/dll/win32/shdocvw/lang/es-ES.rc
++++ b/dll/win32/shdocvw/lang/es-ES.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Carpetas"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/et-EE.rc b/dll/win32/shdocvw/lang/et-EE.rc
+--- a/dll/win32/shdocvw/lang/et-EE.rc
++++ b/dll/win32/shdocvw/lang/et-EE.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Kaustad"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/eu-ES.rc b/dll/win32/shdocvw/lang/eu-ES.rc
+--- a/dll/win32/shdocvw/lang/eu-ES.rc
++++ b/dll/win32/shdocvw/lang/eu-ES.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Carpetas"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/fr-FR.rc b/dll/win32/shdocvw/lang/fr-FR.rc
+--- a/dll/win32/shdocvw/lang/fr-FR.rc
++++ b/dll/win32/shdocvw/lang/fr-FR.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Dossiers"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/he-IL.rc b/dll/win32/shdocvw/lang/he-IL.rc
+--- a/dll/win32/shdocvw/lang/he-IL.rc
++++ b/dll/win32/shdocvw/lang/he-IL.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "תיקיות"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/hi-IN.rc b/dll/win32/shdocvw/lang/hi-IN.rc
+--- a/dll/win32/shdocvw/lang/hi-IN.rc
++++ b/dll/win32/shdocvw/lang/hi-IN.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "फ़ोल्डरों"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/hu-HU.rc b/dll/win32/shdocvw/lang/hu-HU.rc
+--- a/dll/win32/shdocvw/lang/hu-HU.rc
++++ b/dll/win32/shdocvw/lang/hu-HU.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Mappák"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/id-ID.rc b/dll/win32/shdocvw/lang/id-ID.rc
+--- a/dll/win32/shdocvw/lang/id-ID.rc
++++ b/dll/win32/shdocvw/lang/id-ID.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Folder" /* Translated */
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/it-IT.rc b/dll/win32/shdocvw/lang/it-IT.rc
+--- a/dll/win32/shdocvw/lang/it-IT.rc
++++ b/dll/win32/shdocvw/lang/it-IT.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Cartelle"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/ja-JP.rc b/dll/win32/shdocvw/lang/ja-JP.rc
+--- a/dll/win32/shdocvw/lang/ja-JP.rc
++++ b/dll/win32/shdocvw/lang/ja-JP.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "追加..."
+     IDS_ORGANIZE "整理..."
+     IDS_FOLDERSLABEL "フォルダー"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/pl-PL.rc b/dll/win32/shdocvw/lang/pl-PL.rc
+--- a/dll/win32/shdocvw/lang/pl-PL.rc
++++ b/dll/win32/shdocvw/lang/pl-PL.rc
+@@ -13,4 +13,5 @@
+     IDS_ADD "Dodaj..."
+     IDS_ORGANIZE "Organizuj..."
+     IDS_FOLDERSLABEL "Foldery"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/pt-BR.rc b/dll/win32/shdocvw/lang/pt-BR.rc
+--- a/dll/win32/shdocvw/lang/pt-BR.rc
++++ b/dll/win32/shdocvw/lang/pt-BR.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Pastas"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/pt-PT.rc b/dll/win32/shdocvw/lang/pt-PT.rc
+--- a/dll/win32/shdocvw/lang/pt-PT.rc
++++ b/dll/win32/shdocvw/lang/pt-PT.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Pastas"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/ro-RO.rc b/dll/win32/shdocvw/lang/ro-RO.rc
+--- a/dll/win32/shdocvw/lang/ro-RO.rc
++++ b/dll/win32/shdocvw/lang/ro-RO.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Foldere"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/ru-RU.rc b/dll/win32/shdocvw/lang/ru-RU.rc
+--- a/dll/win32/shdocvw/lang/ru-RU.rc
++++ b/dll/win32/shdocvw/lang/ru-RU.rc
+@@ -13,4 +13,5 @@
+     IDS_ADD "Добавить..."
+     IDS_ORGANIZE "Упорядочить..."
+     IDS_FOLDERSLABEL "Папки"
++    IDS_QUICKACCESS "Быстрый доступ"
+ END
+diff --git a/dll/win32/shdocvw/lang/sq-AL.rc b/dll/win32/shdocvw/lang/sq-AL.rc
+--- a/dll/win32/shdocvw/lang/sq-AL.rc
++++ b/dll/win32/shdocvw/lang/sq-AL.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Dosje"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/tr-TR.rc b/dll/win32/shdocvw/lang/tr-TR.rc
+--- a/dll/win32/shdocvw/lang/tr-TR.rc
++++ b/dll/win32/shdocvw/lang/tr-TR.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Dizinler"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/uk-UA.rc b/dll/win32/shdocvw/lang/uk-UA.rc
+--- a/dll/win32/shdocvw/lang/uk-UA.rc
++++ b/dll/win32/shdocvw/lang/uk-UA.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "Папки"
++    IDS_QUICKACCESS "Швидкий доступ"
+ END
+diff --git a/dll/win32/shdocvw/lang/zh-CN.rc b/dll/win32/shdocvw/lang/zh-CN.rc
+--- a/dll/win32/shdocvw/lang/zh-CN.rc
++++ b/dll/win32/shdocvw/lang/zh-CN.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "文件夹"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/lang/zh-TW.rc b/dll/win32/shdocvw/lang/zh-TW.rc
+--- a/dll/win32/shdocvw/lang/zh-TW.rc
++++ b/dll/win32/shdocvw/lang/zh-TW.rc
+@@ -12,4 +12,5 @@
+     IDS_ADD "Add..."
+     IDS_ORGANIZE "Organize..."
+     IDS_FOLDERSLABEL "資料夾"
++    IDS_QUICKACCESS "Quick access"
+ END
+diff --git a/dll/win32/shdocvw/CExplorerBand.h b/dll/win32/shdocvw/CExplorerBand.h
+--- a/dll/win32/shdocvw/CExplorerBand.h
++++ b/dll/win32/shdocvw/CExplorerBand.h
+@@ -64,6 +64,11 @@
+     BOOL _GetTitle(LPWSTR pszTitle, INT cchTitle) override;
+     void _SortItems(HTREEITEM hParent) override;
+     BOOL _NavigateToCurrentFolder();
++    void _Refresh() override;
++    void _InsertQuickAccess();
++    void _InsertPins();
++    void _InsertTopFolder(INT csidl);
++    HTREEITEM m_hQuickAccess = NULL;
+     BOOL _NavigateToPIDL(
+         _In_ LPCITEMIDLIST dest,
+         _Out_ HTREEITEM *phItem,
+diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBand.cpp
+--- a/dll/win32/shdocvw/CExplorerBand.cpp
++++ b/dll/win32/shdocvw/CExplorerBand.cpp
+@@ -8,6 +8,8 @@
+ 
+ #include "objects.h"
+ 
++#include <shlwapi.h>
++#include <undocshell.h>
+ #include <wine/debug.h>
+ WINE_DEFAULT_DEBUG_CHANNEL(shdocvw);
+ 
+@@ -44,7 +46,7 @@
+     // As the navigation pane of Windows 10: no lines, and the whole row
+     // highlights and follows the pointer
+     // Remove TVS_SINGLEEXPAND for now since it has strange behaviour
+-    return WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | TVS_HASBUTTONS |
++    return WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | TVS_HASBUTTONS | TVS_LINESATROOT |
+            TVS_FULLROWSELECT | TVS_TRACKSELECT | TVS_SHOWSELALWAYS | TVS_EDITLABELS
+            /* | TVS_SINGLEEXPAND*/;
+ }
+@@ -66,7 +68,170 @@
+ 
+ BOOL CExplorerBand::_WantsRootItem()
+ {
+-    return TRUE;
++    // Quick access, This PC and Network stand at the top, as in Windows 10
++    return FALSE;
++}
++
++/* Windows 10's navigation pane: Quick access, This PC and Network at the top
++ * level. Quick access is the user's Links folder, as Favorites was in
++ * Windows 7: each shortcut in it pins the folder it points to. */
++
++static const INT QUICK_ACCESS_ICON = 44; /* shell32's star, IDI_SHELL_FAVORITES */
++
++static HRESULT GetLinksFolder(PWSTR pszPath)
++{
++    HRESULT hr = SHGetFolderPathW(NULL, CSIDL_PROFILE, NULL, SHGFP_TYPE_CURRENT, pszPath);
++    if (FAILED(hr))
++        return hr;
++    return PathAppendW(pszPath, L"Links") ? S_OK : E_FAIL;
++}
++
++static void PinFolder(PCWSTR pszLinks, LPCITEMIDLIST pidl)
++{
++    WCHAR szLink[MAX_PATH * 2];
++    SHFILEINFOW info;
++    CComPtr<IShellLinkW> psl;
++    CComPtr<IPersistFile> ppf;
++
++    if (!SHGetFileInfoW((LPCWSTR)pidl, 0, &info, sizeof(info), SHGFI_PIDL | SHGFI_DISPLAYNAME))
++        return;
++    if (FAILED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARG(IShellLinkW, &psl))) ||
++        FAILED(psl->SetIDList(pidl)) ||
++        FAILED(psl->QueryInterface(IID_PPV_ARG(IPersistFile, &ppf))))
++        return;
++    wsprintfW(szLink, L"%s\\%s.lnk", pszLinks, info.szDisplayName);
++    ppf->Save(szLink, TRUE);
++}
++
++/* the folders Windows 10 pins for a new user */
++static void PinDefaults(PCWSTR pszLinks)
++{
++    static const INT csidls[] = { CSIDL_DESKTOPDIRECTORY, -1 /* Downloads */, CSIDL_PERSONAL, CSIDL_MYPICTURES };
++    WCHAR szPath[MAX_PATH];
++
++    for (UINT i = 0; i < _countof(csidls); i++)
++    {
++        CComHeapPtr<ITEMIDLIST> pidl;
++
++        if (csidls[i] < 0)
++        {
++            if (FAILED(SHGetFolderPathW(NULL, CSIDL_PROFILE, NULL, SHGFP_TYPE_CURRENT, szPath)) ||
++                !PathAppendW(szPath, L"Downloads") || !PathIsDirectoryW(szPath) ||
++                FAILED(SHParseDisplayName(szPath, NULL, &pidl, 0, NULL)))
++                continue;
++        }
++        else if (FAILED(SHGetFolderLocation(NULL, csidls[i], NULL, 0, &pidl)))
++            continue;
++        PinFolder(pszLinks, pidl);
++    }
++}
++
++void CExplorerBand::_InsertTopFolder(INT csidl)
++{
++    CComHeapPtr<ITEMIDLIST> pidl;
++
++    if (SUCCEEDED(SHGetFolderLocation(NULL, csidl, NULL, 0, &pidl)))
++        _InsertItem(NULL, m_pDesktop, pidl, pidl, FALSE);
++}
++
++void CExplorerBand::_InsertQuickAccess()
++{
++    WCHAR szLinks[MAX_PATH], szName[64];
++    CComHeapPtr<ITEMIDLIST> pidlLinks;
++    CComPtr<IShellFolder> psfParent;
++    LPCITEMIDLIST pidlChild;
++    INT iIcon;
++
++    if (FAILED(GetLinksFolder(szLinks)))
++        return;
++    if (!PathIsDirectoryW(szLinks) && SHCreateDirectoryExW(NULL, szLinks, NULL) == ERROR_SUCCESS)
++        PinDefaults(szLinks);
++    if (FAILED(SHParseDisplayName(szLinks, NULL, &pidlLinks, 0, NULL)) ||
++        FAILED(SHBindToParent(pidlLinks, IID_PPV_ARG(IShellFolder, &psfParent), &pidlChild)))
++        return;
++
++    m_hQuickAccess = _InsertItem(NULL, psfParent, pidlLinks, pidlChild, FALSE);
++    if (!m_hQuickAccess)
++        return;
++
++    TVITEMW item = { TVIF_HANDLE | TVIF_CHILDREN };
++    item.hItem = m_hQuickAccess;
++    item.cChildren = 1;
++    if (LoadStringW(instance, IDS_QUICKACCESS, szName, _countof(szName)))
++    {
++        item.mask |= TVIF_TEXT;
++        item.pszText = szName;
++    }
++    iIcon = Shell_GetCachedImageIndex(L"shell32.dll", -QUICK_ACCESS_ICON, 0);
++    if (iIcon >= 0)
++    {
++        item.mask |= TVIF_IMAGE | TVIF_SELECTEDIMAGE;
++        item.iImage = item.iSelectedImage = iIcon;
++    }
++    TreeView_SetItem(m_hwndTreeView, &item);
++
++    _InsertPins();
++    TreeView_Expand(m_hwndTreeView, m_hQuickAccess, TVE_EXPAND);
++}
++
++/* the children of Quick access are the folders its shortcuts point to */
++void CExplorerBand::_InsertPins()
++{
++    CItemData *pQuick = _GetItemData(m_hQuickAccess);
++    CComPtr<IShellFolder> psfLinks;
++    CComPtr<IEnumIDList> pEnum;
++    LPITEMIDLIST pidl;
++    ULONG fetched;
++
++    if (!pQuick)
++        return;
++    pQuick->expanded = TRUE;
++    if (FAILED(m_pDesktop->BindToObject(pQuick->absolutePidl, NULL, IID_PPV_ARG(IShellFolder, &psfLinks))) ||
++        psfLinks->EnumObjects(NULL, SHCONTF_NONFOLDERS, &pEnum) != S_OK)
++        return;
++
++    while (pEnum->Next(1, &pidl, &fetched) == S_OK && fetched)
++    {
++        STRRET str;
++        WCHAR szPath[MAX_PATH];
++        CComPtr<IShellLinkW> psl;
++        CComPtr<IPersistFile> ppf;
++        CComHeapPtr<ITEMIDLIST> target;
++
++        if (SUCCEEDED(psfLinks->GetDisplayNameOf(pidl, SHGDN_FORPARSING, &str)) &&
++            SUCCEEDED(StrRetToBufW(&str, pidl, szPath, _countof(szPath))) &&
++            SUCCEEDED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARG(IShellLinkW, &psl))) &&
++            SUCCEEDED(psl->QueryInterface(IID_PPV_ARG(IPersistFile, &ppf))) &&
++            SUCCEEDED(ppf->Load(szPath, STGM_READ)) &&
++            psl->GetIDList(&target) == S_OK && target)
++        {
++            _InsertItem(m_hQuickAccess, target, ILFindLastID(target), FALSE);
++        }
++        ILFree(pidl);
++    }
++}
++
++void CExplorerBand::_Refresh()
++{
++    ++m_mtxBlockNavigate;
++    m_hwndTreeView.SendMessage(WM_SETREDRAW, FALSE, 0);
++    for (HTREEITEM hItem = TreeView_GetRoot(m_hwndTreeView); hItem;
++         hItem = TreeView_GetNextSibling(m_hwndTreeView, hItem))
++    {
++        if (hItem == m_hQuickAccess)
++        {
++            HTREEITEM hPin;
++            while ((hPin = TreeView_GetChild(m_hwndTreeView, hItem)))
++                TreeView_DeleteItem(m_hwndTreeView, hPin);
++            _InsertPins();
++        }
++        else if (TreeView_GetItemState(m_hwndTreeView, hItem, TVIS_EXPANDEDONCE) & TVIS_EXPANDEDONCE)
++        {
++            _RefreshRecurse(hItem);
++        }
++    }
++    m_hwndTreeView.SendMessage(WM_SETREDRAW, TRUE, 0);
++    --m_mtxBlockNavigate;
+ }
+ 
+ // Called when the user has selected an item.
+@@ -113,14 +278,10 @@
+     if (FAILED_UNEXPECTEDLY(hr))
+         return hr;
+ 
+-    // Insert the root node
+-    m_hRoot = _InsertItem(NULL, m_pDesktop, m_pidlRoot, m_pidlRoot, FALSE);
+-    if (!m_hRoot)
+-    {
+-        ERR("Failed to create root item\n");
+-        return E_FAIL;
+-    }
+-    TreeView_Expand(m_hwndTreeView, m_hRoot, TVE_EXPAND);
++    // The top level of Windows 10's navigation pane
++    _InsertQuickAccess();
++    _InsertTopFolder(CSIDL_DRIVES);
++    _InsertTopFolder(CSIDL_NETWORK);
+ 
+     // Navigate to current folder position
+     _NavigateToCurrentFolder();
+@@ -203,6 +364,20 @@
+     HRESULT hr = _GetCurrentLocation(&pidl);
+     if (FAILED_UNEXPECTEDLY(hr))
+         return FALSE;
++
++    // A pinned folder is shown where it is pinned, as in Windows 10
++    for (HTREEITEM hPin = m_hQuickAccess ? TreeView_GetChild(m_hwndTreeView, m_hQuickAccess) : NULL; hPin;
++         hPin = TreeView_GetNextSibling(m_hwndTreeView, hPin))
++    {
++        CItemData *pData = _GetItemData(hPin);
++        if (pData && !m_pDesktop->CompareIDs(0, pData->absolutePidl, pidl))
++        {
++            ++m_mtxBlockNavigate;
++            TreeView_SelectItem(m_hwndTreeView, hPin);
++            --m_mtxBlockNavigate;
++            return TRUE;
++        }
++    }
+ 
+     // Find PIDL into our explorer
+     ++m_mtxBlockNavigate;
