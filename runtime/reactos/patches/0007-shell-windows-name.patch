@@ -1,0 +1,486 @@
+diff --git a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -171,7 +171,7 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", IDC_RUNDLG_ICON, 7, 11, 18, 20, WS_VISIBLE
+-    LTEXT "Type the name of a program, folder, document, or Internet resource, and ReactOS will open it for you.", 12289, 36, 11, 185, 18
++    LTEXT "Type the name of a program, folder, document, or Internet resource, and Windows will open it for you.", 12289, 36, 11, 185, 18
+     LTEXT "&Open:", 12305, 7, 39, 24, 10
+     CONTROL "", IDC_RUNDLG_EDITPATH, "COMBOBOX", WS_TABSTOP | WS_GROUP | WS_VSCROLL | WS_VISIBLE | CBS_AUTOHSCROLL | CBS_DROPDOWN, 36, 37, 184, 100
+     DEFPUSHBUTTON "OK", IDOK, 36, 70, 59, 14
+@@ -420,7 +420,7 @@
+     GROUPBOX "Tasks", -1, 7, 10, 249, 40
+     CONTROL "", IDC_FOLDER_OPTIONS_TASKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 20, 21, 20
+     AUTORADIOBUTTON "Show common tasks in &folders", IDC_FOLDER_OPTIONS_COMMONTASKS, 40, 20, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Use ReactOS class&ic folders", IDC_FOLDER_OPTIONS_CLASSICFOLDERS, 40, 32, 210, 10
++    AUTORADIOBUTTON "Use Windows class&ic folders", IDC_FOLDER_OPTIONS_CLASSICFOLDERS, 40, 32, 210, 10
+     GROUPBOX "Browse folders", -1, 7, 60, 249, 40, WS_TABSTOP
+     CONTROL "", IDC_FOLDER_OPTIONS_FOLDERICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 70, 21, 20
+     AUTORADIOBUTTON "Open each folder in the sa&me window", IDC_FOLDER_OPTIONS_SAMEWINDOW, 40, 70, 210, 10, WS_TABSTOP | WS_GROUP
+@@ -490,7 +490,7 @@
+ 
+ IDD_LOG_OFF DIALOGEX 0, 0, 188, 60
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Log Off ReactOS"
++CAPTION "Log Off Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON IDI_SHELL_LOGOFF, IDC_STATIC, 8, 6, 21, 20
+@@ -508,14 +508,14 @@
+     PUSHBUTTON "&Switch User", IDC_SWITCH_USER_BUTTON, 55, 46, 22, 20, BS_OWNERDRAW | WS_DISABLED | WS_GROUP
+     PUSHBUTTON "&Log Off", IDC_LOG_OFF_BUTTON, 132, 46, 22, 20, BS_OWNERDRAW
+     PUSHBUTTON "Cancel", IDCANCEL, 162, 103, 40, 12, WS_GROUP | BS_FLAT
+-    LTEXT "Log Off ReactOS", IDC_LOG_OFF_TEXT_STATIC, 4, 7, 130, 19
++    LTEXT "Log Off Windows", IDC_LOG_OFF_TEXT_STATIC, 4, 7, 130, 19
+     CTEXT "Switch User", IDC_SWITCH_USER_STATIC, 41, 70, 51, 11
+     CTEXT "Log Off", IDC_LOG_OFF_STATIC, 118, 70, 51, 11
+ END
+ 
+ IDD_DISCONNECT DIALOGEX 0, 0, 188, 60
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Disconnect ReactOS"
++CAPTION "Disconnect Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON IDI_SHELL_DISCONN, IDC_STATIC, 8, 6, 21, 20
+@@ -529,7 +529,7 @@
+ CAPTION "AutoPlay"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LTEXT "&Select a content type, then choose an action for ReactOS to perform automatically when that type is used in this device:", 1000, 7, 7, 215, 20
++    LTEXT "&Select a content type, then choose an action for Windows to perform automatically when that type is used in this device:", 1000, 7, 7, 215, 20
+     CONTROL "", 1001, "COMBOBOXEX32", WS_TABSTOP | 0x00000043, 7, 27, 212, 200
+     GROUPBOX "Actions", -1, 7, 45, 212, 146
+     AUTORADIOBUTTON "Select an action to &perform:", 1005, 14, 54, 202, 10, WS_GROUP
+@@ -545,7 +545,7 @@
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+     LTEXT "This disk or device contains more than one type of content.", 1001, 32, 7, 191, 20
+-    LTEXT "What do you want ReactOS to do?", 1002, 32, 31, 188, 8
++    LTEXT "What do you want Windows to do?", 1002, 32, 31, 188, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 43, 188, 139
+     DEFPUSHBUTTON "OK", IDOK, 96, 186, 60, 14
+     PUSHBUTTON "Cancel", IDCANCEL, 160, 186, 60, 14
+@@ -557,10 +557,10 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+-    LTEXT "ReactOS can perform the same action each time you insert a disk or connect a device with this kind of file:", 1001, 30, 7, 193, 20
++    LTEXT "Windows can perform the same action each time you insert a disk or connect a device with this kind of file:", 1001, 30, 7, 193, 20
+     ICON "", 1005, 32, 27, 11, 10, SS_REALSIZECONTROL
+     EDITTEXT 1006, 49, 28, 177, 14, ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
+-    LTEXT "What do you want ReactOS to do?", 1002, 32, 41, 190, 8
++    LTEXT "What do you want Windows to do?", 1002, 32, 41, 190, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 55, 188, 112
+     AUTOCHECKBOX "Always do the selected action.", 1004, 32, 171, 190, 10
+     DEFPUSHBUTTON "OK", IDOK, 96, 185, 60, 14
+@@ -573,8 +573,8 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+-    LTEXT "ReactOS can perform the same action each time you connect this device.", 1001, 32, 7, 190, 22
+-    LTEXT "&What do you want ReactOS to do?", 1002, 32, 31, 190, 8
++    LTEXT "Windows can perform the same action each time you connect this device.", 1001, 32, 7, 190, 22
++    LTEXT "&What do you want Windows to do?", 1002, 32, 31, 190, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 43, 187, 96
+     AUTOCHECKBOX "&Always perform the selected action", 1004, 32, 143, 190, 8
+     DEFPUSHBUTTON "OK", IDOK, 94, 160, 60, 14
+@@ -583,7 +583,7 @@
+ 
+ IDD_SHUTDOWN DIALOGEX 0, 0, 211, 103
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Shut Down ReactOS"
++CAPTION "Shut Down Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON 8240, -1, 6, 6, 21, 20, SS_REALSIZECONTROL | WS_GROUP
+@@ -854,7 +854,7 @@
+ 
+     /* Warning format system drive dialog strings */
+     IDS_NO_FORMAT_TITLE "Cannot format this volume"
+-    IDS_NO_FORMAT "This volume cannot be formatted! It contains important system files in order for ReactOS to run."
++    IDS_NO_FORMAT "This volume cannot be formatted! It contains important system files in order for Windows to run."
+ 
+     /* Run File dialog */
+     IDS_RUNDLG_ERROR "Unable to display Run File dialog box (internal error)"
+@@ -940,8 +940,8 @@
+ 
+     /* Friendly File Type Names */
+     IDS_DIRECTORY "Folder"
+-    IDS_BAT_FILE "ReactOS Batch File"
+-    IDS_CMD_FILE "ReactOS Command Script"
++    IDS_BAT_FILE "Windows Batch File"
++    IDS_CMD_FILE "Windows Command Script"
+     IDS_COM_FILE "DOS Application"
+     IDS_CPL_FILE "Control Panel Item"
+     IDS_CUR_FILE "Cursor"
+@@ -986,7 +986,7 @@
+     IDS_DEFAULT_CLUSTER_SIZE "Default allocation size"
+     IDS_COPY_OF "Copy of"
+ 
+-    IDS_SHLEXEC_NOASSOC "There is no ReactOS program configured to open this type of file."
++    IDS_SHLEXEC_NOASSOC "There is no Windows program configured to open this type of file."
+ 
+     IDS_FILE_DETAILS "Details for '%s' extension"
+     IDS_FILE_DETAILSADV "Files with extension '%s' are of type '%s'. To change settings that affect all '%s' files, click Advanced."
+@@ -1075,7 +1075,7 @@
+     IDS_SYSTEMFOLDER "System Folder"
+ 
+     /* For IDD_LOG_OFF_FANCY */
+-    IDS_LOG_OFF_DESC "Closes your programs and ends your ReactOS session."
++    IDS_LOG_OFF_DESC "Closes your programs and ends your Windows session."
+     IDS_SWITCH_USER_DESC "Lets another user log on while your programs and files remain open.\r\n\r\n(You can also switch users by pressing the Windows logo key + L.)"
+     IDS_LOG_OFF_TITLE "Log Off"
+     IDS_SWITCH_USER_TITLE "Switch User"
+diff --git a/dll/win32/shell32/lang/ru-RU.rc b/dll/win32/shell32/lang/ru-RU.rc
+--- a/dll/win32/shell32/lang/ru-RU.rc
++++ b/dll/win32/shell32/lang/ru-RU.rc
+@@ -180,7 +180,7 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", IDC_RUNDLG_ICON, 7, 11, 18, 20, WS_VISIBLE
+-    LTEXT "Введите имя программы, папки, документа или ресурс Интернета, и ReactOS откроет их.", 12289, 36, 11, 185, 18
++    LTEXT "Введите имя программы, папки, документа или ресурс Интернета, и Windows откроет их.", 12289, 36, 11, 185, 18
+     LTEXT "&Открыть:", 12305, 7, 39, 34, 10
+     CONTROL "", IDC_RUNDLG_EDITPATH, "COMBOBOX", WS_TABSTOP | WS_GROUP | WS_VSCROLL | WS_VISIBLE | CBS_AUTOHSCROLL | CBS_DROPDOWN, 43, 37, 177, 100
+     DEFPUSHBUTTON "OK", IDOK, 36, 70, 59, 14
+@@ -429,7 +429,7 @@
+     GROUPBOX "Задачи", -1, 7, 10, 249, 40
+     CONTROL "", IDC_FOLDER_OPTIONS_TASKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 20, 21, 20
+     AUTORADIOBUTTON "Отобра&жение списка типичных задач в папках", IDC_FOLDER_OPTIONS_COMMONTASKS, 40, 20, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Использовать обы&чные папки ReactOS", IDC_FOLDER_OPTIONS_CLASSICFOLDERS, 40, 32, 210, 10
++    AUTORADIOBUTTON "Использовать обы&чные папки Windows", IDC_FOLDER_OPTIONS_CLASSICFOLDERS, 40, 32, 210, 10
+     GROUPBOX "Обзор папок", -1, 7, 60, 249, 40, WS_TABSTOP
+     CONTROL "", IDC_FOLDER_OPTIONS_FOLDERICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 70, 21, 20
+     AUTORADIOBUTTON "&Открывать папки в одном и том же окне", IDC_FOLDER_OPTIONS_SAMEWINDOW, 40, 70, 210, 10, WS_TABSTOP | WS_GROUP
+@@ -499,7 +499,7 @@
+ 
+ IDD_LOG_OFF DIALOGEX 0, 0, 212, 60
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Выход из ReactOS"
++CAPTION "Выход из Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON IDI_SHELL_LOGOFF, IDC_STATIC, 8, 6, 21, 20
+@@ -517,14 +517,14 @@
+     PUSHBUTTON "&Смена пользователя", IDC_SWITCH_USER_BUTTON, 55, 46, 22, 20, BS_OWNERDRAW | WS_DISABLED | WS_GROUP
+     PUSHBUTTON "В&ыход", IDC_LOG_OFF_BUTTON, 132, 46, 22, 20, BS_OWNERDRAW
+     PUSHBUTTON "Отмена", IDCANCEL, 162, 103, 40, 12, WS_GROUP | BS_FLAT
+-    LTEXT "Выход из ReactOS", IDC_LOG_OFF_TEXT_STATIC, 4, 7, 130, 19
++    LTEXT "Выход из Windows", IDC_LOG_OFF_TEXT_STATIC, 4, 7, 130, 19
+     CTEXT "Смена пользователя", IDC_SWITCH_USER_STATIC, 31, 70, 71, 11
+     CTEXT "Выход", IDC_LOG_OFF_STATIC, 118, 70, 51, 11
+ END
+ 
+ IDD_DISCONNECT DIALOGEX 0, 0, 188, 60
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Отключить ReactOS"
++CAPTION "Отключить Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON IDI_SHELL_DISCONN, IDC_STATIC, 8, 6, 21, 20
+@@ -554,7 +554,7 @@
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+     LTEXT "На этом диске или устройстве хранится содержимое различных типов.", 1001, 32, 7, 191, 20
+-    LTEXT "Какое действие следует выполнять ReactOS?", 1002, 32, 31, 188, 8
++    LTEXT "Какое действие следует выполнять Windows?", 1002, 32, 31, 188, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 43, 188, 139
+     DEFPUSHBUTTON "OK", IDOK, 96, 186, 60, 14
+     PUSHBUTTON "Отмена", IDCANCEL, 160, 186, 60, 14
+@@ -566,10 +566,10 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+-    LTEXT "ReactOS может всегда выполнять одно и то же действие, когда вы вставляете диск или подключаете устройство с файлами следующего типа:", 1001, 30, 7, 193, 20 /* FIXME Не влазит в рамки */
++    LTEXT "Windows может всегда выполнять одно и то же действие, когда вы вставляете диск или подключаете устройство с файлами следующего типа:", 1001, 30, 7, 193, 20 /* FIXME Не влазит в рамки */
+     ICON "", 1005, 32, 27, 11, 10, SS_REALSIZECONTROL
+     EDITTEXT 1006, 49, 28, 177, 14, ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
+-    LTEXT "Какое действие следует выполнять ReactOS?", 1002, 32, 41, 190, 8
++    LTEXT "Какое действие следует выполнять Windows?", 1002, 32, 41, 190, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 55, 188, 112
+     AUTOCHECKBOX "Всегда выполнять выбранное действие", 1004, 32, 171, 190, 10
+     DEFPUSHBUTTON "OK", IDOK, 96, 185, 60, 14
+@@ -582,8 +582,8 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+-    LTEXT "ReactOS может выполнять одно и то же действие при каждом подключении этого устройства.", 1001, 32, 7, 190, 22
+-    LTEXT "&Какое действие следует выполнять ReactOS?", 1002, 32, 31, 190, 8
++    LTEXT "Windows может выполнять одно и то же действие при каждом подключении этого устройства.", 1001, 32, 7, 190, 22
++    LTEXT "&Какое действие следует выполнять Windows?", 1002, 32, 31, 190, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 43, 187, 96
+     AUTOCHECKBOX "&Всегда выполнять выбранное действие", 1004, 32, 143, 190, 8
+     DEFPUSHBUTTON "OK", IDOK, 94, 160, 60, 14
+@@ -592,7 +592,7 @@
+ 
+ IDD_SHUTDOWN DIALOGEX 0, 0, 211, 103
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Завершение работы ReactOS"
++CAPTION "Завершение работы Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON 8240, -1, 6, 6, 21, 20, SS_REALSIZECONTROL | WS_GROUP
+@@ -852,9 +852,9 @@
+ 
+     /* message box strings */
+     IDS_RESTART_TITLE "Перезагрузка"
+-    IDS_RESTART_PROMPT "Вы действительно хотите перезагрузить ReactOS?"
++    IDS_RESTART_PROMPT "Вы действительно хотите перезагрузить Windows?"
+     IDS_SHUTDOWN_TITLE "Завершение работы"
+-    IDS_SHUTDOWN_PROMPT "Вы действительно хотите завершить работу ReactOS?"
++    IDS_SHUTDOWN_PROMPT "Вы действительно хотите завершить работу Windows?"
+ 
+     /* Format Dialog Strings */
+     IDS_FORMAT_TITLE "Форматирование локального диска"
+@@ -863,7 +863,7 @@
+ 
+     /* Warning format system drive dialog strings */
+     IDS_NO_FORMAT_TITLE "Невозможно отформатировать этот том"
+-    IDS_NO_FORMAT "Этот том не может быть отформатирован! На нём находятся важные системные файлы, необходимые для работы ReactOS."
++    IDS_NO_FORMAT "Этот том не может быть отформатирован! На нём находятся важные системные файлы, необходимые для работы Windows."
+ 
+     /* Run File dialog */
+     IDS_RUNDLG_ERROR "Невозможно отобразить диалоговое окно Выполнить (внутренняя ошибка)"
+@@ -949,8 +949,8 @@
+ 
+     /* Friendly File Type Names */
+     IDS_DIRECTORY "Папка с файлами"
+-    IDS_BAT_FILE "Пакетный файл ReactOS"
+-    IDS_CMD_FILE "Командный скрипт ReactOS"
++    IDS_BAT_FILE "Пакетный файл Windows"
++    IDS_CMD_FILE "Командный скрипт Windows"
+     IDS_COM_FILE "Приложение DOS"
+     IDS_CPL_FILE "Элемент панели управления"
+     IDS_CUR_FILE "Курсор"
+@@ -1084,7 +1084,7 @@
+     IDS_SYSTEMFOLDER "Системная папка"
+ 
+     /* For IDD_LOG_OFF_FANCY */
+-    IDS_LOG_OFF_DESC "Закрывает программы и завершает ваш сеанс ReactOS."
++    IDS_LOG_OFF_DESC "Закрывает программы и завершает ваш сеанс Windows."
+     IDS_SWITCH_USER_DESC "Позволяет другому пользователю войти в систему, оставляя открытыми ваши приложения и файлы.\r\n\r\n(Можно также выполнить переключение пользователей, нажав сочетание клавиш Windows + L.)"
+     IDS_LOG_OFF_TITLE "Выход"
+     IDS_SWITCH_USER_TITLE "Сменить пользователя"
+diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -171,7 +171,7 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", IDC_RUNDLG_ICON, 7, 11, 18, 20, WS_VISIBLE
+-    LTEXT "Введіть ім'я програми, папки, документа або ресурсу Інтернету, і ReactOS відкриє їх.", 12289, 36, 11, 185, 18
++    LTEXT "Введіть ім'я програми, папки, документа або ресурсу Інтернету, і Windows відкриє їх.", 12289, 36, 11, 185, 18
+     LTEXT "&Відкрити:", 12305, 7, 39, 32, 10
+     CONTROL "", IDC_RUNDLG_EDITPATH, "COMBOBOX", WS_TABSTOP | WS_GROUP | WS_VSCROLL | WS_VISIBLE | CBS_AUTOHSCROLL | CBS_DROPDOWN, 43, 37, 177, 100
+     DEFPUSHBUTTON "OK", IDOK, 62, 70, 50, 14
+@@ -420,7 +420,7 @@
+     GROUPBOX "Завдання", -1, 7, 10, 249, 40
+     CONTROL "", IDC_FOLDER_OPTIONS_TASKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 20, 21, 20
+     AUTORADIOBUTTON "&Показувати список типових завдань у теках", IDC_FOLDER_OPTIONS_COMMONTASKS, 40, 20, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Використовувати зви&чайні папки ReactOS", IDC_FOLDER_OPTIONS_CLASSICFOLDERS, 40, 32, 210, 10
++    AUTORADIOBUTTON "Використовувати зви&чайні папки Windows", IDC_FOLDER_OPTIONS_CLASSICFOLDERS, 40, 32, 210, 10
+     GROUPBOX "Огляд папок", -1, 7, 60, 249, 40, WS_TABSTOP
+     CONTROL "", IDC_FOLDER_OPTIONS_FOLDERICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 70, 21, 20
+     AUTORADIOBUTTON "Відкривати папки в то&му самому вікні", IDC_FOLDER_OPTIONS_SAMEWINDOW, 40, 70, 210, 10, WS_TABSTOP | WS_GROUP
+@@ -490,7 +490,7 @@
+ 
+ IDD_LOG_OFF DIALOGEX 0, 0, 188, 60
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Вихід із ReactOS"
++CAPTION "Вихід із Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON IDI_SHELL_LOGOFF, IDC_STATIC, 8, 6, 21, 20
+@@ -508,14 +508,14 @@
+     PUSHBUTTON "&Switch User", IDC_SWITCH_USER_BUTTON, 55, 46, 22, 20, BS_OWNERDRAW | WS_DISABLED | WS_GROUP
+     PUSHBUTTON "В&ихід", IDC_LOG_OFF_BUTTON, 132, 46, 22, 20, BS_OWNERDRAW
+     PUSHBUTTON "Скасувати", IDCANCEL, 162, 103, 40, 12, WS_GROUP | BS_FLAT
+-    LTEXT "Вихід із ReactOS", IDC_LOG_OFF_TEXT_STATIC, 4, 7, 130, 19
++    LTEXT "Вихід із Windows", IDC_LOG_OFF_TEXT_STATIC, 4, 7, 130, 19
+     CTEXT "Switch User", IDC_SWITCH_USER_STATIC, 41, 70, 51, 11
+     CTEXT "Вихід", IDC_LOG_OFF_STATIC, 118, 70, 51, 11
+ END
+ 
+ IDD_DISCONNECT DIALOGEX 0, 0, 188, 60
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Вимкнення ReactOS"
++CAPTION "Вимкнення Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON IDI_SHELL_DISCONN, IDC_STATIC, 8, 6, 21, 20
+@@ -545,7 +545,7 @@
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+     LTEXT "На цьому диску або пристрої зберігається вміст декількох типів.", 1001, 32, 7, 191, 20
+-    LTEXT "Яку дію слід виконувати ReactOS?", 1002, 32, 31, 188, 8
++    LTEXT "Яку дію слід виконувати Windows?", 1002, 32, 31, 188, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 43, 188, 139
+     DEFPUSHBUTTON "OK", IDOK, 96, 186, 60, 14
+     PUSHBUTTON "Скасувати", IDCANCEL, 160, 186, 60, 14
+@@ -557,10 +557,10 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+-    LTEXT "ReactOS може виконувати одну й ту саму дію кожного разу, коли ви вставляєте диск або під'єднуєте пристрій із файлами цього типу:", 1001, 30, 7, 193, 20
++    LTEXT "Windows може виконувати одну й ту саму дію кожного разу, коли ви вставляєте диск або під'єднуєте пристрій із файлами цього типу:", 1001, 30, 7, 193, 20
+     ICON "", 1005, 32, 27, 11, 10, SS_REALSIZECONTROL
+     EDITTEXT 1006, 49, 28, 177, 14, ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
+-    LTEXT "Яку дію слід виконувати ReactOS?", 1002, 32, 41, 190, 8
++    LTEXT "Яку дію слід виконувати Windows?", 1002, 32, 41, 190, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 55, 188, 112
+     AUTOCHECKBOX "Завжди виконувати вибрану дію.", 1004, 32, 171, 190, 10
+     DEFPUSHBUTTON "OK", IDOK, 96, 185, 60, 14
+@@ -573,8 +573,8 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON "", 1000, 5, 7, 21, 20
+-    LTEXT "ReactOS може виконувати одну й ту саму дію кожного разу, коли ви під'єднуєте цей пристрій.", 1001, 32, 7, 190, 22
+-    LTEXT "&Яку дію слід виконувати ReactOS?", 1002, 32, 31, 190, 8
++    LTEXT "Windows може виконувати одну й ту саму дію кожного разу, коли ви під'єднуєте цей пристрій.", 1001, 32, 7, 190, 22
++    LTEXT "&Яку дію слід виконувати Windows?", 1002, 32, 31, 190, 8
+     CONTROL "", 1003, "SYSLISTVIEW32", WS_BORDER | WS_TABSTOP | 0x0000C04D, 32, 43, 187, 96
+     AUTOCHECKBOX "&Завжди виконувати вибрану дію", 1004, 32, 143, 190, 8
+     DEFPUSHBUTTON "OK", IDOK, 94, 160, 60, 14
+@@ -583,7 +583,7 @@
+ 
+ IDD_SHUTDOWN DIALOGEX 0, 0, 211, 103
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUPWINDOW | WS_CAPTION
+-CAPTION "Завершення роботи ReactOS"
++CAPTION "Завершення роботи Windows"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON 8240, -1, 6, 6, 21, 20, SS_REALSIZECONTROL | WS_GROUP
+@@ -854,7 +854,7 @@
+ 
+     /* Warning format system drive dialog strings */
+     IDS_NO_FORMAT_TITLE "Cannot format this volume"
+-    IDS_NO_FORMAT "This volume cannot be formatted! It contains important system files in order for ReactOS to run."
++    IDS_NO_FORMAT "This volume cannot be formatted! It contains important system files in order for Windows to run."
+ 
+     /* Run File dialog */
+     IDS_RUNDLG_ERROR "Неможливо відобразити діалог запуску файлу (внутрішня помилка)"
+@@ -940,8 +940,8 @@
+ 
+     /* Friendly File Type Names */
+     IDS_DIRECTORY "Папка"
+-    IDS_BAT_FILE "Пакетний файл ReactOS"
+-    IDS_CMD_FILE "Командний скрипт ReactOS"
++    IDS_BAT_FILE "Пакетний файл Windows"
++    IDS_CMD_FILE "Командний скрипт Windows"
+     IDS_COM_FILE "Додаток DOS"
+     IDS_CPL_FILE "Елемент панелі керування"
+     IDS_CUR_FILE "Курсор"
+@@ -1075,7 +1075,7 @@
+     IDS_SYSTEMFOLDER "System Folder"
+ 
+     /* For IDD_LOG_OFF_FANCY */
+-    IDS_LOG_OFF_DESC "Closes your programs and ends your ReactOS session."
++    IDS_LOG_OFF_DESC "Closes your programs and ends your Windows session."
+     IDS_SWITCH_USER_DESC "Lets another user log on while your programs and files remain open.\r\n\r\n(You can also switch users by pressing the Windows logo key + L.)"
+     IDS_LOG_OFF_TITLE "Вихід"
+     IDS_SWITCH_USER_TITLE "Switch User"
+diff --git a/dll/win32/browseui/lang/en-US.rc b/dll/win32/browseui/lang/en-US.rc
+--- a/dll/win32/browseui/lang/en-US.rc
++++ b/dll/win32/browseui/lang/en-US.rc
+@@ -90,7 +90,7 @@
+     END
+     POPUP "&Help", FCIDM_MENU_HELP
+     BEGIN
+-        MENUITEM "&About ReactOS", IDM_HELP_ABOUT
++        MENUITEM "&About Windows", IDM_HELP_ABOUT
+     END
+ END
+ 
+@@ -354,6 +354,6 @@
+ 
+ STRINGTABLE
+ BEGIN
+-    IDS_PARSE_ADDR_ERR_TITLE "ReactOS Explorer"
+-    IDS_PARSE_ADDR_ERR_TEXT "ReactOS Explorer cannot find '%1'. Check the spelling and try again."
+-END
++    IDS_PARSE_ADDR_ERR_TITLE "File Explorer"
++    IDS_PARSE_ADDR_ERR_TEXT "File Explorer cannot find '%1'. Check the spelling and try again."
++END
+diff --git a/dll/win32/browseui/lang/ru-RU.rc b/dll/win32/browseui/lang/ru-RU.rc
+--- a/dll/win32/browseui/lang/ru-RU.rc
++++ b/dll/win32/browseui/lang/ru-RU.rc
+@@ -81,7 +81,7 @@
+     END
+     POPUP "&Справка", FCIDM_MENU_HELP
+     BEGIN
+-        MENUITEM "&О ReactOS", IDM_HELP_ABOUT
++        MENUITEM "&О Windows", IDM_HELP_ABOUT
+     END
+ END
+ 
+@@ -345,6 +345,6 @@
+ 
+ STRINGTABLE
+ BEGIN
+-    IDS_PARSE_ADDR_ERR_TITLE "Проводник ReactOS"
+-    IDS_PARSE_ADDR_ERR_TEXT "Проводник ReactOS не может найти '%1'. Проверьте правильность написания и попробуйте снова."
+-END
++    IDS_PARSE_ADDR_ERR_TITLE "Проводник Windows"
++    IDS_PARSE_ADDR_ERR_TEXT "Проводник Windows не может найти '%1'. Проверьте правильность написания и попробуйте снова."
++END
+diff --git a/dll/win32/browseui/lang/uk-UA.rc b/dll/win32/browseui/lang/uk-UA.rc
+--- a/dll/win32/browseui/lang/uk-UA.rc
++++ b/dll/win32/browseui/lang/uk-UA.rc
+@@ -81,7 +81,7 @@
+     END
+     POPUP "&Допомога", FCIDM_MENU_HELP
+     BEGIN
+-        MENUITEM "&Про ReactOS", IDM_HELP_ABOUT
++        MENUITEM "&Про Windows", IDM_HELP_ABOUT
+     END
+ END
+ 
+@@ -345,6 +345,6 @@
+ 
+ STRINGTABLE
+ BEGIN
+-    IDS_PARSE_ADDR_ERR_TITLE "ReactOS Explorer"
+-    IDS_PARSE_ADDR_ERR_TEXT "ReactOS Explorer не може знайти '%1'. Перевірте правильність написання та спробуйте ще раз."
+-END
++    IDS_PARSE_ADDR_ERR_TITLE "Провідник"
++    IDS_PARSE_ADDR_ERR_TEXT "Провідник не може знайти '%1'. Перевірте правильність написання та спробуйте ще раз."
++END
+diff --git a/base/shell/explorer/lang/en-US.rc b/base/shell/explorer/lang/en-US.rc
+--- a/base/shell/explorer/lang/en-US.rc
++++ b/base/shell/explorer/lang/en-US.rc
+@@ -118,7 +118,7 @@
+ CAPTION "Customize Notifications"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LTEXT            "ReactOS displays icons for active and urgent notifications, and hides inactive ones. You can change this behavior for items in the list below.", IDC_STATIC, 6, 6, 220, 30
++    LTEXT            "Windows displays icons for active and urgent notifications, and hides inactive ones. You can change this behavior for items in the list below.", IDC_STATIC, 6, 6, 220, 30
+     LTEXT            "Select an item, then choose its notification behavior:", IDC_STATIC, 6, 40, 220, 10
+     CONTROL          "", IDC_NOTIFICATION_LIST, "SysListView32", WS_CLIPSIBLINGS | WS_BORDER | 0x00008005, 6, 50, 220, 128
+     COMBOBOX         IDC_NOTIFICATION_BEHAVIOUR, 103, 178, 78, 200, CBS_DROPDOWNLIST | NOT WS_VISIBLE | WS_CLIPSIBLINGS
+diff --git a/base/shell/explorer/lang/ru-RU.rc b/base/shell/explorer/lang/ru-RU.rc
+--- a/base/shell/explorer/lang/ru-RU.rc
++++ b/base/shell/explorer/lang/ru-RU.rc
+@@ -122,7 +122,7 @@
+ CAPTION "Настройка уведомлений"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LTEXT            "ReactOS отображает значки для активных и срочных уведомлений, но скрывает неактивные. Вы можете изменить это поведение для элементов в списке ниже.", IDC_STATIC, 6, 6, 220, 30
++    LTEXT            "Windows отображает значки для активных и срочных уведомлений, но скрывает неактивные. Вы можете изменить это поведение для элементов в списке ниже.", IDC_STATIC, 6, 6, 220, 30
+     LTEXT            "Выберите элемент и измените его поведение:", IDC_STATIC, 6, 40, 220, 10
+     CONTROL          "", IDC_NOTIFICATION_LIST, "SysListView32", WS_CLIPSIBLINGS | WS_BORDER | 0x00008005, 6, 50, 220, 128
+     COMBOBOX         IDC_NOTIFICATION_BEHAVIOUR, 103, 178, 78, 200, CBS_DROPDOWNLIST | NOT WS_VISIBLE | WS_CLIPSIBLINGS
+diff --git a/base/shell/explorer/lang/uk-UA.rc b/base/shell/explorer/lang/uk-UA.rc
+--- a/base/shell/explorer/lang/uk-UA.rc
++++ b/base/shell/explorer/lang/uk-UA.rc
+@@ -122,7 +122,7 @@
+ CAPTION "Налаштувати сповіщення"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LTEXT            "ReactOS відображає іконки для активних і термінових повідомлень і приховує неактивні. Ви можете змінити цю поведінку для елементів у списку нижче.", IDC_STATIC, 6, 6, 220, 30
++    LTEXT            "Windows відображає іконки для активних і термінових повідомлень і приховує неактивні. Ви можете змінити цю поведінку для елементів у списку нижче.", IDC_STATIC, 6, 6, 220, 30
+     LTEXT            "Виберіть елемент, а потім виберіть поведінку його сповіщення:", IDC_STATIC, 6, 40, 220, 10
+     CONTROL          "", IDC_NOTIFICATION_LIST, "SysListView32", WS_CLIPSIBLINGS | WS_BORDER | 0x00008005, 6, 50, 220, 128
+     COMBOBOX         IDC_NOTIFICATION_BEHAVIOUR, 103, 178, 78, 200, CBS_DROPDOWNLIST | NOT WS_VISIBLE | WS_CLIPSIBLINGS
