@@ -9,9 +9,11 @@
  * messages go to host.log, the kernel log and, in development builds, the
  * serial console. */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <limits.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -38,6 +40,8 @@
 #define LOGO "/usr/share/arctic/logo.bgra"
 #define WAYLAND_SOCKET "arctic-0" /* served by dwmcore.dll */
 #define FONT "/usr/share/arctic/bsod.font"
+#define VOLUMES_DIR "/run/arctic/volumes" /* written by arctic-volume */
+#define EJECT_DIR "/run/arctic/eject"     /* requests from mountmgr.sys */
 
 static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
 static int dev_mode, splash = -1, stopped;
@@ -156,6 +160,19 @@ static void power_off(int restart)
     sleep(2);
     kill(-1, SIGKILL);
     sync();
+    /* the other drives are written out whole before the power goes */
+    DIR *drives = opendir("/run/arctic/drives");
+    for (struct dirent *de; drives && (de = readdir(drives));) {
+        char path[PATH_MAX];
+
+        if (de->d_name[0] == '.')
+            continue;
+        snprintf(path, sizeof(path), "/run/arctic/drives/%.200s", de->d_name);
+        if (umount2(path, 0))
+            umount2(path, MNT_DETACH);
+    }
+    if (drives)
+        closedir(drives);
     umount2(C_DRIVE, MNT_DETACH);
     sync();
     reboot(restart ? RB_AUTOBOOT : RB_POWER_OFF);
@@ -279,6 +296,7 @@ static void prepare_nt(void)
     make_dir(PREFIX "/home", 0700, 1);
     make_dir(PREFIX "/xdg", 0700, 1);
     make_dir(PREFIX "/dosdevices", 0755, 1);
+    make_dir(EJECT_DIR, 0755, 1);
     if (symlink(C_DRIVE, PREFIX "/dosdevices/c:") && errno != EEXIST)
         say("dosdevices/c: %s", strerror(errno));
     lchown(PREFIX "/dosdevices/c:", nt_uid, nt_gid);
@@ -287,6 +305,136 @@ static void prepare_nt(void)
         snprintf(to, sizeof(to), "%s/%s", PREFIX, hives[i]);
         copy_file(from, to);
     }
+}
+
+/* Safely Remove Hardware. mountmgr.sys, which runs as nt, asks for a disk
+ * by creating EJECT_DIR/<disk>; the answer goes in EJECT_DIR/<disk>.done:
+ * "ok", or "busy" when a program still has a file open on one of its
+ * volumes, as Windows answers. The disk is left as Windows leaves it: its
+ * volumes unmounted and their letters gone, its cache flushed, the disk
+ * stopped and the USB port it is on switched off. */
+static int write_sysfs(const char *path, const char *value)
+{
+    int fd = open(path, O_WRONLY | O_CLOEXEC), ok;
+
+    if (fd < 0)
+        return -1;
+    ok = write(fd, value, strlen(value)) == (ssize_t)strlen(value);
+    close(fd);
+    return ok ? 0 : -1;
+}
+
+static const char *eject_disk(const char *disk)
+{
+    char parts[16][64], mounts[16][PATH_MAX], path[PATH_MAX + 64], line[PATH_MAX + 64];
+    char sys[PATH_MAX], usb[PATH_MAX];
+    int n = 0, done = 0;
+    struct dirent *de;
+    DIR *dir;
+
+    /* its volumes, from the records */
+    if ((dir = opendir(VOLUMES_DIR))) {
+        while (n < 16 && (de = readdir(dir))) {
+            char mount[PATH_MAX] = "", on[64] = "";
+            FILE *f;
+
+            if (de->d_name[0] == '.')
+                continue;
+            snprintf(path, sizeof(path), VOLUMES_DIR "/%s", de->d_name);
+            if (!(f = fopen(path, "re")))
+                continue;
+            while (fgets(line, sizeof(line), f)) {
+                line[strcspn(line, "\n")] = 0;
+                if (!strncmp(line, "mount=", 6))
+                    snprintf(mount, sizeof(mount), "%.4000s", line + 6);
+                else if (!strncmp(line, "disk=", 5))
+                    snprintf(on, sizeof(on), "%.63s", line + 5);
+            }
+            fclose(f);
+            if (strcmp(on, disk) || !mount[0])
+                continue;
+            snprintf(parts[n], sizeof(parts[n]), "%.63s", de->d_name);
+            snprintf(mounts[n], sizeof(mounts[n]), "%s", mount);
+            n++;
+        }
+        closedir(dir);
+    }
+
+    sync();
+    for (; done < n; done++)
+        if (umount2(mounts[done], 0))
+            break;
+    if (done < n) {
+        say("eject %s: %s: %s", disk, mounts[done], strerror(errno));
+        /* the volumes already unmounted come back, with their letters */
+        for (int i = 0; i < done; i++) {
+            snprintf(path, sizeof(path), VOLUMES_DIR "/%s", parts[i]);
+            unlink(path);
+            rmdir(mounts[i]);
+            snprintf(path, sizeof(path), "/sys/class/block/%s/uevent", parts[i]);
+            write_sysfs(path, "add");
+        }
+        return errno == EBUSY ? "busy" : "error";
+    }
+    for (int i = 0; i < n; i++) {
+        snprintf(path, sizeof(path), VOLUMES_DIR "/%s", parts[i]);
+        unlink(path);
+        rmdir(mounts[i]);
+    }
+
+    /* the USB device the disk is on, found before the disk goes */
+    usb[0] = 0;
+    snprintf(path, sizeof(path), "/sys/class/block/%s", disk);
+    if (realpath(path, sys)) {
+        snprintf(usb, sizeof(usb), "%s", sys);
+        for (char *slash; (slash = strrchr(usb, '/')) && slash != usb;) {
+            *slash = 0;
+            snprintf(path, sizeof(path), "%s/idVendor", usb);
+            if (!access(path, F_OK))
+                break;
+        }
+        snprintf(path, sizeof(path), "%s/idVendor", usb);
+        if (access(path, F_OK))
+            usb[0] = 0;
+    }
+    /* a SCSI disk flushes its cache and stops as it is deleted */
+    snprintf(path, sizeof(path), "/sys/class/block/%s/device/delete", disk);
+    write_sysfs(path, "1");
+    if (usb[0]) {
+        snprintf(path, sizeof(path), "%s/remove", usb);
+        write_sysfs(path, "1");
+    }
+    say("eject %s: %d volume(s), %s", disk, n, usb[0] ? "USB port off" : "stopped");
+    return "ok";
+}
+
+static void serve_ejects(void)
+{
+    char request[PATH_MAX], answer[PATH_MAX], tmp[PATH_MAX];
+    struct dirent *de;
+    DIR *dir;
+
+    if (!(dir = opendir(EJECT_DIR)))
+        return;
+    while ((de = readdir(dir))) {
+        const char *name = de->d_name, *result;
+        int fd;
+
+        if (name[0] == '.' || strchr(name, '.') || strspn(name, "abcdefghijklmnopqrstuvwxyz0123456789") != strlen(name))
+            continue;
+        snprintf(request, sizeof(request), EJECT_DIR "/%s", name);
+        unlink(request);
+        result = eject_disk(name);
+        snprintf(tmp, sizeof(tmp), EJECT_DIR "/.%s.done", name);
+        snprintf(answer, sizeof(answer), EJECT_DIR "/%s.done", name);
+        if ((fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) >= 0) {
+            write(fd, result, strlen(result));
+            fchown(fd, nt_uid, nt_gid);
+            close(fd);
+            rename(tmp, answer);
+        }
+    }
+    closedir(dir);
 }
 
 static void open_logs(void)
@@ -499,6 +647,7 @@ int main(void)
         if (!shell_pid)
             start_shell();
         mirror_ntlog();
+        serve_ejects();
         usleep(200000);
     }
 }

@@ -1,21 +1,27 @@
-From 19b2cea3833057b9063408b287d539d2f4baf2c7 Mon Sep 17 00:00:00 2001
+From 807d3b5ba2bbce2ef946cc8d26fef8d4db26ea8b Mon Sep 17 00:00:00 2001
 From: 77450danik <ddziuba1@stu.vistula.edu.pl>
 Date: Mon, 21 Sep 2026 17:08:58 +0300
 Subject: [PATCH] mountmgr.sys: Volumes the Arctic host mounts get drive
- letters as they come and go.
+ letters, and can be ejected.
 
 The host mounts every volume Windows would give a letter to and describes
 each in a file of /run/arctic/volumes; the folder is watched with inotify.
 Fixed disks, removable disks and CDs get their letters and Windows' drive
 types, and the shell hears of each through WM_DEVICECHANGE.
+
+For Safely Remove Hardware, a volume's disk answers
+IOCTL_STORAGE_QUERY_PROPERTY with its bus, product and removable medium,
+IOCTL_STORAGE_GET_DEVICE_NUMBER with a number shared by all its volumes,
+and IOCTL_STORAGE_EJECT_MEDIA by asking the host to flush, unmount and power
+the disk off, on a thread of its own.
 ---
  dlls/mountmgr.sys/Makefile.in |   1 +
- dlls/mountmgr.sys/arctic.c    | 168 ++++++++++++++++++++++++++++++++++
- dlls/mountmgr.sys/device.c    |   3 +-
- dlls/mountmgr.sys/mountmgr.c  |   8 ++
- dlls/mountmgr.sys/unixlib.c   |  11 +++
- dlls/mountmgr.sys/unixlib.h   |   2 +
- 6 files changed, 192 insertions(+), 1 deletion(-)
+ dlls/mountmgr.sys/arctic.c    | 269 ++++++++++++++++++++++++++++++++++
+ dlls/mountmgr.sys/device.c    |  99 ++++++++++++-
+ dlls/mountmgr.sys/mountmgr.c  |   8 +
+ dlls/mountmgr.sys/unixlib.c   |  13 ++
+ dlls/mountmgr.sys/unixlib.h   |  27 ++++
+ 6 files changed, 415 insertions(+), 2 deletions(-)
  create mode 100644 dlls/mountmgr.sys/arctic.c
 
 diff --git a/dlls/mountmgr.sys/Makefile.in b/dlls/mountmgr.sys/Makefile.in
@@ -32,10 +38,10 @@ index 5d732eb9..086d6544 100644
  	dbus.c \
 diff --git a/dlls/mountmgr.sys/arctic.c b/dlls/mountmgr.sys/arctic.c
 new file mode 100644
-index 00000000..41e52aca
+index 00000000..e8a5cf03
 --- /dev/null
 +++ b/dlls/mountmgr.sys/arctic.c
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,269 @@
 +/*
 + * Volumes of the Arctic host
 + *
@@ -67,6 +73,7 @@ index 00000000..41e52aca
 +
 +#include <dirent.h>
 +#include <errno.h>
++#include <fcntl.h>
 +#include <limits.h>
 +#include <stdarg.h>
 +#include <stdio.h>
@@ -83,6 +90,7 @@ index 00000000..41e52aca
 +WINE_DEFAULT_DEBUG_CHANNEL(mountmgr);
 +
 +#define VOLUMES_DIR "/run/arctic/volumes"
++#define EJECT_DIR "/run/arctic/eject" /* served by arctic-init, which is root */
 +
 +#ifdef __linux__
 +
@@ -197,15 +205,114 @@ index 00000000..41e52aca
 +    close( fd );
 +}
 +
++/* reads one key of a volume's record */
++static BOOL read_record( const char *udi, const char *key, char *value, size_t size )
++{
++    char path[PATH_MAX], line[1024];
++    size_t len = strlen( key );
++    BOOL found = FALSE;
++    FILE *f;
++
++    if (!udi || strchr( udi, '/' )) return FALSE;
++    snprintf( path, sizeof(path), VOLUMES_DIR "/%s", udi );
++    if (!(f = fopen( path, "r" ))) return FALSE;
++    while (!found && fgets( line, sizeof(line), f ))
++    {
++        if (strncmp( line, key, len ) || line[len] != '=') continue;
++        line[strcspn( line, "\n" )] = 0;
++        snprintf( value, size, "%s", line + len + 1 );
++        found = TRUE;
++    }
++    fclose( f );
++    return found;
++}
++
++/* every disk keeps the number it got first, as a PhysicalDrive number does */
++static ULONG disk_number( const char *disk )
++{
++    static char disks[64][32];
++    static unsigned int count;
++    unsigned int i;
++
++    for (i = 0; i < count; i++) if (!strcmp( disks[i], disk )) return i + 1;
++    if (count == ARRAY_SIZE(disks)) return 0;
++    snprintf( disks[count], sizeof(disks[count]), "%s", disk );
++    return ++count;
++}
++
++NTSTATUS arctic_volume_info( void *args )
++{
++    const struct arctic_volume_info_params *params = args;
++    struct arctic_volume_info *info = params->info;
++    char value[32];
++
++    memset( info, 0, sizeof(*info) );
++    if (!read_record( params->udi, "disk", info->disk, sizeof(info->disk) )) return STATUS_NOT_FOUND;
++    read_record( params->udi, "product", info->product, sizeof(info->product) );
++    info->usb = read_record( params->udi, "usb", value, sizeof(value) ) && !strcmp( value, "1" );
++    info->removable = read_record( params->udi, "type", value, sizeof(value) ) && !strcmp( value, "removable" );
++    info->disk_number = disk_number( info->disk );
++    return STATUS_SUCCESS;
++}
++
++/* asks the host to take the disk away safely and waits for its answer */
++NTSTATUS arctic_eject( void *args )
++{
++    const struct arctic_eject_params *params = args;
++    char disk[32], request[PATH_MAX], answer[PATH_MAX], result[16] = "";
++    int fd, i;
++
++    if (!read_record( params->udi, "disk", disk, sizeof(disk) )) return STATUS_NO_SUCH_DEVICE;
++    snprintf( request, sizeof(request), EJECT_DIR "/%s", disk );
++    snprintf( answer, sizeof(answer), EJECT_DIR "/%s.done", disk );
++    unlink( answer );
++    if ((fd = open( request, O_WRONLY | O_CREAT | O_CLOEXEC, 0644 )) == -1)
++    {
++        ERR( "%s: %s\n", request, strerror(errno) );
++        return STATUS_ACCESS_DENIED;
++    }
++    close( fd );
++
++    /* flushing a slow stick can take a while */
++    for (i = 0; i < 600; i++)
++    {
++        if ((fd = open( answer, O_RDONLY | O_CLOEXEC )) != -1)
++        {
++            ssize_t len = read( fd, result, sizeof(result) - 1 );
++
++            close( fd );
++            unlink( answer );
++            result[len > 0 ? len : 0] = 0;
++            TRACE( "%s: %s\n", disk, result );
++            if (!strcmp( result, "ok" )) return STATUS_SUCCESS;
++            if (!strcmp( result, "busy" )) return STATUS_DEVICE_BUSY;
++            return STATUS_UNSUCCESSFUL;
++        }
++        usleep( 100000 );
++    }
++    unlink( request );
++    return STATUS_IO_TIMEOUT;
++}
++
 +#else
 +
 +void run_arctic_loop(void)
 +{
 +}
 +
++NTSTATUS arctic_volume_info( void *args )
++{
++    return STATUS_NOT_FOUND;
++}
++
++NTSTATUS arctic_eject( void *args )
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
 +#endif
 diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
-index 51e3cb19..6d19736c 100644
+index 51e3cb19..99aca1d1 100644
 --- a/dlls/mountmgr.sys/device.c
 +++ b/dlls/mountmgr.sys/device.c
 @@ -1020,8 +1020,9 @@ static NTSTATUS set_volume_info( struct volume *volume, struct dos_drive *drive,
@@ -218,6 +325,141 @@ index 51e3cb19..6d19736c 100644
 +        MultiByteToWideChar( CP_UTF8, 0, label, -1, volume->label, ARRAY_SIZE(volume->label) );
  
      TRACE("fs_type %#x, label %s, serial %08lx\n", volume->fs_type, debugstr_w(volume->label), volume->serial);
+ 
+@@ -1553,6 +1554,64 @@ NTSTATUS query_unix_drive( void *buff, SIZE_T insize, SIZE_T outsize, IO_STATUS_
+     return status;
+ }
+ 
++/* the disk under a volume the Arctic host mounted, from the host's record */
++static BOOL get_arctic_info( struct disk_device *device, struct arctic_volume_info *info )
++{
++    struct arctic_volume_info_params params;
++
++    if (!device->volume || !device->volume->udi) return FALSE;
++    params.udi = device->volume->udi;
++    params.info = info;
++    return !MOUNTMGR_CALL( arctic_volume_info, &params );
++}
++
++struct arctic_eject_request
++{
++    IRP  *irp;
++    char *udi;
++};
++
++/* the host flushes, unmounts and powers the disk off, which takes a moment:
++ * the request completes on a thread of its own */
++static DWORD WINAPI arctic_eject_thread( void *arg )
++{
++    struct arctic_eject_request *request = arg;
++    struct arctic_eject_params params = { request->udi };
++    NTSTATUS status = MOUNTMGR_CALL( arctic_eject, &params );
++
++    TRACE( "%s: %#lx\n", debugstr_a(request->udi), status );
++    request->irp->IoStatus.Status = status;
++    request->irp->IoStatus.Information = 0;
++    IoCompleteRequest( request->irp, IO_NO_INCREMENT );
++    RtlFreeHeap( GetProcessHeap(), 0, request->udi );
++    RtlFreeHeap( GetProcessHeap(), 0, request );
++    return 0;
++}
++
++static NTSTATUS arctic_eject_volume( struct disk_device *device, IRP *irp )
++{
++    struct arctic_eject_request *request;
++    HANDLE thread;
++
++    if (!(request = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(*request) ))) return STATUS_NO_MEMORY;
++    if (!(request->udi = RtlAllocateHeap( GetProcessHeap(), 0, strlen( device->volume->udi ) + 1 )))
++    {
++        RtlFreeHeap( GetProcessHeap(), 0, request );
++        return STATUS_NO_MEMORY;
++    }
++    strcpy( request->udi, device->volume->udi );
++    request->irp = irp;
++    IoMarkIrpPending( irp );
++    if (!(thread = CreateThread( NULL, 0, arctic_eject_thread, request, 0, NULL )))
++    {
++        RtlFreeHeap( GetProcessHeap(), 0, request->udi );
++        RtlFreeHeap( GetProcessHeap(), 0, request );
++        return STATUS_NO_MEMORY;
++    }
++    CloseHandle( thread );
++    return STATUS_PENDING;
++}
++
+ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
+ {
+     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
+@@ -1577,8 +1636,11 @@ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
+     {
+         STORAGE_DEVICE_DESCRIPTOR *descriptor;
+         DWORD len = sizeof(*descriptor);
++        struct arctic_volume_info arctic;
++        BOOL is_arctic = get_arctic_info( device, &arctic );
+ 
+         if (device->disk_serial) len += strlen( device->disk_serial ) + 1;
++        if (is_arctic) len += strlen( arctic.product ) + 1;
+ 
+         if (irpsp->Parameters.DeviceIoControl.OutputBufferLength < sizeof(STORAGE_DESCRIPTOR_HEADER))
+             status = STATUS_INVALID_PARAMETER;
+@@ -1613,6 +1675,15 @@ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
+                 descriptor->SerialNumberOffset = sizeof(*descriptor);
+                 strcpy( (char *)descriptor + descriptor->SerialNumberOffset, device->disk_serial );
+             }
++            /* a volume of the Arctic host: its disk as the host sees it */
++            if (is_arctic)
++            {
++                descriptor->RemovableMedia = arctic.removable;
++                descriptor->BusType = arctic.usb ? BusTypeUsb : BusTypeAta;
++                descriptor->ProductIdOffset = sizeof(*descriptor);
++                if (device->disk_serial) descriptor->ProductIdOffset += strlen( device->disk_serial ) + 1;
++                strcpy( (char *)descriptor + descriptor->ProductIdOffset, arctic.product );
++            }
+             irp->IoStatus.Information = len;
+             status = STATUS_SUCCESS;
+         }
+@@ -1920,8 +1991,12 @@ static NTSTATUS WINAPI disk_ioctl( DEVICE_OBJECT *device, IRP *irp )
+     case IOCTL_STORAGE_GET_DEVICE_NUMBER:
+     {
+         DWORD len = min( sizeof(dev->devnum), irpsp->Parameters.DeviceIoControl.OutputBufferLength );
++        STORAGE_DEVICE_NUMBER devnum = dev->devnum;
++        struct arctic_volume_info arctic;
+ 
+-        memcpy( irp->AssociatedIrp.SystemBuffer, &dev->devnum, len );
++        /* the volumes of one disk of the Arctic host share its number */
++        if (get_arctic_info( dev, &arctic )) devnum.DeviceNumber = arctic.disk_number;
++        memcpy( irp->AssociatedIrp.SystemBuffer, &devnum, len );
+         irp->IoStatus.Information = len;
+         status = STATUS_SUCCESS;
+         break;
+@@ -1967,7 +2042,27 @@ static NTSTATUS WINAPI disk_ioctl( DEVICE_OBJECT *device, IRP *irp )
+     case IOCTL_STORAGE_QUERY_PROPERTY:
+         status = query_property( dev, irp );
+         break;
++    case IOCTL_STORAGE_EJECT_MEDIA:
++    case IOCTL_DISK_EJECT_MEDIA:
++    case IOCTL_STORAGE_MEDIA_REMOVAL:
++    {
++        struct arctic_volume_info arctic;
++
++        if (dev->type == DEVICE_CDROM || dev->type == DEVICE_DVD || !get_arctic_info( dev, &arctic ))
++            goto other;
++        if (irpsp->Parameters.DeviceIoControl.IoControlCode == IOCTL_STORAGE_MEDIA_REMOVAL)
++        {
++            status = STATUS_SUCCESS;
++            break;
++        }
++        /* Safely Remove Hardware */
++        status = arctic_eject_volume( dev, irp );
++        if (status != STATUS_PENDING) break;
++        LeaveCriticalSection( &device_section );
++        return status;
++    }
+     default:
++    other:
+     {
+         ULONG code = irpsp->Parameters.DeviceIoControl.IoControlCode;
  
 diff --git a/dlls/mountmgr.sys/mountmgr.c b/dlls/mountmgr.sys/mountmgr.c
 index 762fa395..2135bc94 100644
@@ -246,7 +488,7 @@ index 762fa395..2135bc94 100644
  #ifdef _WIN64
      /* create a symlink so that the Wine port overrides key can be edited with 32-bit reg or regedit */
 diff --git a/dlls/mountmgr.sys/unixlib.c b/dlls/mountmgr.sys/unixlib.c
-index 235e3ae1..5127dfc9 100644
+index 235e3ae1..fc8e88b8 100644
 --- a/dlls/mountmgr.sys/unixlib.c
 +++ b/dlls/mountmgr.sys/unixlib.c
 @@ -181,6 +181,16 @@ static NTSTATUS run_loop( void *args )
@@ -266,23 +508,55 @@ index 235e3ae1..5127dfc9 100644
  static NTSTATUS dequeue_device_op( void *args )
  {
      const struct dequeue_device_op_params *params = args;
-@@ -635,6 +645,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+@@ -635,6 +645,9 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
      write_credential,
      delete_credential,
      enumerate_credentials,
 +    arctic_loop,
++    arctic_volume_info,
++    arctic_eject,
  };
  
  C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
 diff --git a/dlls/mountmgr.sys/unixlib.h b/dlls/mountmgr.sys/unixlib.h
-index bb4cfc46..75629919 100644
+index bb4cfc46..29194cfa 100644
 --- a/dlls/mountmgr.sys/unixlib.h
 +++ b/dlls/mountmgr.sys/unixlib.h
-@@ -193,12 +193,14 @@ enum mountmgr_funcs
+@@ -58,6 +58,27 @@ struct dequeue_device_op_params
+     struct device_info *info;
+ };
+ 
++/* a volume the Arctic host mounted: the disk it is on, for Safely Remove Hardware */
++struct arctic_volume_info
++{
++    char  disk[32];      /* the host's name for the disk */
++    char  product[128];  /* the USB product string, or the disk model */
++    ULONG disk_number;   /* the same for every volume of the disk; C: is on 0 */
++    BOOL  usb;           /* on a USB device */
++    BOOL  removable;     /* the medium is removable (a USB stick, a card) */
++};
++
++struct arctic_volume_info_params
++{
++    const char *udi;
++    struct arctic_volume_info *info;
++};
++
++struct arctic_eject_params
++{
++    const char *udi;
++};
++
+ struct add_drive_params
+ {
+     const char *device;
+@@ -193,12 +214,18 @@ enum mountmgr_funcs
      unix_write_credential,
      unix_delete_credential,
      unix_enumerate_credentials,
 +    unix_arctic_loop,
++    unix_arctic_volume_info,
++    unix_arctic_eject,
      unix_funcs_count
  };
  
@@ -290,6 +564,8 @@ index bb4cfc46..75629919 100644
  
  extern NTSTATUS errno_to_status( int err );
 +extern void run_arctic_loop(void);
++extern NTSTATUS arctic_volume_info( void *args );
++extern NTSTATUS arctic_eject( void *args );
  extern void queue_device_op( enum device_op op, const char *udi, const char *device,
                               const char *mount_point, enum device_type type, const GUID *guid,
                               const char *disk_serial, const char *label,

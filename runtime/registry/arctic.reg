@@ -34,6 +34,11 @@ REGEDIT4
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Winlogon]
 "Shell"="C:\\Windows\\explorer.exe"
 
+; The notification area's own icons (stobject): Safely Remove Hardware. Volume
+; and power join when there is sound (M4) and a battery to show.
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Applets\SysTray]
+"Services"=dword:00000002
+
 [HKEY_CURRENT_USER\Software\Wine\DllOverrides]
 "shell32"="native,builtin"
 "browseui"="native,builtin"

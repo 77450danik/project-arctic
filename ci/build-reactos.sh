@@ -1,6 +1,7 @@
 #!/bin/bash
 # Builds the parts of ReactOS that Arctic takes: the shell (explorer.exe,
-# shell32, browseui, shdocvw, shlwapi, comctl32, uxtheme, compressed folders),
+# shell32, browseui, shdocvw, shlwapi, comctl32, uxtheme, compressed folders,
+# Safely Remove Hardware in the notification area),
 # the Mizu theme and the keyboard layouts. They are built with
 # ReactOS's own toolchain (RosBE), the way ReactOS's CI builds them, and go
 # to C: as native Windows binaries. Output: out/reactos, laid out as on C:.
@@ -17,7 +18,7 @@ COMMIT=$(cat "$ROOT/runtime/reactos/COMMIT")
 ARCH=amd64
 KEYBOARDS="kbdus kbdur kbdru"
 SHELL_DLLS="shell32 browseui shdocvw shlwapi comctl32 uxtheme"
-SHELL_EXTENSIONS="zipfldr"
+SHELL_EXTENSIONS="zipfldr stobject"
 TARGETS="explorer $SHELL_DLLS $SHELL_EXTENSIONS mizu.msstyles $KEYBOARDS"
 
 ROSBE_SCRIPT=https://gist.githubusercontent.com/zefklop/b2d6a0b470c70183e93d5285a03f5899/raw/build_rosbe_ci.sh

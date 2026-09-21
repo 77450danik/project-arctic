@@ -190,6 +190,38 @@ static const char *drive_type(const char *name)
     return removable ? "removable" : "fixed";
 }
 
+static void read_line(const char *path, char *out, size_t size)
+{
+    FILE *f = fopen(path, "re");
+
+    out[0] = 0;
+    if (f) {
+        if (fgets(out, size, f))
+            out[strcspn(out, "\n")] = 0;
+        fclose(f);
+    }
+}
+
+/* the USB device the disk sits on, if it does: the folder above it in sysfs
+ * with idVendor. Its product string is the name Windows shows in the Safely
+ * Remove Hardware menu. */
+static int usb_device(const char *disk, char *dir, char *product, size_t size)
+{
+    char path[PATH_MAX + 16];
+
+    snprintf(dir, PATH_MAX, "%s", disk);
+    for (char *slash; (slash = strrchr(dir, '/')) && slash != dir;) {
+        *slash = 0;
+        snprintf(path, sizeof(path), "%s/idVendor", dir);
+        if (!access(path, F_OK)) {
+            snprintf(path, sizeof(path), "%s/product", dir);
+            read_line(path, product, size);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ID_FS_LABEL_ENC keeps the label as it is, with \xNN for special bytes */
 static void decode_label(const char *in, char *out, size_t size)
 {
@@ -269,7 +301,7 @@ static void remove_volume(const char *name)
 static void add_volume(const char *name, const char *dev)
 {
     const char *fs = env("ID_FS_TYPE"), *type;
-    char dir[PATH_MAX], record[PATH_MAX], tmp[PATH_MAX], label[256];
+    char dir[PATH_MAX], record[PATH_MAX], tmp[PATH_MAX], label[256], disk[PATH_MAX];
     struct stat st;
     int read_only;
     FILE *f;
@@ -298,6 +330,15 @@ static void add_volume(const char *name, const char *dev)
     }
     fprintf(f, "device=%s\nmount=%s\ntype=%s\nfs=%s\nlabel=%s\nuuid=%s\npartuuid=%s\nread_only=%d\n",
             dev, dir, type, fs, label, env("ID_FS_UUID"), env("ID_PART_ENTRY_UUID"), read_only);
+    /* the disk it is on, for Safely Remove Hardware */
+    if (!disk_dir(name, disk)) {
+        char usb[PATH_MAX], product[256] = "";
+        int on_usb = usb_device(disk, usb, product, sizeof(product));
+
+        if (!product[0])
+            decode_label(env("ID_MODEL_ENC"), product, sizeof(product));
+        fprintf(f, "disk=%s\nusb=%d\nproduct=%s\n", strrchr(disk, '/') + 1, on_usb, product);
+    }
     fclose(f);
     /* mountmgr sees the record whole or not at all */
     rename(tmp, record);

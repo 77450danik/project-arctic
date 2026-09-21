@@ -1,0 +1,25 @@
+/*
+ * PROJECT:     ReactOS system libraries
+ * LICENSE:     GPL-2.0-or-later (https://spdx.org/licenses/GPL-2.0-or-later)
+ * PURPOSE:     Ukrainian resource file: Safely Remove Hardware, in the words
+ *              of the Ukrainian Windows 10
+ */
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+BEGIN
+    IDS_HOTPLUG_REMOVE_1 "Безпечно видалити устаткування та витягти носій"
+    IDS_HOTPLUG_REMOVE_2 "&Відкрити пристрої та принтери"
+END
+
+STRINGTABLE
+BEGIN
+    IDS_HOTPLUG_EJECT "Витягти %s"
+    IDS_HOTPLUG_EJECT_VOLUME "   -   %s"
+    IDS_HOTPLUG_MASS_STORAGE "USB Mass Storage Device"
+    IDS_HOTPLUG_BUSY "Пристрій зайнятий. Закрийте всі програми та вікна, які можуть використовувати пристрій, а потім повторіть спробу."
+    IDS_HOTPLUG_PROBLEM "Проблема з витягненням %s"
+    IDS_HOTPLUG_SAFE_TEXT "Тепер пристрій ""%s"" можна безпечно від’єднати від комп’ютера."
+    IDS_HOTPLUG_SAFE_TITLE "Устаткування можна безпечно витягнути"
+END

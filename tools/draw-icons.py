@@ -1,7 +1,8 @@
 """Places the icon set in ICONS/ into ReactOS's shell32 and zipfldr and into
 Wine's user32 (the message box icons), and draws, in the same glossy style,
 the ones the set lacks: Control Panel, Desktop, Documents and Videos (the
-set's folder with a page or a film strip), information and question.
+set's folder with a page or a film strip), information and question, and
+Safely Remove Hardware for stobject (the set's USB stick with a green tick).
 
 usage: python tools/draw-icons.py
   writes runtime/reactos/files/... and runtime/wine/modules/dlls/user32/resources
@@ -193,6 +194,27 @@ def film(n):
     return o
 
 
+def tick_badge(n):
+    """a glossy green disc with a white tick"""
+    c = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    box = (n * 0.04, n * 0.04, n * 0.96, n * 0.96)
+    disc, mask = rounded(c.size, box, n * 0.46, vgrad((10, 10), (120, 220, 90, 255), (30, 140, 40, 255)))
+    shadow(c, mask, (0, int(n * 0.03)), n * 0.04)
+    c.alpha_composite(disc)
+    gloss(c, box, n * 0.46)
+    ImageDraw.Draw(c).line([(n * 0.27, n * 0.52), (n * 0.43, n * 0.68), (n * 0.73, n * 0.34)],
+                           fill=(255, 255, 255, 255), width=int(n * 0.13), joint="curve")
+    return c
+
+
+def safely_remove(size):
+    """Safely Remove Hardware: the set's USB stick with a green tick, as Windows 10 has it"""
+    icon = best_frame(os.path.join(SRC, "USB.ico"), size)
+    b = max(9, round(size * 0.6))
+    icon.alpha_composite(render(tick_badge, b), (size - b, size - b))
+    return icon
+
+
 def render(draw, size):
     return draw(size * SS).resize((size, size), Image.LANCZOS)
 
@@ -206,6 +228,10 @@ shutil.copyfile(os.path.join(SRC, "no_or_error.ico"), os.path.join(USER32, "oic_
 shutil.copyfile(os.path.join(SRC, "warning.ico"), os.path.join(USER32, "oic_bang.ico"))
 for name, glyph in (("oic_note.ico", "i"), ("oic_ques.ico", "?")):
     write_ico(os.path.join(USER32, name), [render(lambda n: sign(n, glyph), s) for s in SIZES])
+# the notification area's Safely Remove Hardware is stobject's
+STOBJECT = os.path.join(FILES, "dll", "shellext", "stobject", "resources", "hotplug")
+os.makedirs(STOBJECT, exist_ok=True)
+write_ico(os.path.join(STOBJECT, "1.ico"), [safely_remove(s) for s in (16, 20, 24, 32, 48)])
 # compressed folders are zipfldr's
 os.makedirs(os.path.join(FILES, "dll", "shellext", "zipfldr", "res"), exist_ok=True)
 shutil.copyfile(os.path.join(SRC, "ZIP.ico"), os.path.join(FILES, "dll", "shellext", "zipfldr", "res", "zipfldr.ico"))

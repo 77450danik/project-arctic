@@ -1,0 +1,91 @@
+diff --git a/dll/shellext/stobject/lang/en-US.rc b/dll/shellext/stobject/lang/en-US.rc
+--- a/dll/shellext/stobject/lang/en-US.rc
++++ b/dll/shellext/stobject/lang/en-US.rc
+@@ -27,8 +27,8 @@
+     IDS_PWR_FULLY_CHARGED "Fully charged"
+ 
+     //Hotplug related strings
+-    IDS_HOTPLUG_REMOVE_1 "Safely Remove Hardware"
+-    IDS_HOTPLUG_REMOVE_2 "&Safely Remove Hardware"
++    IDS_HOTPLUG_REMOVE_1 "Safely Remove Hardware and Eject Media"
++    IDS_HOTPLUG_REMOVE_2 "&Open Devices and Printers"
+     IDS_HOTPLUG_REMOVE_3 "Safely remove %s"
+     IDS_HOTPLUG_RUN "shell32.dll,Control_RunDLL hotplug.dll"
+     IDS_HOTPLUG_COMMA ", "
+@@ -50,3 +50,14 @@
+     IDS_KEYS_MOUSE "MouseKeys"
+     IDS_KEYS_FILTER "FilterKeys"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_HOTPLUG_EJECT "Eject %s"
++    IDS_HOTPLUG_EJECT_VOLUME "   -   %s"
++    IDS_HOTPLUG_MASS_STORAGE "USB Mass Storage Device"
++    IDS_HOTPLUG_BUSY "This device is currently in use. Close any programs or windows that might be using the device, and then try again."
++    IDS_HOTPLUG_PROBLEM "Problem Ejecting %s"
++    IDS_HOTPLUG_SAFE_TEXT "The '%s' device can now be safely removed from the computer."
++    IDS_HOTPLUG_SAFE_TITLE "Safe To Remove Hardware"
++END
+diff --git a/dll/shellext/stobject/lang/ru-RU.rc b/dll/shellext/stobject/lang/ru-RU.rc
+--- a/dll/shellext/stobject/lang/ru-RU.rc
++++ b/dll/shellext/stobject/lang/ru-RU.rc
+@@ -35,8 +35,8 @@
+     IDS_PWR_FULLY_CHARGED "Fully charged"
+ 
+     //Hotplug related strings
+-    IDS_HOTPLUG_REMOVE_1 "Безопасное извлечение устройства"
+-    IDS_HOTPLUG_REMOVE_2 "&Безопасное извлечение устройства"
++    IDS_HOTPLUG_REMOVE_1 "Безопасное извлечение устройств и дисков"
++    IDS_HOTPLUG_REMOVE_2 "&Открыть устройства и принтеры"
+     IDS_HOTPLUG_REMOVE_3 "Безопасное извлечение %s"
+     IDS_HOTPLUG_RUN "shell32.dll,Control_RunDLL hotplug.dll"
+     IDS_HOTPLUG_COMMA ", "
+@@ -58,3 +58,14 @@
+     IDS_KEYS_MOUSE "Управление указателем с клавиатуры"
+     IDS_KEYS_FILTER "Фильтрация ввода"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_HOTPLUG_EJECT "Извлечь ""%s"""
++    IDS_HOTPLUG_EJECT_VOLUME "   -   %s"
++    IDS_HOTPLUG_MASS_STORAGE "Запоминающее устройство для USB"
++    IDS_HOTPLUG_BUSY "Устройство еще используется. Завершите выполнение всех программ и закройте все окна, которые могут использовать это устройство, а затем повторите попытку."
++    IDS_HOTPLUG_PROBLEM "Проблема при извлечении ""%s"""
++    IDS_HOTPLUG_SAFE_TEXT "Теперь устройство ""%s"" может быть безопасно извлечено из компьютера."
++    IDS_HOTPLUG_SAFE_TITLE "Оборудование может быть извлечено"
++END
+diff --git a/dll/shellext/stobject/resource.h b/dll/shellext/stobject/resource.h
+--- a/dll/shellext/stobject/resource.h
++++ b/dll/shellext/stobject/resource.h
+@@ -26,6 +26,16 @@
+ #define IDS_HOTPLUG_A             221
+ #define IDS_HOTPLUG_REQUIRES      222
+ #define IDS_HOTPLUG_CLICK         223
++
++/* Safely Remove Hardware in Windows 10's words: stobject.dll's 223 and 224,
++ * and hotplug.dll's own ids */
++#define IDS_HOTPLUG_EJECT         2223
++#define IDS_HOTPLUG_EJECT_VOLUME  2224
++#define IDS_HOTPLUG_MASS_STORAGE  2270
++#define IDS_HOTPLUG_BUSY          1206
++#define IDS_HOTPLUG_PROBLEM       2254
++#define IDS_HOTPLUG_SAFE_TEXT     2260
++#define IDS_HOTPLUG_SAFE_TITLE    2261
+ 
+ #define IDI_VOLUME                230
+ #define IDI_VOLMUTE               231
+diff --git a/dll/shellext/stobject/stobject.rc b/dll/shellext/stobject/stobject.rc
+--- a/dll/shellext/stobject/stobject.rc
++++ b/dll/shellext/stobject/stobject.rc
+@@ -89,6 +89,9 @@
+ #ifdef LANGUAGE_TR_TR
+     #include "lang/tr-TR.rc"
+ #endif
++#ifdef LANGUAGE_UK_UA
++    #include "lang/uk-UA.rc"
++#endif
+ #ifdef LANGUAGE_ZH_CN
+     #include "lang/zh-CN.rc"
+ #endif
