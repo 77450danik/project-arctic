@@ -1,0 +1,68 @@
+From 0a21c9e98486dbb6ff2dbc8d4e8ff1b484b16f38 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 14:10:45 +0300
+Subject: [PATCH] user32: A visual style repaints the caption after a new title
+ or icon.
+
+The default procedure repaints the classic caption on WM_SETTEXT and
+WM_SETICON; Windows asks the theme with WM_NCUAHDRAWCAPTION instead.
+Explorer names its window after navigating, and the window kept a grey
+classic title bar until something else repainted the frame.
+---
+ dlls/user32/defwnd.c | 30 ++++++++++++++++++++++++------
+ 1 file changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/user32/defwnd.c b/dlls/user32/defwnd.c
+index a90f51d1..67c7915f 100644
+--- a/dlls/user32/defwnd.c
++++ b/dlls/user32/defwnd.c
+@@ -202,13 +202,28 @@ LRESULT WINAPI USER_DefWindowProcW(
+ /***********************************************************************
+  *              DefWindowProcA (USER32.@)
+  */
++#define WM_NCUAHDRAWCAPTION 0x00ae
++
++/* A new title or icon repaints the caption. The default procedure paints the
++ * classic one; with a visual style, as in Windows, the caption is the
++ * theme's to draw, and it is asked to with WM_NCUAHDRAWCAPTION. */
++static void theme_caption_changed( HWND hwnd, UINT msg )
++{
++    if (msg != WM_SETTEXT && msg != WM_SETICON) return;
++    if ((GetWindowLongW( hwnd, GWL_STYLE ) & WS_CAPTION) != WS_CAPTION) return;
++    SendMessageW( hwnd, WM_NCUAHDRAWCAPTION, DC_TEXT | DC_ICON, 0 );
++}
++
+ LRESULT WINAPI DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
+ {
+     USERAPIHOOK *hook = get_theme_api_hook();
++    LRESULT ret;
+ 
+-    if (hook && UAH_IS_MESSAGE_HOOKED( hook->DefWndProcArray, msg ))
+-        return hook->DefWindowProcA( hwnd, msg, wParam, lParam );
+-    return USER_DefWindowProcA( hwnd, msg, wParam, lParam );
++    if (!hook || !UAH_IS_MESSAGE_HOOKED( hook->DefWndProcArray, msg ))
++        return USER_DefWindowProcA( hwnd, msg, wParam, lParam );
++    ret = hook->DefWindowProcA( hwnd, msg, wParam, lParam );
++    theme_caption_changed( hwnd, msg );
++    return ret;
+ }
+ 
+ /***********************************************************************
+@@ -217,8 +232,11 @@ LRESULT WINAPI DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
+ LRESULT WINAPI DefWindowProcW( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
+ {
+     USERAPIHOOK *hook = get_theme_api_hook();
++    LRESULT ret;
+ 
+-    if (hook && UAH_IS_MESSAGE_HOOKED( hook->DefWndProcArray, msg ))
+-        return hook->DefWindowProcW( hwnd, msg, wParam, lParam );
+-    return USER_DefWindowProcW( hwnd, msg, wParam, lParam );
++    if (!hook || !UAH_IS_MESSAGE_HOOKED( hook->DefWndProcArray, msg ))
++        return USER_DefWindowProcW( hwnd, msg, wParam, lParam );
++    ret = hook->DefWindowProcW( hwnd, msg, wParam, lParam );
++    theme_caption_changed( hwnd, msg );
++    return ret;
+ }
+-- 
+2.53.0.windows.2
+
