@@ -1,0 +1,176 @@
+diff --git a/dll/win32/browseui/basebarsite.cpp b/dll/win32/browseui/basebarsite.cpp
+index 3413f6e..da9f5c2 100644
+--- a/dll/win32/browseui/basebarsite.cpp
++++ b/dll/win32/browseui/basebarsite.cpp
+@@ -234,7 +234,8 @@ HRESULT CBaseBarSite::InsertBar(IUnknown *newBar)
+     bandInfo.fMask = RBBIM_STYLE | RBBIM_CHILD | RBBIM_CHILDSIZE | RBBIM_IDEALSIZE | RBBIM_TEXT |
+         RBBIM_LPARAM | RBBIM_ID;
+     bandInfo.fStyle = RBBS_TOPALIGN | RBBS_VARIABLEHEIGHT | RBBS_NOGRIPPER;
+-    bandInfo.lpText = deskBandInfo.wszTitle;
++    /* the navigation pane carries no title */
++    bandInfo.lpText = fVertical ? const_cast<LPWSTR>(L"") : deskBandInfo.wszTitle;
+     hResult = oleWindow->GetWindow(&bandInfo.hwndChild);
+     /* It seems Windows XP doesn't take account of band minsize */
+ #if 0
+@@ -421,6 +422,14 @@ HRESULT STDMETHODCALLTYPE CBaseBarSite::SetDeskBarSite(IUnknown *punkSite)
+         SendMessage(RB_SETTEXTCOLOR, 0, CLR_DEFAULT);
+         SendMessage(RB_SETBKCOLOR, 0, CLR_DEFAULT);
+ 
++        /* The navigation pane has no close button: the View menu hides it,
++           as in Windows */
++        if (fVertical)
++        {
++            toolbarWnd = NULL;
++            return S_OK;
++        }
++
+         /* Create close toolbar and imagelist */
+         toolbarWnd = CreateWindowW(TOOLBARCLASSNAMEW, NULL,
+             WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN |
+@@ -702,36 +711,8 @@ LRESULT CBaseBarSite::OnCustomDraw(LPNMCUSTOMDRAW pnmcd)
+         case CDDS_ITEMPREPAINT:
+             if (fVertical)
+             {
+-                REBARBANDINFO info;
+-                WCHAR wszTitle[MAX_PATH];
+-                DWORD index;
+-                UINT pad = GetSystemMetrics(SM_CXEDGE), leftpad = max(pad * 2, 4);
+-                UINT btnw = 20, btnh = 18, btnarea = 1 + btnw + 1;
+-                HFONT newFont, oldFont;
+-
+-                index = SendMessage(RB_IDTOINDEX, fCurrentActiveBar->fBandID , 0);
+-                ZeroMemory(&info, sizeof(info));
+-                ZeroMemory(wszTitle, sizeof(wszTitle));
++                /* the navigation pane has neither title nor close button */
+                 DrawEdge(pnmcd->hdc, &pnmcd->rc, EDGE_ETCHED, BF_BOTTOM);
+-                // We also resize our close button
+-                ::SetWindowPos(toolbarWnd, HWND_TOP, pnmcd->rc.right - btnarea, 0, btnw, btnh, SWP_SHOWWINDOW);
+-                // Draw the text
+-                info.cch = MAX_PATH;
+-                info.lpText = wszTitle;
+-                RECT rt = pnmcd->rc;
+-                rt.right -= btnarea;
+-                rt.left += leftpad;
+-                rt.bottom -= 1;
+-                if (FAILED_UNEXPECTEDLY(GetInternalBandInfo(index, &info, RBBIM_TEXT)))
+-                    return CDRF_SKIPDEFAULT;
+-                newFont = GetTitleFont();
+-                if (newFont)
+-                    oldFont = (HFONT)SelectObject(pnmcd->hdc, newFont);
+-                COLORREF orgclrtxt = SetTextColor(pnmcd->hdc, GetSysColor(COLOR_BTNTEXT));
+-                DrawText(pnmcd->hdc, info.lpText, -1, &rt, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+-                SetTextColor(pnmcd->hdc, orgclrtxt);
+-                SelectObject(pnmcd->hdc, oldFont);
+-                DeleteObject(newFont);
+                 return CDRF_SKIPDEFAULT;
+             }
+             else
+diff --git a/dll/win32/browseui/settings.cpp b/dll/win32/browseui/settings.cpp
+index ceb7a4e..349df78 100644
+--- a/dll/win32/browseui/settings.cpp
++++ b/dll/win32/browseui/settings.cpp
+@@ -19,6 +19,10 @@ void ShellSettings::Save()
+ 
+     SHRegSetUSValueW(L"Software\\Microsoft\\Internet Explorer\\Toolbar", L"Locked",
+                      REG_DWORD, &fLocked, sizeof(fLocked), SHREGSET_FORCE_HKCU);
++
++    SHRegSetUSValueW(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                     L"NavPaneVisible", REG_DWORD, &fNavPaneVisible, sizeof(fNavPaneVisible),
++                     SHREGSET_FORCE_HKCU);
+ }
+ 
+ void ShellSettings::Load()
+@@ -30,6 +34,9 @@ void ShellSettings::Load()
+ 
+     fLocked = SHRegGetBoolUSValueW(L"Software\\Microsoft\\Internet Explorer\\Toolbar",
+                                    L"Locked", FALSE, TRUE);
++
++    fNavPaneVisible = SHRegGetBoolUSValueW(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                                           L"NavPaneVisible", FALSE, TRUE);
+ }
+ 
+ void CabinetStateSettings::Load()
+diff --git a/dll/win32/browseui/settings.h b/dll/win32/browseui/settings.h
+index 993fb05..bf9420a 100644
+--- a/dll/win32/browseui/settings.h
++++ b/dll/win32/browseui/settings.h
+@@ -15,6 +15,7 @@ struct ShellSettings
+     BOOL fLocked = TRUE;
+     BOOL fShowGoButton = TRUE;
+     BOOL fStatusBarVisible = TRUE;
++    BOOL fNavPaneVisible = TRUE;
+ 
+     void Save();
+     void Load();
+diff --git a/dll/win32/browseui/shellbrowser.cpp b/dll/win32/browseui/shellbrowser.cpp
+index 629297f..760ad87 100644
+--- a/dll/win32/browseui/shellbrowser.cpp
++++ b/dll/win32/browseui/shellbrowser.cpp
+@@ -2171,6 +2171,11 @@ HRESULT STDMETHODCALLTYPE CShellBrowser::Exec(const GUID *pguidCmdGroup, DWORD n
+                 {
+                     ShowBand(*pclsid, true);
+                 }
++                if (nCmdID == SBCMDID_EXPLORERBARFOLDERS)
++                {
++                    m_settings.fNavPaneVisible = IsEqualCLSID(CLSID_ExplorerBand, fCurrentVertBar);
++                    m_settings.Save();
++                }
+                 return S_OK;
+             case 0x22:
+                 //Sent when a band closes
+@@ -2382,8 +2387,11 @@ HRESULT STDMETHODCALLTYPE CShellBrowser::TranslateAcceleratorSB(MSG *pmsg, WORD
+ HRESULT STDMETHODCALLTYPE CShellBrowser::BrowseObject(LPCITEMIDLIST pidl, UINT wFlags)
+ {
+     wFlags = ApplyNewBrowserFlag(wFlags);
+-    // FIXME: Should not automatically show the Explorer band
+-    if ((wFlags & SBSP_EXPLOREMODE) && !(wFlags & SBSP_NEWBROWSER))
++    // The navigation pane belongs to the window, as in Windows: it is there
++    // unless it was hidden from the View menu, and it does not take the place
++    // of another vertical bar the user opened.
++    if (m_settings.fNavPaneVisible && !(wFlags & SBSP_NEWBROWSER) &&
++        IsEqualCLSID(GUID_NULL, fCurrentVertBar))
+         ShowBand(CLSID_ExplorerBand, true);
+ 
+     CComHeapPtr<ITEMIDLIST> pidlResolved;
+diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBand.cpp
+index 6ac5f14..d58f9e8 100644
+--- a/dll/win32/shdocvw/CExplorerBand.cpp
++++ b/dll/win32/shdocvw/CExplorerBand.cpp
+@@ -41,9 +41,12 @@ INT CExplorerBand::_GetRootCsidl()
+ 
+ DWORD CExplorerBand::_GetTVStyle()
+ {
++    // As the navigation pane of Windows 10: no lines, and the whole row
++    // highlights and follows the pointer
+     // Remove TVS_SINGLEEXPAND for now since it has strange behaviour
+-    return WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | TVS_HASLINES |
+-           TVS_HASBUTTONS | TVS_SHOWSELALWAYS | TVS_EDITLABELS /* | TVS_SINGLEEXPAND*/;
++    return WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | TVS_HASBUTTONS |
++           TVS_FULLROWSELECT | TVS_TRACKSELECT | TVS_SHOWSELALWAYS | TVS_EDITLABELS
++           /* | TVS_SINGLEEXPAND*/;
+ }
+ 
+ DWORD CExplorerBand::_GetTVExStyle()
+diff --git a/dll/win32/shdocvw/CNSCBand.cpp b/dll/win32/shdocvw/CNSCBand.cpp
+index 3e489d9..8caf136 100644
+--- a/dll/win32/shdocvw/CNSCBand.cpp
++++ b/dll/win32/shdocvw/CNSCBand.cpp
+@@ -252,6 +252,18 @@ HRESULT CNSCBand::_CreateTreeView(HWND hwndParent)
+         return E_FAIL;
+ 
+     m_hwndTreeView.Attach(hwndTV);
++#ifndef TVS_EX_DOUBLEBUFFER
++#define TVS_EX_DOUBLEBUFFER 0x0004
++#endif
++#ifndef TVS_EX_FADEINOUTEXPANDOS
++#define TVS_EX_FADEINOUTEXPANDOS 0x0040
++#endif
++#ifndef TVM_SETEXTENDEDSTYLE
++#define TVM_SETEXTENDEDSTYLE (TV_FIRST + 44)
++#endif
++    ::SendMessageW(m_hwndTreeView, TVM_SETEXTENDEDSTYLE,
++                   TVS_EX_DOUBLEBUFFER | TVS_EX_FADEINOUTEXPANDOS,
++                   TVS_EX_DOUBLEBUFFER | TVS_EX_FADEINOUTEXPANDOS);
+     ::RegisterDragDrop(m_hwndTreeView, dynamic_cast<IDropTarget*>(this));
+ 
+     // Init the treeview here
