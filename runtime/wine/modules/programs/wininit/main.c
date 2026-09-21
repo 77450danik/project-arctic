@@ -27,7 +27,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(wininit);
 
 static HANDLE start( const WCHAR *name )
 {
-    STARTUPINFOW si = { .cb = sizeof(si) };
+    /* wininit.exe itself runs in session 0; what it starts is the session */
+    STARTUPINFOW si = { .cb = sizeof(si), .lpDesktop = (WCHAR *)L"WinSta0\\Default" };
     PROCESS_INFORMATION pi;
     WCHAR path[MAX_PATH];
 
