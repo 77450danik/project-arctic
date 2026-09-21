@@ -91,7 +91,7 @@ set -e
 # what it writes does not depend on the locale
 export WINEPREFIX=/var/tmp/prefix HOME=/var/tmp/home USER=User LOGNAME=User LANG=C
 export WINEDEBUG=-all
-for dll in shell32 browseui shdocvw shlwapi comctl32 uxtheme; do
+for dll in shell32 browseui shdocvw shlwapi comctl32 uxtheme zipfldr; do
     timeout 120 wine regsvr32.exe /s "$dll.dll" || echo "regsvr32 $dll: $?"
 done
 wineserver -w
