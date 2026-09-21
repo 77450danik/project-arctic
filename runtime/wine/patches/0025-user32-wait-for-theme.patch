@@ -1,0 +1,59 @@
+From 70fcb6059a9885ea7f3c251f267f33f991adc369 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 15:13:57 +0300
+Subject: [PATCH] user32: Threads wait for the theme another thread is loading.
+
+A window made on one thread while another was loading the theme got no
+theme and stayed classic: the Start button was themed on one boot and a
+plain button on the next.
+---
+ dlls/user32/hook.c | 29 +++++++++++++++++++++--------
+ 1 file changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/user32/hook.c b/dlls/user32/hook.c
+index c69c4e62..9f5a8db0 100644
+--- a/dlls/user32/hook.c
++++ b/dlls/user32/hook.c
+@@ -606,18 +606,31 @@ static BOOL is_desktop_process(void)
+ /* the table the theme filled, or NULL while there is none */
+ USERAPIHOOK *get_theme_api_hook(void)
+ {
++    static DWORD loader;
++    DWORD start;
++
+     if (theme_api_state == 2) return &theme_api;
+-    if (theme_api_state) return NULL;
+-    /* the theme's own windows must not come back through the hook while it loads */
+-    if (InterlockedCompareExchange( &theme_api_state, 1, 0 )) return NULL;
++    if (theme_api_state == 3) return NULL;
+ 
+-    if (theme_is_active() && !is_desktop_process() && init_theme_api_hook( L"uxtheme.dll", L"ThemeInitApiHook" ))
++    if (!InterlockedCompareExchange( &theme_api_state, 1, 0 ))
+     {
+-        InterlockedExchange( &theme_api_state, 2 );
+-        return &theme_api;
++        loader = GetCurrentThreadId();
++        if (theme_is_active() && !is_desktop_process() && init_theme_api_hook( L"uxtheme.dll", L"ThemeInitApiHook" ))
++            InterlockedExchange( &theme_api_state, 2 );
++        else
++            InterlockedExchange( &theme_api_state, 3 );
++        loader = 0;
++        return theme_api_state == 2 ? &theme_api : NULL;
+     }
+-    InterlockedExchange( &theme_api_state, 3 );
+-    return NULL;
++
++    /* the theme's own windows must not come back through the hook while it loads */
++    if (loader == GetCurrentThreadId()) return NULL;
++
++    /* Another thread is loading the theme: a window made meanwhile would stay
++     * classic for good. Wait for it, though not for ever, as the loading
++     * thread may be sending this one a message. */
++    for (start = GetTickCount(); theme_api_state == 1 && GetTickCount() - start < 2000;) Sleep( 1 );
++    return theme_api_state == 2 ? &theme_api : NULL;
+ }
+ 
+ /* Undocumented RegisterUserApiHook() */
+-- 
+2.53.0.windows.2
+
