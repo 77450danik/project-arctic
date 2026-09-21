@@ -10,6 +10,15 @@ diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
      IDS_RECYCLEBIN_FOLDER_NAME "Кошик"
      IDS_CONTROLPANEL "Панель керування"
      IDS_ADMINISTRATIVETOOLS "Адміністрування"
+@@ -869,7 +869,7 @@
+ 
+     /* Shell folder path default values. See also: dll/win32/userenv/lang */
+     IDS_PROGRAMS "Головне меню\\Програми"
+-    IDS_PERSONAL "Мої документи"
++    IDS_PERSONAL "Документи"
+     IDS_FAVORITES "Обране"
+     IDS_STARTUP "Головне меню\\Програми\\Автозапуск"
+     IDS_RECENT "Останні документи"
 @@ -895,7 +895,7 @@
      IDS_COMMON_PICTURES "Загальні документи\\Мої малюнки"
      IDS_COMMON_VIDEO "Загальні документи\\Мої відеозаписи"
@@ -31,6 +40,15 @@ diff --git a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
      IDS_RECYCLEBIN_FOLDER_NAME "Recycle Bin"
      IDS_CONTROLPANEL "Control Panel"
      IDS_ADMINISTRATIVETOOLS "Administrative Tools"
+@@ -869,7 +869,7 @@
+ 
+     /* Shell folder path default values. See also: dll/win32/userenv/lang */
+     IDS_PROGRAMS "Start Menu\\Programs"
+-    IDS_PERSONAL "My Documents"
++    IDS_PERSONAL "Documents"
+     IDS_FAVORITES "Favorites"
+     IDS_STARTUP "Start Menu\\Programs\\Startup"
+     IDS_RECENT "Recent"
 @@ -895,7 +895,7 @@
      IDS_COMMON_PICTURES "Documents\\My Pictures"
      IDS_COMMON_VIDEO "Documents\\My Videos"
@@ -52,6 +70,15 @@ diff --git a/dll/win32/shell32/lang/ru-RU.rc b/dll/win32/shell32/lang/ru-RU.rc
      IDS_RECYCLEBIN_FOLDER_NAME "Корзина"
      IDS_CONTROLPANEL "Панель управления"
      IDS_ADMINISTRATIVETOOLS "Администрирование"
+@@ -878,7 +878,7 @@
+ 
+     /* Shell folder path default values. See also: dll/win32/userenv/lang */
+     IDS_PROGRAMS "Главное меню\\Программы"
+-    IDS_PERSONAL "Мои документы"
++    IDS_PERSONAL "Документы"
+     IDS_FAVORITES "Избранное"
+     IDS_STARTUP "Главное меню\\Программы\\Автозагрузка"
+     IDS_RECENT "Недавние документы"
 @@ -904,7 +904,7 @@
      IDS_COMMON_PICTURES "Общие документы\\Мои рисунки"
      IDS_COMMON_VIDEO "Общие документы\\Мои видеозаписи"
