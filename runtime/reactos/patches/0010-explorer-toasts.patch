@@ -1,0 +1,451 @@
+diff --git a/base/shell/explorer/lang/en-US.rc b/base/shell/explorer/lang/en-US.rc
+--- a/base/shell/explorer/lang/en-US.rc
++++ b/base/shell/explorer/lang/en-US.rc
+@@ -217,3 +217,8 @@
+     IDS_TRAYWND_UNDO_TILE "&Undo Tile"
+     IDS_TRAYDESKBTN_TOOLTIP "Show Desktop/Windows"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_TOAST_APP "Windows Explorer"
++END
+diff --git a/base/shell/explorer/lang/ru-RU.rc b/base/shell/explorer/lang/ru-RU.rc
+--- a/base/shell/explorer/lang/ru-RU.rc
++++ b/base/shell/explorer/lang/ru-RU.rc
+@@ -221,3 +221,8 @@
+     IDS_TRAYWND_UNDO_TILE "&Отменить Окна рядом"
+     IDS_TRAYDESKBTN_TOOLTIP "Show Desktop/Windows"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_TOAST_APP "Проводник"
++END
+diff --git a/base/shell/explorer/lang/uk-UA.rc b/base/shell/explorer/lang/uk-UA.rc
+--- a/base/shell/explorer/lang/uk-UA.rc
++++ b/base/shell/explorer/lang/uk-UA.rc
+@@ -221,3 +221,8 @@
+     IDS_TRAYWND_UNDO_TILE "&Undo Tile"
+     IDS_TRAYDESKBTN_TOOLTIP "Show Desktop/Windows"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_TOAST_APP "Провідник Windows"
++END
+diff --git a/base/shell/explorer/resource.h b/base/shell/explorer/resource.h
+--- a/base/shell/explorer/resource.h
++++ b/base/shell/explorer/resource.h
+@@ -103,6 +103,7 @@
+ 
+ #define IDS_STARTUP_ERROR                  105
+ #define IDS_START                          595
++#define IDS_TOAST_APP                      596
+ #define IDS_OPEN_ALL_USERS                 718
+ #define IDS_EXPLORE_ALL_USERS              719
+ #define IDS_PROPERTIES                     720
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -23,6 +23,275 @@
+ 
+ #define BALLOON_MAXWIDTH 340
+ 
++/* The notification area's balloons as Windows 10 shows them: a dark toast in
++ * the corner above the taskbar that slides in from the right, under the name
++ * of the program it comes from, with the icon, the title and the text */
++#define TOAST_WIDTH         364
++#define TOAST_MARGIN        16
++#define TOAST_PADDING       16
++#define TOAST_LOGO          32
++#define TOAST_SLIDE_TIMER   1
++#define TOAST_SLIDE_STEPS   10
++#define WM_TOAST_CLICKED    (WM_USER + 300) /* to the pager; wParam: closed with its X */
++
++class CToastWnd :
++    public CWindowImpl<CToastWnd, CWindow, CWinTraits<WS_POPUP, WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE> >
++{
++    HWND m_hwndNotify;
++    HICON m_hLogo;
++    HICON m_hAppIcon;
++    HFONT m_hfTitle;
++    HFONT m_hfText;
++    HFONT m_hfApp;
++    WCHAR m_szTitle[64];
++    WCHAR m_szText[256];
++    WCHAR m_szApp[64];
++    RECT m_rcClose;
++    int m_xStart;
++    int m_xFinal;
++    int m_step;
++    BOOL m_bHover;
++
++    static int MeasureText(HDC hdc, HFONT hFont, LPCWSTR pszText, int width)
++    {
++        RECT rc;
++        HGDIOBJ hOld = SelectObject(hdc, hFont);
++
++        SetRect(&rc, 0, 0, width, 0);
++        DrawTextW(hdc, pszText, -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
++        SelectObject(hdc, hOld);
++        return rc.bottom;
++    }
++
++public:
++    DECLARE_WND_CLASS_EX(L"ArcticToastWnd", CS_DROPSHADOW, COLOR_WINDOW)
++
++    CToastWnd() :
++        m_hwndNotify(NULL),
++        m_hLogo(NULL),
++        m_hAppIcon(NULL),
++        m_hfTitle(NULL),
++        m_hfText(NULL),
++        m_hfApp(NULL),
++        m_xStart(0),
++        m_xFinal(0),
++        m_step(0),
++        m_bHover(FALSE)
++    {
++        m_szTitle[0] = m_szText[0] = m_szApp[0] = UNICODE_NULL;
++        SetRectEmpty(&m_rcClose);
++    }
++
++    BOOL Init(HWND hwndNotify)
++    {
++        NONCLIENTMETRICSW ncm;
++        LOGFONTW lf;
++
++        m_hwndNotify = hwndNotify;
++        ZeroMemory(&ncm, sizeof(ncm));
++        ncm.cbSize = sizeof(ncm);
++        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
++        lf = ncm.lfMessageFont;
++        lf.lfHeight = -15;
++        lf.lfWeight = FW_NORMAL;
++        m_hfText = CreateFontIndirectW(&lf);
++        lf.lfWeight = FW_SEMIBOLD;
++        m_hfTitle = CreateFontIndirectW(&lf);
++        lf.lfHeight = -12;
++        lf.lfWeight = FW_NORMAL;
++        m_hfApp = CreateFontIndirectW(&lf);
++        LoadStringW(GetModuleHandleW(NULL), IDS_TOAST_APP, m_szApp, _countof(m_szApp));
++        /* File Explorer's icon: the folder */
++        m_hAppIcon = (HICON)LoadImageW(GetModuleHandleW(L"shell32.dll"), MAKEINTRESOURCEW(4), IMAGE_ICON, 16, 16, 0);
++        return Create(NULL) != NULL;
++    }
++
++    void Deinit()
++    {
++        if (m_hWnd)
++            DestroyWindow();
++        if (m_hAppIcon)
++            DestroyIcon(m_hAppIcon);
++        if (m_hfTitle)
++            DeleteObject(m_hfTitle);
++        if (m_hfText)
++            DeleteObject(m_hfText);
++        if (m_hfApp)
++            DeleteObject(m_hfApp);
++        m_hAppIcon = NULL;
++        m_hfTitle = m_hfText = m_hfApp = NULL;
++    }
++
++    void Show(LPCWSTR pszTitle, LPCWSTR pszText, HICON hLogo)
++    {
++        RECT rcWork, rcTray;
++        HWND hwndTray;
++        HDC hdc;
++        int textWidth = TOAST_WIDTH - 2 * TOAST_PADDING - TOAST_LOGO - 12;
++        int height, content, bottom;
++
++        StringCchCopyW(m_szTitle, _countof(m_szTitle), pszTitle);
++        StringCchCopyW(m_szText, _countof(m_szText), pszText);
++        m_hLogo = hLogo;
++
++        hdc = GetDC();
++        content = MeasureText(hdc, m_hfTitle, m_szTitle, textWidth) + 2 +
++                  MeasureText(hdc, m_hfText, m_szText, textWidth);
++        ReleaseDC(hdc);
++        height = TOAST_PADDING + 16 + 12 + (content > TOAST_LOGO ? content : TOAST_LOGO) + TOAST_PADDING;
++
++        /* above the taskbar */
++        SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
++        bottom = rcWork.bottom;
++        hwndTray = FindWindowW(L"Shell_TrayWnd", NULL);
++        if (hwndTray && ::GetWindowRect(hwndTray, &rcTray) && rcTray.top > rcWork.top && rcTray.top < bottom)
++            bottom = rcTray.top;
++
++        m_xFinal = rcWork.right - TOAST_MARGIN - TOAST_WIDTH;
++        m_xStart = rcWork.right;
++        m_step = 0;
++        m_bHover = FALSE;
++        SetWindowPos(HWND_TOPMOST, m_xStart, bottom - TOAST_MARGIN - height, TOAST_WIDTH, height,
++                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
++        Invalidate();
++        SetTimer(TOAST_SLIDE_TIMER, 15, NULL);
++    }
++
++    void Hide()
++    {
++        if (!m_hWnd)
++            return;
++        KillTimer(TOAST_SLIDE_TIMER);
++        ShowWindow(SW_HIDE);
++    }
++
++    LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        RECT rc;
++        int left;
++
++        if (wParam != TOAST_SLIDE_TIMER)
++            return 0;
++        m_step++;
++        /* eases out: fast at first, slowing into place */
++        left = TOAST_SLIDE_STEPS - m_step;
++        GetWindowRect(&rc);
++        SetWindowPos(NULL, m_xFinal + (m_xStart - m_xFinal) * left * left / (TOAST_SLIDE_STEPS * TOAST_SLIDE_STEPS),
++                     rc.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
++        if (m_step >= TOAST_SLIDE_STEPS)
++            KillTimer(TOAST_SLIDE_TIMER);
++        return 0;
++    }
++
++    LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        return TRUE;
++    }
++
++    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        PAINTSTRUCT ps;
++        RECT rc, rcText;
++        HDC hdc = BeginPaint(&ps);
++        HBRUSH hbr;
++        HGDIOBJ hOld;
++        int x = TOAST_PADDING, y = TOAST_PADDING, tx, h;
++
++        GetClientRect(&rc);
++        hbr = CreateSolidBrush(RGB(31, 31, 31));
++        FillRect(hdc, &rc, hbr);
++        DeleteObject(hbr);
++        hbr = CreateSolidBrush(RGB(62, 62, 62));
++        FrameRect(hdc, &rc, hbr);
++        DeleteObject(hbr);
++        SetBkMode(hdc, TRANSPARENT);
++
++        /* the program it comes from */
++        if (m_hAppIcon)
++            DrawIconEx(hdc, x, y, m_hAppIcon, 16, 16, 0, NULL, DI_NORMAL);
++        hOld = SelectObject(hdc, m_hfApp);
++        SetTextColor(hdc, RGB(170, 170, 170));
++        SetRect(&rcText, x + 16 + 8, y, rc.right - TOAST_PADDING - 24, y + 16);
++        DrawTextW(hdc, m_szApp, -1, &rcText, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
++
++        /* its X, while the pointer is over it */
++        SetRect(&m_rcClose, rc.right - TOAST_PADDING - 12, y + 2, rc.right - TOAST_PADDING, y + 14);
++        if (m_bHover)
++        {
++            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(210, 210, 210));
++            HGDIOBJ hOldPen = SelectObject(hdc, hPen);
++            MoveToEx(hdc, m_rcClose.left, m_rcClose.top, NULL);
++            LineTo(hdc, m_rcClose.right, m_rcClose.bottom);
++            MoveToEx(hdc, m_rcClose.left, m_rcClose.bottom - 1, NULL);
++            LineTo(hdc, m_rcClose.right, m_rcClose.top - 1);
++            SelectObject(hdc, hOldPen);
++            DeleteObject(hPen);
++        }
++
++        y += 16 + 12;
++        if (m_hLogo)
++            DrawIconEx(hdc, x, y, m_hLogo, TOAST_LOGO, TOAST_LOGO, 0, NULL, DI_NORMAL);
++        tx = x + TOAST_LOGO + 12;
++
++        SelectObject(hdc, m_hfTitle);
++        SetTextColor(hdc, RGB(255, 255, 255));
++        SetRect(&rcText, tx, y, rc.right - TOAST_PADDING, rc.bottom);
++        h = DrawTextW(hdc, m_szTitle, -1, &rcText, DT_WORDBREAK | DT_NOPREFIX);
++        rcText.top += h + 2;
++        SelectObject(hdc, m_hfText);
++        SetTextColor(hdc, RGB(200, 200, 200));
++        DrawTextW(hdc, m_szText, -1, &rcText, DT_WORDBREAK | DT_NOPREFIX);
++
++        SelectObject(hdc, hOld);
++        EndPaint(&ps);
++        return 0;
++    }
++
++    LRESULT OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (!m_bHover)
++        {
++            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, m_hWnd, 0 };
++            TrackMouseEvent(&tme);
++            m_bHover = TRUE;
++            Invalidate();
++        }
++        return 0;
++    }
++
++    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_bHover = FALSE;
++        Invalidate();
++        return 0;
++    }
++
++    LRESULT OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
++        RECT rcClose = m_rcClose;
++
++        InflateRect(&rcClose, 6, 6);
++        ::PostMessageW(m_hwndNotify, WM_TOAST_CLICKED, PtInRect(&rcClose, pt), 0);
++        return 0;
++    }
++
++    LRESULT OnMouseActivate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        return MA_NOACTIVATE;
++    }
++
++    BEGIN_MSG_MAP(CToastWnd)
++        MESSAGE_HANDLER(WM_TIMER, OnTimer)
++        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
++        MESSAGE_HANDLER(WM_PAINT, OnPaint)
++        MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseMove)
++        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
++        MESSAGE_HANDLER(WM_LBUTTONUP, OnLButtonUp)
++        MESSAGE_HANDLER(WM_MOUSEACTIVATE, OnMouseActivate)
++    END_MSG_MAP()
++};
++
+ struct InternalIconData : NOTIFYICONDATA
+ {
+     void SaveVersion(UINT Version) // uVersion is unioned with uTimeout but cbSize is free so we store it there
+@@ -103,6 +372,7 @@
+         WCHAR szInfo[256];
+         WCHAR szInfoTitle[64];
+         WPARAM uIcon;
++        HICON hLogo;
+         UINT uTimeout;
+ 
+         Info(InternalIconData * source)
+@@ -113,6 +383,21 @@
+             uIcon = source->dwInfoFlags & NIIF_ICON_MASK;
+             if (source->dwInfoFlags == NIIF_USER)
+                 uIcon = reinterpret_cast<WPARAM>(source->hIcon);
++            switch (source->dwInfoFlags & NIIF_ICON_MASK)
++            {
++                case NIIF_INFO:
++                    hLogo = (HICON)LoadImageW(NULL, (LPCWSTR)IDI_INFORMATION, IMAGE_ICON, TOAST_LOGO, TOAST_LOGO, LR_SHARED);
++                    break;
++                case NIIF_WARNING:
++                    hLogo = (HICON)LoadImageW(NULL, (LPCWSTR)IDI_WARNING, IMAGE_ICON, TOAST_LOGO, TOAST_LOGO, LR_SHARED);
++                    break;
++                case NIIF_ERROR:
++                    hLogo = (HICON)LoadImageW(NULL, (LPCWSTR)IDI_ERROR, IMAGE_ICON, TOAST_LOGO, TOAST_LOGO, LR_SHARED);
++                    break;
++                default:
++                    hLogo = source->hIcon;
++                    break;
++            }
+             uTimeout = source->uTimeout;
+         }
+     };
+@@ -128,6 +413,8 @@
+     InternalIconData * m_current;
+ 
+     int m_timer;
++
++    CToastWnd m_toast;
+ 
+ public:
+     CBalloonQueue();
+@@ -139,6 +426,7 @@
+     void UpdateInfo(InternalIconData * notifyItem);
+     void RemoveInfo(InternalIconData * notifyItem);
+     void CloseCurrent();
++    void OnToastClicked(BOOL bClose);
+ 
+ private:
+ 
+@@ -256,8 +544,15 @@
+ 
+     DECLARE_WND_CLASS_EX(szSysPagerWndClass, CS_DBLCLKS, COLOR_3DFACE)
+ 
++    LRESULT OnToastClicked(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_BalloonQueue.OnToastClicked((BOOL)wParam);
++        return 0;
++    }
++
+     BEGIN_MSG_MAP(CSysPagerWnd)
+         MESSAGE_HANDLER(WM_CREATE, OnCreate)
++        MESSAGE_HANDLER(WM_TOAST_CLICKED, OnToastClicked)
+         MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
+         MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBackground)
+         MESSAGE_HANDLER(WM_COMMAND, OnCommand)
+@@ -521,6 +816,7 @@
+     m_hwndParent = hwndParent;
+     m_toolbar = toolbar;
+     m_tooltips = balloons;
++    m_toast.Init(hwndParent);
+ }
+ 
+ void CBalloonQueue::Deinit()
+@@ -529,6 +825,7 @@
+     {
+         ::KillTimer(m_hwndParent, m_timer);
+     }
++    m_toast.Deinit();
+ }
+ 
+ bool CBalloonQueue::OnTimer(int timerId)
+@@ -601,6 +898,15 @@
+     }
+ }
+ 
++/* a click on the toast is the program's to act on; its X only closes it */
++void CBalloonQueue::OnToastClicked(BOOL bClose)
++{
++    if (m_current != NULL)
++    {
++        Close(m_current, bClose ? NIN_BALLOONTIMEOUT : NIN_BALLOONUSERCLICK);
++    }
++}
++
+ int CBalloonQueue::IndexOf(InternalIconData * pdata)
+ {
+     int count = m_toolbar->GetButtonCount();
+@@ -624,17 +930,7 @@
+     // TODO: NIF_REALTIME, NIIF_NOSOUND, other Vista+ flags
+ 
+     m_current = info.pSource;
+-    RECT rc;
+-    m_toolbar->GetItemRect(IndexOf(m_current), &rc);
+-    UINT halfsize = (rc.right - rc.left) / 2;
+-    m_toolbar->ClientToScreen(&rc);
+-    WORD x = rc.left + halfsize, y = rc.top + halfsize;
+-
+-    m_tooltips->SetTitle(info.szInfoTitle, info.uIcon);
+-    m_tooltips->TrackPosition(x, y);
+-    m_tooltips->SetMaxTipWidth(BALLOON_MAXWIDTH);
+-    m_tooltips->UpdateTipText(m_hwndParent, reinterpret_cast<LPARAM>(m_toolbar->m_hWnd), info.szInfo);
+-    m_tooltips->TrackActivate(m_hwndParent, reinterpret_cast<LPARAM>(m_toolbar->m_hWnd));
++    m_toast.Show(info.szInfoTitle, info.szInfo, info.hLogo);
+ 
+     int timeout = info.uTimeout;
+     if (timeout < MinTimeout) timeout = MinTimeout;
+@@ -653,8 +949,8 @@
+     {
+         m_toolbar->SendNotifyCallback(m_current, uReason);
+ 
+-        m_current = NULL; // Prevent re-entry (TrackDeactivate will generate a TTN_POP)
+-        m_tooltips->TrackDeactivate();
++        m_current = NULL;
++        m_toast.Hide();
+         SetTimer(CooldownBetweenBalloons);
+     }
+ }

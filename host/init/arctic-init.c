@@ -324,7 +324,28 @@ static int write_sysfs(const char *path, const char *value)
     return ok ? 0 : -1;
 }
 
-static const char *eject_disk(const char *disk)
+/* the answer to mountmgr.sys; "ok" waits until it has been read, so the
+ * eject request completes before the volumes and their letters go */
+static void send_answer(const char *disk, const char *result)
+{
+    char answer[PATH_MAX], tmp[PATH_MAX];
+    int fd;
+
+    snprintf(tmp, sizeof(tmp), EJECT_DIR "/.%s.done", disk);
+    snprintf(answer, sizeof(answer), EJECT_DIR "/%s.done", disk);
+    if ((fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) < 0)
+        return;
+    write(fd, result, strlen(result));
+    fchown(fd, nt_uid, nt_gid);
+    close(fd);
+    rename(tmp, answer);
+    if (strcmp(result, "ok"))
+        return;
+    for (int i = 0; i < 50 && !access(answer, F_OK); i++)
+        usleep(100000);
+}
+
+static void eject_disk(const char *disk)
 {
     char parts[16][64], mounts[16][PATH_MAX], path[PATH_MAX + 64], line[PATH_MAX + 64];
     char sys[PATH_MAX], usb[PATH_MAX];
@@ -365,7 +386,9 @@ static const char *eject_disk(const char *disk)
         if (umount2(mounts[done], 0))
             break;
     if (done < n) {
-        say("eject %s: %s: %s", disk, mounts[done], strerror(errno));
+        int error = errno;
+
+        say("eject %s: %s: %s", disk, mounts[done], strerror(error));
         /* the volumes already unmounted come back, with their letters */
         for (int i = 0; i < done; i++) {
             snprintf(path, sizeof(path), VOLUMES_DIR "/%s", parts[i]);
@@ -374,8 +397,10 @@ static const char *eject_disk(const char *disk)
             snprintf(path, sizeof(path), "/sys/class/block/%s/uevent", parts[i]);
             write_sysfs(path, "add");
         }
-        return errno == EBUSY ? "busy" : "error";
+        send_answer(disk, error == EBUSY ? "busy" : "error");
+        return;
     }
+    send_answer(disk, "ok");
     for (int i = 0; i < n; i++) {
         snprintf(path, sizeof(path), VOLUMES_DIR "/%s", parts[i]);
         unlink(path);
@@ -405,34 +430,24 @@ static const char *eject_disk(const char *disk)
         write_sysfs(path, "1");
     }
     say("eject %s: %d volume(s), %s", disk, n, usb[0] ? "USB port off" : "stopped");
-    return "ok";
 }
 
 static void serve_ejects(void)
 {
-    char request[PATH_MAX], answer[PATH_MAX], tmp[PATH_MAX];
+    char request[PATH_MAX];
     struct dirent *de;
     DIR *dir;
 
     if (!(dir = opendir(EJECT_DIR)))
         return;
     while ((de = readdir(dir))) {
-        const char *name = de->d_name, *result;
-        int fd;
+        const char *name = de->d_name;
 
         if (name[0] == '.' || strchr(name, '.') || strspn(name, "abcdefghijklmnopqrstuvwxyz0123456789") != strlen(name))
             continue;
         snprintf(request, sizeof(request), EJECT_DIR "/%s", name);
         unlink(request);
-        result = eject_disk(name);
-        snprintf(tmp, sizeof(tmp), EJECT_DIR "/.%s.done", name);
-        snprintf(answer, sizeof(answer), EJECT_DIR "/%s.done", name);
-        if ((fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) >= 0) {
-            write(fd, result, strlen(result));
-            fchown(fd, nt_uid, nt_gid);
-            close(fd);
-            rename(tmp, answer);
-        }
+        eject_disk(name);
     }
     closedir(dir);
 }

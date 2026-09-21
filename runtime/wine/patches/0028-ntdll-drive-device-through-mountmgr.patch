@@ -1,0 +1,47 @@
+From d93da81b9ad494019ea0387b44ff7acd8f6a95b1 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 20:27:53 +0300
+Subject: [PATCH] ntdll: A drive device the process cannot open is reached
+ through mountmgr's device.
+
+\.\E: opened the unix block device behind the drive; where only root may
+open it, as on Arctic, that failed with access denied. The NT device
+mountmgr made for the drive is used instead, and answers the storage
+ioctls.
+---
+ dlls/ntdll/unix/file.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 1bfec7a4..4d05e1b6 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -3314,9 +3314,14 @@ static NTSTATUS get_dos_device( char **unix_name, int start_pos )
+ {
+     struct stat st;
+     char *new_name, *dev = *unix_name + start_pos;
++    BOOL drive = FALSE;
+ 
+     /* special case for drive devices */
+-    if (dev[0] && dev[1] == ':' && !dev[2]) strcpy( dev + 1, "::" );
++    if (dev[0] && dev[1] == ':' && !dev[2])
++    {
++        strcpy( dev + 1, "::" );
++        drive = TRUE;
++    }
+ 
+     if (strchr( dev, '/' )) goto failed;
+ 
+@@ -3324,6 +3329,9 @@ static NTSTATUS get_dos_device( char **unix_name, int start_pos )
+     {
+         if (!stat( *unix_name, &st ))
+         {
++            /* a disk the process may not open (on Arctic the host's disks are
++             * root's) is reached through the device mountmgr made for it */
++            if (drive && access( *unix_name, R_OK ) && access( *unix_name, W_OK )) goto failed;
+             TRACE( "-> %s\n", debugstr_a(*unix_name));
+             return STATUS_SUCCESS;
+         }
+-- 
+2.53.0.windows.2
+

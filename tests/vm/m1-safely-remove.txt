@@ -1,0 +1,17 @@
+# Safely Remove Hardware: the icon comes with a USB stick, its menu ejects the
+# stick, a toast says it can be pulled out, and the icon goes
+sleep 6
+shot s0-before
+plug stick usb-stick.img
+sleep 6
+shot s1-plugged
+move 1206 782
+click                         # значок «Безпечно видалити устаткування та витягти носій»
+sleep 2
+shot s2-menu
+move 1100 748
+click                         # «Витягти QEMU USB HARDDRIVE»
+sleep 3
+shot s3-toast
+sleep 12
+shot s4-after

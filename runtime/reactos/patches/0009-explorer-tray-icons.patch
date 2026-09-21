@@ -1,0 +1,27 @@
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -882,7 +882,9 @@
+         if (iconData->dwStateMask & NIS_HIDDEN &&
+             (notifyItem->dwState & NIS_HIDDEN) != (iconData->dwState & NIS_HIDDEN))
+         {
++            /* from the button's state: an icon shown again stays enabled, not greyed */
+             tbbi.dwMask |= TBIF_STATE;
++            tbbi.fsState = btn.fsState;
+             if (iconData->dwState & NIS_HIDDEN)
+             {
+                 tbbi.fsState |= TBSTATE_HIDDEN;
+@@ -1181,6 +1183,13 @@
+ 
+     if (iBtn >= 0)
+     {
++        /* a click takes the icon's tooltip away, as the menu it opens would cover it */
++        if (uMsg == WM_LBUTTONDOWN || uMsg == WM_RBUTTONDOWN)
++        {
++            HWND hwndTip = (HWND)SendMessageW(TB_GETTOOLTIPS);
++            if (hwndTip)
++                ::SendMessageW(hwndTip, TTM_POP, 0, 0);
++        }
+         SendMouseEvent(iBtn, uMsg, wParam);
+     }
+ 
