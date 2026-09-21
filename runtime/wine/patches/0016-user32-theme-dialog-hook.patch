@@ -1,0 +1,53 @@
+From 109e3a7912aa8223364fec631a40a65b48219711 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 10:44:46 +0300
+Subject: [PATCH 16/16] user32: The theme hooks the dialog procedure too.
+
+A visual style colours dialog backgrounds and the controls on them
+through PreDefDlgProc and PostDefDlgProc, as it does windows through
+PreWndProc and PostWndProc.
+---
+ dlls/user32/defdlg.c | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/defdlg.c b/dlls/user32/defdlg.c
+index 69c573c6..d6472988 100644
+--- a/dlls/user32/defdlg.c
++++ b/dlls/user32/defdlg.c
+@@ -418,7 +418,7 @@ static LRESULT USER_DefDlgProcW( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
+     return GetWindowLongPtrW( hwnd, DWLP_MSGRESULT );
+ }
+ 
+-LRESULT WINAPI USER_DefDlgProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, BOOL unicode )
++static LRESULT call_def_dlg_proc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, BOOL unicode )
+ {
+     if (unicode)
+         return USER_DefDlgProcW( hwnd, msg, wParam, lParam );
+@@ -426,6 +426,24 @@ LRESULT WINAPI USER_DefDlgProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
+         return USER_DefDlgProcA( hwnd, msg, wParam, lParam );
+ }
+ 
++LRESULT WINAPI USER_DefDlgProc( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, BOOL unicode )
++{
++    USERAPIHOOK *hook = get_theme_api_hook();
++    LRESULT result = 0;
++    DWORD data = 0;
++
++    /* the theme draws dialog backgrounds and colours their controls */
++    if (!hook || !UAH_IS_MESSAGE_HOOKED( hook->DlgProcArray, msg ))
++        return call_def_dlg_proc( hwnd, msg, wParam, lParam, unicode );
++
++    if (!hook->PreDefDlgProc( hwnd, msg, wParam, lParam, (ULONG_PTR)&result, &data ))
++    {
++        result = call_def_dlg_proc( hwnd, msg, wParam, lParam, unicode );
++        hook->PostDefDlgProc( hwnd, msg, wParam, lParam, (ULONG_PTR)&result, &data );
++    }
++    return result;
++}
++
+ /***********************************************************************
+  *              DialogWndProcA
+  */
+-- 
+2.53.0.windows.2
+

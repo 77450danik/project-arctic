@@ -1,0 +1,30 @@
+From 15f765cb0b83875f4049f976a118c291c395424d Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 10:44:45 +0300
+Subject: [PATCH 15/16] user32: SwitchToThisWindow makes the window the
+ foreground one.
+
+The taskbar switches windows with it: the window came to the top but
+stayed inactive, with a grey title.
+---
+ dlls/user32/win.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index bcf88ee2..1c938198 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -635,8 +635,9 @@ UINT WINAPI GetDpiForWindow( HWND hwnd )
+  */
+ void WINAPI SwitchToThisWindow( HWND hwnd, BOOL alt_tab )
+ {
++    /* as in Windows, the window becomes the foreground one, not only the top one */
+     if (IsIconic( hwnd )) NtUserShowWindow( hwnd, SW_RESTORE );
+-    else BringWindowToTop( hwnd );
++    NtUserSetForegroundWindow( hwnd );
+ }
+ 
+ 
+-- 
+2.53.0.windows.2
+

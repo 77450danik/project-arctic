@@ -1,25 +1,29 @@
 diff --git a/dll/win32/browseui/toolsband.cpp b/dll/win32/browseui/toolsband.cpp
-index 3c78013..9b56b08 100644
+index 3c78013..b044fa4 100644
 --- a/dll/win32/browseui/toolsband.cpp
 +++ b/dll/win32/browseui/toolsband.cpp
-@@ -222,8 +222,10 @@ enum StandardToolbarButtons {
+@@ -222,24 +222,25 @@ enum StandardToolbarButtons {
      BtnIdx_FolderOptions,
  };
  
 -const int numShownButtons = 13;
 -const int numHiddenButtons = 13;
-+// The toolbar Windows shows: the buttons that carry no label are the ones
-+// Windows leaves unlabelled too. The rest wait in the customize dialog.
++// The buttons Windows shows, each with its label. The rest wait in the
++// customize dialog.
 +const int numShownButtons = 8;
 +const int numHiddenButtons = 17;
  TBBUTTON tbButtonsAdd[numShownButtons + numHiddenButtons] =
  {
      { backImageIndex, IDM_GOTO_BACK, TBSTATE_ENABLED, BTNS_DROPDOWN | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Back },
-@@ -233,13 +235,12 @@ TBBUTTON tbButtonsAdd[numShownButtons + numHiddenButtons] =
+-    { forwardImageIndex, IDM_GOTO_FORWARD, TBSTATE_ENABLED, BTNS_DROPDOWN, { 0 }, 0,          BtnIdx_Forward },
+-    { upImageIndex, IDM_GOTO_UPONELEVEL, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0,                 BtnIdx_Up },
++    { forwardImageIndex, IDM_GOTO_FORWARD, TBSTATE_ENABLED, BTNS_DROPDOWN | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Forward },
++    { upImageIndex, IDM_GOTO_UPONELEVEL, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0,  BtnIdx_Up },
+     { 6, -1, TBSTATE_ENABLED, BTNS_SEP },
      { searchImageIndex, gSearchCommandID, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Search },
      { foldersImageIndex, gFoldersCommandID, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Folders },
      { 6, -1, TBSTATE_ENABLED, BTNS_SEP },
-+    { viewsImageIndex, gViewsCommandID, TBSTATE_ENABLED, BTNS_WHOLEDROPDOWN, { 0 }, 0, BtnIdx_Views },
++    { viewsImageIndex, gViewsCommandID, TBSTATE_ENABLED, BTNS_WHOLEDROPDOWN | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Views },
 +
      { moveToImageIndex, gMoveToCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_MoveTo },
      { copyToImageIndex, gCopyToCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_CopyTo },

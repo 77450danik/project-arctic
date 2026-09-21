@@ -1,0 +1,31 @@
+From b3561c6c18ed96cbc5b6ada41e7a706d2b3c4797 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 10:44:45 +0300
+Subject: [PATCH 14/16] win32u: The shell's window stays under every program.
+
+Showing the desktop window raised it over the programs that were already
+open; only activation was kept from raising it.
+---
+ dlls/win32u/window.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index e7e4ccaa..792a3242 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -3962,6 +3962,12 @@ static BOOL fixup_swp_flags( WINDOWPOS *winpos, const RECT *old_window_rect, int
+         }
+     }
+ 
++    /* The shell's window lies under every program, as in Windows, whatever
++     * would raise it: showing it, activating it or an explicit HWND_TOP. */
++    if (!(winpos->flags & SWP_NOZORDER) && winpos->hwndInsertAfter != HWND_BOTTOM &&
++        winpos->hwnd == get_shell_window())
++        winpos->hwndInsertAfter = HWND_BOTTOM;
++
+     /* Check hwndInsertAfter */
+     if (winpos->flags & SWP_NOZORDER) goto done;
+ 
+-- 
+2.53.0.windows.2
+
