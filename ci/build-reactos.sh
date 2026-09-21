@@ -31,7 +31,9 @@ if [ ! -x "$ROSBE/RosBE.sh" ]; then
     echo "$ROSBE_SCRIPT_SHA256  build_rosbe_ci.sh" | sha256sum -c -
     # the same fallback ReactOS's CI uses when the GNU mirror fails
     sed -i '/gcc-8.4.0\/gcc-8.4.0.tar.xz/c\wget https://ftpmirror.gnu.org/gcc/gcc-8.4.0/gcc-8.4.0.tar.xz || wget -L https://web.archive.org/web/2025if_/https://ftpmirror.gnu.org/gcc/gcc-8.4.0/gcc-8.4.0.tar.xz' build_rosbe_ci.sh
-    bash build_rosbe_ci.sh "$ROSBE"
+    # RosBE builds its host tools with -march=native by default, which ties
+    # them to the CPU of whatever runner built them; the cache is shared
+    CFLAGS="-pipe -O2 -g0" bash build_rosbe_ci.sh "$ROSBE"
 fi
 [ "${1:-}" = toolchain ] && exit 0
 

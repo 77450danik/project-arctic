@@ -73,8 +73,6 @@ jobs:
       - id: key
         run: |
           echo "key=reactos-${{ hashFiles('runtime/reactos/**', 'ci/build-reactos.sh') }}" >> "$GITHUB_OUTPUT"
-          # RosBE is built for the runner's own CPU, so it only runs on that kind
-          echo "march=$(gcc -march=native -Q --help=target | sha1sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache/restore@v4
         with:
@@ -86,7 +84,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/reactos/RosBE
-          key: rosbe-${{ runner.os }}-ea42b03-${{ steps.key.outputs.march }} # ROSBE_SCRIPT_SHA256 in ci/build-reactos.sh
+          key: rosbe-${{ runner.os }}-ea42b03-generic # ROSBE_SCRIPT_SHA256 in ci/build-reactos.sh
       - if: steps.cache.outputs.cache-hit != 'true'
         run: sudo apt-get install -y ninja-build texinfo
       - if: steps.cache.outputs.cache-hit != 'true' && steps.rosbe.outputs.cache-hit != 'true'
@@ -95,7 +93,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/reactos/RosBE
-          key: rosbe-${{ runner.os }}-ea42b03-${{ steps.key.outputs.march }}
+          key: rosbe-${{ runner.os }}-ea42b03-generic
       - if: steps.cache.outputs.cache-hit != 'true'
         run: bash ci/build-reactos.sh
       - if: steps.cache.outputs.cache-hit != 'true'
