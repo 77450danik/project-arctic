@@ -79,6 +79,9 @@ for spec in args.put:
     read_for(3)
     print("### put %s -> %s" % (local, remote))
 for c in args.commands:
+    if c.startswith("#wait "):  # only read the console for that many seconds
+        print(read_for(float(c.split()[1])))
+        continue
     sock.sendall(c.encode() + b"\n")
     print("### " + c)
     print(read_for(6))

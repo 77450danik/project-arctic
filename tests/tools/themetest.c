@@ -62,6 +62,30 @@ int main( void )
         try_part( theme, "CLOSEBUTTON", WP_CLOSEBUTTON, CBS_NORMAL, 21, 21 );
         CloseThemeData( theme );
     }
+    {
+        /* a real frame: who paints its caption, and in which state */
+        WINDOWINFO info = { sizeof(info) };
+        HWND frame = CreateWindowW( L"STATIC", L"themetest frame", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                    300, 200, 400, 200, 0, 0, 0, 0 );
+        DWORD end = GetTickCount() + 1500;
+        MSG msg;
+        HDC dc;
+
+        SetForegroundWindow( frame );
+        while (GetTickCount() < end)
+        {
+            while (PeekMessageW( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageW( &msg );
+            Sleep( 20 );
+        }
+        GetWindowInfo( frame, &info );
+        dc = GetWindowDC( frame );
+        printf( "themetest: frame fg %d status %#lx theme %p caption px %06lx %06lx %06lx border px %06lx\n",
+                GetForegroundWindow() == frame, info.dwWindowStatus, GetWindowTheme( frame ),
+                GetPixel( dc, 60, 12 ), GetPixel( dc, 200, 12 ), GetPixel( dc, 390, 12 ), GetPixel( dc, 2, 100 ) );
+        ReleaseDC( frame, dc );
+        DestroyWindow( frame );
+    }
+
     theme = OpenThemeData( NULL, L"TASKBAR" );
     if (theme)
     {
