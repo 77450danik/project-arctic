@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: key
-        run: echo "key=wine-${{ hashFiles('runtime/**', 'ci/build-wine.sh', 'ci/arch-prep.sh') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=wine-${{ hashFiles('runtime/WINE_VERSION', 'runtime/wine/**', 'ci/build-wine.sh', 'ci/arch-prep.sh') }}" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache/restore@v4
         with:
@@ -125,7 +125,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: out/wine
-          key: wine-${{ hashFiles('runtime/**', 'ci/build-wine.sh', 'ci/arch-prep.sh') }}
+          key: wine-${{ hashFiles('runtime/WINE_VERSION', 'runtime/wine/**', 'ci/build-wine.sh', 'ci/arch-prep.sh') }}
           fail-on-cache-miss: true
 
       - name: Host root filesystem and NT prefix
