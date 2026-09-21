@@ -73,6 +73,12 @@ if [ -d "$REACTOS/Windows" ]; then
     # never runs, so it is not in the image at all
     rm -f "$PFX/drive_c/windows/system32/explorer.exe" "$RFS"/usr/lib/wine/*-windows/explorer.exe
     [ -d "$REACTOS/Windows/Resources" ] && cp -a "$REACTOS/Windows/Resources" "$PFX/drive_c/windows/"
+    # The shell's manifest asks for common controls 6.0, so what it loads is the
+    # side-by-side copy, not the one in system32
+    for sxs in "$PFX"/drive_c/windows/winsxs/amd64_microsoft.windows.common-controls_*/comctl32.dll; do
+        [ -e "$sxs" ] && [ -e "$REACTOS/Windows/System32/comctl32.dll" ] &&
+            cp "$REACTOS/Windows/System32/comctl32.dll" "$sxs"
+    done
 fi
 # The classes of the ReactOS shell, registered by the DLLs themselves
 if [ -d "$REACTOS/Windows" ]; then
