@@ -27,6 +27,8 @@ rename_case() { $SUDO mv "$MNT/$1" "$MNT/$1.tmp" && $SUDO mv "$MNT/$1.tmp" "$MNT
 rename_case windows Windows
 rename_case Windows/system32 Windows/System32
 rename_case Windows/syswow64 Windows/SysWOW64
+rename_case Windows/resources Windows/Resources
+rename_case Windows/Resources/themes Windows/Resources/Themes
 rename_case users Users
 
 $SUDO umount "$MNT"

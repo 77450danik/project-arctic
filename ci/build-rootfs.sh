@@ -73,7 +73,11 @@ if [ -d "$REACTOS/Windows" ]; then
     # There is one explorer.exe, in C:\Windows, as in Windows: Wine's own
     # never runs, so it is not in the image at all
     rm -f "$PFX/drive_c/windows/system32/explorer.exe" "$RFS"/usr/lib/wine/*-windows/explorer.exe
-    [ -d "$REACTOS/Windows/Resources" ] && cp -a "$REACTOS/Windows/Resources" "$PFX/drive_c/windows/"
+    # into Wine's resources	hemes, which holds aero: C: shows one Resources folder
+    if [ -d "$REACTOS/Windows/Resources/Themes" ]; then
+        mkdir -p "$PFX/drive_c/windows/resources/themes"
+        cp -a "$REACTOS/Windows/Resources/Themes/." "$PFX/drive_c/windows/resources/themes/"
+    fi
     # the font of the visual style
     cp "$ROOT"/runtime/fonts/*.ttf "$PFX/drive_c/windows/Fonts/"
     # The shell's manifest asks for common controls 6.0, so what it loads is the
