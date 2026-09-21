@@ -18,8 +18,16 @@ WINE_DEFAULT_DEBUG_CHANNEL(dwm);
 
 int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int show )
 {
-    HMODULE core = LoadLibraryW( L"dwmcore.dll" );
-    DWORD (WINAPI *run)(void) = core ? (void *)GetProcAddress( core, "DwmCoreRun" ) : NULL;
+    HMODULE core;
+    DWORD (WINAPI *run)(void);
+
+    /* A process joins the desktop it was started on when user32 sets it up;
+     * dwm composes the windows of the session's desktop, which wininit.exe
+     * named, not of the session 0 desktop it would otherwise inherit. */
+    if (!GetProcessWindowStation()) ERR( "no window station: %lu\n", GetLastError() );
+
+    core = LoadLibraryW( L"dwmcore.dll" );
+    run = core ? (void *)GetProcAddress( core, "DwmCoreRun" ) : NULL;
 
     if (!run)
     {
