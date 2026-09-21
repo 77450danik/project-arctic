@@ -1,16 +1,8 @@
-# Опції папки: відкрити діалог
+# Параметри папки: відкрити діалог і пройти вкладки (третя падала)
 sleep 6
-move 36 40
-dblclick
-sleep 5
-move 281 41
-click
+key meta_l-e                  # Win+E: «Мій комп'ютер»
+sleep 6
+move 278 40
+click                         # Інструменти
 sleep 2
-move 300 122
-click                         # Опції папки...
-sleep 5
-shot o1-options
-move 160 48
-click                         # Типи файлів (падає)
-sleep 6
-shot o2-filetypes
+shot o0-tools-menu

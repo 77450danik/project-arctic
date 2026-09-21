@@ -1,0 +1,43 @@
+From c24c9e3d7043bcc6e0d6f2aa7d168ff24264079f Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 14:21:40 +0300
+Subject: [PATCH] win32u: InternalGetWindowText gives the length when there is
+ no buffer.
+
+As in Windows. The visual style asks for the length of the title that
+way before it draws it, got 0 and left every caption without its text.
+---
+ dlls/win32u/window.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 792a3242..6b36c934 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -3427,7 +3427,22 @@ INT WINAPI NtUserInternalGetWindowText( HWND hwnd, WCHAR *text, INT count )
+ {
+     WND *win;
+ 
+-    if (count <= 0) return 0;
++    /* with nowhere to copy the text, the length of it, as in Windows */
++    if (!text || count <= 0)
++    {
++        WCHAR buffer[1024];
++        INT len = 0;
++
++        if (!(win = get_win_ptr( hwnd )) || win == WND_DESKTOP) return 0;
++        if (win != WND_OTHER_PROCESS)
++        {
++            if (win->text) len = lstrlenW( win->text );
++            release_win_ptr( win );
++            return len;
++        }
++        get_server_window_text( hwnd, buffer, ARRAY_SIZE(buffer) );
++        return lstrlenW( buffer );
++    }
+     if (!(win = get_win_ptr( hwnd ))) return 0;
+     if (win == WND_DESKTOP) text[0] = 0;
+     else if (win != WND_OTHER_PROCESS)
+-- 
+2.53.0.windows.2
+

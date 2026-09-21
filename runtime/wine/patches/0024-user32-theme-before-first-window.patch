@@ -1,0 +1,31 @@
+From 7820e922ba2281fe14a417302a6e7c00e9ebd9d4 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 14:22:27 +0300
+Subject: [PATCH] user32: The theme joins a process before its first window is
+ created.
+
+It was loaded with the first message a window procedure handled, which
+could come after controls had asked for their theme data on WM_CREATE:
+the taskbar was themed on one boot and classic on the next.
+---
+ dlls/user32/win.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index 1c938198..a2329acd 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -268,6 +268,10 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+     WCHAR name_buf[8];
+     HMENU menu;
+ 
++    /* the theme joins the process before its first window exists, so that
++     * windows opening their theme data on WM_CREATE find it, as in Windows */
++    get_theme_api_hook();
++
+     init_class_name( &class, className );
+     get_class_version( &class, &version, TRUE );
+ 
+-- 
+2.53.0.windows.2
+
