@@ -41,6 +41,7 @@ REGEDIT4
 "uxtheme"="native,builtin"
 "shlwapi"="native,builtin"
 "comctl32"="native,builtin"
+"winemenubuilder.exe"=""
 
 [HKEY_CURRENT_USER\Software\Wine\WineDbg]
 "ShowCrashDialog"=dword:00000000
