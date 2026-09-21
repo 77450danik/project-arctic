@@ -36,6 +36,7 @@ cp -a "$OUT/wine/usr/." "$RFS/usr/"
 
 INIT_SRC=("$ROOT"/host/init/{splash,screen,stop}.c)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}"
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
 mkdir -p "$OUT/initrd/dev" "$OUT/initrd/proc" "$OUT/initrd/sys"
 gcc -static -Os -Wall -o "$OUT/initrd/init" "$ROOT/host/init/initrd-init.c" "${INIT_SRC[@]}"
 mknod -m 600 "$OUT/initrd/dev/console" c 5 1

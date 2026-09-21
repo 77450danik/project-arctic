@@ -10,6 +10,8 @@ Steps, one per line ('#' starts a comment):
     key COMBO             e.g. ret, alt-f4, ctrl-shift-esc, alt-shift
     sleep SECONDS
     shot NAME             screenshot to out/test-local/NAME.png
+    plug NAME IMAGE       a USB stick with that raw image (relative to out/test-local)
+    unplug NAME           pull it out
 """
 import json
 import os
@@ -142,6 +144,19 @@ def run(qmp, steps):
             time.sleep(float(words[0]))
         elif cmd == "shot":
             print("    " + qmp.shot(words[0]), flush=True)
+        elif cmd == "plug":
+            image = os.path.join(RES, words[1])
+            qmp.call("blockdev-add", {"driver": "raw", "node-name": words[0],
+                                      "file": {"driver": "file", "filename": image}})
+            qmp.call("device_add", {"driver": "usb-storage", "id": words[0], "drive": words[0],
+                                    "bus": "xhci.0", "removable": True})
+        elif cmd == "unplug":
+            qmp.call("device_del", {"id": words[0]})
+            time.sleep(1)
+            try:
+                qmp.call("blockdev-del", {"node-name": words[0]})
+            except RuntimeError as e:
+                print("    " + str(e), flush=True)
         else:
             raise ValueError("unknown step: " + line)
         time.sleep(0.15)

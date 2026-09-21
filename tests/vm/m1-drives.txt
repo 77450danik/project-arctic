@@ -1,0 +1,13 @@
+# Drive letters: run with --disk out/test-local/disk-internal.img
+# (tools/wsl/make-test-disks.sh). «Цей ПК» shows C: and «Дані» (D:), no EFI
+# partition; a USB stick appears when plugged in and goes when pulled out.
+sleep 6
+key meta_l-e                  # Win+E: «Цей ПК»
+sleep 6
+shot d1-thispc
+plug stick usb-stick.img
+sleep 6
+shot d2-plugged
+unplug stick
+sleep 6
+shot d3-unplugged

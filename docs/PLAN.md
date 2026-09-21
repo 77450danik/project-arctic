@@ -284,8 +284,13 @@ EnumDisplayDevices / EnumDisplaySettingsEx
   `USB\VID_…&PID_…`, `HDAUDIO\…`, `ACPI\…`. Драйвер вузла — ім'я модуля Linux і його версія.
   Диспетчер пристроїв (devmgr з ReactOS) показує реальне залізо. «Вимкнути пристрій» →
   hostd відв'язує Linux-драйвер через sysfs `unbind`.
-- **Диски:** `mountmgr.sys` отримує Linux-бекенд на udev (у Wine він ходить в UDisks2 через D-Bus).
-  hostd монтує ntfs, exfat, vfat, ext4, btrfs → літери D:, E: з гарячим підключенням.
+- **Диски:** udev на кожен том запускає `arctic-volume` (`host/init/arctic-volume.c`): той монтує
+  ntfs, exfat, vfat, ext4, btrfs, CD (iso9660, udf) у `/run/arctic/media/<пристрій>` і описує том у
+  `/run/arctic/volumes/<пристрій>`. `mountmgr.sys` стежить за цією текою (inotify, патч Wine 0027)
+  і дає літери D:, E: з гарячим підключенням; провідник дізнається через `WM_DEVICECHANGE`.
+  Приховані, як у Windows: EFI, MSR, розділи відновлення, атрибут GPT «без літери» і власні
+  пристрої хоста (носій завантаження, C:). Усе з записом; том, який драйвер писати не дає
+  (приспаний Windows), — лише для читання.
 - **Windows-драйвери (v0.3):**
   - USB `.sys`: `ntoskrnl.exe` + `wineusb.sys` вантажать драйвер у користувацькому просторі поверх libusb.
     Коли для VID/PID встановлено INF, hostd відв'язує від пристрою Linux-драйвер.

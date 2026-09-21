@@ -399,6 +399,10 @@ int main(void)
     mkdir("/dev/shm", 01777);
     mount("tmpfs", "/dev/shm", "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777");
     mkdir("/run/arctic", 0755);
+    /* arctic-volume (run by udev) mounts and describes the volumes that get a
+     * drive letter here; mountmgr.sys watches the descriptions */
+    mkdir("/run/arctic/media", 0755);
+    mkdir("/run/arctic/volumes", 0755);
     sethostname("arctic", 6);
 
     console = open("/dev/console", O_WRONLY | O_NOCTTY | O_CLOEXEC);

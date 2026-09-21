@@ -2,13 +2,14 @@
 the NT world, and saves the serial log and a screenshot.
 
 usage: python tools/vm-test.py [image] [--wait SECONDS] [--append "kernel params"] [--script FILE]
-                               [--usb] [--uefi] [--headless] [--keep]
+                               [--usb] [--uefi] [--headless] [--keep] [--disk IMAGE]
 
 --usb boots out/arctic-usb.img as a USB disk and --uefi boots through OVMF, which
 is how the image is tried the way real machines boot it.
 --append boots the kernel directly (taken from the ISO) with extra parameters,
 e.g. --append arctic.stoptest=nt. --script runs input steps (tools/vmscript.py)
-once the desktop is up. Results go to out/test-local/.
+once the desktop is up. --disk adds an internal disk
+(tools/wsl/make-test-disks.sh makes some). Results go to out/test-local/.
 """
 import argparse
 import os
@@ -33,6 +34,8 @@ parser.add_argument("--keep", action="store_true", help="leave the VM running af
 parser.add_argument("--script", help="input steps to run once the desktop is up (tools/vmscript.py)")
 parser.add_argument("--usb", action="store_true", help="the image is a USB disk, not a CD")
 parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
+parser.add_argument("--disk", action="append", default=[],
+                    help="a raw disk image attached as an internal disk (repeatable)")
 args = parser.parse_args()
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -54,6 +57,8 @@ if args.usb:
             "-device", "usb-storage,drive=usbdisk,bus=xhci.0,bootindex=0"]
 else:
     cmd += ["-cdrom", args.iso]
+for disk in args.disk:
+    cmd += ["-drive", "if=virtio,format=raw,file=" + os.path.abspath(disk)]
 if args.uefi:
     fw = os.path.join(ROOT, "tools", "qemu", "share")
     nvram = os.path.join(RES, "uefi-vars.fd")

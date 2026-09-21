@@ -1,0 +1,252 @@
+From 00478a806d13f1e13d38f7ca263ad6897883e999 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 17:08:58 +0300
+Subject: [PATCH] mountmgr.sys: Volumes the Arctic host mounts get drive
+ letters as they come and go.
+
+The host mounts every volume Windows would give a letter to and describes
+each in a file of /run/arctic/volumes; the folder is watched with inotify.
+Fixed disks, removable disks and CDs get their letters and Windows' drive
+types, and the shell hears of each through WM_DEVICECHANGE.
+---
+ dlls/mountmgr.sys/Makefile.in |   1 +
+ dlls/mountmgr.sys/arctic.c    | 168 ++++++++++++++++++++++++++++++++++
+ dlls/mountmgr.sys/unixlib.c   |  10 ++
+ dlls/mountmgr.sys/unixlib.h   |   1 +
+ 4 files changed, 180 insertions(+)
+ create mode 100644 dlls/mountmgr.sys/arctic.c
+
+diff --git a/dlls/mountmgr.sys/Makefile.in b/dlls/mountmgr.sys/Makefile.in
+index 5d732eb9..086d6544 100644
+--- a/dlls/mountmgr.sys/Makefile.in
++++ b/dlls/mountmgr.sys/Makefile.in
+@@ -8,6 +8,7 @@ UNIX_LIBS    = $(DISKARBITRATION_LIBS) $(SYSTEMCONFIGURATION_LIBS) $(CORESERVICE
+ EXTRADLLFLAGS = -Wl,--subsystem,native
+ 
+ SOURCES = \
++	arctic.c \
+ 	cdrom.c \
+ 	cred.c \
+ 	dbus.c \
+diff --git a/dlls/mountmgr.sys/arctic.c b/dlls/mountmgr.sys/arctic.c
+new file mode 100644
+index 00000000..41e52aca
+--- /dev/null
++++ b/dlls/mountmgr.sys/arctic.c
+@@ -0,0 +1,168 @@
++/*
++ * Volumes of the Arctic host
++ *
++ * Arctic's host mounts every volume Windows would give a drive letter to
++ * (arctic-volume, which udev runs as disks come and go) and describes each in
++ * a file of /run/arctic/volumes named after the device. The folder is watched
++ * here, and each volume gets its letter the moment it is plugged in.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <dirent.h>
++#include <errno.h>
++#include <limits.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#ifdef __linux__
++#include <sys/inotify.h>
++#endif
++
++#include "unixlib.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(mountmgr);
++
++#define VOLUMES_DIR "/run/arctic/volumes"
++
++#ifdef __linux__
++
++static BOOL parse_guid( const char *str, GUID *guid )
++{
++    unsigned int d[11];
++
++    if (strlen( str ) != 36 ||
++        sscanf( str, "%8x-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x", &d[0], &d[1], &d[2], &d[3], &d[4],
++                &d[5], &d[6], &d[7], &d[8], &d[9], &d[10] ) != 11)
++        return FALSE;
++    guid->Data1 = d[0];
++    guid->Data2 = d[1];
++    guid->Data3 = d[2];
++    for (int i = 0; i < 8; i++) guid->Data4[i] = d[3 + i];
++    return TRUE;
++}
++
++/* a record is key=value lines: device, mount, type (fixed, removable or
++ * cdrom), fs, label, uuid, partuuid, read_only */
++static void add_volume_record( const char *name )
++{
++    char path[PATH_MAX], line[1024];
++    char device[256] = "", mount[256] = "", type[32] = "", label[256] = "", uuid[64] = "", partuuid[64] = "";
++    enum device_type device_type;
++    GUID guid, *guid_ptr = NULL;
++    FILE *f;
++
++    snprintf( path, sizeof(path), VOLUMES_DIR "/%s", name );
++    if (!(f = fopen( path, "r" )))
++    {
++        WARN( "%s: %s\n", debugstr_a(path), strerror(errno) );
++        return;
++    }
++    while (fgets( line, sizeof(line), f ))
++    {
++        char *value = strchr( line, '=' ), *end;
++
++        if (!value) continue;
++        *value++ = 0;
++        if ((end = strchr( value, '\n' ))) *end = 0;
++        if (!strcmp( line, "device" )) snprintf( device, sizeof(device), "%s", value );
++        else if (!strcmp( line, "mount" )) snprintf( mount, sizeof(mount), "%s", value );
++        else if (!strcmp( line, "type" )) snprintf( type, sizeof(type), "%s", value );
++        else if (!strcmp( line, "label" )) snprintf( label, sizeof(label), "%s", value );
++        else if (!strcmp( line, "uuid" )) snprintf( uuid, sizeof(uuid), "%s", value );
++        else if (!strcmp( line, "partuuid" )) snprintf( partuuid, sizeof(partuuid), "%s", value );
++    }
++    fclose( f );
++    if (!device[0] || !mount[0]) return;
++
++    if (!strcmp( type, "cdrom" )) device_type = DEVICE_CDROM;
++    else if (!strcmp( type, "removable" )) device_type = DEVICE_HARDDISK; /* DRIVE_REMOVABLE */
++    else device_type = DEVICE_HARDDISK_VOL;                            /* DRIVE_FIXED */
++    if (parse_guid( partuuid, &guid ) || parse_guid( uuid, &guid )) guid_ptr = &guid;
++
++    TRACE( "%s: %s on %s, %s, label %s\n", debugstr_a(name), debugstr_a(device), debugstr_a(mount),
++           type, debugstr_a(label) );
++    queue_device_op( ADD_DOS_DEVICE, name, device, mount, device_type, guid_ptr, NULL,
++                     label[0] ? label : NULL, NULL );
++}
++
++static void remove_volume_record( const char *name )
++{
++    TRACE( "%s\n", debugstr_a(name) );
++    queue_device_op( REMOVE_DEVICE, name, NULL, NULL, DEVICE_UNKNOWN, NULL, NULL, NULL, NULL );
++}
++
++void run_arctic_loop(void)
++{
++    char buffer[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
++    struct dirent *de;
++    DIR *dir;
++    int fd;
++
++    if ((fd = inotify_init1( IN_CLOEXEC )) == -1) return;
++    /* records are written under a dot name and renamed when whole */
++    if (inotify_add_watch( fd, VOLUMES_DIR, IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE ) == -1)
++    {
++        TRACE( "no %s: %s\n", VOLUMES_DIR, strerror(errno) );
++        close( fd );
++        return;
++    }
++
++    /* the volumes there before mountmgr started */
++    if ((dir = opendir( VOLUMES_DIR )))
++    {
++        while ((de = readdir( dir )))
++            if (de->d_name[0] != '.') add_volume_record( de->d_name );
++        closedir( dir );
++    }
++
++    for (;;)
++    {
++        ssize_t len = read( fd, buffer, sizeof(buffer) );
++        char *p;
++
++        if (len <= 0)
++        {
++            if (len == -1 && errno == EINTR) continue;
++            break;
++        }
++        for (p = buffer; p < buffer + len; p += sizeof(struct inotify_event) + ((struct inotify_event *)p)->len)
++        {
++            struct inotify_event *event = (struct inotify_event *)p;
++
++            if (!event->len || event->name[0] == '.') continue;
++            if (event->mask & IN_MOVED_TO) add_volume_record( event->name );
++            else if (event->mask & (IN_MOVED_FROM | IN_DELETE)) remove_volume_record( event->name );
++        }
++    }
++    close( fd );
++}
++
++#else
++
++void run_arctic_loop(void)
++{
++}
++
++#endif
+diff --git a/dlls/mountmgr.sys/unixlib.c b/dlls/mountmgr.sys/unixlib.c
+index 235e3ae1..fd0f7f4b 100644
+--- a/dlls/mountmgr.sys/unixlib.c
++++ b/dlls/mountmgr.sys/unixlib.c
+@@ -41,6 +41,7 @@
+ # include <sys/param.h>
+ #endif
+ #include <unistd.h>
++#include <pthread.h>
+ 
+ #include "unixlib.h"
+ #include "wine/debug.h"
+@@ -171,11 +172,20 @@ void queue_device_op( enum device_op op, const char *udi, const char *device,
+     NtQueueApcThread( run_loop_params.op_thread, run_loop_params.op_apc, (ULONG_PTR)info, 0, 0 );
+ }
+ 
++static void *arctic_loop_thread( void *arg )
++{
++    run_arctic_loop();
++    return NULL;
++}
++
+ static NTSTATUS run_loop( void *args )
+ {
+     const struct run_loop_params *params = args;
++    pthread_t thread;
+ 
+     run_loop_params = *params;
++    /* next to D-Bus, which, when it runs, does not return */
++    if (!pthread_create( &thread, NULL, arctic_loop_thread, NULL )) pthread_detach( thread );
+     run_diskarbitration_loop();
+     run_dbus_loop();
+     return STATUS_SUCCESS;
+diff --git a/dlls/mountmgr.sys/unixlib.h b/dlls/mountmgr.sys/unixlib.h
+index bb4cfc46..fa2b44f2 100644
+--- a/dlls/mountmgr.sys/unixlib.h
++++ b/dlls/mountmgr.sys/unixlib.h
+@@ -199,6 +199,7 @@ enum mountmgr_funcs
+ #define MOUNTMGR_CALL( func, params ) WINE_UNIX_CALL( unix_ ## func, params )
+ 
+ extern NTSTATUS errno_to_status( int err );
++extern void run_arctic_loop(void);
+ extern void queue_device_op( enum device_op op, const char *udi, const char *device,
+                              const char *mount_point, enum device_type type, const GUID *guid,
+                              const char *disk_serial, const char *label,
+-- 
+2.53.0.windows.2
+

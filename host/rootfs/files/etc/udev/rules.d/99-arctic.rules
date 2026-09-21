@@ -5,3 +5,9 @@ SUBSYSTEM=="input", KERNEL=="event*", OWNER="nt"
 SUBSYSTEM=="sound", OWNER="nt"
 SUBSYSTEM=="hidraw", OWNER="nt"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", OWNER="nt"
+
+# Volumes that get a drive letter: arctic-volume mounts them and mountmgr.sys
+# gives each its letter; a CD's medium comes and goes with change events
+SUBSYSTEM=="block", ACTION=="add|change", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/bin/arctic-volume add"
+SUBSYSTEM=="block", ACTION=="change", ENV{ID_FS_USAGE}!="filesystem", RUN+="/usr/bin/arctic-volume remove"
+SUBSYSTEM=="block", ACTION=="remove", RUN+="/usr/bin/arctic-volume remove"
