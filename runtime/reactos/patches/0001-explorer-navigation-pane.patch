@@ -103,10 +103,18 @@ index 993fb05..bf9420a 100644
      void Save();
      void Load();
 diff --git a/dll/win32/browseui/shellbrowser.cpp b/dll/win32/browseui/shellbrowser.cpp
-index 629297f..760ad87 100644
+index 629297f..430d818 100644
 --- a/dll/win32/browseui/shellbrowser.cpp
 +++ b/dll/win32/browseui/shellbrowser.cpp
-@@ -2171,6 +2171,11 @@ HRESULT STDMETHODCALLTYPE CShellBrowser::Exec(const GUID *pguidCmdGroup, DWORD n
+@@ -761,6 +761,7 @@ CShellBrowser::CShellBrowser()
+     fHistoryObject = NULL;
+     fHistoryStream = NULL;
+     fHistoryBindContext = NULL;
++    memset(&fCurrentVertBar, 0, sizeof(fCurrentVertBar));
+     m_settings.Load();
+     m_deffoldersettings.Load();
+     gCabinetState.Load();
+@@ -2171,6 +2172,11 @@ HRESULT STDMETHODCALLTYPE CShellBrowser::Exec(const GUID *pguidCmdGroup, DWORD n
                  {
                      ShowBand(*pclsid, true);
                  }
@@ -118,7 +126,7 @@ index 629297f..760ad87 100644
                  return S_OK;
              case 0x22:
                  //Sent when a band closes
-@@ -2382,8 +2387,11 @@ HRESULT STDMETHODCALLTYPE CShellBrowser::TranslateAcceleratorSB(MSG *pmsg, WORD
+@@ -2382,8 +2388,11 @@ HRESULT STDMETHODCALLTYPE CShellBrowser::TranslateAcceleratorSB(MSG *pmsg, WORD
  HRESULT STDMETHODCALLTYPE CShellBrowser::BrowseObject(LPCITEMIDLIST pidl, UINT wFlags)
  {
      wFlags = ApplyNewBrowserFlag(wFlags);
