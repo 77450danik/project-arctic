@@ -8,3 +8,13 @@ move 155 41
 click                         # Вигляд
 sleep 2
 shot n2-view-menu
+key esc
+sleep 1
+move 350 68
+click                         # «Папки» на панелі інструментів — сховати
+sleep 3
+shot n3-toggled-off
+move 350 68
+click                         # і показати знову
+sleep 3
+shot n4-toggled-on
