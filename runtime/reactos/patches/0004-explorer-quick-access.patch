@@ -261,11 +261,10 @@ diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBa
             TVS_FULLROWSELECT | TVS_TRACKSELECT | TVS_SHOWSELALWAYS | TVS_EDITLABELS
             /* | TVS_SINGLEEXPAND*/;
  }
-@@ -66,7 +68,170 @@
+@@ -66,7 +68,186 @@
  
  BOOL CExplorerBand::_WantsRootItem()
  {
--    return TRUE;
 +    // Quick access, This PC and Network stand at the top, as in Windows 10
 +    return FALSE;
 +}
@@ -324,6 +323,20 @@ diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBa
 +    }
 +}
 +
++/* the defaults are pinned once for a user, as Windows 10 does for a new profile */
++static BOOL FirstQuickAccess()
++{
++    static const WCHAR szKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced";
++    DWORD dwValue = 0, cbValue = sizeof(dwValue);
++
++    if (SHGetValueW(HKEY_CURRENT_USER, szKey, L"QuickAccessPinned", NULL, &dwValue, &cbValue) == ERROR_SUCCESS &&
++        dwValue)
++        return FALSE;
++    dwValue = 1;
++    SHSetValueW(HKEY_CURRENT_USER, szKey, L"QuickAccessPinned", REG_DWORD, &dwValue, sizeof(dwValue));
+     return TRUE;
++}
++
 +void CExplorerBand::_InsertTopFolder(INT csidl)
 +{
 +    CComHeapPtr<ITEMIDLIST> pidl;
@@ -342,7 +355,9 @@ diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBa
 +
 +    if (FAILED(GetLinksFolder(szLinks)))
 +        return;
-+    if (!PathIsDirectoryW(szLinks) && SHCreateDirectoryExW(NULL, szLinks, NULL) == ERROR_SUCCESS)
++    if (!PathIsDirectoryW(szLinks))
++        SHCreateDirectoryExW(NULL, szLinks, NULL);
++    if (FirstQuickAccess())
 +        PinDefaults(szLinks);
 +    if (FAILED(SHParseDisplayName(szLinks, NULL, &pidlLinks, 0, NULL)) ||
 +        FAILED(SHBindToParent(pidlLinks, IID_PPV_ARG(IShellFolder, &psfParent), &pidlChild)))
@@ -433,7 +448,7 @@ diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBa
  }
  
  // Called when the user has selected an item.
-@@ -113,14 +278,10 @@
+@@ -113,14 +294,10 @@
      if (FAILED_UNEXPECTEDLY(hr))
          return hr;
  
@@ -452,7 +467,7 @@ diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBa
  
      // Navigate to current folder position
      _NavigateToCurrentFolder();
-@@ -203,6 +364,20 @@
+@@ -203,6 +380,20 @@
      HRESULT hr = _GetCurrentLocation(&pidl);
      if (FAILED_UNEXPECTEDLY(hr))
          return FALSE;
