@@ -1,0 +1,13 @@
+# Programs and folders in a folder window: programs show their own icons,
+# Enter on a folder opens it, as a double click does
+sleep 10
+move 18 789
+click                         # Пуск
+sleep 2
+move 90 717
+click                         # Виконати...
+sleep 3
+type C:\Windows
+key ret
+sleep 6
+shot e1-windows
