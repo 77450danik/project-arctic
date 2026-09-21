@@ -1,0 +1,303 @@
+From c9839cdc6f5586c840a7704c837063cc966667f0 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 13:40:11 +0300
+Subject: [PATCH] gdi32: Implement GdiDrawStream.
+
+uxtheme draws every image of a visual style through it, as in Windows;
+the stub drew nothing, so ReactOS's uxtheme left frames, captions,
+buttons and the taskbar unpainted or classic.
+---
+ dlls/gdi32/Makefile.in  |   1 +
+ dlls/gdi32/drawstream.c | 254 ++++++++++++++++++++++++++++++++++++++++
+ dlls/gdi32/gdi32.spec   |   2 +-
+ 3 files changed, 256 insertions(+), 1 deletion(-)
+ create mode 100644 dlls/gdi32/drawstream.c
+
+diff --git a/dlls/gdi32/Makefile.in b/dlls/gdi32/Makefile.in
+index 61a23f13..96f06432 100644
+--- a/dlls/gdi32/Makefile.in
++++ b/dlls/gdi32/Makefile.in
+@@ -8,6 +8,7 @@ VER_FILEDESCRIPTION_STR = "Wine graphics library"
+ 
+ SOURCES = \
+ 	dc.c \
++	drawstream.c \
+ 	emfdc.c \
+ 	enhmetafile.c \
+ 	gdi32.rc \
+diff --git a/dlls/gdi32/drawstream.c b/dlls/gdi32/drawstream.c
+new file mode 100644
+index 00000000..6d801cc3
+--- /dev/null
++++ b/dlls/gdi32/drawstream.c
+@@ -0,0 +1,254 @@
++/*
++ * GdiDrawStream: draws the images of a visual style
++ *
++ * uxtheme hands every image of a theme part to GdiDrawStream, as in Windows:
++ * the image, its source and destination rectangles, the sizing margins and
++ * how it is to be stretched or tiled and blended. The drawing is the one
++ * uxtheme used to do itself (Wine's uxtheme draw.c, by way of ReactOS's
++ * gdi32, which implements GdiDrawStream with it).
++ *
++ * Copyright (C) 2003 Kevin Koltzau
++ * Copyright (C) ReactOS Team
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++#include <stdlib.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "wingdi.h"
++#include "winerror.h"
++#include "ntgdi.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(gdi);
++
++#define DS_TILE             0x02
++#define DS_TRANSPARENTALPHA 0x04
++#define DS_TRANSPARENTCLR   0x08
++#define DS_TRUESIZE         0x20
++
++typedef struct
++{
++    DWORD   signature;     /* "Swrd" */
++    DWORD   reserved;
++    HDC     hDC;
++    RECT    rcDest;
++    DWORD   unknown1;      /* 1 */
++    HBITMAP hImage;
++    DWORD   unknown2;      /* 9 */
++    RECT    rcClip;
++    RECT    rcSrc;
++    DWORD   drawOption;    /* DS_ flags */
++    DWORD   leftSizingMargin;
++    DWORD   rightSizingMargin;
++    DWORD   topSizingMargin;
++    DWORD   bottomSizingMargin;
++    DWORD   crTransparent;
++} GDI_DRAW_STREAM;
++
++enum blend { BLEND_NONE, BLEND_BINARY, BLEND_FULL };
++enum sizing { SIZE_TRUESIZE, SIZE_STRETCH, SIZE_TILE };
++
++struct margins { int left, right, top, bottom; };
++
++/* TransparentBlt or AlphaBlend, falling back on StretchBlt */
++static BOOL stretch_blt( HDC dst, int x_dst, int y_dst, int w_dst, int h_dst,
++                         HDC src, int x_src, int y_src, int w_src, int h_src,
++                         enum blend blend, COLORREF transparent )
++{
++    static const BLENDFUNCTION func = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
++    BOOL ret = TRUE;
++    int old_mode;
++    POINT old_org;
++
++    old_mode = SetStretchBltMode( dst, HALFTONE );
++    SetBrushOrgEx( dst, x_dst, y_dst, &old_org );
++
++    if (blend == BLEND_BINARY)
++        ret = GdiTransparentBlt( dst, x_dst, y_dst, abs(w_dst), abs(h_dst),
++                                 src, x_src, y_src, abs(w_src), abs(h_src), transparent );
++    else if (blend == BLEND_NONE ||
++             !GdiAlphaBlend( dst, x_dst, y_dst, w_dst, h_dst, src, x_src, y_src, w_src, h_src, func ))
++        ret = StretchBlt( dst, x_dst, y_dst, w_dst, h_dst, src, x_src, y_src, w_src, h_src, SRCCOPY );
++
++    SetBrushOrgEx( dst, old_org.x, old_org.y, NULL );
++    SetStretchBltMode( dst, old_mode );
++    return ret;
++}
++
++static BOOL blt( HDC dst, int x_dst, int y_dst, int w, int h, HDC src, int x_src, int y_src,
++                 enum blend blend, COLORREF transparent )
++{
++    return stretch_blt( dst, x_dst, y_dst, w, h, src, x_src, y_src, w, h, blend, transparent );
++}
++
++/* stretches or tiles */
++static BOOL sized_blt( HDC dst, int x_dst, int y_dst, int w_dst, int h_dst,
++                       HDC src, int x_src, int y_src, int w_src, int h_src,
++                       enum sizing sizing, enum blend blend, COLORREF transparent )
++{
++    HDC tmp_dc;
++    HBITMAP tmp_bmp, old_bmp;
++    int w_tmp, h_tmp, ofs, remaining, grow;
++    BOOL ret = FALSE;
++
++    if (sizing != SIZE_TILE)
++        return stretch_blt( dst, x_dst, y_dst, w_dst, h_dst, src, x_src, y_src, w_src, h_src,
++                            blend, transparent );
++
++    if (!w_src || !h_src) return TRUE;
++    if (w_src >= w_dst && h_src >= h_dst)
++        return blt( dst, x_dst, y_dst, min( w_dst, w_src ), min( h_dst, h_src ), src, x_src, y_src,
++                    blend, transparent );
++
++    /* a bitmap of whole tiles, grown by doubling, then one blit */
++    if (!(tmp_dc = NtGdiCreateCompatibleDC( src ))) return FALSE;
++    w_tmp = ((w_dst + w_src - 1) / w_src) * w_src;
++    h_tmp = ((h_dst + h_src - 1) / h_src) * h_src;
++    tmp_bmp = CreateCompatibleBitmap( src, w_tmp, h_tmp );
++    old_bmp = SelectObject( tmp_dc, tmp_bmp );
++
++    BitBlt( tmp_dc, 0, 0, w_src, h_src, src, x_src, y_src, SRCCOPY );
++    for (ofs = w_src, remaining = w_tmp - w_src, grow = w_src; remaining > 0; grow *= 2)
++    {
++        grow = min( grow, remaining );
++        BitBlt( tmp_dc, ofs, 0, grow, h_src, tmp_dc, 0, 0, SRCCOPY );
++        ofs += grow;
++        remaining -= grow;
++    }
++    for (ofs = h_src, remaining = h_tmp - h_src, grow = h_src; remaining > 0; grow *= 2)
++    {
++        grow = min( grow, remaining );
++        BitBlt( tmp_dc, 0, ofs, w_tmp, grow, tmp_dc, 0, 0, SRCCOPY );
++        ofs += grow;
++        remaining -= grow;
++    }
++    ret = blt( dst, x_dst, y_dst, w_dst, h_dst, tmp_dc, 0, 0, blend, transparent );
++
++    SelectObject( tmp_dc, old_bmp );
++    DeleteObject( tmp_bmp );
++    DeleteDC( tmp_dc );
++    return ret;
++}
++
++/* the nine parts of an image: four corners, four edges, the centre */
++static BOOL draw_image( HDC hdc, HBITMAP image, const RECT *src_rect, enum blend blend,
++                        COLORREF transparent, enum sizing sizing, const struct margins *margins,
++                        const RECT *dst_rect )
++{
++    struct margins m = *margins;
++    RECT src = *src_rect, dst = *dst_rect;
++    int w_dst = dst.right - dst.left, h_dst = dst.bottom - dst.top;
++    int w_src = src.right - src.left, h_src = src.bottom - src.top;
++    HDC src_dc;
++    HGDIOBJ old;
++    POINT org;
++    BOOL ret = TRUE;
++
++    if (!(src_dc = NtGdiCreateCompatibleDC( hdc ))) return FALSE;
++    old = SelectObject( src_dc, image );
++
++    if (sizing == SIZE_TRUESIZE)
++    {
++        ret = stretch_blt( hdc, dst.left, dst.top, w_dst, h_dst, src_dc, src.left, src.top, w_src, h_src,
++                           blend, transparent );
++        goto done;
++    }
++
++    w_dst = abs( w_dst );
++    h_dst = abs( h_dst );
++    OffsetViewportOrgEx( hdc, dst.left, dst.top, &org );
++
++    ret = blt( hdc, 0, 0, m.left, m.top, src_dc, src.left, src.top, blend, transparent ) &&
++          blt( hdc, w_dst - m.right, 0, m.right, m.top,
++               src_dc, src.right - m.right, src.top, blend, transparent ) &&
++          blt( hdc, 0, h_dst - m.bottom, m.left, m.bottom,
++               src_dc, src.left, src.bottom - m.bottom, blend, transparent ) &&
++          blt( hdc, w_dst - m.right, h_dst - m.bottom, m.right, m.bottom,
++               src_dc, src.right - m.right, src.bottom - m.bottom, blend, transparent );
++
++    if (ret)
++    {
++        int w_dst_mid = w_dst - (m.left + m.right), w_src_mid = w_src - (m.left + m.right);
++        int h_dst_mid = h_dst - (m.top + m.bottom), h_src_mid = h_src - (m.top + m.bottom);
++
++        if (w_dst_mid > 0)
++            ret = sized_blt( hdc, m.left, 0, w_dst_mid, m.top,
++                             src_dc, src.left + m.left, src.top, w_src_mid, m.top,
++                             sizing, blend, transparent ) &&
++                  sized_blt( hdc, m.left, h_dst - m.bottom, w_dst_mid, m.bottom,
++                             src_dc, src.left + m.left, src.bottom - m.bottom, w_src_mid, m.bottom,
++                             sizing, blend, transparent );
++        if (ret && h_dst_mid > 0)
++            ret = sized_blt( hdc, 0, m.top, m.left, h_dst_mid,
++                             src_dc, src.left, src.top + m.top, m.left, h_src_mid,
++                             sizing, blend, transparent ) &&
++                  sized_blt( hdc, w_dst - m.right, m.top, m.right, h_dst_mid,
++                             src_dc, src.right - m.right, src.top + m.top, m.right, h_src_mid,
++                             sizing, blend, transparent );
++        if (ret && w_dst_mid > 0 && h_dst_mid > 0)
++            ret = sized_blt( hdc, m.left, m.top, w_dst_mid, h_dst_mid,
++                             src_dc, src.left + m.left, src.top + m.top, w_src_mid, h_src_mid,
++                             sizing, blend, transparent );
++    }
++    SetViewportOrgEx( hdc, org.x, org.y, NULL );
++
++done:
++    SelectObject( src_dc, old );
++    DeleteDC( src_dc );
++    return ret;
++}
++
++/***********************************************************************
++ *           GdiDrawStream   (GDI32.@)
++ */
++BOOL WINAPI GdiDrawStream( HDC hdc, ULONG size, void *data )
++{
++    GDI_DRAW_STREAM *ds = data;
++    struct margins margins;
++    enum blend blend;
++    enum sizing sizing;
++
++    if (!ds || size != sizeof(*ds) || ds->signature != 0x44727753 || ds->reserved ||
++        ds->unknown1 != 1 || ds->unknown2 != 9)
++    {
++        WARN( "unknown draw stream %p, size %lu\n", data, size );
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    if (ds->rcDest.right < ds->rcDest.left || ds->rcDest.bottom < ds->rcDest.top) return FALSE;
++
++    if (ds->drawOption & DS_TRANSPARENTALPHA) blend = BLEND_FULL;
++    else if (ds->drawOption & DS_TRANSPARENTCLR) blend = BLEND_BINARY;
++    else blend = BLEND_NONE;
++
++    if (ds->drawOption & DS_TILE) sizing = SIZE_TILE;
++    else if (ds->drawOption & DS_TRUESIZE) sizing = SIZE_TRUESIZE;
++    else sizing = SIZE_STRETCH;
++
++    margins.left = ds->leftSizingMargin;
++    margins.right = ds->rightSizingMargin;
++    margins.top = ds->topSizingMargin;
++    margins.bottom = ds->bottomSizingMargin;
++    if (margins.left + margins.right > ds->rcDest.right - ds->rcDest.left) margins.left = margins.right = 0;
++    if (margins.top + margins.bottom > ds->rcDest.bottom - ds->rcDest.top) margins.top = margins.bottom = 0;
++
++    SetLastError( ERROR_SUCCESS );
++    return draw_image( ds->hDC, ds->hImage, &ds->rcSrc, blend, ds->crTransparent, sizing, &margins,
++                       &ds->rcDest );
++}
+diff --git a/dlls/gdi32/gdi32.spec b/dlls/gdi32/gdi32.spec
+index 207549ff..7214f13d 100644
+--- a/dlls/gdi32/gdi32.spec
++++ b/dlls/gdi32/gdi32.spec
+@@ -246,7 +246,7 @@
+ @ stdcall GdiDescribePixelFormat(long long long ptr) NtGdiDescribePixelFormat
+ # @ stub GdiDisableUMPDSandboxing
+ @ stdcall GdiDllInitialize(ptr long ptr)
+-@ stdcall GdiDrawStream(long long ptr) NtGdiDrawStream
++@ stdcall GdiDrawStream(long long ptr)
+ # @ stub GdiEndDocEMF
+ # @ stub GdiEndPageEMF
+ # @ stub GdiEntry1
+-- 
+2.53.0.windows.2
+
