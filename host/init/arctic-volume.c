@@ -1,6 +1,6 @@
 /* arctic-volume: udev runs it for every block device that comes, changes or
  * goes. A volume Windows would give a drive letter is mounted under
- * /run/arctic/media/<name> and described in /run/arctic/volumes/<name>;
+ * /run/arctic/drives/<name> and described in /run/arctic/volumes/<name>;
  * mountmgr.sys watches that folder and gives the volume its letter.
  *
  *   arctic-volume add     the device in DEVNAME has a file system (udev's
@@ -25,7 +25,7 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
-#define MEDIA_DIR "/run/arctic/media"
+#define DRIVES_DIR "/run/arctic/drives"
 #define VOLUMES_DIR "/run/arctic/volumes"
 #define NT_USER "nt"
 
@@ -124,7 +124,7 @@ static int has_holders(const char *dir)
 
 /* the host's own devices: loop, device-mapper and zram, and every volume of a
  * disk the host uses: a device-mapper table holds it (C:'s origin) or it is
- * mounted outside MEDIA_DIR (the boot medium, which on a stick written from
+ * mounted outside DRIVES_DIR (the boot medium, which on a stick written from
  * the ISO is the whole disk and two partitions at once) */
 static int host_device(const char *name)
 {
@@ -160,7 +160,7 @@ static int host_device(const char *name)
     if ((f = fopen("/proc/self/mountinfo", "re"))) {
         unsigned int major, minor;
         while (!used && fgets(line, sizeof(line), f)) {
-            if (sscanf(line, "%*u %*u %u:%u", &major, &minor) != 2 || strstr(line, " " MEDIA_DIR "/"))
+            if (sscanf(line, "%*u %*u %u:%u", &major, &minor) != 2 || strstr(line, " " DRIVES_DIR "/"))
                 continue;
             for (int i = 0; i < n; i++)
                 used |= devs[i] == makedev(major, minor);
@@ -260,7 +260,7 @@ static void remove_volume(const char *name)
     snprintf(path, sizeof(path), VOLUMES_DIR "/%s", name);
     if (!unlink(path))
         say("%s removed", name);
-    snprintf(path, sizeof(path), MEDIA_DIR "/%s", name);
+    snprintf(path, sizeof(path), DRIVES_DIR "/%s", name);
     /* the medium may be gone already: detach, nothing can be flushed to it */
     umount2(path, MNT_DETACH);
     rmdir(path);
@@ -280,8 +280,8 @@ static void add_volume(const char *name, const char *dev)
     if (stat(dev, &st) || !S_ISBLK(st.st_mode) || host_device(name) || hidden_partition())
         return;
 
-    snprintf(dir, sizeof(dir), MEDIA_DIR "/%s", name);
-    mkdir(MEDIA_DIR, 0755);
+    snprintf(dir, sizeof(dir), DRIVES_DIR "/%s", name);
+    mkdir(DRIVES_DIR, 0755);
     mkdir(VOLUMES_DIR, 0755);
     mkdir(dir, 0755);
     if (mount_volume(dev, dir, fs, &read_only)) {

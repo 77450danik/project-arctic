@@ -56,7 +56,9 @@ if args.usb:
     cmd += ["-drive", "if=none,id=usbdisk,format=raw,file=" + args.iso,
             "-device", "usb-storage,drive=usbdisk,bus=xhci.0,bootindex=0"]
 else:
-    cmd += ["-cdrom", args.iso]
+    # the CD boots first even with other disks attached (--disk)
+    cmd += ["-drive", "if=none,id=cd,media=cdrom,format=raw,readonly=on,file=" + args.iso,
+            "-device", "ide-cd,drive=cd,bootindex=1"]
 for disk in args.disk:
     cmd += ["-drive", "if=virtio,format=raw,file=" + os.path.abspath(disk)]
 if args.uefi:

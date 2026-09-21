@@ -1,4 +1,4 @@
-From 00478a806d13f1e13d38f7ca263ad6897883e999 Mon Sep 17 00:00:00 2001
+From 19b2cea3833057b9063408b287d539d2f4baf2c7 Mon Sep 17 00:00:00 2001
 From: 77450danik <ddziuba1@stu.vistula.edu.pl>
 Date: Mon, 21 Sep 2026 17:08:58 +0300
 Subject: [PATCH] mountmgr.sys: Volumes the Arctic host mounts get drive
@@ -11,9 +11,11 @@ types, and the shell hears of each through WM_DEVICECHANGE.
 ---
  dlls/mountmgr.sys/Makefile.in |   1 +
  dlls/mountmgr.sys/arctic.c    | 168 ++++++++++++++++++++++++++++++++++
- dlls/mountmgr.sys/unixlib.c   |  10 ++
- dlls/mountmgr.sys/unixlib.h   |   1 +
- 4 files changed, 180 insertions(+)
+ dlls/mountmgr.sys/device.c    |   3 +-
+ dlls/mountmgr.sys/mountmgr.c  |   8 ++
+ dlls/mountmgr.sys/unixlib.c   |  11 +++
+ dlls/mountmgr.sys/unixlib.h   |   2 +
+ 6 files changed, 192 insertions(+), 1 deletion(-)
  create mode 100644 dlls/mountmgr.sys/arctic.c
 
 diff --git a/dlls/mountmgr.sys/Makefile.in b/dlls/mountmgr.sys/Makefile.in
@@ -202,44 +204,88 @@ index 00000000..41e52aca
 +}
 +
 +#endif
-diff --git a/dlls/mountmgr.sys/unixlib.c b/dlls/mountmgr.sys/unixlib.c
-index 235e3ae1..fd0f7f4b 100644
---- a/dlls/mountmgr.sys/unixlib.c
-+++ b/dlls/mountmgr.sys/unixlib.c
-@@ -41,6 +41,7 @@
- # include <sys/param.h>
- #endif
- #include <unistd.h>
-+#include <pthread.h>
+diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
+index 51e3cb19..6d19736c 100644
+--- a/dlls/mountmgr.sys/device.c
++++ b/dlls/mountmgr.sys/device.c
+@@ -1020,8 +1020,9 @@ static NTSTATUS set_volume_info( struct volume *volume, struct dos_drive *drive,
+         get_filesystem_label( volume );
+         get_filesystem_serial( volume );
+     }
++    /* labels come from the host in UTF-8 */
+     if (label && label[0] && !volume->label[0])
+-        RtlMultiByteToUnicodeN(volume->label, ARRAY_SIZE(volume->label), NULL, label, strlen(label)+1);
++        MultiByteToWideChar( CP_UTF8, 0, label, -1, volume->label, ARRAY_SIZE(volume->label) );
  
- #include "unixlib.h"
- #include "wine/debug.h"
-@@ -171,11 +172,20 @@ void queue_device_op( enum device_op op, const char *udi, const char *device,
-     NtQueueApcThread( run_loop_params.op_thread, run_loop_params.op_apc, (ULONG_PTR)info, 0, 0 );
+     TRACE("fs_type %#x, label %s, serial %08lx\n", volume->fs_type, debugstr_w(volume->label), volume->serial);
+ 
+diff --git a/dlls/mountmgr.sys/mountmgr.c b/dlls/mountmgr.sys/mountmgr.c
+index 762fa395..2135bc94 100644
+--- a/dlls/mountmgr.sys/mountmgr.c
++++ b/dlls/mountmgr.sys/mountmgr.c
+@@ -564,6 +564,13 @@ static DWORD WINAPI run_loop_thread( void *arg )
+     return MOUNTMGR_CALL( run_loop, &params );
  }
  
-+static void *arctic_loop_thread( void *arg )
++/* the volumes the Arctic host mounts */
++static DWORD WINAPI arctic_loop_thread( void *arg )
 +{
-+    run_arctic_loop();
-+    return NULL;
++    struct run_loop_params params = {.op_thread = arg, .op_apc = device_op};
++    return MOUNTMGR_CALL( arctic_loop, &params );
 +}
 +
- static NTSTATUS run_loop( void *args )
+ static NTSTATUS WINAPI mountmgr_create( DEVICE_OBJECT *device, IRP *irp )
  {
-     const struct run_loop_params *params = args;
-+    pthread_t thread;
+     irp->IoStatus.Status = STATUS_SUCCESS;
+@@ -614,6 +621,7 @@ NTSTATUS WINAPI DriverEntry( DRIVER_OBJECT *driver, UNICODE_STRING *path )
  
-     run_loop_params = *params;
-+    /* next to D-Bus, which, when it runs, does not return */
-+    if (!pthread_create( &thread, NULL, arctic_loop_thread, NULL )) pthread_detach( thread );
-     run_diskarbitration_loop();
-     run_dbus_loop();
+     thread = CreateThread( NULL, 0, device_op_thread, NULL, 0, NULL );
+     CloseHandle( CreateThread( NULL, 0, run_loop_thread, thread, 0, NULL ));
++    CloseHandle( CreateThread( NULL, 0, arctic_loop_thread, thread, 0, NULL ));
+ 
+ #ifdef _WIN64
+     /* create a symlink so that the Wine port overrides key can be edited with 32-bit reg or regedit */
+diff --git a/dlls/mountmgr.sys/unixlib.c b/dlls/mountmgr.sys/unixlib.c
+index 235e3ae1..5127dfc9 100644
+--- a/dlls/mountmgr.sys/unixlib.c
++++ b/dlls/mountmgr.sys/unixlib.c
+@@ -181,6 +181,16 @@ static NTSTATUS run_loop( void *args )
      return STATUS_SUCCESS;
+ }
+ 
++/* on a thread of its own, next to D-Bus, which, when it runs, does not return */
++static NTSTATUS arctic_loop( void *args )
++{
++    const struct run_loop_params *params = args;
++
++    run_loop_params = *params;
++    run_arctic_loop();
++    return STATUS_SUCCESS;
++}
++
+ static NTSTATUS dequeue_device_op( void *args )
+ {
+     const struct dequeue_device_op_params *params = args;
+@@ -635,6 +645,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     write_credential,
+     delete_credential,
+     enumerate_credentials,
++    arctic_loop,
+ };
+ 
+ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
 diff --git a/dlls/mountmgr.sys/unixlib.h b/dlls/mountmgr.sys/unixlib.h
-index bb4cfc46..fa2b44f2 100644
+index bb4cfc46..75629919 100644
 --- a/dlls/mountmgr.sys/unixlib.h
 +++ b/dlls/mountmgr.sys/unixlib.h
-@@ -199,6 +199,7 @@ enum mountmgr_funcs
+@@ -193,12 +193,14 @@ enum mountmgr_funcs
+     unix_write_credential,
+     unix_delete_credential,
+     unix_enumerate_credentials,
++    unix_arctic_loop,
+     unix_funcs_count
+ };
+ 
  #define MOUNTMGR_CALL( func, params ) WINE_UNIX_CALL( unix_ ## func, params )
  
  extern NTSTATUS errno_to_status( int err );

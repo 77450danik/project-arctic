@@ -25,14 +25,18 @@ parser.add_argument("--append", default="")
 parser.add_argument("--after", type=int, default=60, help="seconds to let it boot first")
 parser.add_argument("--keep", action="store_true")
 parser.add_argument("--put", action="append", default=[], help="LOCAL:REMOTE")
+parser.add_argument("--disk", action="append", default=[], help="a raw disk image attached as an internal disk")
 parser.add_argument("commands", nargs="*")
 args = parser.parse_args()
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
-       "-cdrom", args.iso, "-vga", "std", "-display", "gtk", "-name", "Arctic",
+       "-drive", "if=none,id=cd,media=cdrom,format=raw,readonly=on,file=" + args.iso,
+       "-device", "ide-cd,drive=cd,bootindex=1", "-vga", "std", "-display", "gtk", "-name", "Arctic",
        "-device", "qemu-xhci", "-device", "usb-tablet",
        "-serial", "tcp:127.0.0.1:%d,server=on,wait=on" % PORT]
+for disk in args.disk:
+    cmd += ["-drive", "if=virtio,format=raw,file=" + os.path.abspath(disk)]
 if args.append:
     kdir = os.path.join(ROOT, "out", "test-local", "kernel")
     os.makedirs(kdir, exist_ok=True)
@@ -40,7 +44,8 @@ if args.append:
                     "arctic/vmlinuz", "arctic/initrd.img"], check=True)
     cmd += ["-kernel", os.path.join(kdir, "vmlinuz"), "-initrd", os.path.join(kdir, "initrd.img"),
             "-append", "console=ttyS0,115200 loglevel=6 arctic.dev=1 " + args.append]
-vm = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+vm = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                      stderr=open(os.path.join(ROOT, "out", "test-local", "qemu-shell.log"), "w"))
 for _ in range(50):
     try:
         sock = socket.create_connection(("127.0.0.1", PORT))

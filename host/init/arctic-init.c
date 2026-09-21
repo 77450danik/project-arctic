@@ -401,7 +401,7 @@ int main(void)
     mkdir("/run/arctic", 0755);
     /* arctic-volume (run by udev) mounts and describes the volumes that get a
      * drive letter here; mountmgr.sys watches the descriptions */
-    mkdir("/run/arctic/media", 0755);
+    mkdir("/run/arctic/drives", 0755);
     mkdir("/run/arctic/volumes", 0755);
     sethostname("arctic", 6);
 

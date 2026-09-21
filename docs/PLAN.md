@@ -285,7 +285,7 @@ EnumDisplayDevices / EnumDisplaySettingsEx
   Диспетчер пристроїв (devmgr з ReactOS) показує реальне залізо. «Вимкнути пристрій» →
   hostd відв'язує Linux-драйвер через sysfs `unbind`.
 - **Диски:** udev на кожен том запускає `arctic-volume` (`host/init/arctic-volume.c`): той монтує
-  ntfs, exfat, vfat, ext4, btrfs, CD (iso9660, udf) у `/run/arctic/media/<пристрій>` і описує том у
+  ntfs, exfat, vfat, ext4, btrfs, CD (iso9660, udf) у `/run/arctic/drives/<пристрій>` і описує том у
   `/run/arctic/volumes/<пристрій>`. `mountmgr.sys` стежить за цією текою (inotify, патч Wine 0027)
   і дає літери D:, E: з гарячим підключенням; провідник дізнається через `WM_DEVICECHANGE`.
   Приховані, як у Windows: EFI, MSR, розділи відновлення, атрибут GPT «без літери» і власні
