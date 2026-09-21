@@ -65,7 +65,8 @@ for dll in $SHELL_DLLS; do
     cp "build/dll/win32/$dll/$dll.dll" "$OUT/Windows/System32/"
 done
 for kbd in $KEYBOARDS; do
-    cp "build/dll/keyboard/$kbd/$kbd.dll" "$OUT/Windows/System32/"
+    # the layouts are linked straight into dll/keyboard, not into a folder each
+    cp "$(find build/dll/keyboard -name "$kbd.dll" -print -quit)" "$OUT/Windows/System32/"
 done
 cp build/media/themes/Mizu/mizu.msstyles/mizu.msstyles "$OUT/Windows/Resources/Themes/Mizu/"
 # the debug files stay out of the image; they turn a crash address into a line
