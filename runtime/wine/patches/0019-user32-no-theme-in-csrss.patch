@@ -1,0 +1,46 @@
+From 8bdc73f2f0eb18b5583df612f4d5642c2c2cb632 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 12:38:05 +0300
+Subject: [PATCH] user32: csrss.exe loads no theme.
+
+The theme hook loaded uxtheme into the process that owns the desktop
+while it made it, and the desktop came out 1024x768 instead of the
+display's size.
+---
+ dlls/user32/hook.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/hook.c b/dlls/user32/hook.c
+index 8234a5ad..c69c4e62 100644
+--- a/dlls/user32/hook.c
++++ b/dlls/user32/hook.c
+@@ -592,6 +592,17 @@ static BOOL init_theme_api_hook( const WCHAR *dll_name, const WCHAR *func_name )
+     return TRUE;
+ }
+ 
++/* csrss.exe owns the desktop and draws no window a theme would style; it
++ * loads no theme, as in Windows */
++static BOOL is_desktop_process(void)
++{
++    WCHAR path[MAX_PATH], *name;
++
++    if (!GetModuleFileNameW( NULL, path, MAX_PATH )) return FALSE;
++    name = wcsrchr( path, '\\' );
++    return !wcsicmp( name ? name + 1 : path, L"csrss.exe" );
++}
++
+ /* the table the theme filled, or NULL while there is none */
+ USERAPIHOOK *get_theme_api_hook(void)
+ {
+@@ -600,7 +611,7 @@ USERAPIHOOK *get_theme_api_hook(void)
+     /* the theme's own windows must not come back through the hook while it loads */
+     if (InterlockedCompareExchange( &theme_api_state, 1, 0 )) return NULL;
+ 
+-    if (theme_is_active() && init_theme_api_hook( L"uxtheme.dll", L"ThemeInitApiHook" ))
++    if (theme_is_active() && !is_desktop_process() && init_theme_api_hook( L"uxtheme.dll", L"ThemeInitApiHook" ))
+     {
+         InterlockedExchange( &theme_api_state, 2 );
+         return &theme_api;
+-- 
+2.53.0.windows.2
+

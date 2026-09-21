@@ -1,0 +1,56 @@
+From c08c4b3aef9550a53a7722e5af73a81b86fce3ff Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 12:37:14 +0300
+Subject: [PATCH] user32: Implement PaintMenuBar.
+
+A visual style draws the menu bar with it when it paints a window's
+frame; programs with a menu stopped on the missing export.
+---
+ dlls/user32/menu.c      | 17 +++++++++++++++++
+ dlls/user32/user32.spec |  2 +-
+ 2 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/menu.c b/dlls/user32/menu.c
+index 31867542..8afad35a 100644
+--- a/dlls/user32/menu.c
++++ b/dlls/user32/menu.c
+@@ -321,6 +321,23 @@ INT WINAPI GetMenuStringW( HMENU menu, UINT item, WCHAR *str, INT count, UINT fl
+ /**********************************************************************
+  *         GetMenuState    (USER32.@)
+  */
++/***********************************************************************
++ *           PaintMenuBar   (USER32.@)
++ *
++ * Draws the menu bar of a window whose frame a visual style paints, between
++ * left and right, from top down; returns the height of the bar.
++ */
++DWORD WINAPI PaintMenuBar( HWND hwnd, HDC hdc, ULONG left, ULONG right, ULONG top, BOOL active )
++{
++    HMENU menu = GetMenu( hwnd );
++    RECT rect;
++
++    if (!menu) return 0;
++    SetRect( &rect, left, top, right, top + GetSystemMetrics( SM_CYMENU ) );
++    return NtUserDrawMenuBarTemp( hwnd, hdc, &rect, menu, NULL );
++}
++
++
+ UINT WINAPI GetMenuState( HMENU menu, UINT item, UINT flags )
+ {
+     return NtUserThunkedMenuItemInfo( menu, item, flags, NtUserGetMenuState, NULL, NULL );
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 241b4005..b934cce0 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -897,7 +897,7 @@
+ @ stdcall PackDDElParam(long long long)
+ @ stdcall PackTouchHitTestingProximityEvaluation(ptr ptr)
+ @ stdcall PaintDesktop(long)
+-# @ stub PaintMenuBar
++@ stdcall PaintMenuBar(long long long long long long)
+ # @ stub PaintMonitor
+ @ stdcall PeekMessageA(ptr long long long long)
+ @ stdcall PeekMessageW(ptr long long long long)
+-- 
+2.53.0.windows.2
+
