@@ -273,7 +273,7 @@ diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBa
 + * level. Quick access is the user's Links folder, as Favorites was in
 + * Windows 7: each shortcut in it pins the folder it points to. */
 +
-+static const INT QUICK_ACCESS_ICON = 44; /* shell32's star, IDI_SHELL_FAVORITES */
++static const INT QUICK_ACCESS_ICON = 16800; /* shell32's IDI_SHELL_QUICKACCESS, a star */
 +
 +static HRESULT GetLinksFolder(PWSTR pszPath)
 +{

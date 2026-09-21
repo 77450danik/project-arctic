@@ -6,7 +6,7 @@
 # to C: as native Windows binaries. Output: out/reactos, laid out as on C:.
 #
 # The commit is pinned in runtime/reactos/COMMIT; our changes to it are in
-# runtime/reactos/patches. "build-reactos.sh toolchain" stops after RosBE.
+# runtime/reactos/patches, new files in runtime/reactos/files. "build-reactos.sh toolchain" stops after RosBE.
 set -euo pipefail
 
 ROOT=${ARCTIC_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -46,6 +46,8 @@ if [ "$(cat src.commit 2>/dev/null)" != "$COMMIT" ]; then
 fi
 git -C src checkout -q -f FETCH_HEAD 2>/dev/null || git -C src checkout -q -f "$COMMIT"
 git -C src clean -qfdx
+# new files (icons and the like) go in as they are, before the patches that use them
+[ -d "$ROOT/runtime/reactos/files" ] && cp -r "$ROOT/runtime/reactos/files/." src/
 for patch in "$ROOT"/runtime/reactos/patches/*.patch; do
     [ -e "$patch" ] || continue
     echo "applying $(basename "$patch")"

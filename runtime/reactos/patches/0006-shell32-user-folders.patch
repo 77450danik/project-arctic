@@ -1,0 +1,181 @@
+diff --git a/dll/win32/shell32/shresdef.h b/dll/win32/shell32/shresdef.h
+--- a/dll/win32/shell32/shresdef.h
++++ b/dll/win32/shell32/shresdef.h
+@@ -831,6 +831,18 @@
+ #define IDI_SHELL_DELETE2 16715
+ #define IDI_SHELL_DELETE3 16717
+ #define IDI_SHELL_DELETE4 16718
++/* Windows 10's Quick access and Downloads, drawn for Arctic */
++#define IDI_SHELL_QUICKACCESS    16800
++#define IDI_SHELL_DOWNLOADS      16801
++
++/* Windows 10's names of the user's folders, with Windows' own ids */
++#define IDS_USERFOLDER_DESKTOP   21769
++#define IDS_USERFOLDER_DOCUMENTS 21770
++#define IDS_USERFOLDER_PICTURES  21779
++#define IDS_USERFOLDER_MUSIC     21790
++#define IDS_USERFOLDER_VIDEOS    21791
++#define IDS_USERFOLDER_DOWNLOADS 21798
++
+ #define IDI_SHELL_DELETE5 16721
+ 
+ /*
+diff --git a/dll/win32/shell32/icon_res.rc b/dll/win32/shell32/icon_res.rc
+--- a/dll/win32/shell32/icon_res.rc
++++ b/dll/win32/shell32/icon_res.rc
+@@ -239,3 +239,5 @@
+ IDI_SHELL_DELETE3 ICON "res/icons/16717.ico"
+ IDI_SHELL_DELETE4 ICON "res/icons/16718.ico"
+ IDI_SHELL_DELETE5 ICON "res/icons/16721.ico"
++IDI_SHELL_QUICKACCESS ICON "res/icons/16800.ico"
++IDI_SHELL_DOWNLOADS ICON "res/icons/16801.ico"
+diff --git a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -1080,3 +1080,13 @@
+     IDS_LOG_OFF_TITLE "Log Off"
+     IDS_SWITCH_USER_TITLE "Switch User"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_USERFOLDER_DESKTOP "Desktop"
++    IDS_USERFOLDER_DOCUMENTS "Documents"
++    IDS_USERFOLDER_PICTURES "Pictures"
++    IDS_USERFOLDER_MUSIC "Music"
++    IDS_USERFOLDER_VIDEOS "Videos"
++    IDS_USERFOLDER_DOWNLOADS "Downloads"
++END
+diff --git a/dll/win32/shell32/lang/ru-RU.rc b/dll/win32/shell32/lang/ru-RU.rc
+--- a/dll/win32/shell32/lang/ru-RU.rc
++++ b/dll/win32/shell32/lang/ru-RU.rc
+@@ -1089,3 +1089,13 @@
+     IDS_LOG_OFF_TITLE "Выход"
+     IDS_SWITCH_USER_TITLE "Сменить пользователя"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_USERFOLDER_DESKTOP "Рабочий стол"
++    IDS_USERFOLDER_DOCUMENTS "Документы"
++    IDS_USERFOLDER_PICTURES "Изображения"
++    IDS_USERFOLDER_MUSIC "Музыка"
++    IDS_USERFOLDER_VIDEOS "Видео"
++    IDS_USERFOLDER_DOWNLOADS "Загрузки"
++END
+diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -1080,3 +1080,13 @@
+     IDS_LOG_OFF_TITLE "Вихід"
+     IDS_SWITCH_USER_TITLE "Switch User"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_USERFOLDER_DESKTOP "Робочий стіл"
++    IDS_USERFOLDER_DOCUMENTS "Документи"
++    IDS_USERFOLDER_PICTURES "Зображення"
++    IDS_USERFOLDER_MUSIC "Музика"
++    IDS_USERFOLDER_VIDEOS "Відео"
++    IDS_USERFOLDER_DOWNLOADS "Завантаження"
++END
+diff --git a/dll/win32/shell32/folders/CFSFolder.cpp b/dll/win32/shell32/folders/CFSFolder.cpp
+--- a/dll/win32/shell32/folders/CFSFolder.cpp
++++ b/dll/win32/shell32/folders/CFSFolder.cpp
+@@ -216,6 +216,56 @@
+     return GetPrivateProfileStringW(L".ShellClassInfo", Entry, NULL, pszValue, cchValueLen, IniFile);
+ }
+ 
++/* The folders of the user's profile that Windows 10 names and draws its own
++ * way. Windows takes both from each folder's desktop.ini; this table stands
++ * in for those files, as C: cannot hide them yet. */
++static const struct
++{
++    INT csidl; /* -1: the profile's Downloads, which has no CSIDL */
++    UINT idsName;
++    INT idIcon;
++} g_UserFolders[] =
++{
++    { CSIDL_DESKTOPDIRECTORY, IDS_USERFOLDER_DESKTOP,   IDI_SHELL_DESKTOP },
++    { CSIDL_PERSONAL,         IDS_USERFOLDER_DOCUMENTS, IDI_SHELL_MY_DOCUMENTS },
++    { -1,                     IDS_USERFOLDER_DOWNLOADS, IDI_SHELL_DOWNLOADS },
++    { CSIDL_MYMUSIC,          IDS_USERFOLDER_MUSIC,     IDI_SHELL_MY_MUSIC },
++    { CSIDL_MYPICTURES,       IDS_USERFOLDER_PICTURES,  IDI_SHELL_MY_PICTURES },
++    { CSIDL_MYVIDEO,          IDS_USERFOLDER_VIDEOS,    IDI_SHELL_MY_MOVIES },
++};
++
++static BOOL
++SHELL_IsProfile(LPCWSTR pszPath)
++{
++    WCHAR szProfile[MAX_PATH];
++
++    return pszPath && SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_PROFILE, NULL, SHGFP_TYPE_CURRENT, szProfile)) &&
++           !lstrcmpiW(szProfile, pszPath);
++}
++
++/* the index in g_UserFolders of the folder at that path in the profile, or -1 */
++static INT
++SHELL_FindUserFolder(LPCWSTR pszPath)
++{
++    WCHAR szParent[MAX_PATH], szFolder[MAX_PATH];
++
++    StringCchCopyW(szParent, _countof(szParent), pszPath);
++    if (!PathRemoveFileSpecW(szParent) || !SHELL_IsProfile(szParent))
++        return -1;
++
++    for (UINT i = 0; i < _countof(g_UserFolders); i++)
++    {
++        INT csidl = g_UserFolders[i].csidl < 0 ? CSIDL_PROFILE : g_UserFolders[i].csidl;
++        if (FAILED(SHGetFolderPathW(NULL, csidl, NULL, SHGFP_TYPE_CURRENT, szFolder)))
++            continue;
++        if (g_UserFolders[i].csidl < 0 && !PathAppendW(szFolder, L"Downloads"))
++            continue;
++        if (!lstrcmpiW(szFolder, pszPath))
++            return i;
++    }
++    return -1;
++}
++
+ static HRESULT
+ getIconLocationForFolder(IShellFolder * psf, PCITEMID_CHILD pidl, UINT uFlags,
+                          LPWSTR szIconFile, UINT cchMax, int *piIndex, UINT *pwFlags)
+@@ -232,6 +282,17 @@
+         goto Quit;
+     if (!PathIsDirectoryW(wszPath))
+         goto Quit;
++
++    // the user's folders of Windows 10
++    {
++        INT iFolder = SHELL_FindUserFolder(wszPath);
++        if (iFolder >= 0)
++        {
++            StringCchCopyW(szIconFile, cchMax, swShell32Name);
++            *piIndex = -g_UserFolders[iFolder].idIcon;
++            return S_OK;
++        }
++    }
+ 
+     // read-only or system folder?
+     dwFileAttrs = _ILGetFileAttributes(ILFindLastID(pidl), NULL, 0);
+@@ -1538,6 +1599,20 @@
+     _ILSimpleGetTextW(pidl, pszPath + len, MAX_PATH + 1 - len);
+     if (!_ILIsFolder(pidl)) SHELL_FS_ProcessDisplayFilename(pszPath, dwFlags);
+ 
++    /* the names Windows 10 gives the user's folders; parsing and renaming use the real one */
++    if (_ILIsFolder(pidl) && !(GET_SHGDN_FOR(dwFlags) & (SHGDN_FORPARSING | SHGDN_FOREDITING)) && m_sPathTarget)
++    {
++        WCHAR szFull[MAX_PATH], szName[MAX_PATH];
++        INT iFolder;
++
++        StringCchCopyW(szFull, _countof(szFull), m_sPathTarget);
++        if (PathAppendW(szFull, pszPath) && (iFolder = SHELL_FindUserFolder(szFull)) >= 0 &&
++            LoadStringW(shell32_hInstance, g_UserFolders[iFolder].idsName, szName, _countof(szName)))
++        {
++            lstrcpynW(pszPath, szName, MAX_PATH);
++        }
++    }
++
+     strRet->uType = STRRET_WSTR;
+     strRet->pOleStr = pszPath;
+ 

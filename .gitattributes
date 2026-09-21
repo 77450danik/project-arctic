@@ -4,3 +4,4 @@
 # patches are applied byte for byte: some carry CRLF lines of the files they change
 runtime/reactos/patches/*.patch -text
 runtime/wine/patches/*.patch -text
+runtime/reactos/files/**/*.ico binary
