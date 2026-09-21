@@ -105,7 +105,7 @@ static void nt_stop(const char *code, const char *what)
 }
 
 static char winedebug[256] = "WINEDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
-static char dev_program[128] = "notepad.exe";        /* arctic.run= */
+static char dev_program[128];                        /* arctic.run= */
 
 static char *const nt_env[] = {
     "WINEPREFIX=" PREFIX,
@@ -479,8 +479,8 @@ int main(void)
         else
             say("dwm.exe did not start serving");
 
-        /* development builds show a window, so a screenshot tells whether composition works */
-        if (served && dev_mode) {
+        /* a program named on the command line, for tests */
+        if (served && dev_program[0]) {
             char *program[] = {"/usr/bin/wine", dev_program, NULL};
             say("%s pid %d", dev_program, spawn(program, 1, ntlog));
         }
