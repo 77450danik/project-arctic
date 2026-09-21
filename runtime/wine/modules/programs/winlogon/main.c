@@ -24,6 +24,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(winlogon);
 #define HOTKEY_SECURITY_OPTIONS 1
 #define HOTKEY_TASK_MANAGER     2
 
+#define TIMER_SHELL             1
+#define SHELL_CHECK_MS          2000
+
 #ifndef MOD_NOREPEAT
 #define MOD_NOREPEAT 0x4000
 #endif
@@ -48,6 +51,30 @@ void run( WCHAR *cmdline )
     }
     CloseHandle( pi.hThread );
     CloseHandle( pi.hProcess );
+}
+
+/* Winlogon\AutoRestartShell: when the shell ends, whether it is started
+ * again, as Windows does unless the value is 0 */
+static void check_shell(void)
+{
+    static BOOL had_shell;
+    WCHAR shell[MAX_PATH] = L"explorer.exe";
+    DWORD restart = 1, size = sizeof(restart);
+
+    if (GetShellWindow())
+    {
+        had_shell = TRUE;
+        return;
+    }
+    if (!had_shell) return;
+    had_shell = FALSE;
+
+    RegGetValueW( HKEY_LOCAL_MACHINE, winlogon_key, L"AutoRestartShell", RRF_RT_REG_DWORD, NULL, &restart, &size );
+    if (!restart) return;
+    size = sizeof(shell);
+    RegGetValueW( HKEY_LOCAL_MACHINE, winlogon_key, L"Shell", RRF_RT_REG_SZ, NULL, shell, &size );
+    ERR( "the shell ended, starting it again\n" );
+    run( shell );
 }
 
 /* Winlogon\Userinit is a comma-separated list, "userinit.exe," by default */
@@ -79,6 +106,11 @@ static LRESULT WINAPI sas_window_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         else end_session( WINLOGON_EXIT_LOGOFF );
         return 0;
     }
+    if (msg == WM_TIMER && wp == TIMER_SHELL)
+    {
+        check_shell();
+        return 0;
+    }
     if (msg != WM_HOTKEY) return DefWindowProcW( hwnd, msg, wp, lp );
     if (wp == HOTKEY_SECURITY_OPTIONS) show_security_options();
     else if (wp == HOTKEY_TASK_MANAGER) run( taskmgr );
@@ -103,6 +135,7 @@ static void create_sas_window(void)
         ERR( "Ctrl+Alt+Del is taken: %lu\n", GetLastError() );
     if (!RegisterHotKey( hwnd, HOTKEY_TASK_MANAGER, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_ESCAPE ))
         ERR( "Ctrl+Shift+Esc is taken: %lu\n", GetLastError() );
+    SetTimer( hwnd, TIMER_SHELL, SHELL_CHECK_MS, NULL );
 }
 
 int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int show )

@@ -1,0 +1,220 @@
+From 91b79f911f1a8b6f6c262450dbd93ae661d60aa7 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 21 Sep 2026 16:05:08 +0300
+Subject: [PATCH] user32: PaintDesktop draws the wallpaper in every process, in
+ any format.
+
+Only the process owning the desktop loaded the wallpaper, and only a BMP,
+so the shell, which paints its own desktop, showed the plain colour. The
+wallpaper is read with WIC and laid out as Windows 10 does it:
+WallpaperStyle 10 fills, 6 fits, 2 stretches, 0 centres or tiles.
+---
+ dlls/user32/desktop.c | 163 +++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 137 insertions(+), 26 deletions(-)
+
+diff --git a/dlls/user32/desktop.c b/dlls/user32/desktop.c
+index 35cf39b9..fe279980 100644
+--- a/dlls/user32/desktop.c
++++ b/dlls/user32/desktop.c
+@@ -22,10 +22,13 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
++#define COBJMACROS
+ #include "windef.h"
+ #include "winbase.h"
+ #include "wingdi.h"
+ #include "winnls.h"
++#include "winreg.h"
++#include "wincodec.h"
+ #include "controls.h"
+ 
+ static HBRUSH hbrushPattern;
+@@ -34,24 +37,141 @@ static SIZE bitmapSize;
+ static BOOL fTileWallPaper;
+ 
+ 
+-/***********************************************************************
+- *           DESKTOP_LoadBitmap
+- */
+-static HBITMAP DESKTOP_LoadBitmap( const WCHAR *filename )
++/* The wallpaper as Windows 10 lays it out: WallpaperStyle 10 fills the
++ * desktop, 6 fits it, 2 stretches it, 0 centres it or tiles it
++ * (TileWallpaper). Every process that paints the desktop loads it, in any
++ * format WIC reads, as in Windows every process sees the one win32k keeps. */
++static WCHAR wallpaper_path[MAX_PATH];
++static int wallpaper_style = -1;
++static SIZE wallpaper_desktop;
++
++static int get_desktop_setting( const WCHAR *name, int def )
++{
++    WCHAR value[16], *p;
++    DWORD size = sizeof(value);
++    int n = 0;
++
++    if (RegGetValueW( HKEY_CURRENT_USER, L"Control Panel\\Desktop", name, RRF_RT_REG_SZ, NULL, value, &size ))
++        return def;
++    for (p = value; *p >= '0' && *p <= '9'; p++) n = n * 10 + *p - '0';
++    return p == value ? def : n;
++}
++
++static HBITMAP load_wallpaper( const WCHAR *path, int style, int width, int height, SIZE *size )
+ {
+-    HBITMAP hbitmap;
++    static HRESULT (WINAPI *create_factory)( UINT, IWICImagingFactory ** );
++    IWICImagingFactory *factory;
++    IWICBitmapDecoder *decoder = NULL;
++    IWICBitmapFrameDecode *frame = NULL;
++    IWICBitmapClipper *clipper = NULL;
++    IWICBitmapScaler *scaler = NULL;
++    IWICFormatConverter *converter = NULL;
++    IWICBitmapSource *source;
++    BITMAPINFO info = {{ sizeof(info.bmiHeader) }};
++    HBITMAP bitmap = 0;
++    UINT iw, ih, w, h;
++    void *bits;
++
++    if (!create_factory)
++    {
++        HMODULE module = LoadLibraryW( L"windowscodecs.dll" );
++        if (module) create_factory = (void *)GetProcAddress( module, "WICCreateImagingFactory_Proxy" );
++        if (!create_factory) return 0;
++    }
++    if (FAILED(create_factory( WINCODEC_SDK_VERSION, &factory ))) return 0;
++
++    if (FAILED(IWICImagingFactory_CreateDecoderFromFilename( factory, path, NULL, GENERIC_READ,
++                                                              WICDecodeMetadataCacheOnDemand, &decoder )) ||
++        FAILED(IWICBitmapDecoder_GetFrame( decoder, 0, &frame )) ||
++        FAILED(IWICBitmapFrameDecode_GetSize( frame, &iw, &ih )) || !iw || !ih)
++        goto done;
++
++    source = (IWICBitmapSource *)frame;
++    w = iw;
++    h = ih;
++    if (style == 10 || style == 6 || style == 2)
++    {
++        double sx = (double)width / iw, sy = (double)height / ih;
++        double scale = style == 10 ? max( sx, sy ) : min( sx, sy );
++
++        if (style == 10)
++        {
++            /* fill: the middle of the picture, as much of it as the desktop's shape allows */
++            WICRect rc;
++            rc.Width = min( (int)(width / scale + 0.5), (int)iw );
++            rc.Height = min( (int)(height / scale + 0.5), (int)ih );
++            rc.X = (iw - rc.Width) / 2;
++            rc.Y = (ih - rc.Height) / 2;
++            if (FAILED(IWICImagingFactory_CreateBitmapClipper( factory, &clipper )) ||
++                FAILED(IWICBitmapClipper_Initialize( clipper, source, &rc )))
++                goto done;
++            source = (IWICBitmapSource *)clipper;
++            w = width;
++            h = height;
++        }
++        else if (style == 2)
++        {
++            w = width;
++            h = height;
++        }
++        else
++        {
++            w = max( 1, (int)(iw * scale + 0.5) );
++            h = max( 1, (int)(ih * scale + 0.5) );
++        }
++        if (FAILED(IWICImagingFactory_CreateBitmapScaler( factory, &scaler )) ||
++            FAILED(IWICBitmapScaler_Initialize( scaler, source, w, h, WICBitmapInterpolationModeFant )))
++            goto done;
++        source = (IWICBitmapSource *)scaler;
++    }
++    if (FAILED(IWICImagingFactory_CreateFormatConverter( factory, &converter )) ||
++        FAILED(IWICFormatConverter_Initialize( converter, source, &GUID_WICPixelFormat32bppBGR,
++                                               WICBitmapDitherTypeNone, NULL, 0, WICBitmapPaletteTypeCustom )))
++        goto done;
+ 
+-    if (!filename[0]) return 0;
+-    hbitmap = LoadImageW( 0, filename, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE );
+-    if (!hbitmap)
++    info.bmiHeader.biWidth = w;
++    info.bmiHeader.biHeight = -(int)h;
++    info.bmiHeader.biPlanes = 1;
++    info.bmiHeader.biBitCount = 32;
++    if (!(bitmap = CreateDIBSection( 0, &info, DIB_RGB_COLORS, &bits, NULL, 0 ))) goto done;
++    if (FAILED(IWICFormatConverter_CopyPixels( converter, NULL, w * 4, w * h * 4, bits )))
+     {
+-        WCHAR buffer[MAX_PATH];
+-        UINT len = GetWindowsDirectoryW( buffer, MAX_PATH - 2 );
+-        if (buffer[len - 1] != '\\') buffer[len++] = '\\';
+-        lstrcpynW( buffer + len, filename, MAX_PATH - len );
+-        hbitmap = LoadImageW( 0, buffer, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE );
++        DeleteObject( bitmap );
++        bitmap = 0;
++        goto done;
+     }
+-    return hbitmap;
++    size->cx = w;
++    size->cy = h;
++
++done:
++    if (converter) IWICFormatConverter_Release( converter );
++    if (scaler) IWICBitmapScaler_Release( scaler );
++    if (clipper) IWICBitmapClipper_Release( clipper );
++    if (frame) IWICBitmapFrameDecode_Release( frame );
++    if (decoder) IWICBitmapDecoder_Release( decoder );
++    IWICImagingFactory_Release( factory );
++    return bitmap;
++}
++
++/* keeps the wallpaper this process paints in step with the settings and the desktop */
++static void refresh_wallpaper( const RECT *rect )
++{
++    WCHAR path[MAX_PATH];
++    int style = get_desktop_setting( L"WallpaperStyle", 10 );
++    BOOL tile = style == 0 && get_desktop_setting( L"TileWallpaper", 0 );
++
++    if (!SystemParametersInfoW( SPI_GETDESKWALLPAPER, ARRAY_SIZE(path), path, 0 )) path[0] = 0;
++    if (!wcscmp( path, wallpaper_path ) && style == wallpaper_style && tile == fTileWallPaper &&
++        wallpaper_desktop.cx == rect->right && wallpaper_desktop.cy == rect->bottom)
++        return;
++
++    lstrcpynW( wallpaper_path, path, ARRAY_SIZE(wallpaper_path) );
++    wallpaper_style = style;
++    wallpaper_desktop.cx = rect->right;
++    wallpaper_desktop.cy = rect->bottom;
++    fTileWallPaper = tile;
++    if (hbitmapWallPaper) DeleteObject( hbitmapWallPaper );
++    hbitmapWallPaper = path[0] ? load_wallpaper( path, style, rect->right, rect->bottom, &bitmapSize ) : 0;
+ }
+ 
+ /***********************************************************************
+@@ -59,18 +179,8 @@ static HBITMAP DESKTOP_LoadBitmap( const WCHAR *filename )
+  */
+ static void init_wallpaper( const WCHAR *wallpaper )
+ {
+-    HBITMAP hbitmap = DESKTOP_LoadBitmap( wallpaper );
+-
+-    if (hbitmapWallPaper) DeleteObject( hbitmapWallPaper );
+-    hbitmapWallPaper = hbitmap;
+-    if (hbitmap)
+-    {
+-	BITMAP bmp;
+-	GetObjectA( hbitmap, sizeof(bmp), &bmp );
+-	bitmapSize.cx = (bmp.bmWidth != 0) ? bmp.bmWidth : 1;
+-	bitmapSize.cy = (bmp.bmHeight != 0) ? bmp.bmHeight : 1;
+-        fTileWallPaper = GetProfileIntA( "desktop", "TileWallPaper", 0 );
+-    }
++    /* loaded when the desktop is next painted, at its size */
++    wallpaper_style = -1;
+ }
+ 
+ /***********************************************************************
+@@ -127,6 +237,7 @@ BOOL WINAPI PaintDesktop(HDC hdc)
+         RECT rect;
+ 
+         GetClientRect( hwnd, &rect );
++        refresh_wallpaper( &rect );
+ 
+         /* Paint desktop pattern (only if wall paper does not cover everything) */
+ 
+-- 
+2.53.0.windows.2
+

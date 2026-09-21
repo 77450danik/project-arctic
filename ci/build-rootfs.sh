@@ -53,6 +53,7 @@ mkdir -p "$HOME"
 wine wineboot.exe --init
 wine winecfg.exe -v win11
 wine reg.exe add 'HKCU\Control Panel\Desktop' /v Wallpaper /d 'C:\Windows\Web\Wallpaper\Arctic\img0.jpg' /f
+wine reg.exe add 'HKCU\Control Panel\Desktop' /v WallpaperStyle /d 10 /f
 for reg in /var/tmp/registry/*.reg; do wine reg.exe import "Z:$reg"; done
 wineserver -w
 EOF

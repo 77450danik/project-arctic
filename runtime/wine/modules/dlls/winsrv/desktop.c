@@ -91,8 +91,9 @@ static LRESULT WINAPI desktop_wnd_proc( HWND hwnd, UINT message, WPARAM wp, LPAR
         if ((wp & 0xfff0) == SC_CLOSE) return 0;
         break;
     case WM_CLOSE:
-        /* wineserver's word that no other process uses the desktop any more */
-        PostQuitMessage( 0 );
+        /* wineserver's word that no other process uses the desktop any more:
+         * the session's desktop lives as long as the session, as in Windows,
+         * even while the shell restarts */
         return 0;
     case WM_SETCURSOR:
         return (LRESULT)SetCursor( LoadCursorW( 0, (LPCWSTR)IDC_ARROW ) );
