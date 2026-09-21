@@ -83,28 +83,40 @@ static int write_file(const char *path, const char *value)
     return ok ? 0 : -1;
 }
 
+/* The medium is whatever holds arctic/host.sqfs: an ISO written to a disc or
+ * copied to a stick sector by sector, or its files unpacked onto a FAT stick. */
+static const char *const media_fs[] = {"iso9660", "vfat", "exfat", "udf", "ext4", NULL};
+
 static int is_media(const char *dev)
 {
-    if (mount(dev, MEDIA, "iso9660", MS_RDONLY, NULL))
-        return 0;
-    if (!access(MEDIA "/arctic/host.sqfs", R_OK))
-        return 1;
-    umount(MEDIA);
+    for (int i = 0; media_fs[i]; i++) {
+        if (mount(dev, MEDIA, media_fs[i], MS_RDONLY, NULL))
+            continue;
+        if (!access(MEDIA "/arctic/host.sqfs", R_OK))
+            return 1;
+        umount(MEDIA);
+    }
     return 0;
 }
 
 /* USB sticks can take several seconds to appear */
 static void find_media(void)
 {
+    char seen[192] = "";
+
     for (int attempt = 0; attempt < 150; attempt++) {
         DIR *dir = opendir("/sys/class/block");
         struct dirent *de;
+        size_t len = 0;
 
+        seen[0] = 0;
         while (dir && (de = readdir(dir))) {
             char dev[300];
             if (de->d_name[0] == '.' || !strncmp(de->d_name, "loop", 4) || !strncmp(de->d_name, "ram", 3) ||
                 !strncmp(de->d_name, "zram", 4) || !strncmp(de->d_name, "dm-", 3))
                 continue;
+            if (len + strlen(de->d_name) + 2 < sizeof(seen))
+                len += (size_t)snprintf(seen + len, sizeof(seen) - len, "%s ", de->d_name);
             snprintf(dev, sizeof(dev), "/dev/%s", de->d_name);
             if (is_media(dev)) {
                 say("boot medium: %s", dev);
@@ -117,7 +129,10 @@ static void find_media(void)
         usleep(200000);
     }
     errno = ENOENT;
-    fatal("INACCESSIBLE_BOOT_DEVICE", "ARCTIC", "boot medium not found");
+    say("no medium among: %s", seen[0] ? seen : "(no block devices)");
+    /* development builds name the disks that were there, to tell a missing
+     * driver from a medium the kernel cannot read */
+    fatal("INACCESSIBLE_BOOT_DEVICE", dev_mode && seen[0] ? seen : "ARCTIC", "boot medium not found");
 }
 
 static int loop_attach(const char *file, char *dev, size_t len)

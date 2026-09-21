@@ -134,7 +134,9 @@ jobs:
         run: bash ci/make-windows-img.sh
       - name: ISO
         run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/build-image.sh
-      - run: sudo chown "$(id -u):$(id -g)" out out/arctic.iso
+      - name: USB image
+        run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/make-usb-img.sh
+      - run: sudo chown "$(id -u):$(id -g)" out out/arctic.iso out/arctic-usb.img
 
       - name: Boot test
         run: bash ci/smoke-test.sh
@@ -146,14 +148,17 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      - name: Publish ISO
+      - name: Publish images
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          size=$(stat -c %s out/arctic.iso)
-          [ "$size" -lt 2147483648 ] || { echo "ISO is over the 2 GiB release asset limit"; exit 1; }
-          notes="Commit ${GITHUB_SHA::7}. Kernel $(cat out/kernel/release), $(cat out/wine/version)."
+          for f in out/arctic.iso out/arctic-usb.img; do
+            [ "$(stat -c %s "$f")" -lt 2147483648 ] || { echo "$f is over the 2 GiB release asset limit"; exit 1; }
+          done
+          notes="Commit ${GITHUB_SHA::7}. Kernel $(cat out/kernel/release), $(cat out/wine/version).
+
+          arctic-usb.img goes to a stick as it is (dd, or Rufus in DD mode) and boots both from UEFI and from BIOS/CSM. arctic.iso is for discs and virtual machines."
           gh release delete dev --cleanup-tag --yes || true
-          gh release create dev out/arctic.iso --prerelease --target "$GITHUB_SHA" \
+          gh release create dev out/arctic.iso out/arctic-usb.img --prerelease --target "$GITHUB_SHA" \
             --title "Arctic dev ${GITHUB_SHA::7}" --notes "$notes"

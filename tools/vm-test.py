@@ -1,9 +1,11 @@
 """Boots an Arctic ISO in the local QEMU (WHPX) in a visible window, waits for
 the NT world, and saves the serial log and a screenshot.
 
-usage: python tools/vm-test.py [iso] [--wait SECONDS] [--append "kernel params"] [--script FILE]
-                               [--headless] [--keep]
+usage: python tools/vm-test.py [image] [--wait SECONDS] [--append "kernel params"] [--script FILE]
+                               [--usb] [--uefi] [--headless] [--keep]
 
+--usb boots out/arctic-usb.img as a USB disk and --uefi boots through OVMF, which
+is how the image is tried the way real machines boot it.
 --append boots the kernel directly (taken from the ISO) with extra parameters,
 e.g. --append arctic.stoptest=nt. --script runs input steps (tools/vmscript.py)
 once the desktop is up. Results go to out/test-local/.
@@ -11,6 +13,7 @@ once the desktop is up. Results go to out/test-local/.
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +31,8 @@ parser.add_argument("--timeout", type=int, default=240)
 parser.add_argument("--headless", action="store_true", help="no window (the screenshot is still taken)")
 parser.add_argument("--keep", action="store_true", help="leave the VM running after the test")
 parser.add_argument("--script", help="input steps to run once the desktop is up (tools/vmscript.py)")
+parser.add_argument("--usb", action="store_true", help="the image is a USB disk, not a CD")
+parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
 args = parser.parse_args()
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -39,9 +44,22 @@ for path in (serial, shot):
         os.remove(path)
 
 cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
-       "-cdrom", args.iso, "-vga", "std", "-display", "none" if args.headless else "gtk",
-       "-name", "Arctic", "-device", "qemu-xhci", "-device", "usb-tablet",
+       "-vga", "std", "-display", "none" if args.headless else "gtk",
+       "-name", "Arctic", "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet",
        "-serial", "file:" + serial, "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]
+if args.usb:
+    if args.iso.endswith(".iso") and os.path.exists(os.path.join(ROOT, "out", "arctic-usb.img")):
+        args.iso = os.path.join(ROOT, "out", "arctic-usb.img")
+    cmd += ["-drive", "if=none,id=usbdisk,format=raw,file=" + args.iso,
+            "-device", "usb-storage,drive=usbdisk,bus=xhci.0,bootindex=0"]
+else:
+    cmd += ["-cdrom", args.iso]
+if args.uefi:
+    fw = os.path.join(ROOT, "tools", "qemu", "share")
+    nvram = os.path.join(RES, "uefi-vars.fd")
+    shutil.copyfile(os.path.join(fw, "edk2-i386-vars.fd"), nvram)
+    cmd += ["-drive", "if=pflash,unit=0,format=raw,readonly=on,file=" + os.path.join(fw, "edk2-x86_64-code.fd"),
+            "-drive", "if=pflash,unit=1,format=raw,file=" + nvram]
 if args.append:
     kernel_dir = os.path.join(RES, "kernel")
     os.makedirs(kernel_dir, exist_ok=True)

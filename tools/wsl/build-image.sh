@@ -23,5 +23,7 @@ fi
 bash "$ROOT/ci/build-rootfs.sh"
 bash "$ROOT/ci/make-windows-img.sh"
 bash "$ROOT/ci/build-image.sh"
+bash "$ROOT/ci/make-usb-img.sh"
 cp "$OUT/arctic.iso" "$ROOT/out/arctic-local.iso"
-ls -l "$ROOT/out/arctic-local.iso"
+cp "$OUT/arctic-usb.img" "$ROOT/out/arctic-usb.img"
+ls -l "$ROOT/out/arctic-local.iso" "$ROOT/out/arctic-usb.img"
