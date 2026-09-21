@@ -1,0 +1,27 @@
+# The wallpaper and the icons from ICONS/: desktop, This PC, the user's folders,
+# Control Panel, a message box
+sleep 8
+shot i1-desktop
+key meta_l-e                  # Win+E
+sleep 6
+shot i2-thispc
+key alt-f4
+sleep 2
+key meta_l-r                  # Виконати
+sleep 3
+type control
+key ret
+sleep 8
+shot i3-control
+key alt-f4
+sleep 2
+key meta_l-r
+sleep 3
+type notepad
+key ret
+sleep 5
+type a
+key alt-f4                    # зберегти зміни?
+sleep 3
+shot i4-msgbox
+key esc
