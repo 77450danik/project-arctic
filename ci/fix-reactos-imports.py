@@ -2,13 +2,15 @@
 
 ReactOS keeps the kernelbase half of shlwapi (Path*, Str*, Url*, ...) in its
 own kernelbase_ros.dll. Wine has the same functions under the Windows name,
-kernelbase.dll, so the import is renamed in place in each DLL's import and
-delay-import tables. usage: fix-reactos-imports.py file.dll...
+kernelbase.dll, so the name is rewritten in place in each DLL's import and
+delay-import tables and in the exports shlwapi forwards there.
+usage: fix-reactos-imports.py file.dll...
 """
 import struct
 import sys
 
 RENAME = {b"kernelbase_ros.dll": b"kernelbase.dll"}
+FORWARD = (b"kernelbase_ros.", b"kernelbase.")
 
 
 def sections(data, pe):
@@ -51,6 +53,23 @@ def fix(path):
                     data[name_off:end] = new + b"\0" * (len(name) - len(new))
                     changed += 1
             off += desc_size
+    # forwarded exports are "module.function" strings inside the export directory
+    rva, size = struct.unpack_from("<II", data, dirs)
+    off = rva_to_offset(data, pe, rva) if rva else None
+    if off is not None:
+        count, funcs = struct.unpack_from("<I", data, off + 20)[0], struct.unpack_from("<I", data, off + 28)[0]
+        funcs_off = rva_to_offset(data, pe, funcs)
+        for i in range(count if funcs_off is not None else 0):
+            target = struct.unpack_from("<I", data, funcs_off + i * 4)[0]
+            if not rva <= target < rva + size:
+                continue
+            str_off = rva_to_offset(data, pe, target)
+            end = data.index(b"\0", str_off)
+            text = bytes(data[str_off:end])
+            if text.lower().startswith(FORWARD[0]):
+                new_text = FORWARD[1] + text[len(FORWARD[0]):]
+                data[str_off:end] = new_text + b"\0" * (len(text) - len(new_text))
+                changed += 1
     if changed:
         open(path, "wb").write(data)
     return changed
