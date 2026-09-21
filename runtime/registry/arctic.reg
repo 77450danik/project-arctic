@@ -75,3 +75,9 @@ REGEDIT4
 
 [HKEY_CLASSES_ROOT\Drive\shell\cmd\command]
 @="cmd.exe /s /k pushd \"%V\""
+
+[-HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\Namespace\{9D20AAE8-0625-44B0-9CA7-71889C2254D9}]
+
+[-HKEY_LOCAL_MACHINE\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\Desktop\Namespace\{9D20AAE8-0625-44B0-9CA7-71889C2254D9}]
+
+[-HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\Namespace\{9D20AAE8-0625-44B0-9CA7-71889C2254D9}]
