@@ -24,7 +24,7 @@
 
 #define WM_HOTPLUG_EJECTED        (WM_USER + 223)
 #define HOTPLUG_BALLOON_TIMER_ID  6
-#define HOTPLUG_BALLOON_TIME      10000
+#define HOTPLUG_BALLOON_TIME      6000 /* the toast: 5 s, then 1 s going */
 
 #define IDM_HOTPLUG_DEVICES       1
 #define IDM_HOTPLUG_EJECT         100
@@ -39,7 +39,6 @@ struct HOTPLUG_DISK
 static CSimpleArray<HOTPLUG_DISK> g_Disks;
 static CString g_strHotplugTooltip;
 static HICON g_hIconHotplug = NULL;
-static HICON g_hIconHotplugLarge = NULL; /* for the notification */
 static BOOL g_bBalloonShown = FALSE; /* the icon stays while its notification does */
 static BOOL g_bEjecting = FALSE;
 
@@ -128,8 +127,6 @@ HRESULT STDMETHODCALLTYPE Hotplug_Init(_In_ CSysTray * pSysTray)
 
     g_hIconHotplug = (HICON)LoadImageW(g_hInstance, MAKEINTRESOURCEW(IDI_HOTPLUG_OK), IMAGE_ICON,
                                        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
-    g_hIconHotplugLarge = (HICON)LoadImageW(g_hInstance, MAKEINTRESOURCEW(IDI_HOTPLUG_OK), IMAGE_ICON,
-                                            32, 32, 0);
     g_strHotplugTooltip.LoadStringW(IDS_HOTPLUG_REMOVE_1);
 
     EnumEjectableDisks();
@@ -149,8 +146,7 @@ HRESULT STDMETHODCALLTYPE Hotplug_Shutdown(_In_ CSysTray * pSysTray)
     TRACE("Hotplug_Shutdown\n");
 
     DestroyIcon(g_hIconHotplug);
-    DestroyIcon(g_hIconHotplugLarge);
-    g_hIconHotplug = g_hIconHotplugLarge = NULL;
+    g_hIconHotplug = NULL;
 
     return pSysTray->NotifyIcon(NIM_DELETE, ID_ICON_HOTPLUG, NULL, NULL);
 }
@@ -225,12 +221,10 @@ static VOID OnEjected(CSysTray *pSysTray, DWORD dwError)
         g_bBalloonShown = TRUE;
         SetTimer(pSysTray->GetHWnd(), HOTPLUG_BALLOON_TIMER_ID, HOTPLUG_BALLOON_TIME, NULL);
 
-        /* the notification takes the icon it is given with it, so it gets the
-         * large one; the notification area gets its own back right after */
+        /* the toast shows the notification icon, 16x16 as in Windows 10 */
         nid.hWnd = pSysTray->GetHWnd();
         nid.uID = ID_ICON_HOTPLUG;
-        nid.uFlags = NIF_INFO | NIF_ICON;
-        nid.hIcon = g_hIconHotplugLarge;
+        nid.uFlags = NIF_INFO;
         nid.dwInfoFlags = NIIF_USER;
         nid.uTimeout = HOTPLUG_BALLOON_TIME;
         StringCchCopyW(nid.szInfoTitle, _countof(nid.szInfoTitle), strTitle);

@@ -48,67 +48,362 @@ diff --git a/base/shell/explorer/resource.h b/base/shell/explorer/resource.h
 diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 --- a/base/shell/explorer/syspager.cpp
 +++ b/base/shell/explorer/syspager.cpp
-@@ -23,6 +23,275 @@
+@@ -23,6 +23,570 @@
  
  #define BALLOON_MAXWIDTH 340
  
-+/* The notification area's balloons as Windows 10 shows them: a dark toast in
-+ * the corner above the taskbar that slides in from the right, under the name
-+ * of the program it comes from, with the icon, the title and the text */
++#ifndef SPI_GETMESSAGEDURATION
++#define SPI_GETMESSAGEDURATION 0x2016
++#endif
++
++/* The notification area's balloons as Windows 10 shows them: the toast of its
++ * LegacyToastView (ShellExperienceHost, Windows.UI.ShellCommon), with its
++ * layout, dark theme colours and storyboards:
++ * - 364 wide, 16 from the right of the screen (ToastCenterDesktopMargin),
++ *   padding 16; the balloon's icon 16x16 with margin 0,6,16,0 on the first
++ *   row, the text on the second, 4 below it: the title 15 SemiBold white, the
++ *   text 15 and the program's name 12 (3 below) at #99FFFFFF;
++ * - acrylic behind it: the desktop blurred, under #101010 at 0.75;
++ * - its X and settings buttons, 36x20 each, one above the other, only while
++ *   the pointer is over it, #99FFFFFF, white under the pointer;
++ * - Appearing: opacity 0 to 1 in 0.5 s, cubic ease-in;
++ * - Decayed (its time is up) and Dismissed (its X): 400 to the right in 1 s,
++ *   spline 0.1,0.9,0.2,1;
++ * - Activated (clicked): opacity to 0 on spline 0.9,0.1,1,0.2 and scale to
++ *   0.8 on spline 0.1,0.9,0.2,1, in 0.3 s. */
 +#define TOAST_WIDTH         364
 +#define TOAST_MARGIN        16
 +#define TOAST_PADDING       16
-+#define TOAST_LOGO          32
-+#define TOAST_SLIDE_TIMER   1
-+#define TOAST_SLIDE_STEPS   10
++#define TOAST_LOGO          16
++#define TOAST_BUTTON_WIDTH  36
++#define TOAST_BUTTON_HEIGHT 20
++#define TOAST_TIMER         1
++#define TOAST_FRAME_MS      15
++#define TOAST_BLUR          30   /* the acrylic's blur */
 +#define WM_TOAST_CLICKED    (WM_USER + 300) /* to the pager; wParam: closed with its X */
 +
++enum TOAST_ANIMATION
++{
++    TOAST_STILL,
++    TOAST_APPEARING,
++    TOAST_DECAYED,
++    TOAST_ACTIVATED,
++};
++
 +class CToastWnd :
-+    public CWindowImpl<CToastWnd, CWindow, CWinTraits<WS_POPUP, WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE> >
++    public CWindowImpl<CToastWnd, CWindow,
++                       CWinTraits<WS_POPUP, WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED> >
 +{
 +    HWND m_hwndNotify;
 +    HICON m_hLogo;
-+    HICON m_hAppIcon;
 +    HFONT m_hfTitle;
 +    HFONT m_hfText;
-+    HFONT m_hfApp;
++    HFONT m_hfCaption;
 +    WCHAR m_szTitle[64];
 +    WCHAR m_szText[256];
 +    WCHAR m_szApp[64];
-+    RECT m_rcClose;
-+    int m_xStart;
-+    int m_xFinal;
-+    int m_step;
-+    BOOL m_bHover;
++    HDC m_hdcContent;
++    HBITMAP m_hbmContent;
++    DWORD *m_pContent;
++    HDC m_hdcFrame;
++    HBITMAP m_hbmFrame;
++    int m_x, m_y, m_cx, m_cy;
++    int m_titleHeight, m_textHeight, m_captionHeight;
++    RECT m_rcClose, m_rcSettings;
++    TOAST_ANIMATION m_animation;
++    DWORD m_start;
++    int m_hover; /* 0: not over it, 1: over it, 2: over its X, 3: over its settings */
 +
-+    static int MeasureText(HDC hdc, HFONT hFont, LPCWSTR pszText, int width)
++    /* y of the cubic Bezier through (0,0), (x1,y1), (x2,y2), (1,1) at x */
++    static double Spline(double x1, double y1, double x2, double y2, double x)
 +    {
++        double lo = 0, hi = 1, t = x;
++
++        for (int i = 0; i < 30; i++)
++        {
++            double u = 1 - t;
++            double bx = 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t;
++            if (bx < x) lo = t; else hi = t;
++            t = (lo + hi) / 2;
++        }
++        double u = 1 - t;
++        return 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t;
++    }
++
++    static int LinesHeight(HDC hdc, HFONT hFont, LPCWSTR pszText, int width, int maxLines, int *pLine)
++    {
++        TEXTMETRICW tm;
 +        RECT rc;
 +        HGDIOBJ hOld = SelectObject(hdc, hFont);
++        int lines;
 +
++        GetTextMetricsW(hdc, &tm);
++        *pLine = tm.tmHeight;
 +        SetRect(&rc, 0, 0, width, 0);
 +        DrawTextW(hdc, pszText, -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
 +        SelectObject(hdc, hOld);
-+        return rc.bottom;
++        if (!pszText[0])
++            return 0;
++        lines = (rc.bottom + tm.tmHeight - 1) / tm.tmHeight;
++        return (lines < maxLines ? lines : maxLines) * tm.tmHeight;
++    }
++
++    static HBITMAP CreateBits(HDC hdc, int cx, int cy, DWORD **ppBits)
++    {
++        BITMAPINFO bi;
++
++        ZeroMemory(&bi, sizeof(bi));
++        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
++        bi.bmiHeader.biWidth = cx;
++        bi.bmiHeader.biHeight = -cy;
++        bi.bmiHeader.biPlanes = 1;
++        bi.bmiHeader.biBitCount = 32;
++        return CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)ppBits, NULL, 0);
++    }
++
++    /* three box blurs of radius r make a Gaussian close to the acrylic's */
++    static void BoxBlur(DWORD *pBits, int cx, int cy, int r)
++    {
++        DWORD *tmp = (DWORD *)HeapAlloc(GetProcessHeap(), 0, cx * cy * sizeof(DWORD));
++
++        if (!tmp)
++            return;
++        for (int pass = 0; pass < 6; pass++)
++        {
++            BOOL horizontal = !(pass & 1);
++            int n = horizontal ? cx : cy, lines = horizontal ? cy : cx;
++
++            for (int line = 0; line < lines; line++)
++            {
++                int sum[3] = { 0, 0, 0 };
++                for (int i = -r; i <= r; i++)
++                {
++                    int j = i < 0 ? 0 : i >= n ? n - 1 : i;
++                    DWORD p = horizontal ? pBits[line * cx + j] : pBits[j * cx + line];
++                    sum[0] += p & 0xff; sum[1] += (p >> 8) & 0xff; sum[2] += (p >> 16) & 0xff;
++                }
++                for (int i = 0; i < n; i++)
++                {
++                    int out = horizontal ? line * cx + i : i * cx + line;
++                    int add = i + r + 1 >= n ? n - 1 : i + r + 1, sub = i - r < 0 ? 0 : i - r;
++                    DWORD pa = horizontal ? pBits[line * cx + add] : pBits[add * cx + line];
++                    DWORD ps = horizontal ? pBits[line * cx + sub] : pBits[sub * cx + line];
++                    tmp[out] = (sum[0] / (2 * r + 1)) | ((sum[1] / (2 * r + 1)) << 8) | ((sum[2] / (2 * r + 1)) << 16);
++                    sum[0] += (pa & 0xff) - (ps & 0xff);
++                    sum[1] += ((pa >> 8) & 0xff) - ((ps >> 8) & 0xff);
++                    sum[2] += ((pa >> 16) & 0xff) - ((ps >> 16) & 0xff);
++                }
++            }
++            CopyMemory(pBits, tmp, cx * cy * sizeof(DWORD));
++        }
++        HeapFree(GetProcessHeap(), 0, tmp);
++    }
++
++    /* the acrylic: the desktop behind the toast, blurred, under #101010 at 0.75 */
++    void PaintBackdrop()
++    {
++        int r = TOAST_BLUR, cx = m_cx + 6 * r, cy = m_cy + 6 * r;
++        HDC hdcScreen = ::GetDC(NULL), hdc = CreateCompatibleDC(hdcScreen);
++        DWORD *pBits = NULL;
++        HBITMAP hbm = CreateBits(hdcScreen, cx, cy, &pBits);
++        BOOL ok = FALSE;
++
++        if (hbm)
++        {
++            HGDIOBJ hOld = SelectObject(hdc, hbm);
++            SetViewportOrgEx(hdc, -(m_x - 3 * r), -(m_y - 3 * r), NULL);
++            ok = PaintDesktop(hdc);
++            SetViewportOrgEx(hdc, 0, 0, NULL);
++            if (ok)
++            {
++                BoxBlur(pBits, cx, cy, r);
++                for (int y = 0; y < m_cy; y++)
++                {
++                    for (int x = 0; x < m_cx; x++)
++                    {
++                        DWORD p = pBits[(y + 3 * r) * cx + x + 3 * r];
++                        int b = (p & 0xff) / 4 + 0x10 * 3 / 4;
++                        int g = ((p >> 8) & 0xff) / 4 + 0x10 * 3 / 4;
++                        int rr = ((p >> 16) & 0xff) / 4 + 0x10 * 3 / 4;
++                        m_pContent[y * m_cx + x] = 0xff000000 | (rr << 16) | (g << 8) | b;
++                    }
++                }
++            }
++            SelectObject(hdc, hOld);
++            DeleteObject(hbm);
++        }
++        DeleteDC(hdc);
++        ::ReleaseDC(NULL, hdcScreen);
++        if (!ok)
++        {
++            /* the acrylic's fallback colour */
++            for (int i = 0; i < m_cx * m_cy; i++)
++                m_pContent[i] = 0xff1f1f1f;
++        }
++    }
++
++    /* text as XAML draws it: white at the brush's opacity, over the acrylic */
++    void PaintText(HFONT hFont, LPCWSTR pszText, int x, int y, int cx, int cy, int opacity)
++    {
++        HDC hdcScreen = ::GetDC(NULL), hdc = CreateCompatibleDC(hdcScreen);
++        DWORD *pMask = NULL;
++        HBITMAP hbm = CreateBits(hdcScreen, m_cx, m_cy, &pMask);
++        RECT rc;
++
++        if (hbm && pszText[0])
++        {
++            HGDIOBJ hOldBm = SelectObject(hdc, hbm), hOldFont = SelectObject(hdc, hFont);
++
++            ZeroMemory(pMask, m_cx * m_cy * sizeof(DWORD));
++            SetTextColor(hdc, RGB(255, 255, 255));
++            SetBkMode(hdc, TRANSPARENT);
++            SetRect(&rc, x, y, x + cx, y + cy);
++            DrawTextW(hdc, pszText, -1, &rc, DT_WORDBREAK | DT_NOPREFIX);
++            GdiFlush();
++            for (int i = 0; i < m_cx * m_cy; i++)
++            {
++                int cov = ((pMask[i] >> 8) & 0xff) * opacity / 255;
++                DWORD p = m_pContent[i];
++                if (!cov)
++                    continue;
++                m_pContent[i] = 0xff000000 |
++                    ((((p >> 16) & 0xff) * (255 - cov) / 255 + cov) << 16) |
++                    ((((p >> 8) & 0xff) * (255 - cov) / 255 + cov) << 8) |
++                    ((p & 0xff) * (255 - cov) / 255 + cov);
++            }
++            SelectObject(hdc, hOldFont);
++            SelectObject(hdc, hOldBm);
++        }
++        if (hbm)
++            DeleteObject(hbm);
++        DeleteDC(hdc);
++        ::ReleaseDC(NULL, hdcScreen);
++    }
++
++    /* the glyphs of its buttons: Segoe MDL2's ChromeClose (E8BB) and Settings (E713) */
++    void PaintButtons()
++    {
++        HPEN hPen;
++        HGDIOBJ hOld;
++        COLORREF close = m_hover == 2 ? RGB(255, 255, 255) : RGB(153, 153, 153);
++        COLORREF settings = m_hover == 3 ? RGB(255, 255, 255) : RGB(153, 153, 153);
++        int cx = (m_rcClose.left + m_rcClose.right) / 2, cy = (m_rcClose.top + m_rcClose.bottom) / 2;
++
++        hPen = CreatePen(PS_SOLID, 1, close);
++        hOld = SelectObject(m_hdcContent, hPen);
++        MoveToEx(m_hdcContent, cx - 5, cy - 5, NULL);
++        LineTo(m_hdcContent, cx + 6, cy + 6);
++        MoveToEx(m_hdcContent, cx + 5, cy - 5, NULL);
++        LineTo(m_hdcContent, cx - 6, cy + 6);
++        SelectObject(m_hdcContent, hOld);
++        DeleteObject(hPen);
++
++        cx = (m_rcSettings.left + m_rcSettings.right) / 2;
++        cy = (m_rcSettings.top + m_rcSettings.bottom) / 2;
++        hPen = CreatePen(PS_SOLID, 1, settings);
++        hOld = SelectObject(m_hdcContent, hPen);
++        HGDIOBJ hOldBrush = SelectObject(m_hdcContent, GetStockObject(NULL_BRUSH));
++        Ellipse(m_hdcContent, cx - 2, cy - 2, cx + 3, cy + 3);
++        Ellipse(m_hdcContent, cx - 5, cy - 5, cx + 6, cy + 6);
++        /* its eight teeth */
++        static const signed char teeth[8][4] =
++        {
++            { 5, 0, 7, 0 }, { 4, 4, 5, 5 }, { 0, 5, 0, 7 }, { -4, 4, -5, 5 },
++            { -5, 0, -7, 0 }, { -4, -4, -5, -5 }, { 0, -5, 0, -7 }, { 4, -4, 5, -5 },
++        };
++        for (int i = 0; i < 8; i++)
++        {
++            MoveToEx(m_hdcContent, cx + teeth[i][0], cy + teeth[i][1], NULL);
++            LineTo(m_hdcContent, cx + teeth[i][2], cy + teeth[i][3]);
++        }
++        SelectObject(m_hdcContent, hOldBrush);
++        SelectObject(m_hdcContent, hOld);
++        DeleteObject(hPen);
++    }
++
++    void Render()
++    {
++        int textX = TOAST_PADDING + (m_hLogo ? TOAST_LOGO + 16 : 0);
++        int textWidth = m_cx - TOAST_PADDING - (TOAST_BUTTON_WIDTH + 2) - textX;
++        int y = TOAST_PADDING + 2 * TOAST_BUTTON_HEIGHT + 4;
++
++        PaintBackdrop();
++        if (m_hLogo)
++            DrawIconEx(m_hdcContent, TOAST_PADDING, TOAST_PADDING + 6, m_hLogo, TOAST_LOGO, TOAST_LOGO, 0, NULL, DI_NORMAL);
++        PaintText(m_hfTitle, m_szTitle, textX, y, textWidth, m_titleHeight, 255);
++        y += m_titleHeight;
++        PaintText(m_hfText, m_szText, textX, y, textWidth, m_textHeight, 153);
++        y += m_textHeight + 3;
++        PaintText(m_hfCaption, m_szApp, textX, y, textWidth, m_captionHeight, 153);
++        if (m_hover)
++            PaintButtons();
++        GdiFlush();
++        /* opaque: the icon and the lines drew no alpha */
++        for (int i = 0; i < m_cx * m_cy; i++)
++            m_pContent[i] |= 0xff000000;
++    }
++
++    void Present(double opacity, int dx, double scale)
++    {
++        BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)(opacity * 255 + 0.5), AC_SRC_ALPHA };
++        POINT pos = { m_x + dx, m_y }, src = { 0, 0 };
++        SIZE size = { m_cx, m_cy };
++        HDC hdcSrc = m_hdcContent;
++
++        if (scale < 1 && m_hdcFrame)
++        {
++            int cx = (int)(m_cx * scale + 0.5), cy = (int)(m_cy * scale + 0.5);
++            RECT rc = { 0, 0, m_cx, m_cy };
++
++            FillRect(m_hdcFrame, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
++            SetStretchBltMode(m_hdcFrame, HALFTONE);
++            StretchBlt(m_hdcFrame, (m_cx - cx) / 2, (m_cy - cy) / 2, cx, cy, m_hdcContent, 0, 0, m_cx, m_cy, SRCCOPY);
++            GdiFlush();
++            /* around the shrunk toast is nothing: alpha 0 there, 255 on it */
++            DWORD *pFrame = NULL;
++            BITMAP bm;
++            if (GetObjectW(m_hbmFrame, sizeof(bm), &bm) && (pFrame = (DWORD *)bm.bmBits))
++            {
++                for (int y = 0; y < m_cy; y++)
++                    for (int x = 0; x < m_cx; x++)
++                    {
++                        BOOL inside = x >= (m_cx - cx) / 2 && x < (m_cx - cx) / 2 + cx &&
++                                      y >= (m_cy - cy) / 2 && y < (m_cy - cy) / 2 + cy;
++                        pFrame[y * m_cx + x] = inside ? (pFrame[y * m_cx + x] | 0xff000000) : 0;
++                    }
++            }
++            hdcSrc = m_hdcFrame;
++        }
++        UpdateLayeredWindow(m_hWnd, NULL, &pos, &size, hdcSrc, &src, 0, &bf, ULW_ALPHA);
++    }
++
++    void FreeBitmaps()
++    {
++        if (m_hdcContent)
++            DeleteDC(m_hdcContent);
++        if (m_hbmContent)
++            DeleteObject(m_hbmContent);
++        if (m_hdcFrame)
++            DeleteDC(m_hdcFrame);
++        if (m_hbmFrame)
++            DeleteObject(m_hbmFrame);
++        m_hdcContent = m_hdcFrame = NULL;
++        m_hbmContent = m_hbmFrame = NULL;
++        m_pContent = NULL;
 +    }
 +
 +public:
-+    DECLARE_WND_CLASS_EX(L"ArcticToastWnd", CS_DROPSHADOW, COLOR_WINDOW)
++    DECLARE_WND_CLASS_EX(L"ArcticToastWnd", 0, COLOR_WINDOW)
 +
 +    CToastWnd() :
-+        m_hwndNotify(NULL),
-+        m_hLogo(NULL),
-+        m_hAppIcon(NULL),
-+        m_hfTitle(NULL),
-+        m_hfText(NULL),
-+        m_hfApp(NULL),
-+        m_xStart(0),
-+        m_xFinal(0),
-+        m_step(0),
-+        m_bHover(FALSE)
++        m_hwndNotify(NULL), m_hLogo(NULL), m_hfTitle(NULL), m_hfText(NULL), m_hfCaption(NULL),
++        m_hdcContent(NULL), m_hbmContent(NULL), m_pContent(NULL), m_hdcFrame(NULL), m_hbmFrame(NULL),
++        m_x(0), m_y(0), m_cx(0), m_cy(0), m_titleHeight(0), m_textHeight(0), m_captionHeight(0),
++        m_animation(TOAST_STILL), m_start(0), m_hover(0)
 +    {
 +        m_szTitle[0] = m_szText[0] = m_szApp[0] = UNICODE_NULL;
 +        SetRectEmpty(&m_rcClose);
++        SetRectEmpty(&m_rcSettings);
 +    }
 +
 +    BOOL Init(HWND hwndNotify)
@@ -121,17 +416,15 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        ncm.cbSize = sizeof(ncm);
 +        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
 +        lf = ncm.lfMessageFont;
++        lf.lfQuality = ANTIALIASED_QUALITY;
 +        lf.lfHeight = -15;
-+        lf.lfWeight = FW_NORMAL;
-+        m_hfText = CreateFontIndirectW(&lf);
 +        lf.lfWeight = FW_SEMIBOLD;
 +        m_hfTitle = CreateFontIndirectW(&lf);
-+        lf.lfHeight = -12;
 +        lf.lfWeight = FW_NORMAL;
-+        m_hfApp = CreateFontIndirectW(&lf);
++        m_hfText = CreateFontIndirectW(&lf);
++        lf.lfHeight = -12;
++        m_hfCaption = CreateFontIndirectW(&lf);
 +        LoadStringW(GetModuleHandleW(NULL), IDS_TOAST_APP, m_szApp, _countof(m_szApp));
-+        /* File Explorer's icon: the folder */
-+        m_hAppIcon = (HICON)LoadImageW(GetModuleHandleW(L"shell32.dll"), MAKEINTRESOURCEW(4), IMAGE_ICON, 16, 16, 0);
 +        return Create(NULL) != NULL;
 +    }
 +
@@ -139,169 +432,173 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +    {
 +        if (m_hWnd)
 +            DestroyWindow();
-+        if (m_hAppIcon)
-+            DestroyIcon(m_hAppIcon);
++        FreeBitmaps();
 +        if (m_hfTitle)
 +            DeleteObject(m_hfTitle);
 +        if (m_hfText)
 +            DeleteObject(m_hfText);
-+        if (m_hfApp)
-+            DeleteObject(m_hfApp);
-+        m_hAppIcon = NULL;
-+        m_hfTitle = m_hfText = m_hfApp = NULL;
++        if (m_hfCaption)
++            DeleteObject(m_hfCaption);
++        m_hfTitle = m_hfText = m_hfCaption = NULL;
++    }
++
++    BOOL IsHovered() const
++    {
++        return m_hover != 0;
 +    }
 +
 +    void Show(LPCWSTR pszTitle, LPCWSTR pszText, HICON hLogo)
 +    {
 +        RECT rcWork, rcTray;
 +        HWND hwndTray;
-+        HDC hdc;
-+        int textWidth = TOAST_WIDTH - 2 * TOAST_PADDING - TOAST_LOGO - 12;
-+        int height, content, bottom;
++        HDC hdcScreen;
++        int textX, textWidth, line, bottom;
 +
 +        StringCchCopyW(m_szTitle, _countof(m_szTitle), pszTitle);
 +        StringCchCopyW(m_szText, _countof(m_szText), pszText);
 +        m_hLogo = hLogo;
++        m_hover = 0;
 +
-+        hdc = GetDC();
-+        content = MeasureText(hdc, m_hfTitle, m_szTitle, textWidth) + 2 +
-+                  MeasureText(hdc, m_hfText, m_szText, textWidth);
-+        ReleaseDC(hdc);
-+        height = TOAST_PADDING + 16 + 12 + (content > TOAST_LOGO ? content : TOAST_LOGO) + TOAST_PADDING;
++        /* the title in at most 2 lines, the text in 4 */
++        m_cx = TOAST_WIDTH;
++        textX = TOAST_PADDING + (m_hLogo ? TOAST_LOGO + 16 : 0);
++        textWidth = m_cx - TOAST_PADDING - (TOAST_BUTTON_WIDTH + 2) - textX;
++        hdcScreen = ::GetDC(NULL);
++        m_titleHeight = LinesHeight(hdcScreen, m_hfTitle, m_szTitle, textWidth, 2, &line);
++        m_textHeight = LinesHeight(hdcScreen, m_hfText, m_szText, textWidth, 4, &line);
++        m_captionHeight = LinesHeight(hdcScreen, m_hfCaption, m_szApp, textWidth, 1, &line);
++        m_cy = TOAST_PADDING + 2 * TOAST_BUTTON_HEIGHT + 4 + m_titleHeight + m_textHeight +
++               (m_captionHeight ? 3 + m_captionHeight : 0) + 5 + TOAST_PADDING;
 +
-+        /* above the taskbar */
++        /* in the corner above the taskbar */
 +        SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
 +        bottom = rcWork.bottom;
 +        hwndTray = FindWindowW(L"Shell_TrayWnd", NULL);
 +        if (hwndTray && ::GetWindowRect(hwndTray, &rcTray) && rcTray.top > rcWork.top && rcTray.top < bottom)
 +            bottom = rcTray.top;
++        m_x = rcWork.right - TOAST_MARGIN - m_cx;
++        m_y = bottom - TOAST_MARGIN - m_cy;
 +
-+        m_xFinal = rcWork.right - TOAST_MARGIN - TOAST_WIDTH;
-+        m_xStart = rcWork.right;
-+        m_step = 0;
-+        m_bHover = FALSE;
-+        SetWindowPos(HWND_TOPMOST, m_xStart, bottom - TOAST_MARGIN - height, TOAST_WIDTH, height,
-+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
-+        Invalidate();
-+        SetTimer(TOAST_SLIDE_TIMER, 15, NULL);
++        SetRect(&m_rcClose, m_cx - TOAST_PADDING - 2 - TOAST_BUTTON_WIDTH, TOAST_PADDING,
++                m_cx - TOAST_PADDING - 2, TOAST_PADDING + TOAST_BUTTON_HEIGHT);
++        m_rcSettings = m_rcClose;
++        OffsetRect(&m_rcSettings, 0, TOAST_BUTTON_HEIGHT);
++
++        FreeBitmaps();
++        m_hdcContent = CreateCompatibleDC(hdcScreen);
++        m_hbmContent = CreateBits(hdcScreen, m_cx, m_cy, &m_pContent);
++        m_hdcFrame = CreateCompatibleDC(hdcScreen);
++        DWORD *pFrame;
++        m_hbmFrame = CreateBits(hdcScreen, m_cx, m_cy, &pFrame);
++        ::ReleaseDC(NULL, hdcScreen);
++        if (!m_hbmContent || !m_hbmFrame)
++        {
++            FreeBitmaps();
++            return;
++        }
++        SelectObject(m_hdcContent, m_hbmContent);
++        SelectObject(m_hdcFrame, m_hbmFrame);
++        Render();
++
++        m_animation = TOAST_APPEARING;
++        m_start = GetTickCount();
++        Present(0, 0, 1);
++        ShowWindow(SW_SHOWNOACTIVATE);
++        SetTimer(TOAST_TIMER, TOAST_FRAME_MS, NULL);
 +    }
 +
-+    void Hide()
++    /* it goes the way Windows 10 lets it: slid out when its time is up or its
++     * X is clicked, faded and shrunk when it is clicked */
++    void Hide(BOOL bClicked)
 +    {
-+        if (!m_hWnd)
++        if (!m_hWnd || !IsWindowVisible() || !m_pContent)
 +            return;
-+        KillTimer(TOAST_SLIDE_TIMER);
-+        ShowWindow(SW_HIDE);
++        m_animation = bClicked ? TOAST_ACTIVATED : TOAST_DECAYED;
++        m_start = GetTickCount();
++        m_hover = 0;
++        SetTimer(TOAST_TIMER, TOAST_FRAME_MS, NULL);
 +    }
 +
 +    LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 +    {
-+        RECT rc;
-+        int left;
++        DWORD elapsed = GetTickCount() - m_start;
++        double t;
 +
-+        if (wParam != TOAST_SLIDE_TIMER)
++        if (wParam != TOAST_TIMER)
 +            return 0;
-+        m_step++;
-+        /* eases out: fast at first, slowing into place */
-+        left = TOAST_SLIDE_STEPS - m_step;
-+        GetWindowRect(&rc);
-+        SetWindowPos(NULL, m_xFinal + (m_xStart - m_xFinal) * left * left / (TOAST_SLIDE_STEPS * TOAST_SLIDE_STEPS),
-+                     rc.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-+        if (m_step >= TOAST_SLIDE_STEPS)
-+            KillTimer(TOAST_SLIDE_TIMER);
-+        return 0;
-+    }
-+
-+    LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
-+    {
-+        return TRUE;
-+    }
-+
-+    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
-+    {
-+        PAINTSTRUCT ps;
-+        RECT rc, rcText;
-+        HDC hdc = BeginPaint(&ps);
-+        HBRUSH hbr;
-+        HGDIOBJ hOld;
-+        int x = TOAST_PADDING, y = TOAST_PADDING, tx, h;
-+
-+        GetClientRect(&rc);
-+        hbr = CreateSolidBrush(RGB(31, 31, 31));
-+        FillRect(hdc, &rc, hbr);
-+        DeleteObject(hbr);
-+        hbr = CreateSolidBrush(RGB(62, 62, 62));
-+        FrameRect(hdc, &rc, hbr);
-+        DeleteObject(hbr);
-+        SetBkMode(hdc, TRANSPARENT);
-+
-+        /* the program it comes from */
-+        if (m_hAppIcon)
-+            DrawIconEx(hdc, x, y, m_hAppIcon, 16, 16, 0, NULL, DI_NORMAL);
-+        hOld = SelectObject(hdc, m_hfApp);
-+        SetTextColor(hdc, RGB(170, 170, 170));
-+        SetRect(&rcText, x + 16 + 8, y, rc.right - TOAST_PADDING - 24, y + 16);
-+        DrawTextW(hdc, m_szApp, -1, &rcText, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
-+
-+        /* its X, while the pointer is over it */
-+        SetRect(&m_rcClose, rc.right - TOAST_PADDING - 12, y + 2, rc.right - TOAST_PADDING, y + 14);
-+        if (m_bHover)
++        switch (m_animation)
 +        {
-+            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(210, 210, 210));
-+            HGDIOBJ hOldPen = SelectObject(hdc, hPen);
-+            MoveToEx(hdc, m_rcClose.left, m_rcClose.top, NULL);
-+            LineTo(hdc, m_rcClose.right, m_rcClose.bottom);
-+            MoveToEx(hdc, m_rcClose.left, m_rcClose.bottom - 1, NULL);
-+            LineTo(hdc, m_rcClose.right, m_rcClose.top - 1);
-+            SelectObject(hdc, hOldPen);
-+            DeleteObject(hPen);
++            case TOAST_APPEARING:
++                t = elapsed >= 500 ? 1 : elapsed / 500.0;
++                Present(t * t * t, 0, 1);
++                break;
++            case TOAST_DECAYED:
++                t = elapsed >= 1000 ? 1 : elapsed / 1000.0;
++                Present(1, (int)(400 * Spline(0.1, 0.9, 0.2, 1, t) + 0.5), 1);
++                break;
++            case TOAST_ACTIVATED:
++                t = elapsed >= 300 ? 1 : elapsed / 300.0;
++                Present(1 - Spline(0.9, 0.1, 1, 0.2, t), 0, 1 - 0.2 * Spline(0.1, 0.9, 0.2, 1, t));
++                break;
++            default:
++                t = 1;
++                break;
 +        }
-+
-+        y += 16 + 12;
-+        if (m_hLogo)
-+            DrawIconEx(hdc, x, y, m_hLogo, TOAST_LOGO, TOAST_LOGO, 0, NULL, DI_NORMAL);
-+        tx = x + TOAST_LOGO + 12;
-+
-+        SelectObject(hdc, m_hfTitle);
-+        SetTextColor(hdc, RGB(255, 255, 255));
-+        SetRect(&rcText, tx, y, rc.right - TOAST_PADDING, rc.bottom);
-+        h = DrawTextW(hdc, m_szTitle, -1, &rcText, DT_WORDBREAK | DT_NOPREFIX);
-+        rcText.top += h + 2;
-+        SelectObject(hdc, m_hfText);
-+        SetTextColor(hdc, RGB(200, 200, 200));
-+        DrawTextW(hdc, m_szText, -1, &rcText, DT_WORDBREAK | DT_NOPREFIX);
-+
-+        SelectObject(hdc, hOld);
-+        EndPaint(&ps);
++        if (t >= 1)
++        {
++            KillTimer(TOAST_TIMER);
++            if (m_animation == TOAST_DECAYED || m_animation == TOAST_ACTIVATED)
++                ShowWindow(SW_HIDE);
++            m_animation = TOAST_STILL;
++        }
 +        return 0;
 +    }
 +
 +    LRESULT OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 +    {
-+        if (!m_bHover)
++        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
++        int hover = PtInRect(&m_rcClose, pt) ? 2 : PtInRect(&m_rcSettings, pt) ? 3 : 1;
++
++        if (m_animation == TOAST_DECAYED || m_animation == TOAST_ACTIVATED)
++            return 0;
++        if (!m_hover)
 +        {
 +            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, m_hWnd, 0 };
 +            TrackMouseEvent(&tme);
-+            m_bHover = TRUE;
-+            Invalidate();
++        }
++        if (hover != m_hover && m_pContent)
++        {
++            m_hover = hover;
++            Render();
++            if (m_animation == TOAST_STILL)
++                Present(1, 0, 1);
 +        }
 +        return 0;
 +    }
 +
 +    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 +    {
-+        m_bHover = FALSE;
-+        Invalidate();
++        if (m_hover && m_pContent && m_animation != TOAST_DECAYED && m_animation != TOAST_ACTIVATED)
++        {
++            m_hover = 0;
++            Render();
++            if (m_animation == TOAST_STILL)
++                Present(1, 0, 1);
++        }
++        m_hover = 0;
 +        return 0;
 +    }
 +
 +    LRESULT OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 +    {
 +        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-+        RECT rcClose = m_rcClose;
 +
-+        InflateRect(&rcClose, 6, 6);
-+        ::PostMessageW(m_hwndNotify, WM_TOAST_CLICKED, PtInRect(&rcClose, pt), 0);
++        if (m_animation == TOAST_DECAYED || m_animation == TOAST_ACTIVATED)
++            return 0;
++        /* its settings would open the notification settings, which are not there yet */
++        if (PtInRect(&m_rcSettings, pt))
++            return 0;
++        ::PostMessageW(m_hwndNotify, WM_TOAST_CLICKED, PtInRect(&m_rcClose, pt), 0);
 +        return 0;
 +    }
 +
@@ -312,8 +609,6 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +
 +    BEGIN_MSG_MAP(CToastWnd)
 +        MESSAGE_HANDLER(WM_TIMER, OnTimer)
-+        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
-+        MESSAGE_HANDLER(WM_PAINT, OnPaint)
 +        MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseMove)
 +        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
 +        MESSAGE_HANDLER(WM_LBUTTONUP, OnLButtonUp)
@@ -324,7 +619,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  struct InternalIconData : NOTIFYICONDATA
  {
      void SaveVersion(UINT Version) // uVersion is unioned with uTimeout but cbSize is free so we store it there
-@@ -103,6 +372,7 @@
+@@ -103,6 +667,7 @@
          WCHAR szInfo[256];
          WCHAR szInfoTitle[64];
          WPARAM uIcon;
@@ -332,7 +627,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
          UINT uTimeout;
  
          Info(InternalIconData * source)
-@@ -113,6 +383,21 @@
+@@ -113,6 +678,21 @@
              uIcon = source->dwInfoFlags & NIIF_ICON_MASK;
              if (source->dwInfoFlags == NIIF_USER)
                  uIcon = reinterpret_cast<WPARAM>(source->hIcon);
@@ -354,7 +649,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
              uTimeout = source->uTimeout;
          }
      };
-@@ -128,6 +413,8 @@
+@@ -128,6 +708,8 @@
      InternalIconData * m_current;
  
      int m_timer;
@@ -363,7 +658,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  
  public:
      CBalloonQueue();
-@@ -139,6 +426,7 @@
+@@ -139,6 +721,7 @@
      void UpdateInfo(InternalIconData * notifyItem);
      void RemoveInfo(InternalIconData * notifyItem);
      void CloseCurrent();
@@ -371,7 +666,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  
  private:
  
-@@ -256,8 +544,15 @@
+@@ -256,8 +839,15 @@
  
      DECLARE_WND_CLASS_EX(szSysPagerWndClass, CS_DBLCLKS, COLOR_3DFACE)
  
@@ -387,7 +682,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
          MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
          MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBackground)
          MESSAGE_HANDLER(WM_COMMAND, OnCommand)
-@@ -521,6 +816,7 @@
+@@ -521,6 +1111,7 @@
      m_hwndParent = hwndParent;
      m_toolbar = toolbar;
      m_tooltips = balloons;
@@ -395,7 +690,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  }
  
  void CBalloonQueue::Deinit()
-@@ -529,6 +825,7 @@
+@@ -529,6 +1120,7 @@
      {
          ::KillTimer(m_hwndParent, m_timer);
      }
@@ -403,7 +698,20 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  }
  
  bool CBalloonQueue::OnTimer(int timerId)
-@@ -601,6 +898,15 @@
+@@ -541,6 +1133,12 @@
+ 
+     if (m_current)
+     {
++        /* not while the pointer is over it */
++        if (m_toast.IsHovered())
++        {
++            SetTimer(1000);
++            return true;
++        }
+         Close(m_current, NIN_BALLOONTIMEOUT);
+     }
+     else
+@@ -601,6 +1199,15 @@
      }
  }
  
@@ -419,7 +727,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  int CBalloonQueue::IndexOf(InternalIconData * pdata)
  {
      int count = m_toolbar->GetButtonCount();
-@@ -624,17 +930,7 @@
+@@ -624,23 +1231,13 @@
      // TODO: NIF_REALTIME, NIIF_NOSOUND, other Vista+ flags
  
      m_current = info.pSource;
@@ -434,18 +742,30 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 -    m_tooltips->SetMaxTipWidth(BALLOON_MAXWIDTH);
 -    m_tooltips->UpdateTipText(m_hwndParent, reinterpret_cast<LPARAM>(m_toolbar->m_hWnd), info.szInfo);
 -    m_tooltips->TrackActivate(m_hwndParent, reinterpret_cast<LPARAM>(m_toolbar->m_hWnd));
+-
+-    int timeout = info.uTimeout;
+-    if (timeout < MinTimeout) timeout = MinTimeout;
+-    if (timeout > MaxTimeout) timeout = MaxTimeout;
+-
+-    SetTimer(timeout);
 +    m_toast.Show(info.szInfoTitle, info.szInfo, info.hLogo);
++
++    /* as long as Windows 10 shows a notification, whatever the balloon asks:
++     * SPI_GETMESSAGEDURATION, 5 seconds */
++    ULONG duration = 5;
++    SystemParametersInfoW(SPI_GETMESSAGEDURATION, 0, &duration, 0);
++    SetTimer(duration * 1000);
  
-     int timeout = info.uTimeout;
-     if (timeout < MinTimeout) timeout = MinTimeout;
-@@ -653,8 +949,8 @@
+     m_toolbar->SendNotifyCallback(m_current, NIN_BALLOONSHOW);
+ }
+@@ -653,8 +1250,8 @@
      {
          m_toolbar->SendNotifyCallback(m_current, uReason);
  
 -        m_current = NULL; // Prevent re-entry (TrackDeactivate will generate a TTN_POP)
 -        m_tooltips->TrackDeactivate();
 +        m_current = NULL;
-+        m_toast.Hide();
++        m_toast.Hide(uReason == NIN_BALLOONUSERCLICK);
          SetTimer(CooldownBetweenBalloons);
      }
  }
