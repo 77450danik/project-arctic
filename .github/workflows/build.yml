@@ -41,6 +41,17 @@ jobs:
         with:
           path: out/kernel
           key: ${{ steps.key.outputs.key }}
+      # the kernel on its own, for an image built locally (tools/wsl/build-image.sh)
+      - if: steps.cache.outputs.cache-hit == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: out/kernel
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel
+          path: out/kernel/
+          retention-days: 7
 
   wine:
     concurrency:

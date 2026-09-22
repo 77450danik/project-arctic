@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds the ISO locally in WSL: the kernel from the last CI ISO (out/arctic.iso
-# on G:, fetched by tools/get-iso.ps1), Wine from tools/wsl/build-wine.sh,
+# Builds the ISO locally in WSL: the kernel from /root/arctic/out/kernel (the
+# CI's "kernel" artifact put there), else from the last CI ISO (out/arctic.iso
+# on G:, fetched by tools/get-iso.ps1); Wine from tools/wsl/build-wine.sh,
 # everything else from this checkout. Output: out/arctic-local.iso on G:.
 set -euo pipefail
 
