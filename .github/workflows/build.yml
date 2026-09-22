@@ -136,12 +136,19 @@ jobs:
           path: out/wine
           key: wine-${{ hashFiles('runtime/WINE_VERSION', 'runtime/wine/**', 'ci/build-wine.sh', 'ci/arch-prep.sh') }}
           fail-on-cache-miss: true
-      # the shell, the theme and the keyboard layouts of C:
-      - uses: actions/cache/restore@v4
+      # the shell, the theme and the keyboard layouts of C:: from the cache, or
+      # from this run's build when the cache could not be saved (a key another
+      # run reserved and never wrote)
+      - id: reactos
+        uses: actions/cache/restore@v4
         with:
           path: out/reactos
           key: reactos-${{ hashFiles('runtime/reactos/**', 'ci/build-reactos.sh') }}
-          fail-on-cache-miss: true
+      - if: steps.reactos.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: reactos-shell
+          path: out/reactos
 
       - name: Host root filesystem and NT prefix
         run: docker run --rm --privileged -v "$PWD:/work" archlinux:latest bash /work/ci/build-rootfs.sh
