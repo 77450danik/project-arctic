@@ -12,5 +12,6 @@
 
 void start_raw_input_thread(void);
 void set_input_language( HKL layout );
+HKL get_input_language(void);
 
 #endif

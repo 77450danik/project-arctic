@@ -1,0 +1,20 @@
+# Ctrl+Alt+Del: the input indicator bottom right, its list of languages,
+# and a language chosen there reaching the taskbar's indicator
+sleep 8
+shot c0-desktop
+key ctrl-alt-delete
+sleep 3
+shot c1-security
+move 1230 760
+sleep 1
+shot c2-hover
+click
+sleep 2
+shot c3-flyout
+move 1100 650
+click                         # УКР
+sleep 2
+shot c4-chosen
+key esc
+sleep 3
+shot c5-desktop

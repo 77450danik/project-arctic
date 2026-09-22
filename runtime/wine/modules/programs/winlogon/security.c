@@ -92,9 +92,15 @@ static void language_names( HKL hkl, WCHAR *language, int language_count, WCHAR 
     wsprintfW( keyboard, format, layout );
 }
 
-/* the language of the program that was in front */
+/* the session's language, which csrss keeps; before one is chosen, the
+ * language of the program that was in front */
 static HKL current_language(void)
 {
+    DWORD_PTR hkl = 0;
+
+    if (SendMessageTimeoutW( GetDesktopWindow(), RegisterWindowMessageW( L"ArcticInputLanguage" ), 1, 0,
+                             SMTO_ABORTIFHUNG, 200, &hkl ) && hkl)
+        return (HKL)hkl;
     if (screen.previous && IsWindow( screen.previous ))
         return GetKeyboardLayout( GetWindowThreadProcessId( screen.previous, NULL ) );
     return GetKeyboardLayout( 0 );

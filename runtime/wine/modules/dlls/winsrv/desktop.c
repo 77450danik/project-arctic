@@ -87,10 +87,11 @@ static LRESULT WINAPI desktop_wnd_proc( HWND hwnd, UINT message, WPARAM wp, LPAR
 {
     static UINT input_language_message;
 
-    /* the input indicator of the notification area chose a language */
+    /* an input indicator chose a language (wp 0), or asks for the session's (wp 1) */
     if (!input_language_message) input_language_message = RegisterWindowMessageW( L"ArcticInputLanguage" );
     if (message == input_language_message)
     {
+        if (wp) return (LRESULT)get_input_language();
         set_input_language( (HKL)lp );
         return 0;
     }

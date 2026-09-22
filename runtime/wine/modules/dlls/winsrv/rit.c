@@ -259,6 +259,12 @@ void set_input_language( HKL layout )
     if ((hwnd = GetForegroundWindow())) request_language( hwnd, layout );
 }
 
+/* the session's language for the input indicators; NULL until one is chosen */
+HKL get_input_language(void)
+{
+    return input_language;
+}
+
 /* before a key goes to a program the language has not reached yet */
 static void follow_input_language(void)
 {

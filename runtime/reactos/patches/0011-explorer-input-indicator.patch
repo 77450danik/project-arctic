@@ -56,14 +56,14 @@ diff --git a/base/shell/explorer/resource.h b/base/shell/explorer/resource.h
 diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 --- a/base/shell/explorer/trayntfy.cpp
 +++ b/base/shell/explorer/trayntfy.cpp
-@@ -32,6 +32,532 @@
+@@ -32,6 +32,567 @@
   * TrayNotifyWnd
   */
  
 +/* The input indicator of Windows 10 (InputSwitch.dll, its DirectUI layouts
 + * and the immersive colours of its dark theme): the abbreviation of the input
-+ * language in the notification area, 50 wide, 12pt bold white, #21FFFFFF
-+ * under the pointer. A click opens the list of the languages: 300 wide on
++ * language in the notification area, 50 wide, white in the taskbar's font,
++ * #21FFFFFF under the pointer. A click opens the list of the languages: 300 wide on
 + * #F21E1E1E; 60 a language, with its abbreviation (12pt semibold) in a 74
 + * wide column and its name and keyboard (11pt) beside it, #19FFFFFF under the
 + * pointer, #33FFFFFF pressed, the current one on the accent colour; under a
@@ -405,12 +405,18 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 +    BOOL m_bHover;
 +    CInputFlyout m_flyout;
 +
-+    /* the language of the program in front; not the taskbar's own, nor its flyout's */
++    /* the session's language, which csrss keeps; before one is chosen, the
++     * language of the program in front, not the taskbar's own nor its flyout's */
 +    HKL CurrentLanguage()
 +    {
-+        HWND hwnd = GetForegroundWindow();
++        HWND hwnd;
 +        DWORD pid = 0, tid;
++        DWORD_PTR hkl = 0;
 +
++        if (::SendMessageTimeoutW(GetDesktopWindow(), RegisterWindowMessageW(L"ArcticInputLanguage"), 1, 0,
++                                  SMTO_ABORTIFHUNG, 200, &hkl) && hkl)
++            return (HKL)hkl;
++        hwnd = GetForegroundWindow();
 +        if (!hwnd)
 +            return m_current;
 +        tid = GetWindowThreadProcessId(hwnd, &pid);
@@ -460,14 +466,35 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 +        return GetKeyboardLayoutList(0, NULL) > 1;
 +    }
 +
++    /* the taskbar's font, the clock's: a visual style with a larger one makes
++     * the abbreviation larger in Windows 10 too */
++    void UpdateFont()
++    {
++        LOGFONTW lf;
++        HFONT hFont = NULL;
++        HTHEME hTheme = OpenThemeData(m_hWnd, L"Clock");
++
++        if (hTheme)
++        {
++            if (SUCCEEDED(GetThemeFont(hTheme, NULL, CLP_TIME, 0, TMT_FONT, &lf)))
++                hFont = CreateFontIndirectW(&lf);
++            CloseThemeData(hTheme);
++        }
++        if (!hFont)
++            hFont = CreateInputFont(12, FW_NORMAL);
++        if (m_hfAbbr)
++            DeleteObject(m_hfAbbr);
++        m_hfAbbr = hFont;
++    }
++
 +    HWND DoCreate(HWND hwndParent)
 +    {
 +        TOOLINFOW ti = { sizeof(ti) };
 +
-+        m_hfAbbr = CreateInputFont(16, FW_BOLD);
 +        m_current = GetKeyboardLayout(0);
 +        if (!Create(hwndParent, 0, NULL, WS_CHILD | WS_VISIBLE))
 +            return NULL;
++        UpdateFont();
 +        m_hwndTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
 +                                    0, 0, 0, 0, m_hWnd, NULL, NULL, NULL);
 +        if (m_hwndTip)
@@ -505,6 +532,13 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 +    {
 +        m_current = (HKL)lParam;
 +        UpdateTip();
++        Invalidate();
++        return 0;
++    }
++
++    LRESULT OnThemeChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        UpdateFont();
 +        Invalidate();
 +        return 0;
 +    }
@@ -577,6 +611,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 +    BEGIN_MSG_MAP(CInputIndicator)
 +        MESSAGE_HANDLER(WM_TIMER, OnTimer)
 +        MESSAGE_HANDLER(WM_USER + 1, OnChosen)
++        MESSAGE_HANDLER(WM_THEMECHANGED, OnThemeChanged)
 +        MESSAGE_HANDLER(WM_SIZE, OnSize)
 +        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
 +        MESSAGE_HANDLER(WM_PAINT, OnPaint)
@@ -589,7 +624,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
  class CTrayNotifyWnd :
      public CComCoClass<CTrayNotifyWnd>,
      public CComObjectRootEx<CComMultiThreadModelNoCS>,
-@@ -46,6 +572,9 @@
+@@ -46,6 +607,9 @@
      HWND m_hwndShowDesktop;
      HWND m_hwndPager;
  
@@ -599,7 +634,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
      HTHEME TrayTheme;
      SIZE trayClockMinSize;
      SIZE trayShowDesktopSize;
-@@ -57,6 +586,7 @@
+@@ -57,6 +621,7 @@
      CTrayNotifyWnd() :
          m_hwndClock(NULL),
          m_hwndPager(NULL),
@@ -607,7 +642,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
          TrayTheme(NULL),
          IsHorizontal(FALSE)
      {
-@@ -127,6 +657,10 @@
+@@ -127,6 +692,10 @@
          if (FAILED_UNEXPECTEDLY(hr))
              return FALSE;
  
@@ -618,7 +653,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
          /* Create the 'Show Desktop' button */
          m_ShowDesktopButton.DoCreate(m_hWnd);
          m_hwndShowDesktop = m_ShowDesktopButton.m_hWnd;
-@@ -201,6 +735,9 @@
+@@ -201,6 +770,9 @@
              if (!bHideClock)
                  pSize->cx += TRAY_NOTIFY_WND_SPACING_X + trayClockMinSize.cx;
  
@@ -628,7 +663,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
              if (g_TaskbarSettings.bShowDesktopButton)
                  pSize->cx += showDesktopButtonExtent;
  
-@@ -213,6 +750,9 @@
+@@ -213,6 +785,9 @@
  
              if (!bHideClock)
                  pSize->cy += TRAY_NOTIFY_WND_SPACING_Y + trayClockMinSize.cy;
@@ -638,7 +673,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
  
              if (g_TaskbarSettings.bShowDesktopButton)
                  pSize->cy += showDesktopButtonExtent;
-@@ -331,6 +871,22 @@
+@@ -331,6 +906,22 @@
                  clockSize.cx,
                  clockSize.cy,
                  swpFlags);
