@@ -11,7 +11,15 @@ sleep 2
 shot s2-menu
 move 1100 748
 click                         # «Витягти QEMU USB HARDDRIVE»
-sleep 3
+sleep 0.4
+shot s3a-appearing
+sleep 2
 shot s3-toast
-sleep 12
+move 1100 700
+sleep 1
+shot s3b-hover                # its X and settings, under the pointer
+move 600 400
+sleep 3.2
+shot s3c-going                # 5 s up: sliding out
+sleep 3
 shot s4-after
