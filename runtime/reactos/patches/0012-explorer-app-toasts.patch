@@ -12,10 +12,12 @@ diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
 diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 --- a/base/shell/explorer/syspager.cpp
 +++ b/base/shell/explorer/syspager.cpp
-@@ -827,6 +827,56 @@
+@@ -827,6 +827,58 @@
  
  class CNotifyToolbar;
  
++#include <winver.h>
++
 +#ifndef PROCESS_QUERY_LIMITED_INFORMATION
 +#define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
 +#endif
@@ -69,7 +71,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  class CBalloonQueue
  {
  public:
-@@ -845,6 +895,33 @@
+@@ -845,6 +897,33 @@
          WPARAM uIcon;
          HICON hLogo;
          UINT uTimeout;
@@ -103,7 +105,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  
          Info(InternalIconData * source)
          {
-@@ -870,6 +947,11 @@
+@@ -870,6 +949,11 @@
                      break;
              }
              uTimeout = source->uTimeout;
@@ -115,7 +117,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
          }
      };
  
-@@ -886,6 +968,12 @@
+@@ -886,6 +970,12 @@
      int m_timer;
  
      CToastWnd m_toast;
@@ -128,7 +130,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  
  public:
      CBalloonQueue();
-@@ -898,8 +986,11 @@
+@@ -898,8 +988,11 @@
      void RemoveInfo(InternalIconData * notifyItem);
      void CloseCurrent();
      void OnToastClicked(BOOL bClose);
@@ -140,7 +142,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  
      int IndexOf(InternalIconData * pdata);
      void SetTimer(int length);
-@@ -1278,7 +1369,11 @@
+@@ -1278,7 +1371,11 @@
      m_tooltips(NULL),
      m_toolbar(NULL),
      m_current(NULL),
@@ -153,7 +155,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  {
  }
  
-@@ -1297,6 +1392,9 @@
+@@ -1297,6 +1394,9 @@
          ::KillTimer(m_hwndParent, m_timer);
      }
      m_toast.Deinit();
@@ -163,7 +165,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  }
  
  bool CBalloonQueue::OnTimer(int timerId)
-@@ -1307,7 +1405,7 @@
+@@ -1307,7 +1407,7 @@
      ::KillTimer(m_hwndParent, m_timer);
      m_timer = -1;
  
@@ -172,7 +174,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
      {
          /* not while the pointer is over it */
          if (m_toast.IsHovered())
-@@ -1315,7 +1413,10 @@
+@@ -1315,7 +1415,10 @@
              SetTimer(1000);
              return true;
          }
@@ -184,7 +186,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
      }
      else
      {
-@@ -1336,7 +1437,7 @@
+@@ -1336,7 +1439,7 @@
          Info info(notifyItem);
  
          // If m_current == notifyItem, we want to replace the previous balloon even if there is a queue.
@@ -193,7 +195,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
          {
              m_queue.AddTail(info);
          }
-@@ -1378,10 +1479,65 @@
+@@ -1378,10 +1481,65 @@
  /* a click on the toast is the program's to act on; its X only closes it */
  void CBalloonQueue::OnToastClicked(BOOL bClose)
  {
@@ -259,7 +261,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  }
  
  int CBalloonQueue::IndexOf(InternalIconData * pdata)
-@@ -1405,14 +1561,35 @@
+@@ -1405,14 +1563,35 @@
      TRACE("ShowBalloonTip called for flags=%x text=%ws; title=%ws\n", info.uIcon, info.szInfo, info.szInfoTitle);
  
      // TODO: NIF_REALTIME, NIIF_NOSOUND, other Vista+ flags
@@ -298,7 +300,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
      SetTimer(duration * 1000);
  
      m_toolbar->SendNotifyCallback(m_current, NIN_BALLOONSHOW);
-@@ -2395,6 +2572,17 @@
+@@ -2395,6 +2574,17 @@
      {
          FIXME("Taskbar Load In Proc\n");
      }
