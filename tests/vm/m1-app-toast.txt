@@ -1,0 +1,29 @@
+# A program's toast through Windows.UI.Notifications (tests/tools/toasttest.c,
+# on the disk tools/wsl/make-tools-disk.sh makes): run with
+# --disk out/test-local/tools.img. The toast comes in the corner with the
+# program's icon and name in its title bar; a click on it activates the
+# program, which says "Activated: arctic-test"; the template's toast times out.
+sleep 8
+key meta_l-r
+sleep 3
+type D:\toasttest.exe
+key ret
+sleep 6
+shot a1-toast
+move 1000 690
+sleep 1
+shot a2-hover
+click
+sleep 3
+shot a3-activated
+key ret
+sleep 2
+key meta_l-r
+sleep 3
+type D:\toasttest.exe template
+key ret
+sleep 5
+shot a4-template
+sleep 9
+shot a5-timedout
+key ret
