@@ -48,7 +48,7 @@ diff --git a/base/shell/explorer/resource.h b/base/shell/explorer/resource.h
 diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 --- a/base/shell/explorer/syspager.cpp
 +++ b/base/shell/explorer/syspager.cpp
-@@ -23,6 +23,570 @@
+@@ -23,6 +23,746 @@
  
  #define BALLOON_MAXWIDTH 340
  
@@ -70,13 +70,21 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 + * - Decayed (its time is up) and Dismissed (its X): 400 to the right in 1 s,
 + *   spline 0.1,0.9,0.2,1;
 + * - Activated (clicked): opacity to 0 on spline 0.9,0.1,1,0.2 and scale to
-+ *   0.8 on spline 0.1,0.9,0.2,1, in 0.3 s. */
++ *   0.8 on spline 0.1,0.9,0.2,1, in 0.3 s.
++ * A program's own toast (Windows.UI.Notifications) is its ToastView instead:
++ * a title bar first, the program's icon 16x16 and its name 12 white 8 to
++ * the right, the buttons 20x20 side by side at its right end, 8 below it;
++ * then the app logo override 60x60 (16 to its right) beside the title, the
++ * text and the attribution 12 at #99FFFFFF 3 below them, 4 above and 5
++ * below. */
 +#define TOAST_WIDTH         364
 +#define TOAST_MARGIN        16
 +#define TOAST_PADDING       16
 +#define TOAST_LOGO          16
 +#define TOAST_BUTTON_WIDTH  36
 +#define TOAST_BUTTON_HEIGHT 20
++#define TOAST_HEADER_BUTTON 20   /* HorizontalGlyphButtonStyle */
++#define TOAST_IMAGE         60
 +#define TOAST_TIMER         1
 +#define TOAST_FRAME_MS      15
 +#define TOAST_BLUR          30   /* the acrylic's blur */
@@ -102,6 +110,12 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +    WCHAR m_szTitle[64];
 +    WCHAR m_szText[256];
 +    WCHAR m_szApp[64];
++    WCHAR m_szDefaultApp[64];
++    BOOL m_bApp;               /* a program's toast, in ToastView's layout */
++    WCHAR m_szAttribution[64];
++    WCHAR m_szImage[MAX_PATH];
++    BOOL m_bImageCircle;
++    int m_headerHeight, m_attributionHeight, m_imageTop;
 +    HDC m_hdcContent;
 +    HBITMAP m_hbmContent;
 +    DWORD *m_pContent;
@@ -321,8 +335,108 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        DeleteObject(hPen);
 +    }
 +
++    /* the app logo override, an image file, through GDI+'s flat API:
++     * UniformToFill in 60x60, in a circle for hint-crop="circle" */
++    void PaintImage(int x, int y)
++    {
++        typedef struct { UINT32 version; void *callback; BOOL noThread; BOOL noCodecs; } STARTUP;
++        typedef int (WINAPI *STARTUP_FN)(ULONG_PTR *, const STARTUP *, void *);
++        typedef int (WINAPI *LOAD_FN)(const WCHAR *, void **);
++        typedef int (WINAPI *SIZE_FN)(void *, UINT *);
++        typedef int (WINAPI *FROMHDC_FN)(HDC, void **);
++        typedef int (WINAPI *MODE_FN)(void *, int);
++        typedef int (WINAPI *DRAW_FN)(void *, void *, int, int, int, int, int, int, int, int, int, void *, void *, void *);
++        typedef int (WINAPI *PATH_FN)(int, void **);
++        typedef int (WINAPI *ELLIPSE_FN)(void *, int, int, int, int);
++        typedef int (WINAPI *CLIP_FN)(void *, void *, int);
++        typedef int (WINAPI *FREE_FN)(void *);
++        HMODULE hGdiplus = LoadLibraryW(L"gdiplus.dll");
++        STARTUP startup = { 1, NULL, FALSE, FALSE };
++        ULONG_PTR token = 0;
++        void *image = NULL, *graphics = NULL, *path = NULL;
++        UINT cx = 0, cy = 0;
++
++        if (!hGdiplus)
++            return;
++#define GP(type, name) type name = (type)GetProcAddress(hGdiplus, #name)
++        GP(STARTUP_FN, GdiplusStartup);
++        GP(LOAD_FN, GdipLoadImageFromFile);
++        GP(SIZE_FN, GdipGetImageWidth);
++        GP(SIZE_FN, GdipGetImageHeight);
++        GP(FROMHDC_FN, GdipCreateFromHDC);
++        GP(MODE_FN, GdipSetInterpolationMode);
++        GP(DRAW_FN, GdipDrawImageRectRectI);
++        GP(PATH_FN, GdipCreatePath);
++        GP(ELLIPSE_FN, GdipAddPathEllipseI);
++        GP(CLIP_FN, GdipSetClipPath);
++        GP(FREE_FN, GdipDeletePath);
++        GP(FREE_FN, GdipDeleteGraphics);
++        GP(FREE_FN, GdipDisposeImage);
++#undef GP
++        if (GdiplusStartup && GdipLoadImageFromFile && GdipDrawImageRectRectI && GdipCreateFromHDC &&
++            !GdiplusStartup(&token, &startup, NULL))
++        {
++            if (!GdipLoadImageFromFile(m_szImage, &image) && !GdipCreateFromHDC(m_hdcContent, &graphics))
++            {
++                GdipGetImageWidth(image, &cx);
++                GdipGetImageHeight(image, &cy);
++                /* the middle square of it */
++                int side = cx < cy ? cx : cy, sx = (cx - side) / 2, sy = (cy - side) / 2;
++                GdipSetInterpolationMode(graphics, 7 /* HighQualityBicubic */);
++                if (m_bImageCircle && GdipCreatePath && !GdipCreatePath(0, &path))
++                {
++                    GdipAddPathEllipseI(path, x, y, TOAST_IMAGE, TOAST_IMAGE);
++                    GdipSetClipPath(graphics, path, 0 /* CombineModeReplace */);
++                }
++                if (side)
++                    GdipDrawImageRectRectI(graphics, image, x, y, TOAST_IMAGE, TOAST_IMAGE, sx, sy, side, side,
++                                           2 /* UnitPixel */, NULL, NULL, NULL);
++            }
++            if (path)
++                GdipDeletePath(path);
++            if (graphics)
++                GdipDeleteGraphics(graphics);
++            if (image)
++                GdipDisposeImage(image);
++        }
++        FreeLibrary(hGdiplus);
++    }
++
++    void RenderApp()
++    {
++        int textX = TOAST_PADDING + (m_szImage[0] ? TOAST_IMAGE + 16 : 0);
++        int textWidth = m_cx - TOAST_PADDING - textX;
++        int senderX = TOAST_PADDING + TOAST_LOGO + 8;
++        int y = TOAST_PADDING + m_headerHeight + 8;
++
++        PaintBackdrop();
++        if (m_hLogo)
++            DrawIconEx(m_hdcContent, TOAST_PADDING, TOAST_PADDING + (m_headerHeight - TOAST_LOGO) / 2, m_hLogo,
++                       TOAST_LOGO, TOAST_LOGO, 0, NULL, DI_NORMAL);
++        PaintText(m_hfCaption, m_szApp, senderX, TOAST_PADDING + 2,
++                  (m_hover ? m_rcSettings.left : m_cx - TOAST_PADDING) - senderX, m_captionHeight, 255);
++        if (m_szImage[0])
++            PaintImage(TOAST_PADDING, m_imageTop);
++        y += 4;
++        PaintText(m_hfTitle, m_szTitle, textX, y, textWidth, m_titleHeight, 255);
++        y += m_titleHeight;
++        PaintText(m_hfText, m_szText, textX, y, textWidth, m_textHeight, 153);
++        y += m_textHeight + 3;
++        PaintText(m_hfCaption, m_szAttribution, textX, y, textWidth, m_attributionHeight, 153);
++        if (m_hover)
++            PaintButtons();
++        GdiFlush();
++        for (int i = 0; i < m_cx * m_cy; i++)
++            m_pContent[i] |= 0xff000000;
++    }
++
 +    void Render()
 +    {
++        if (m_bApp)
++        {
++            RenderApp();
++            return;
++        }
 +        int textX = TOAST_PADDING + (m_hLogo ? TOAST_LOGO + 16 : 0);
 +        int textWidth = m_cx - TOAST_PADDING - (TOAST_BUTTON_WIDTH + 2) - textX;
 +        int y = TOAST_PADDING + 2 * TOAST_BUTTON_HEIGHT + 4;
@@ -399,9 +513,11 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        m_hwndNotify(NULL), m_hLogo(NULL), m_hfTitle(NULL), m_hfText(NULL), m_hfCaption(NULL),
 +        m_hdcContent(NULL), m_hbmContent(NULL), m_pContent(NULL), m_hdcFrame(NULL), m_hbmFrame(NULL),
 +        m_x(0), m_y(0), m_cx(0), m_cy(0), m_titleHeight(0), m_textHeight(0), m_captionHeight(0),
-+        m_animation(TOAST_STILL), m_start(0), m_hover(0)
++        m_animation(TOAST_STILL), m_start(0), m_hover(0),
++        m_bApp(FALSE), m_bImageCircle(FALSE), m_headerHeight(0), m_attributionHeight(0), m_imageTop(0)
 +    {
-+        m_szTitle[0] = m_szText[0] = m_szApp[0] = UNICODE_NULL;
++        m_szTitle[0] = m_szText[0] = m_szApp[0] = m_szDefaultApp[0] = UNICODE_NULL;
++        m_szAttribution[0] = m_szImage[0] = UNICODE_NULL;
 +        SetRectEmpty(&m_rcClose);
 +        SetRectEmpty(&m_rcSettings);
 +    }
@@ -424,7 +540,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        m_hfText = CreateFontIndirectW(&lf);
 +        lf.lfHeight = -12;
 +        m_hfCaption = CreateFontIndirectW(&lf);
-+        LoadStringW(GetModuleHandleW(NULL), IDS_TOAST_APP, m_szApp, _countof(m_szApp));
++        LoadStringW(GetModuleHandleW(NULL), IDS_TOAST_APP, m_szDefaultApp, _countof(m_szDefaultApp));
 +        return Create(NULL) != NULL;
 +    }
 +
@@ -447,17 +563,18 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        return m_hover != 0;
 +    }
 +
-+    void Show(LPCWSTR pszTitle, LPCWSTR pszText, HICON hLogo)
++    /* a balloon; its program's name, or the shell's own when it is the shell's */
++    void Show(LPCWSTR pszTitle, LPCWSTR pszText, HICON hLogo, LPCWSTR pszApp = NULL)
 +    {
-+        RECT rcWork, rcTray;
-+        HWND hwndTray;
 +        HDC hdcScreen;
-+        int textX, textWidth, line, bottom;
++        int textX, textWidth, line;
 +
 +        StringCchCopyW(m_szTitle, _countof(m_szTitle), pszTitle);
 +        StringCchCopyW(m_szText, _countof(m_szText), pszText);
++        StringCchCopyW(m_szApp, _countof(m_szApp), pszApp && pszApp[0] ? pszApp : m_szDefaultApp);
 +        m_hLogo = hLogo;
 +        m_hover = 0;
++        m_bApp = FALSE;
 +
 +        /* the title in at most 2 lines, the text in 4 */
 +        m_cx = TOAST_WIDTH;
@@ -467,10 +584,72 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        m_titleHeight = LinesHeight(hdcScreen, m_hfTitle, m_szTitle, textWidth, 2, &line);
 +        m_textHeight = LinesHeight(hdcScreen, m_hfText, m_szText, textWidth, 4, &line);
 +        m_captionHeight = LinesHeight(hdcScreen, m_hfCaption, m_szApp, textWidth, 1, &line);
++        ::ReleaseDC(NULL, hdcScreen);
 +        m_cy = TOAST_PADDING + 2 * TOAST_BUTTON_HEIGHT + 4 + m_titleHeight + m_textHeight +
 +               (m_captionHeight ? 3 + m_captionHeight : 0) + 5 + TOAST_PADDING;
 +
-+        /* in the corner above the taskbar */
++        SetRect(&m_rcClose, m_cx - TOAST_PADDING - 2 - TOAST_BUTTON_WIDTH, TOAST_PADDING,
++                m_cx - TOAST_PADDING - 2, TOAST_PADDING + TOAST_BUTTON_HEIGHT);
++        m_rcSettings = m_rcClose;
++        OffsetRect(&m_rcSettings, 0, TOAST_BUTTON_HEIGHT);
++        Start();
++    }
++
++    /* a program's toast */
++    void ShowApp(LPCWSTR pszApp, HICON hLogo, LPCWSTR pszTitle, LPCWSTR pszText, LPCWSTR pszAttribution,
++                 LPCWSTR pszImage, BOOL bImageCircle)
++    {
++        HDC hdcScreen;
++        int textX, textWidth, line, content, row;
++
++        StringCchCopyW(m_szApp, _countof(m_szApp), pszApp);
++        StringCchCopyW(m_szTitle, _countof(m_szTitle), pszTitle);
++        StringCchCopyW(m_szText, _countof(m_szText), pszText);
++        StringCchCopyW(m_szAttribution, _countof(m_szAttribution), pszAttribution);
++        StringCchCopyW(m_szImage, _countof(m_szImage), pszImage);
++        if (m_szImage[0] && GetFileAttributesW(m_szImage) == INVALID_FILE_ATTRIBUTES)
++            m_szImage[0] = UNICODE_NULL;
++        m_bImageCircle = bImageCircle;
++        m_hLogo = hLogo;
++        m_hover = 0;
++        m_bApp = TRUE;
++
++        m_cx = TOAST_WIDTH;
++        textX = TOAST_PADDING + (m_szImage[0] ? TOAST_IMAGE + 16 : 0);
++        textWidth = m_cx - TOAST_PADDING - textX;
++        hdcScreen = ::GetDC(NULL);
++        m_captionHeight = LinesHeight(hdcScreen, m_hfCaption, L" ", textWidth, 1, &line);
++        m_titleHeight = LinesHeight(hdcScreen, m_hfTitle, m_szTitle, textWidth, 2, &line);
++        m_textHeight = LinesHeight(hdcScreen, m_hfText, m_szText, textWidth, 4, &line);
++        m_attributionHeight = LinesHeight(hdcScreen, m_hfCaption, m_szAttribution, textWidth, 1, &line);
++        ::ReleaseDC(NULL, hdcScreen);
++
++        /* the title bar: the name 2 below its top (PaddedCaption), 4 above its bottom */
++        m_headerHeight = 2 + m_captionHeight + 4;
++        if (m_headerHeight < TOAST_LOGO)
++            m_headerHeight = TOAST_LOGO;
++        content = 4 + m_titleHeight + m_textHeight + (m_attributionHeight ? 3 + m_attributionHeight : 0) + 5;
++        row = m_szImage[0] && content < TOAST_IMAGE ? TOAST_IMAGE : content;
++        /* the image centred in its row, which is at most 76 high */
++        m_imageTop = TOAST_PADDING + m_headerHeight + 8 + ((row < 76 ? row : 76) - TOAST_IMAGE) / 2;
++        m_cy = TOAST_PADDING + m_headerHeight + 8 + row + TOAST_PADDING;
++
++        SetRect(&m_rcClose, m_cx - TOAST_PADDING - 2 - TOAST_HEADER_BUTTON, TOAST_PADDING,
++                m_cx - TOAST_PADDING - 2, TOAST_PADDING + TOAST_HEADER_BUTTON);
++        m_rcSettings = m_rcClose;
++        OffsetRect(&m_rcSettings, -(TOAST_HEADER_BUTTON + 2), 0);
++        Start();
++    }
++
++private:
++    /* in the corner above the taskbar, appearing */
++    void Start()
++    {
++        RECT rcWork, rcTray;
++        HWND hwndTray;
++        HDC hdcScreen;
++        int bottom;
++
 +        SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
 +        bottom = rcWork.bottom;
 +        hwndTray = FindWindowW(L"Shell_TrayWnd", NULL);
@@ -479,11 +658,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        m_x = rcWork.right - TOAST_MARGIN - m_cx;
 +        m_y = bottom - TOAST_MARGIN - m_cy;
 +
-+        SetRect(&m_rcClose, m_cx - TOAST_PADDING - 2 - TOAST_BUTTON_WIDTH, TOAST_PADDING,
-+                m_cx - TOAST_PADDING - 2, TOAST_PADDING + TOAST_BUTTON_HEIGHT);
-+        m_rcSettings = m_rcClose;
-+        OffsetRect(&m_rcSettings, 0, TOAST_BUTTON_HEIGHT);
-+
++        hdcScreen = ::GetDC(NULL);
 +        FreeBitmaps();
 +        m_hdcContent = CreateCompatibleDC(hdcScreen);
 +        m_hbmContent = CreateBits(hdcScreen, m_cx, m_cy, &m_pContent);
@@ -507,6 +682,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        SetTimer(TOAST_TIMER, TOAST_FRAME_MS, NULL);
 +    }
 +
++public:
 +    /* it goes the way Windows 10 lets it: slid out when its time is up or its
 +     * X is clicked, faded and shrunk when it is clicked */
 +    void Hide(BOOL bClicked)
@@ -619,7 +795,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  struct InternalIconData : NOTIFYICONDATA
  {
      void SaveVersion(UINT Version) // uVersion is unioned with uTimeout but cbSize is free so we store it there
-@@ -103,6 +667,7 @@
+@@ -103,6 +843,7 @@
          WCHAR szInfo[256];
          WCHAR szInfoTitle[64];
          WPARAM uIcon;
@@ -627,7 +803,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
          UINT uTimeout;
  
          Info(InternalIconData * source)
-@@ -113,6 +678,21 @@
+@@ -113,6 +854,21 @@
              uIcon = source->dwInfoFlags & NIIF_ICON_MASK;
              if (source->dwInfoFlags == NIIF_USER)
                  uIcon = reinterpret_cast<WPARAM>(source->hIcon);
@@ -649,7 +825,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
              uTimeout = source->uTimeout;
          }
      };
-@@ -128,6 +708,8 @@
+@@ -128,6 +884,8 @@
      InternalIconData * m_current;
  
      int m_timer;
@@ -658,7 +834,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  
  public:
      CBalloonQueue();
-@@ -139,6 +721,7 @@
+@@ -139,6 +897,7 @@
      void UpdateInfo(InternalIconData * notifyItem);
      void RemoveInfo(InternalIconData * notifyItem);
      void CloseCurrent();
@@ -666,7 +842,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  
  private:
  
-@@ -256,8 +839,15 @@
+@@ -256,8 +1015,15 @@
  
      DECLARE_WND_CLASS_EX(szSysPagerWndClass, CS_DBLCLKS, COLOR_3DFACE)
  
@@ -682,7 +858,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
          MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
          MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBackground)
          MESSAGE_HANDLER(WM_COMMAND, OnCommand)
-@@ -521,6 +1111,7 @@
+@@ -521,6 +1287,7 @@
      m_hwndParent = hwndParent;
      m_toolbar = toolbar;
      m_tooltips = balloons;
@@ -690,7 +866,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  }
  
  void CBalloonQueue::Deinit()
-@@ -529,6 +1120,7 @@
+@@ -529,6 +1296,7 @@
      {
          ::KillTimer(m_hwndParent, m_timer);
      }
@@ -698,7 +874,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  }
  
  bool CBalloonQueue::OnTimer(int timerId)
-@@ -541,6 +1133,12 @@
+@@ -541,6 +1309,12 @@
  
      if (m_current)
      {
@@ -711,7 +887,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
          Close(m_current, NIN_BALLOONTIMEOUT);
      }
      else
-@@ -601,6 +1199,15 @@
+@@ -601,6 +1375,15 @@
      }
  }
  
@@ -727,7 +903,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  int CBalloonQueue::IndexOf(InternalIconData * pdata)
  {
      int count = m_toolbar->GetButtonCount();
-@@ -624,23 +1231,13 @@
+@@ -624,23 +1407,13 @@
      // TODO: NIF_REALTIME, NIIF_NOSOUND, other Vista+ flags
  
      m_current = info.pSource;
@@ -758,7 +934,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  
      m_toolbar->SendNotifyCallback(m_current, NIN_BALLOONSHOW);
  }
-@@ -653,8 +1250,8 @@
+@@ -653,8 +1426,8 @@
      {
          m_toolbar->SendNotifyCallback(m_current, uReason);
  

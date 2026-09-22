@@ -1,0 +1,8 @@
+MODULE  = wpnapps.dll
+IMPORTS = combase ole32 oleaut32 advapi32 user32 shlwapi version
+
+SOURCES = \
+	classes.idl \
+	main.c \
+	toast.c \
+	xmldom.c

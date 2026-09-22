@@ -1,0 +1,330 @@
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -51,6 +51,7 @@
+ 
+ #include "tmschema.h"
+ #include "resource.h"
++#include "arctic_toast.h"
+ 
+ #include <wine/debug.h>
+ 
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -827,6 +827,56 @@
+ 
+ class CNotifyToolbar;
+ 
++#ifndef PROCESS_QUERY_LIMITED_INFORMATION
++#define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
++#endif
++
++/* the name a toast gives its program, as Windows 10 does: its file's
++ * description; none for the shell's own balloons, which carry the shell's */
++static void ToastProgramName(HWND hwnd, LPWSTR pszName, UINT cchName)
++{
++    typedef BOOL (WINAPI *QUERY_FN)(HANDLE, DWORD, LPWSTR, PDWORD);
++    QUERY_FN pQuery = (QUERY_FN)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "QueryFullProcessImageNameW");
++    WCHAR szPath[MAX_PATH], szKey[64];
++    DWORD pid = 0, cch = _countof(szPath), dwHandle, cb;
++    HANDLE hProcess;
++    BOOL ok = FALSE;
++
++    pszName[0] = UNICODE_NULL;
++    if (!pQuery || !GetWindowThreadProcessId(hwnd, &pid) || pid == GetCurrentProcessId())
++        return;
++    if ((hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)))
++    {
++        ok = pQuery(hProcess, 0, szPath, &cch);
++        CloseHandle(hProcess);
++    }
++    if (!ok)
++        return;
++    if ((cb = GetFileVersionInfoSizeW(szPath, &dwHandle)))
++    {
++        LPVOID pInfo = HeapAlloc(GetProcessHeap(), 0, cb);
++        WORD *pTranslation;
++        LPWSTR pszDescription;
++        UINT cbValue;
++
++        if (pInfo && GetFileVersionInfoW(szPath, 0, cb, pInfo) &&
++            VerQueryValueW(pInfo, L"\\VarFileInfo\\Translation", (LPVOID *)&pTranslation, &cbValue) && cbValue >= 4)
++        {
++            StringCchPrintfW(szKey, _countof(szKey), L"\\StringFileInfo\\%04x%04x\\FileDescription",
++                             pTranslation[0], pTranslation[1]);
++            if (VerQueryValueW(pInfo, szKey, (LPVOID *)&pszDescription, &cbValue) && cbValue)
++                StringCchCopyW(pszName, cchName, pszDescription);
++        }
++        if (pInfo)
++            HeapFree(GetProcessHeap(), 0, pInfo);
++    }
++    if (!pszName[0])
++    {
++        StringCchCopyW(pszName, cchName, PathFindFileNameW(szPath));
++        PathRemoveExtensionW(pszName);
++    }
++}
++
+ class CBalloonQueue
+ {
+ public:
+@@ -845,6 +895,33 @@
+         WPARAM uIcon;
+         HICON hLogo;
+         UINT uTimeout;
++        WCHAR szApp[64];
++        /* a program's toast: where what becomes of it goes, and what it shows */
++        HWND hwndReply;
++        DWORD dwToastId;
++        DWORD dwDuration;
++        WCHAR szIcon[MAX_PATH];
++        WCHAR szAttribution[64];
++        WCHAR szImage[MAX_PATH];
++        BOOL bImageCircle;
++
++        Info(const arctic_toast *toast)
++        {
++            pSource = NULL;
++            StringCchCopyNW(szInfo, _countof(szInfo), toast->text, _countof(toast->text));
++            StringCchCopyNW(szInfoTitle, _countof(szInfoTitle), toast->title, _countof(toast->title));
++            uIcon = 0;
++            hLogo = NULL;
++            uTimeout = 0;
++            StringCchCopyNW(szApp, _countof(szApp), toast->app, _countof(toast->app));
++            hwndReply = (HWND)ULongToHandle(toast->reply);
++            dwToastId = toast->id;
++            dwDuration = toast->duration;
++            StringCchCopyNW(szIcon, _countof(szIcon), toast->icon, _countof(toast->icon));
++            StringCchCopyNW(szAttribution, _countof(szAttribution), toast->attribution, _countof(toast->attribution));
++            StringCchCopyNW(szImage, _countof(szImage), toast->image, _countof(toast->image));
++            bImageCircle = toast->image_circle;
++        }
+ 
+         Info(InternalIconData * source)
+         {
+@@ -870,6 +947,11 @@
+                     break;
+             }
+             uTimeout = source->uTimeout;
++            ToastProgramName(source->hWnd, szApp, _countof(szApp));
++            hwndReply = NULL;
++            dwToastId = dwDuration = 0;
++            szIcon[0] = szAttribution[0] = szImage[0] = UNICODE_NULL;
++            bImageCircle = FALSE;
+         }
+     };
+ 
+@@ -886,6 +968,12 @@
+     int m_timer;
+ 
+     CToastWnd m_toast;
++
++    /* the program's toast shown now, and where what becomes of it goes */
++    BOOL m_bAppToast;
++    HWND m_hwndAppReply;
++    DWORD m_dwAppToastId;
++    HICON m_hAppIcon;
+ 
+ public:
+     CBalloonQueue();
+@@ -898,8 +986,11 @@
+     void RemoveInfo(InternalIconData * notifyItem);
+     void CloseCurrent();
+     void OnToastClicked(BOOL bClose);
++    void ShowAppToast(const arctic_toast *toast);
++    void HideAppToast(HWND hwndReply, DWORD dwId);
+ 
+ private:
++    void CloseAppToast(UINT uReason);
+ 
+     int IndexOf(InternalIconData * pdata);
+     void SetTimer(int length);
+@@ -1278,7 +1369,11 @@
+     m_tooltips(NULL),
+     m_toolbar(NULL),
+     m_current(NULL),
+-    m_timer(-1)
++    m_timer(-1),
++    m_bAppToast(FALSE),
++    m_hwndAppReply(NULL),
++    m_dwAppToastId(0),
++    m_hAppIcon(NULL)
+ {
+ }
+ 
+@@ -1297,6 +1392,9 @@
+         ::KillTimer(m_hwndParent, m_timer);
+     }
+     m_toast.Deinit();
++    if (m_hAppIcon)
++        DestroyIcon(m_hAppIcon);
++    m_hAppIcon = NULL;
+ }
+ 
+ bool CBalloonQueue::OnTimer(int timerId)
+@@ -1307,7 +1405,7 @@
+     ::KillTimer(m_hwndParent, m_timer);
+     m_timer = -1;
+ 
+-    if (m_current)
++    if (m_current || m_bAppToast)
+     {
+         /* not while the pointer is over it */
+         if (m_toast.IsHovered())
+@@ -1315,7 +1413,10 @@
+             SetTimer(1000);
+             return true;
+         }
+-        Close(m_current, NIN_BALLOONTIMEOUT);
++        if (m_bAppToast)
++            CloseAppToast(ARCTIC_TOAST_TIMED_OUT);
++        else
++            Close(m_current, NIN_BALLOONTIMEOUT);
+     }
+     else
+     {
+@@ -1336,7 +1437,7 @@
+         Info info(notifyItem);
+ 
+         // If m_current == notifyItem, we want to replace the previous balloon even if there is a queue.
+-        if (m_current != notifyItem && (m_current != NULL || !m_queue.IsEmpty()))
++        if (m_current != notifyItem && (m_current != NULL || m_bAppToast || !m_queue.IsEmpty()))
+         {
+             m_queue.AddTail(info);
+         }
+@@ -1378,10 +1479,65 @@
+ /* a click on the toast is the program's to act on; its X only closes it */
+ void CBalloonQueue::OnToastClicked(BOOL bClose)
+ {
++    if (m_bAppToast)
++    {
++        CloseAppToast(bClose ? ARCTIC_TOAST_USER_CANCELED : ARCTIC_TOAST_ACTIVATED);
++        return;
++    }
+     if (m_current != NULL)
+     {
+         Close(m_current, bClose ? NIN_BALLOONTIMEOUT : NIN_BALLOONUSERCLICK);
+     }
++}
++
++/* a program's toast, in turn with the balloons */
++void CBalloonQueue::ShowAppToast(const arctic_toast *toast)
++{
++    Info info(toast);
++
++    if (m_current != NULL || m_bAppToast || !m_queue.IsEmpty())
++        m_queue.AddTail(info);
++    else
++        Show(info);
++}
++
++/* the program took it back (ToastNotifier.Hide) */
++void CBalloonQueue::HideAppToast(HWND hwndReply, DWORD dwId)
++{
++    if (m_bAppToast && m_hwndAppReply == hwndReply && m_dwAppToastId == dwId)
++    {
++        CloseAppToast(ARCTIC_TOAST_APPLICATION_HIDDEN);
++        return;
++    }
++    for (POSITION next = m_queue.GetHeadPosition(); next;)
++    {
++        POSITION current = next;
++        Info& info = m_queue.GetNext(next);
++        if (info.hwndReply == hwndReply && info.dwToastId == dwId)
++        {
++            m_queue.RemoveAt(current);
++            ::PostMessageW(hwndReply, RegisterWindowMessageW(ARCTIC_TOAST_EVENT), dwId, ARCTIC_TOAST_APPLICATION_HIDDEN);
++            break;
++        }
++    }
++}
++
++void CBalloonQueue::CloseAppToast(UINT uReason)
++{
++    DWORD pid = 0;
++
++    if (!m_bAppToast)
++        return;
++    /* the program a click activates may come to the front */
++    if (uReason == ARCTIC_TOAST_ACTIVATED && GetWindowThreadProcessId(m_hwndAppReply, &pid))
++        AllowSetForegroundWindow(pid);
++    ::PostMessageW(m_hwndAppReply, RegisterWindowMessageW(ARCTIC_TOAST_EVENT), m_dwAppToastId, uReason);
++    m_bAppToast = FALSE;
++    m_toast.Hide(uReason == ARCTIC_TOAST_ACTIVATED);
++    if (m_hAppIcon)
++        DestroyIcon(m_hAppIcon);
++    m_hAppIcon = NULL;
++    SetTimer(CooldownBetweenBalloons);
+ }
+ 
+ int CBalloonQueue::IndexOf(InternalIconData * pdata)
+@@ -1405,14 +1561,35 @@
+     TRACE("ShowBalloonTip called for flags=%x text=%ws; title=%ws\n", info.uIcon, info.szInfo, info.szInfoTitle);
+ 
+     // TODO: NIF_REALTIME, NIIF_NOSOUND, other Vista+ flags
+-
+-    m_current = info.pSource;
+-    m_toast.Show(info.szInfoTitle, info.szInfo, info.hLogo);
+ 
+     /* as long as Windows 10 shows a notification, whatever the balloon asks:
+      * SPI_GETMESSAGEDURATION, 5 seconds */
+     ULONG duration = 5;
+     SystemParametersInfoW(SPI_GETMESSAGEDURATION, 0, &duration, 0);
++
++    if (info.hwndReply)
++    {
++        m_current = NULL;
++        m_bAppToast = TRUE;
++        m_hwndAppReply = info.hwndReply;
++        m_dwAppToastId = info.dwToastId;
++        m_hAppIcon = NULL;
++        if (info.szIcon[0])
++            ExtractIconExW(info.szIcon, 0, NULL, &m_hAppIcon, 1);
++        m_toast.ShowApp(info.szApp, m_hAppIcon, info.szInfoTitle, info.szInfo, info.szAttribution,
++                        info.szImage, info.bImageCircle);
++        if (info.dwDuration != ARCTIC_TOAST_FOREVER)
++            SetTimer(info.dwDuration ? info.dwDuration : duration * 1000);
++        else if (m_timer >= 0)
++        {
++            ::KillTimer(m_hwndParent, m_timer);
++            m_timer = -1;
++        }
++        return;
++    }
++
++    m_current = info.pSource;
++    m_toast.Show(info.szInfoTitle, info.szInfo, info.hLogo, info.szApp);
+     SetTimer(duration * 1000);
+ 
+     m_toolbar->SendNotifyCallback(m_current, NIN_BALLOONSHOW);
+@@ -2395,6 +2572,17 @@
+     {
+         FIXME("Taskbar Load In Proc\n");
+     }
++    else if (cpData->dwData == ARCTIC_TOAST_SHOW && cpData->cbData >= sizeof(arctic_toast))
++    {
++        m_BalloonQueue.ShowAppToast((const arctic_toast *)cpData->lpData);
++        return TRUE;
++    }
++    else if (cpData->dwData == ARCTIC_TOAST_HIDE && cpData->cbData >= sizeof(arctic_toast))
++    {
++        const arctic_toast *toast = (const arctic_toast *)cpData->lpData;
++        m_BalloonQueue.HideAppToast((HWND)ULongToHandle(toast->reply), toast->id);
++        return TRUE;
++    }
+ 
+     return FALSE;
+ }
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -2559,6 +2559,8 @@
+                 return OnAppBarMessage(pCopyData);
+             case TABDMC_NOTIFY:
+             case TABDMC_LOADINPROC:
++            case ARCTIC_TOAST_SHOW:
++            case ARCTIC_TOAST_HIDE:
+                 return ::SendMessageW(m_TrayNotify, uMsg, wParam, lParam);
+         }
+         return FALSE;

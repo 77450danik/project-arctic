@@ -1,0 +1,29 @@
+/*
+ * Runtime classes of wpnapps.dll
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma makedep register
+#pragma winrt ns_prefix
+
+import "inspectable.idl";
+import "asyncinfo.idl";
+import "eventtoken.idl";
+import "windowscontracts.idl";
+import "windows.foundation.idl";
+import "windows.storage.idl";
+import "windows.data.xml.dom.idl";
+import "windows.ui.notifications.idl";
+
+namespace Windows.Data.Xml.Dom {
+    runtimeclass XmlDocument;
+}
+
+namespace Windows.UI.Notifications {
+    runtimeclass ToastNotificationManager;
+    runtimeclass ToastNotification;
+}
