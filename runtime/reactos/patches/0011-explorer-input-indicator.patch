@@ -56,7 +56,7 @@ diff --git a/base/shell/explorer/resource.h b/base/shell/explorer/resource.h
 diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 --- a/base/shell/explorer/trayntfy.cpp
 +++ b/base/shell/explorer/trayntfy.cpp
-@@ -32,6 +32,530 @@
+@@ -32,6 +32,532 @@
   * TrayNotifyWnd
   */
  
@@ -442,6 +442,8 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 +    }
 +
 +public:
++    DECLARE_WND_CLASS_EX(L"ArcticInputIndicator", CS_HREDRAW | CS_VREDRAW, COLOR_3DFACE)
++
 +    CInputIndicator() : m_current(NULL), m_hfAbbr(NULL), m_hwndTip(NULL), m_bHover(FALSE)
 +    {
 +    }
@@ -587,7 +589,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
  class CTrayNotifyWnd :
      public CComCoClass<CTrayNotifyWnd>,
      public CComObjectRootEx<CComMultiThreadModelNoCS>,
-@@ -46,6 +570,9 @@
+@@ -46,6 +572,9 @@
      HWND m_hwndShowDesktop;
      HWND m_hwndPager;
  
@@ -597,7 +599,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
      HTHEME TrayTheme;
      SIZE trayClockMinSize;
      SIZE trayShowDesktopSize;
-@@ -57,6 +584,7 @@
+@@ -57,6 +586,7 @@
      CTrayNotifyWnd() :
          m_hwndClock(NULL),
          m_hwndPager(NULL),
@@ -605,7 +607,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
          TrayTheme(NULL),
          IsHorizontal(FALSE)
      {
-@@ -127,6 +655,10 @@
+@@ -127,6 +657,10 @@
          if (FAILED_UNEXPECTEDLY(hr))
              return FALSE;
  
@@ -616,7 +618,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
          /* Create the 'Show Desktop' button */
          m_ShowDesktopButton.DoCreate(m_hWnd);
          m_hwndShowDesktop = m_ShowDesktopButton.m_hWnd;
-@@ -201,6 +733,9 @@
+@@ -201,6 +735,9 @@
              if (!bHideClock)
                  pSize->cx += TRAY_NOTIFY_WND_SPACING_X + trayClockMinSize.cx;
  
@@ -626,7 +628,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
              if (g_TaskbarSettings.bShowDesktopButton)
                  pSize->cx += showDesktopButtonExtent;
  
-@@ -213,6 +748,9 @@
+@@ -213,6 +750,9 @@
  
              if (!bHideClock)
                  pSize->cy += TRAY_NOTIFY_WND_SPACING_Y + trayClockMinSize.cy;
@@ -636,7 +638,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
  
              if (g_TaskbarSettings.bShowDesktopButton)
                  pSize->cy += showDesktopButtonExtent;
-@@ -331,6 +869,22 @@
+@@ -331,6 +871,22 @@
                  clockSize.cx,
                  clockSize.cy,
                  swpFlags);

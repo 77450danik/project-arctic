@@ -15,6 +15,7 @@
 #define IDS_RESTART        3
 #define IDS_SHUT_DOWN      4
 #define IDS_CANCEL         5
+#define IDS_INPUT_KEYBOARD 6
 
 /* exit codes: how the session ended, for wininit.exe and arctic-init */
 #define WINLOGON_EXIT_RESTART  3
