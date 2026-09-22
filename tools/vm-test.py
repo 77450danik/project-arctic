@@ -48,7 +48,8 @@ for path in (serial, shot):
 
 cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
        "-vga", "std", "-display", "none" if args.headless else "gtk",
-       "-name", "Arctic", "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet",
+       "-name", "Arctic", "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet", "-device", "usb-kbd",  # a USB keyboard, as real PCs have: the kernel repeats its keys
+      
        "-serial", "file:" + serial, "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]
 if args.usb:
     if args.iso.endswith(".iso") and os.path.exists(os.path.join(ROOT, "out", "arctic-usb.img")):

@@ -10,6 +10,7 @@ Steps, one per line ('#' starts a comment):
     key COMBO             e.g. ret, alt-f4, ctrl-shift-esc, alt-shift
     sleep SECONDS
     shot NAME             screenshot to out/test-local/NAME.png
+    hold KEY SECONDS      keeps a key down, for key repeat
     plug NAME IMAGE       a USB stick with that raw image (relative to out/test-local)
     unplug NAME           pull it out
 """
@@ -144,6 +145,10 @@ def run(qmp, steps):
             time.sleep(float(words[0]))
         elif cmd == "shot":
             print("    " + qmp.shot(words[0]), flush=True)
+        elif cmd == "hold":
+            qmp.key(ALIASES.get(words[0], words[0]), True)
+            time.sleep(float(words[1]))
+            qmp.key(ALIASES.get(words[0], words[0]), False)
         elif cmd == "plug":
             image = os.path.join(RES, words[1])
             qmp.call("blockdev-add", {"driver": "raw", "node-name": words[0],

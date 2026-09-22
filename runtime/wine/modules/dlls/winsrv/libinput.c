@@ -18,6 +18,7 @@
 #include <poll.h>
 #include <stdarg.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <libinput.h>
 #include <libudev.h>
@@ -180,12 +181,21 @@ static void translate( struct rit_read_params *params, struct libinput_event *ev
     }
 }
 
+static long long now_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime( CLOCK_MONOTONIC, &ts );
+    return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
+}
+
 static NTSTATUS rit_read( void *args )
 {
     struct rit_read_params *params = args;
     struct libinput_event *event;
     struct pollfd pfd;
-    int ret;
+    long long deadline = params->timeout_ms == ~0u ? -1 : now_ms() + params->timeout_ms;
+    int ret, timeout;
 
     params->count = 0;
     if (!li) return STATUS_INVALID_DEVICE_STATE;
@@ -201,9 +211,19 @@ static NTSTATUS rit_read( void *args )
         }
         if (params->count) return STATUS_SUCCESS;
 
+        /* the time left, not the whole timeout again: a USB keyboard held down
+         * wakes the fd with the kernel's own repeats, which libinput drops,
+         * and the RIT's key repeat would never come */
+        timeout = -1;
+        if (deadline >= 0)
+        {
+            long long left = deadline - now_ms();
+            if (left <= 0) return STATUS_TIMEOUT;
+            timeout = left;
+        }
         pfd.fd = libinput_get_fd( li );
         pfd.events = POLLIN;
-        ret = poll( &pfd, 1, params->timeout_ms == ~0u ? -1 : (int)params->timeout_ms );
+        ret = poll( &pfd, 1, timeout );
         if (!ret) return STATUS_TIMEOUT;
         if (ret < 0 && errno != EINTR) return STATUS_UNSUCCESSFUL;
     }

@@ -34,7 +34,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
        "-drive", "if=none,id=cd,media=cdrom,format=raw,readonly=on,file=" + args.iso,
        "-device", "ide-cd,drive=cd,bootindex=1", "-vga", "std", "-display", "gtk", "-name", "Arctic",
-       "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet",
+       "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet", "-device", "usb-kbd",  # a USB keyboard, as real PCs have: the kernel repeats its keys
+      
        "-serial", "tcp:127.0.0.1:%d,server=on,wait=on" % PORT,
        "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]  # for tools/vmscript.py meanwhile
 for disk in args.disk:

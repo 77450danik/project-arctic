@@ -1,0 +1,15 @@
+# Key repeat: a key held down in Notepad for two seconds types a row of letters
+sleep 10
+move 18 789
+click                         # Пуск
+sleep 2
+move 90 717
+click                         # Виконати...
+sleep 3
+key ctrl-a
+type notepad
+key ret
+sleep 5
+hold a 2
+sleep 1
+shot k1-repeat
