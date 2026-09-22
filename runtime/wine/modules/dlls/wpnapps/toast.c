@@ -178,7 +178,6 @@ static ULONG WINAPI toast_Release( IToastNotification *iface )
         WindowsDeleteString( impl->tag );
         WindowsDeleteString( impl->group );
         WindowsDeleteString( impl->launch );
-        impl->cs.DebugInfo->Spare[0] = 0;
         DeleteCriticalSection( &impl->cs );
         free( impl );
     }
@@ -387,7 +386,6 @@ static HRESULT toast_create( IXmlDocument *content, IToastNotification **out )
     impl->IToastNotification2_iface.lpVtbl = &toast2_vtbl;
     impl->ref = 1;
     InitializeCriticalSection( &impl->cs );
-    impl->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": toast.cs");
     impl->content = content;
     IXmlDocument_AddRef( content );
     list_init( &impl->activated );

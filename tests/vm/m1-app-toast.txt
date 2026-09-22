@@ -8,9 +8,10 @@ key meta_l-r
 sleep 3
 type D:\toasttest.exe
 key ret
-sleep 6
+sleep 2
 shot a1-toast
-move 1000 690
+move 1000 700
+move 1010 705
 sleep 1
 shot a2-hover
 click

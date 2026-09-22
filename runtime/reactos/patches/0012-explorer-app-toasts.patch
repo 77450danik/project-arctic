@@ -261,7 +261,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
  }
  
  int CBalloonQueue::IndexOf(InternalIconData * pdata)
-@@ -1405,14 +1563,35 @@
+@@ -1405,14 +1563,38 @@
      TRACE("ShowBalloonTip called for flags=%x text=%ws; title=%ws\n", info.uIcon, info.szInfo, info.szInfoTitle);
  
      // TODO: NIF_REALTIME, NIIF_NOSOUND, other Vista+ flags
@@ -283,6 +283,9 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
 +        m_hAppIcon = NULL;
 +        if (info.szIcon[0])
 +            ExtractIconExW(info.szIcon, 0, NULL, &m_hAppIcon, 1);
++        /* a program without an icon of its own has the shell's for programs */
++        if (!m_hAppIcon)
++            ExtractIconExW(L"shell32.dll", 2, NULL, &m_hAppIcon, 1);
 +        m_toast.ShowApp(info.szApp, m_hAppIcon, info.szInfoTitle, info.szInfo, info.szAttribution,
 +                        info.szImage, info.bImageCircle);
 +        if (info.dwDuration != ARCTIC_TOAST_FOREVER)
@@ -300,7 +303,7 @@ diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
      SetTimer(duration * 1000);
  
      m_toolbar->SendNotifyCallback(m_current, NIN_BALLOONSHOW);
-@@ -2395,6 +2574,17 @@
+@@ -2395,6 +2577,17 @@
      {
          FIXME("Taskbar Load In Proc\n");
      }
