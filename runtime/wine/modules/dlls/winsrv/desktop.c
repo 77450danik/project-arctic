@@ -85,6 +85,16 @@ static void load_graphics_driver( const GUID *guid )
 
 static LRESULT WINAPI desktop_wnd_proc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
 {
+    static UINT input_language_message;
+
+    /* the input indicator of the notification area chose a language */
+    if (!input_language_message) input_language_message = RegisterWindowMessageW( L"ArcticInputLanguage" );
+    if (message == input_language_message)
+    {
+        set_input_language( (HKL)lp );
+        return 0;
+    }
+
     switch (message)
     {
     case WM_SYSCOMMAND:

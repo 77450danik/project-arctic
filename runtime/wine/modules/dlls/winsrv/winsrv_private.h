@@ -11,5 +11,6 @@
 #define __WINE_WINSRV_PRIVATE_H
 
 void start_raw_input_thread(void);
+void set_input_language( HKL layout );
 
 #endif

@@ -1,0 +1,661 @@
+diff --git a/base/shell/explorer/lang/en-US.rc b/base/shell/explorer/lang/en-US.rc
+--- a/base/shell/explorer/lang/en-US.rc
++++ b/base/shell/explorer/lang/en-US.rc
+@@ -222,3 +222,10 @@
+ BEGIN
+     IDS_TOAST_APP "Windows Explorer"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_INPUT_KEYBOARD "%s keyboard"
++    IDS_INPUT_TOOLTIP "%s\n%s\n\nTo switch input methods, press\nWindows key+Space."
++    IDS_INPUT_SETTINGS "Language preferences"
++END
+diff --git a/base/shell/explorer/lang/ru-RU.rc b/base/shell/explorer/lang/ru-RU.rc
+--- a/base/shell/explorer/lang/ru-RU.rc
++++ b/base/shell/explorer/lang/ru-RU.rc
+@@ -226,3 +226,10 @@
+ BEGIN
+     IDS_TOAST_APP "Проводник"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_INPUT_KEYBOARD "%s клавиатура"
++    IDS_INPUT_TOOLTIP "%s\n%s\n\nДля переключения методов ввода нажмите клавиши\nWINDOWS+ПРОБЕЛ."
++    IDS_INPUT_SETTINGS "Настройки языка"
++END
+diff --git a/base/shell/explorer/lang/uk-UA.rc b/base/shell/explorer/lang/uk-UA.rc
+--- a/base/shell/explorer/lang/uk-UA.rc
++++ b/base/shell/explorer/lang/uk-UA.rc
+@@ -226,3 +226,10 @@
+ BEGIN
+     IDS_TOAST_APP "Провідник Windows"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_INPUT_KEYBOARD "Клавіатура %s"
++    IDS_INPUT_TOOLTIP "%s\n%s\n\nЩоб змінити метод вводу, натисніть\nсполучення клавіш Windows+ПРОБІЛ."
++    IDS_INPUT_SETTINGS "Мовні параметри"
++END
+diff --git a/base/shell/explorer/resource.h b/base/shell/explorer/resource.h
+--- a/base/shell/explorer/resource.h
++++ b/base/shell/explorer/resource.h
+@@ -104,6 +104,9 @@
+ #define IDS_STARTUP_ERROR                  105
+ #define IDS_START                          595
+ #define IDS_TOAST_APP                      596
++#define IDS_INPUT_KEYBOARD                 597
++#define IDS_INPUT_TOOLTIP                  598
++#define IDS_INPUT_SETTINGS                 599
+ #define IDS_OPEN_ALL_USERS                 718
+ #define IDS_EXPLORE_ALL_USERS              719
+ #define IDS_PROPERTIES                     720
+diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
+--- a/base/shell/explorer/trayntfy.cpp
++++ b/base/shell/explorer/trayntfy.cpp
+@@ -32,6 +32,530 @@
+  * TrayNotifyWnd
+  */
+ 
++/* The input indicator of Windows 10 (InputSwitch.dll, its DirectUI layouts
++ * and the immersive colours of its dark theme): the abbreviation of the input
++ * language in the notification area, 50 wide, 12pt bold white, #21FFFFFF
++ * under the pointer. A click opens the list of the languages: 300 wide on
++ * #F21E1E1E; 60 a language, with its abbreviation (12pt semibold) in a 74
++ * wide column and its name and keyboard (11pt) beside it, #19FFFFFF under the
++ * pointer, #33FFFFFF pressed, the current one on the accent colour; under a
++ * separator (#33FFFFFF, 12 in from each side), Language preferences, 48 high.
++ * The abbreviation is the first three letters of the language's own name
++ * (ENG, УКР, РУС). Choosing a language asks the Raw Input Thread of csrss for
++ * it, as Alt+Shift does. */
++#define INPUT_INDICATOR_WIDTH   50
++#define INPUT_FLYOUT_WIDTH      300
++#define INPUT_TILE_HEIGHT       60
++#define INPUT_TILE_COLUMN       74
++#define INPUT_SETTINGS_HEIGHT   48
++#define INPUT_POLL_TIMER        1
++#define INPUT_ACCENT            RGB(0x00, 0x78, 0xd7)
++
++static void InputLanguageAbbreviation(HKL hkl, LPWSTR pszAbbr, int cch)
++{
++    WCHAR szName[80];
++
++    pszAbbr[0] = UNICODE_NULL;
++    if (!GetLocaleInfoW(MAKELCID(LOWORD(hkl), SORT_DEFAULT), LOCALE_SNATIVELANGNAME, szName, _countof(szName)))
++        return;
++    StringCchCopyNW(pszAbbr, cch, szName, 3);
++    CharUpperW(pszAbbr);
++}
++
++/* "Українська (Україна)" and "Клавіатура Українська", as the flyout and the
++ * tooltip name them */
++static void InputLanguageNames(HKL hkl, LPWSTR pszLanguage, int cchLanguage, LPWSTR pszKeyboard, int cchKeyboard)
++{
++    WCHAR szKey[128], szLayout[128] = L"", szFormat[64];
++    DWORD cb = sizeof(szLayout);
++    HKEY hKey;
++
++    if (!GetLocaleInfoW(MAKELCID(LOWORD(hkl), SORT_DEFAULT), LOCALE_SLANGUAGE, pszLanguage, cchLanguage))
++        pszLanguage[0] = UNICODE_NULL;
++
++    StringCchPrintfW(szKey, _countof(szKey), L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts\\%08X",
++                     (HIWORD(hkl) & 0xf000) == 0xf000 ? LOWORD(hkl) : HIWORD(hkl));
++    if (!RegOpenKeyExW(HKEY_LOCAL_MACHINE, szKey, 0, KEY_READ, &hKey))
++    {
++        if (RegQueryValueExW(hKey, L"Layout Display Name", NULL, NULL, (LPBYTE)szLayout, &cb) ||
++            FAILED(SHLoadIndirectString(szLayout, szLayout, _countof(szLayout), NULL)))
++        {
++            cb = sizeof(szLayout);
++            if (RegQueryValueExW(hKey, L"Layout Text", NULL, NULL, (LPBYTE)szLayout, &cb))
++                szLayout[0] = UNICODE_NULL;
++        }
++        RegCloseKey(hKey);
++    }
++    LoadStringW(GetModuleHandleW(NULL), IDS_INPUT_KEYBOARD, szFormat, _countof(szFormat));
++    StringCchPrintfW(pszKeyboard, cchKeyboard, szFormat, szLayout);
++}
++
++static HFONT CreateInputFont(int height, int weight)
++{
++    NONCLIENTMETRICSW ncm;
++    LOGFONTW lf;
++
++    ZeroMemory(&ncm, sizeof(ncm));
++    ncm.cbSize = sizeof(ncm);
++    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
++    lf = ncm.lfMessageFont;
++    lf.lfHeight = -height;
++    lf.lfWeight = weight;
++    lf.lfQuality = ANTIALIASED_QUALITY;
++    return CreateFontIndirectW(&lf);
++}
++
++/* a colour over what is there already, as the immersive colours' alpha asks */
++static void FillAlpha(HDC hdc, const RECT *prc, COLORREF color, BYTE alpha)
++{
++    BITMAPINFO bi;
++    DWORD *pBits;
++    HBITMAP hbm;
++
++    ZeroMemory(&bi, sizeof(bi));
++    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
++    bi.bmiHeader.biWidth = 1;
++    bi.bmiHeader.biHeight = 1;
++    bi.bmiHeader.biPlanes = 1;
++    bi.bmiHeader.biBitCount = 32;
++    hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)&pBits, NULL, 0);
++    if (!hbm)
++        return;
++    *pBits = (alpha << 24) | ((GetRValue(color) * alpha / 255) << 16) |
++             ((GetGValue(color) * alpha / 255) << 8) | (GetBValue(color) * alpha / 255);
++    HDC hdcMem = CreateCompatibleDC(hdc);
++    HGDIOBJ hOld = SelectObject(hdcMem, hbm);
++    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
++    GdiAlphaBlend(hdc, prc->left, prc->top, prc->right - prc->left, prc->bottom - prc->top, hdcMem, 0, 0, 1, 1, bf);
++    SelectObject(hdcMem, hOld);
++    DeleteDC(hdcMem);
++    DeleteObject(hbm);
++}
++
++class CInputFlyout :
++    public CWindowImpl<CInputFlyout, CWindow, CWinTraits<WS_POPUP, WS_EX_TOOLWINDOW | WS_EX_TOPMOST> >
++{
++    HWND m_hwndIndicator;
++    HKL m_layouts[16];
++    int m_count;
++    HKL m_current;
++    int m_hover;   /* the tile under the pointer, m_count for Language preferences, -1 none */
++    BOOL m_pressed;
++    HFONT m_hfAbbr, m_hfName;
++
++public:
++    DECLARE_WND_CLASS_EX(L"ArcticInputFlyout", CS_DROPSHADOW, COLOR_WINDOW)
++
++    CInputFlyout() : m_hwndIndicator(NULL), m_count(0), m_current(NULL), m_hover(-1), m_pressed(FALSE),
++                     m_hfAbbr(NULL), m_hfName(NULL)
++    {
++    }
++
++    int Height() const
++    {
++        return 5 + m_count * INPUT_TILE_HEIGHT + 5 + 1 + 5 + INPUT_SETTINGS_HEIGHT + 5;
++    }
++
++    void Open(HWND hwndIndicator, HKL current)
++    {
++        RECT rcIndicator, rcWork;
++        int x, y;
++
++        m_hwndIndicator = hwndIndicator;
++        m_current = current;
++        m_count = GetKeyboardLayoutList(_countof(m_layouts), m_layouts);
++        m_hover = -1;
++        m_pressed = FALSE;
++        if (!m_hfAbbr)
++            m_hfAbbr = CreateInputFont(16, FW_SEMIBOLD);
++        if (!m_hfName)
++            m_hfName = CreateInputFont(15, FW_NORMAL);
++        if (!m_hWnd && !Create(NULL))
++            return;
++
++        /* above the indicator, inside the screen */
++        ::GetWindowRect(hwndIndicator, &rcIndicator);
++        SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
++        x = rcIndicator.right - INPUT_FLYOUT_WIDTH;
++        if (x + INPUT_FLYOUT_WIDTH > rcWork.right)
++            x = rcWork.right - INPUT_FLYOUT_WIDTH;
++        if (x < rcWork.left)
++            x = rcWork.left;
++        y = rcIndicator.top - Height();
++        SetWindowPos(HWND_TOPMOST, x, y, INPUT_FLYOUT_WIDTH, Height(), SWP_SHOWWINDOW);
++        SetForegroundWindow(m_hWnd);
++        Invalidate();
++    }
++
++    void Close()
++    {
++        if (m_hWnd && IsWindowVisible())
++            ShowWindow(SW_HIDE);
++    }
++
++    int HitTest(POINT pt)
++    {
++        if (pt.y >= 5 && pt.y < 5 + m_count * INPUT_TILE_HEIGHT)
++            return (pt.y - 5) / INPUT_TILE_HEIGHT;
++        if (pt.y >= Height() - 5 - INPUT_SETTINGS_HEIGHT && pt.y < Height() - 5)
++            return m_count;
++        return -1;
++    }
++
++    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        PAINTSTRUCT ps;
++        HDC hdc = BeginPaint(&ps);
++        RECT rc, rcTile, rcText;
++        HBRUSH hbr;
++
++        GetClientRect(&rc);
++        /* #F21E1E1E over the desktop is, near enough, #1E1E1E: a window of its own has nothing behind */
++        hbr = CreateSolidBrush(RGB(0x1e, 0x1e, 0x1e));
++        FillRect(hdc, &rc, hbr);
++        DeleteObject(hbr);
++        SetBkMode(hdc, TRANSPARENT);
++
++        for (int i = 0; i < m_count; i++)
++        {
++            WCHAR szAbbr[8], szLanguage[80], szKeyboard[128];
++
++            SetRect(&rcTile, 0, 5 + i * INPUT_TILE_HEIGHT, rc.right, 5 + (i + 1) * INPUT_TILE_HEIGHT);
++            if (m_layouts[i] == m_current)
++            {
++                hbr = CreateSolidBrush(INPUT_ACCENT);
++                FillRect(hdc, &rcTile, hbr);
++                DeleteObject(hbr);
++            }
++            if (i == m_hover)
++                FillAlpha(hdc, &rcTile, RGB(255, 255, 255), m_pressed ? 0x33 : 0x19);
++
++            InputLanguageAbbreviation(m_layouts[i], szAbbr, _countof(szAbbr));
++            InputLanguageNames(m_layouts[i], szLanguage, _countof(szLanguage), szKeyboard, _countof(szKeyboard));
++            SetTextColor(hdc, RGB(255, 255, 255));
++
++            /* the abbreviation, bottom-centred in the upper 30 of the 74 wide column less its 14 of padding */
++            HGDIOBJ hOld = SelectObject(hdc, m_hfAbbr);
++            SetRect(&rcText, 0, rcTile.top, INPUT_TILE_COLUMN - 14, rcTile.top + 30);
++            DrawTextW(hdc, szAbbr, -1, &rcText, DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
++
++            /* the language and its keyboard, bottom-left and top-left of the two rows */
++            SelectObject(hdc, m_hfName);
++            SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top, rc.right - 22, rcTile.top + 30);
++            DrawTextW(hdc, szLanguage, -1, &rcText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
++            SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top + 30, rc.right - 22, rcTile.bottom);
++            DrawTextW(hdc, szKeyboard, -1, &rcText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
++            SelectObject(hdc, hOld);
++        }
++
++        /* the separator and Language preferences */
++        int y = 5 + m_count * INPUT_TILE_HEIGHT + 5;
++        SetRect(&rcText, 12, y, rc.right - 12, y + 1);
++        FillAlpha(hdc, &rcText, RGB(255, 255, 255), 0x33);
++        y += 1 + 5;
++        SetRect(&rcTile, 0, y, rc.right, y + INPUT_SETTINGS_HEIGHT);
++        if (m_hover == m_count)
++            FillAlpha(hdc, &rcTile, RGB(255, 255, 255), m_pressed ? 0x33 : 0x19);
++        {
++            WCHAR szSettings[64];
++            HGDIOBJ hOld = SelectObject(hdc, m_hfName);
++            int cx = 19 + 8, cy = y + 12 + 8;
++            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
++            HGDIOBJ hOldPen = SelectObject(hdc, hPen), hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
++            static const signed char teeth[8][4] =
++            {
++                { 5, 0, 7, 0 }, { 4, 4, 5, 5 }, { 0, 5, 0, 7 }, { -4, 4, -5, 5 },
++                { -5, 0, -7, 0 }, { -4, -4, -5, -5 }, { 0, -5, 0, -7 }, { 4, -4, 5, -5 },
++            };
++
++            Ellipse(hdc, cx - 2, cy - 2, cx + 3, cy + 3);
++            Ellipse(hdc, cx - 5, cy - 5, cx + 6, cy + 6);
++            for (int i = 0; i < 8; i++)
++            {
++                MoveToEx(hdc, cx + teeth[i][0], cy + teeth[i][1], NULL);
++                LineTo(hdc, cx + teeth[i][2], cy + teeth[i][3]);
++            }
++            SelectObject(hdc, hOldBrush);
++            SelectObject(hdc, hOldPen);
++            DeleteObject(hPen);
++
++            LoadStringW(GetModuleHandleW(NULL), IDS_INPUT_SETTINGS, szSettings, _countof(szSettings));
++            SetTextColor(hdc, RGB(255, 255, 255));
++            SetRect(&rcText, INPUT_TILE_COLUMN, y + 12, rc.right - 14, y + INPUT_SETTINGS_HEIGHT);
++            DrawTextW(hdc, szSettings, -1, &rcText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
++            SelectObject(hdc, hOld);
++        }
++        EndPaint(&ps);
++        return 0;
++    }
++
++    LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        return TRUE;
++    }
++
++    LRESULT OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
++        int hover = HitTest(pt);
++
++        if (m_hover == -1)
++        {
++            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, m_hWnd, 0 };
++            TrackMouseEvent(&tme);
++        }
++        if (hover != m_hover)
++        {
++            m_hover = hover;
++            Invalidate();
++        }
++        return 0;
++    }
++
++    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_hover = -1;
++        m_pressed = FALSE;
++        Invalidate();
++        return 0;
++    }
++
++    LRESULT OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_pressed = TRUE;
++        Invalidate();
++        return 0;
++    }
++
++    LRESULT OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
++        int hit = HitTest(pt);
++
++        m_pressed = FALSE;
++        if (hit >= 0 && hit < m_count)
++        {
++            ::PostMessageW(GetDesktopWindow(), RegisterWindowMessageW(L"ArcticInputLanguage"), 0, (LPARAM)m_layouts[hit]);
++            ::SendMessageW(m_hwndIndicator, WM_USER + 1, 0, (LPARAM)m_layouts[hit]);
++            Close();
++        }
++        return 0;
++    }
++
++    LRESULT OnActivate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (LOWORD(wParam) == WA_INACTIVE)
++            Close();
++        return 0;
++    }
++
++    LRESULT OnKeyDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (wParam == VK_ESCAPE)
++            Close();
++        return 0;
++    }
++
++    BEGIN_MSG_MAP(CInputFlyout)
++        MESSAGE_HANDLER(WM_PAINT, OnPaint)
++        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
++        MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseMove)
++        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
++        MESSAGE_HANDLER(WM_LBUTTONDOWN, OnLButtonDown)
++        MESSAGE_HANDLER(WM_LBUTTONUP, OnLButtonUp)
++        MESSAGE_HANDLER(WM_ACTIVATE, OnActivate)
++        MESSAGE_HANDLER(WM_KEYDOWN, OnKeyDown)
++    END_MSG_MAP()
++};
++
++class CInputIndicator :
++    public CWindowImpl<CInputIndicator, CWindow, CControlWinTraits>
++{
++    HKL m_current;
++    HFONT m_hfAbbr;
++    HWND m_hwndTip;
++    BOOL m_bHover;
++    CInputFlyout m_flyout;
++
++    /* the language of the program in front; not the taskbar's own, nor its flyout's */
++    HKL CurrentLanguage()
++    {
++        HWND hwnd = GetForegroundWindow();
++        DWORD pid = 0, tid;
++
++        if (!hwnd)
++            return m_current;
++        tid = GetWindowThreadProcessId(hwnd, &pid);
++        if (pid == GetCurrentProcessId())
++        {
++            WCHAR szClass[64];
++            if (GetClassNameW(hwnd, szClass, _countof(szClass)) &&
++                (!wcscmp(szClass, L"Shell_TrayWnd") || !wcscmp(szClass, L"ArcticInputFlyout") ||
++                 !wcscmp(szClass, L"Progman") || !wcscmp(szClass, L"WorkerW")))
++                return m_current ? m_current : GetKeyboardLayout(tid);
++        }
++        return GetKeyboardLayout(tid);
++    }
++
++    void UpdateTip()
++    {
++        WCHAR szLanguage[80], szKeyboard[128], szFormat[256], szTip[512];
++        TOOLINFOW ti = { sizeof(ti) };
++
++        if (!m_hwndTip)
++            return;
++        InputLanguageNames(m_current, szLanguage, _countof(szLanguage), szKeyboard, _countof(szKeyboard));
++        LoadStringW(GetModuleHandleW(NULL), IDS_INPUT_TOOLTIP, szFormat, _countof(szFormat));
++        StringCchPrintfW(szTip, _countof(szTip), szFormat, szLanguage, szKeyboard);
++        ti.hwnd = m_hWnd;
++        ti.uId = 0;
++        ti.lpszText = szTip;
++        ::SendMessageW(m_hwndTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
++    }
++
++public:
++    CInputIndicator() : m_current(NULL), m_hfAbbr(NULL), m_hwndTip(NULL), m_bHover(FALSE)
++    {
++    }
++
++    ~CInputIndicator()
++    {
++        if (m_hfAbbr)
++            DeleteObject(m_hfAbbr);
++    }
++
++    /* shown while there is more than one input language, as in Windows 10 */
++    static BOOL Wanted()
++    {
++        return GetKeyboardLayoutList(0, NULL) > 1;
++    }
++
++    HWND DoCreate(HWND hwndParent)
++    {
++        TOOLINFOW ti = { sizeof(ti) };
++
++        m_hfAbbr = CreateInputFont(16, FW_BOLD);
++        m_current = GetKeyboardLayout(0);
++        if (!Create(hwndParent, 0, NULL, WS_CHILD | WS_VISIBLE))
++            return NULL;
++        m_hwndTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
++                                    0, 0, 0, 0, m_hWnd, NULL, NULL, NULL);
++        if (m_hwndTip)
++        {
++            ti.uFlags = TTF_SUBCLASS;
++            ti.hwnd = m_hWnd;
++            ti.uId = 0;
++            GetClientRect(&ti.rect);
++            ti.lpszText = (LPWSTR)L"";
++            ::SendMessageW(m_hwndTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
++            ::SendMessageW(m_hwndTip, TTM_SETMAXTIPWIDTH, 0, 400);
++            UpdateTip();
++        }
++        SetTimer(INPUT_POLL_TIMER, 250, NULL);
++        return m_hWnd;
++    }
++
++    LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        HKL hkl;
++
++        if (wParam != INPUT_POLL_TIMER)
++            return 0;
++        hkl = CurrentLanguage();
++        if (hkl && hkl != m_current)
++        {
++            m_current = hkl;
++            UpdateTip();
++            Invalidate();
++        }
++        return 0;
++    }
++
++    LRESULT OnChosen(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_current = (HKL)lParam;
++        UpdateTip();
++        Invalidate();
++        return 0;
++    }
++
++    LRESULT OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        TOOLINFOW ti = { sizeof(ti) };
++
++        if (m_hwndTip)
++        {
++            ti.hwnd = m_hWnd;
++            ti.uId = 0;
++            GetClientRect(&ti.rect);
++            ::SendMessageW(m_hwndTip, TTM_NEWTOOLRECTW, 0, (LPARAM)&ti);
++        }
++        return 0;
++    }
++
++    LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        return TRUE;
++    }
++
++    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        PAINTSTRUCT ps;
++        HDC hdc = BeginPaint(&ps);
++        WCHAR szAbbr[8];
++        RECT rc;
++
++        GetClientRect(&rc);
++        DrawThemeParentBackground(m_hWnd, hdc, &rc);
++        if (m_bHover)
++            FillAlpha(hdc, &rc, RGB(255, 255, 255), 0x21);
++        InputLanguageAbbreviation(m_current, szAbbr, _countof(szAbbr));
++        SetBkMode(hdc, TRANSPARENT);
++        SetTextColor(hdc, RGB(255, 255, 255));
++        HGDIOBJ hOld = SelectObject(hdc, m_hfAbbr);
++        DrawTextW(hdc, szAbbr, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
++        SelectObject(hdc, hOld);
++        EndPaint(&ps);
++        return 0;
++    }
++
++    LRESULT OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (!m_bHover)
++        {
++            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, m_hWnd, 0 };
++            TrackMouseEvent(&tme);
++            m_bHover = TRUE;
++            Invalidate();
++        }
++        return 0;
++    }
++
++    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_bHover = FALSE;
++        Invalidate();
++        return 0;
++    }
++
++    LRESULT OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_flyout.Open(m_hWnd, m_current);
++        return 0;
++    }
++
++    BEGIN_MSG_MAP(CInputIndicator)
++        MESSAGE_HANDLER(WM_TIMER, OnTimer)
++        MESSAGE_HANDLER(WM_USER + 1, OnChosen)
++        MESSAGE_HANDLER(WM_SIZE, OnSize)
++        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
++        MESSAGE_HANDLER(WM_PAINT, OnPaint)
++        MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseMove)
++        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
++        MESSAGE_HANDLER(WM_LBUTTONUP, OnLButtonUp)
++    END_MSG_MAP()
++};
++
+ class CTrayNotifyWnd :
+     public CComCoClass<CTrayNotifyWnd>,
+     public CComObjectRootEx<CComMultiThreadModelNoCS>,
+@@ -46,6 +570,9 @@
+     HWND m_hwndShowDesktop;
+     HWND m_hwndPager;
+ 
++    CInputIndicator m_InputIndicator;
++    HWND m_hwndInput;
++
+     HTHEME TrayTheme;
+     SIZE trayClockMinSize;
+     SIZE trayShowDesktopSize;
+@@ -57,6 +584,7 @@
+     CTrayNotifyWnd() :
+         m_hwndClock(NULL),
+         m_hwndPager(NULL),
++        m_hwndInput(NULL),
+         TrayTheme(NULL),
+         IsHorizontal(FALSE)
+     {
+@@ -127,6 +655,10 @@
+         if (FAILED_UNEXPECTEDLY(hr))
+             return FALSE;
+ 
++        /* the input indicator, beside the clock */
++        if (CInputIndicator::Wanted())
++            m_hwndInput = m_InputIndicator.DoCreate(m_hWnd);
++
+         /* Create the 'Show Desktop' button */
+         m_ShowDesktopButton.DoCreate(m_hWnd);
+         m_hwndShowDesktop = m_ShowDesktopButton.m_hWnd;
+@@ -201,6 +733,9 @@
+             if (!bHideClock)
+                 pSize->cx += TRAY_NOTIFY_WND_SPACING_X + trayClockMinSize.cx;
+ 
++            if (m_hwndInput)
++                pSize->cx += INPUT_INDICATOR_WIDTH;
++
+             if (g_TaskbarSettings.bShowDesktopButton)
+                 pSize->cx += showDesktopButtonExtent;
+ 
+@@ -213,6 +748,9 @@
+ 
+             if (!bHideClock)
+                 pSize->cy += TRAY_NOTIFY_WND_SPACING_Y + trayClockMinSize.cy;
++
++            if (m_hwndInput)
++                pSize->cy += INPUT_INDICATOR_WIDTH;
+ 
+             if (g_TaskbarSettings.bShowDesktopButton)
+                 pSize->cy += showDesktopButtonExtent;
+@@ -331,6 +869,22 @@
+                 clockSize.cx,
+                 clockSize.cy,
+                 swpFlags);
++        }
++
++        if (m_hwndInput)
++        {
++            if (IsHorizontal)
++            {
++                rcClient.right -= INPUT_INDICATOR_WIDTH;
++                ::SetWindowPos(m_hwndInput, NULL, rcClient.right, rcClient.top,
++                               INPUT_INDICATOR_WIDTH, rcClient.bottom - rcClient.top, swpFlags);
++            }
++            else
++            {
++                rcClient.bottom -= INPUT_INDICATOR_WIDTH;
++                ::SetWindowPos(m_hwndInput, NULL, rcClient.left, rcClient.bottom,
++                               rcClient.right - rcClient.left, INPUT_INDICATOR_WIDTH, swpFlags);
++            }
+         }
+ 
+         POINT ptPager;

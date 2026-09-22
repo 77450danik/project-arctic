@@ -246,6 +246,19 @@ static void next_input_language(void)
     if ((hwnd = GetForegroundWindow())) request_language( hwnd, input_language );
 }
 
+/* the layout the RIT maps scan codes with, set on its own thread */
+static HKL pending_layout;
+
+/* a language chosen elsewhere, in the input indicator of the notification area */
+void set_input_language( HKL layout )
+{
+    HWND hwnd;
+
+    input_language = layout;
+    InterlockedExchangePointer( (void **)&pending_layout, layout );
+    if ((hwnd = GetForegroundWindow())) request_language( hwnd, layout );
+}
+
 /* before a key goes to a program the language has not reached yet */
 static void follow_input_language(void)
 {
@@ -315,6 +328,9 @@ static DWORD WINAPI raw_input_thread( void *arg )
             switch (event->type)
             {
             case RIT_KEY:
+            {
+                HKL layout = InterlockedExchangePointer( (void **)&pending_layout, NULL );
+                if (layout) ActivateKeyboardLayout( layout, 0 );
                 if (event->value) follow_input_language();
                 send_key( event->code, event->value );
                 if (language_chord( event->code, event->value )) next_input_language();
@@ -325,6 +341,7 @@ static DWORD WINAPI raw_input_thread( void *arg )
                 }
                 else if (event->code == repeat_key) repeat_key = 0;
                 break;
+            }
             case RIT_BUTTON:
                 send_button( event->code, event->value );
                 break;
