@@ -56,7 +56,7 @@ diff --git a/base/shell/explorer/resource.h b/base/shell/explorer/resource.h
 diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 --- a/base/shell/explorer/trayntfy.cpp
 +++ b/base/shell/explorer/trayntfy.cpp
-@@ -32,6 +32,567 @@
+@@ -32,6 +32,581 @@
   * TrayNotifyWnd
   */
  
@@ -218,7 +218,10 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 +    void Close()
 +    {
 +        if (m_hWnd && IsWindowVisible())
++        {
 +            ShowWindow(SW_HIDE);
++            ::PostMessageW(m_hwndIndicator, WM_USER + 2, 0, 0);
++        }
 +    }
 +
 +    int HitTest(POINT pt)
@@ -602,15 +605,26 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
 +        return 0;
 +    }
 +
++    /* no tooltip over the open list */
 +    LRESULT OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 +    {
++        if (m_hwndTip)
++            ::SendMessageW(m_hwndTip, TTM_ACTIVATE, FALSE, 0);
 +        m_flyout.Open(m_hWnd, m_current);
++        return 0;
++    }
++
++    LRESULT OnFlyoutClosed(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (m_hwndTip)
++            ::SendMessageW(m_hwndTip, TTM_ACTIVATE, TRUE, 0);
 +        return 0;
 +    }
 +
 +    BEGIN_MSG_MAP(CInputIndicator)
 +        MESSAGE_HANDLER(WM_TIMER, OnTimer)
 +        MESSAGE_HANDLER(WM_USER + 1, OnChosen)
++        MESSAGE_HANDLER(WM_USER + 2, OnFlyoutClosed)
 +        MESSAGE_HANDLER(WM_THEMECHANGED, OnThemeChanged)
 +        MESSAGE_HANDLER(WM_SIZE, OnSize)
 +        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
@@ -624,7 +638,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
  class CTrayNotifyWnd :
      public CComCoClass<CTrayNotifyWnd>,
      public CComObjectRootEx<CComMultiThreadModelNoCS>,
-@@ -46,6 +607,9 @@
+@@ -46,6 +621,9 @@
      HWND m_hwndShowDesktop;
      HWND m_hwndPager;
  
@@ -634,7 +648,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
      HTHEME TrayTheme;
      SIZE trayClockMinSize;
      SIZE trayShowDesktopSize;
-@@ -57,6 +621,7 @@
+@@ -57,6 +635,7 @@
      CTrayNotifyWnd() :
          m_hwndClock(NULL),
          m_hwndPager(NULL),
@@ -642,7 +656,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
          TrayTheme(NULL),
          IsHorizontal(FALSE)
      {
-@@ -127,6 +692,10 @@
+@@ -127,6 +706,10 @@
          if (FAILED_UNEXPECTEDLY(hr))
              return FALSE;
  
@@ -653,7 +667,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
          /* Create the 'Show Desktop' button */
          m_ShowDesktopButton.DoCreate(m_hWnd);
          m_hwndShowDesktop = m_ShowDesktopButton.m_hWnd;
-@@ -201,6 +770,9 @@
+@@ -201,6 +784,9 @@
              if (!bHideClock)
                  pSize->cx += TRAY_NOTIFY_WND_SPACING_X + trayClockMinSize.cx;
  
@@ -663,7 +677,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
              if (g_TaskbarSettings.bShowDesktopButton)
                  pSize->cx += showDesktopButtonExtent;
  
-@@ -213,6 +785,9 @@
+@@ -213,6 +799,9 @@
  
              if (!bHideClock)
                  pSize->cy += TRAY_NOTIFY_WND_SPACING_Y + trayClockMinSize.cy;
@@ -673,7 +687,7 @@ diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
  
              if (g_TaskbarSettings.bShowDesktopButton)
                  pSize->cy += showDesktopButtonExtent;
-@@ -331,6 +906,22 @@
+@@ -331,6 +920,22 @@
                  clockSize.cx,
                  clockSize.cy,
                  swpFlags);

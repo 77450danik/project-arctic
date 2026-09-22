@@ -18,3 +18,15 @@ shot c4-chosen
 key esc
 sleep 3
 shot c5-desktop
+move 1198 780
+click                         # the taskbar's indicator
+sleep 2
+shot c6-tray-flyout
+move 1050 666
+click                         # РУС
+sleep 2
+shot c7-tray-chosen
+key ctrl-alt-delete
+sleep 3
+shot c8-security-again        # РУС, the session's
+key esc
