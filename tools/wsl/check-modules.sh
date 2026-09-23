@@ -36,7 +36,8 @@ pe() {
     done
 }
 
-unix dlls/dwmcore wayland-server kms.c compositor.c xdg-shell-protocol.c viewporter-protocol.c arctic-shell-v1-protocol.c
+unix dlls/dwmcore wayland-server kms.c compositor.c xdg-shell-protocol.c viewporter-protocol.c \
+    xdg-output-unstable-v1-protocol.c arctic-shell-v1-protocol.c arctic-display-v1-protocol.c
 pe dlls/dwmcore dwmcore.c
 unix dlls/winsrv "libinput libudev" libinput.c
 pe dlls/winsrv desktop.c rit.c
@@ -46,3 +47,4 @@ pe programs/wininit main.c
 pe programs/winlogon main.c security.c
 pe programs/userinit main.c
 pe programs/vktest main.c
+pe programs/dispmode main.c

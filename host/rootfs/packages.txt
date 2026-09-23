@@ -11,6 +11,9 @@ kmod
 # Hardware manager: only udevd, udevadm, sysusers and hwdb are used
 systemd
 
+# Names of PCI devices: dwm.exe names the display adapter from pci.ids
+hwdata
+
 # Serial shell in development builds
 busybox
 

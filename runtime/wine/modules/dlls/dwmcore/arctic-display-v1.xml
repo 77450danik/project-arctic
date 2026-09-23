@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="arctic_display_v1">
+  <copyright>
+    Copyright Project Arctic contributors.
+
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 2.1 of the License, or (at your option) any later version.
+  </copyright>
+
+  <interface name="arctic_display_v1" version="1">
+    <description summary="the display hardware behind the outputs">
+      Offered by dwm.exe next to wl_output and xdg_output: the graphics
+      adapter, the EDID of each output, and mode setting. The modes are the
+      ones wl_output advertises; the display layout of the Win32 world is
+      applied through a configuration.
+    </description>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="get_output">
+      <arg name="id" type="new_id" interface="arctic_output_v1"/>
+      <arg name="output" type="object" interface="wl_output"/>
+    </request>
+
+    <request name="create_configuration">
+      <arg name="id" type="new_id" interface="arctic_configuration_v1"/>
+    </request>
+
+    <event name="adapter">
+      <description summary="the graphics adapter, sent on bind">
+        PCI ids are 0 for an adapter that is not a PCI device, such as the
+        firmware framebuffer.
+      </description>
+      <arg name="vendor" type="uint"/>
+      <arg name="device" type="uint"/>
+      <arg name="subsystem" type="uint"/>
+      <arg name="revision" type="uint"/>
+      <arg name="description" type="string"/>
+    </event>
+  </interface>
+
+  <interface name="arctic_output_v1" version="1">
+    <description summary="what an output is connected to"/>
+
+    <request name="destroy" type="destructor"/>
+
+    <event name="edid">
+      <description summary="the monitor's EDID, sent once; empty if it has none"/>
+      <arg name="edid" type="array"/>
+    </event>
+  </interface>
+
+  <interface name="arctic_configuration_v1" version="1">
+    <description summary="modes and positions for the outputs, applied at once">
+      Outputs the configuration does not name keep their mode and position.
+      On apply dwm.exe answers with succeeded or failed; either way the
+      configuration is used up and the client destroys it. Before
+      succeeded, every wl_output that changed has sent its new mode and
+      position.
+    </description>
+
+    <enum name="apply_flags" bitfield="true">
+      <entry name="test" value="1" summary="only check that the configuration can be shown"/>
+      <entry name="persist" value="2" summary="keep it for this set of monitors, across restarts"/>
+    </enum>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="set_mode">
+      <arg name="output" type="object" interface="wl_output"/>
+      <arg name="x" type="int" summary="position in the virtual screen"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="refresh" type="int" summary="mHz, as the wl_output mode event gave it"/>
+    </request>
+
+    <request name="apply">
+      <arg name="flags" type="uint" enum="apply_flags"/>
+    </request>
+
+    <event name="succeeded"/>
+    <event name="failed"/>
+  </interface>
+</protocol>

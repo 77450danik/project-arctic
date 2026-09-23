@@ -3,8 +3,9 @@
  *
  * dwm.exe hosts this library the way Windows' dwm.exe hosts dwmcore.dll.
  * The unix side owns the display (DRM/KMS) and serves window buffers; this
- * side reads Windows settings, asks wineserver where the windows are and
- * lends the unix side the thread in between.
+ * side reads Windows settings, decides what each monitor shows, asks
+ * wineserver where the windows are and lends the unix side the thread in
+ * between.
  *
  * user32 is deliberately not used: its first window-related call would
  * start the desktop and the display driver before the compositor serves.
@@ -53,6 +54,311 @@ static COLORREF desktop_color(void)
         return RGB( r, g, b );
     return RGB( 58, 110, 165 );
 }
+
+/**********************************************************************
+ *          The monitors
+ *
+ * What each monitor shows is decided here, as the display kernel of
+ * Windows decides it: the layout kept for this set of monitors when
+ * there is one, else every monitor at its own resolution and the
+ * highest refresh rate it takes there.
+ */
+
+static const WCHAR configuration_keyW[] =
+    L"System\\CurrentControlSet\\Control\\GraphicsDrivers\\Configuration";
+
+static struct dwm_output *outputs;
+static UINT               output_count;
+
+static BOOL read_outputs(void)
+{
+    struct dwm_get_outputs_params params = { .outputs = outputs };
+
+    if (!outputs && !(outputs = params.outputs = calloc( DWM_MAX_OUTPUTS, sizeof(*outputs) ))) return FALSE;
+    if (WINE_UNIX_CALL( unix_dwm_get_outputs, &params )) return FALSE;
+    output_count = params.count;
+    return output_count > 0;
+}
+
+/* "DEL40F3_4C3A5A30", the manufacturer, model and serial of the EDID, as
+ * Windows names a monitor in its display database */
+static void monitor_id( const struct dwm_output *output, WCHAR *id, SIZE_T size )
+{
+    const BYTE *edid = output->edid;
+    UINT manufacturer, product, serial;
+
+    if (output->edid_len < 128)
+    {
+        swprintf( id, size, L"%hs", output->name );
+        return;
+    }
+    manufacturer = (edid[8] << 8) | edid[9];
+    product = edid[10] | (edid[11] << 8);
+    serial = edid[12] | (edid[13] << 8) | (edid[14] << 16) | ((UINT)edid[15] << 24);
+    swprintf( id, size, L"%c%c%c%04X_%08X", 'A' + ((manufacturer >> 10) & 0x1f) - 1,
+              'A' + ((manufacturer >> 5) & 0x1f) - 1, 'A' + (manufacturer & 0x1f) - 1, product, serial );
+}
+
+/* one key per set of monitors, so that a laptop remembers each desk */
+static void configuration_path( WCHAR *path, SIZE_T size )
+{
+    WCHAR id[64];
+    int len;
+
+    len = swprintf( path, size, L"%s\\", configuration_keyW );
+    for (UINT i = 0; i < output_count && len > 0; i++)
+    {
+        monitor_id( &outputs[i], id, ARRAY_SIZE(id) );
+        len += swprintf( path + len, size - len, i ? L"+%s" : L"%s", id );
+    }
+}
+
+static HKEY open_configuration( BOOL create )
+{
+    WCHAR path[512];
+    HKEY hkey;
+
+    configuration_path( path, ARRAY_SIZE(path) );
+    if (create)
+    {
+        if (RegCreateKeyExW( HKEY_LOCAL_MACHINE, path, 0, NULL, 0, KEY_SET_VALUE | KEY_CREATE_SUB_KEY,
+                             NULL, &hkey, NULL ))
+            return NULL;
+    }
+    else if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, path, 0, KEY_QUERY_VALUE, &hkey ))
+        return NULL;
+    return hkey;
+}
+
+static const struct dwm_mode *find_mode( const struct dwm_output *output, UINT width, UINT height, UINT refresh )
+{
+    const struct dwm_mode *best = NULL;
+
+    for (UINT i = 0; i < output->mode_count; i++)
+    {
+        const struct dwm_mode *mode = &output->modes[i];
+
+        if (mode->width != width || mode->height != height) continue;
+        if (mode->refresh == refresh) return mode;
+        if (!best || (refresh ? labs( (LONG)mode->refresh - (LONG)refresh ) < labs( (LONG)best->refresh - (LONG)refresh )
+                              : mode->refresh > best->refresh))
+            best = mode;
+    }
+    return best;
+}
+
+/* the size the monitor was made for */
+static const struct dwm_mode *native_mode( const struct dwm_output *output )
+{
+    for (UINT i = 0; i < output->mode_count; i++)
+        if (output->modes[i].flags & DWM_MODE_PREFERRED) return &output->modes[i];
+    return output->mode_count ? &output->modes[0] : NULL;
+}
+
+/* the fastest the monitor goes at that size, then the next fastest, and so
+ * on: a mode from the monitor's list can still be more than the cable takes */
+static const struct dwm_mode *mode_for_attempt( const struct dwm_output *output, UINT attempt )
+{
+    const struct dwm_mode *native = native_mode( output ), *mode = NULL;
+    UINT refresh = ~0u;
+
+    if (!native) return NULL;
+    for (UINT skipped = 0; skipped <= attempt; skipped++)
+    {
+        mode = NULL;
+        for (UINT i = 0; i < output->mode_count; i++)
+        {
+            const struct dwm_mode *m = &output->modes[i];
+
+            if (m->width != native->width || m->height != native->height) continue;
+            if (m->refresh >= refresh) continue;
+            if (!mode || m->refresh > mode->refresh) mode = m;
+        }
+        if (!mode) return native;
+        refresh = mode->refresh;
+    }
+    return mode;
+}
+
+static void config_from_mode( struct dwm_output_config *config, const struct dwm_output *output,
+                              const struct dwm_mode *mode, INT x, INT y )
+{
+    config->id = output->id;
+    config->enabled = 1;
+    config->x = x;
+    config->y = y;
+    config->width = mode->width;
+    config->height = mode->height;
+    config->refresh = mode->refresh;
+}
+
+/* every monitor keeps its own place; the primary one is at 0,0, as Windows
+ * has it, because that is where the Win32 side takes the desktop to start */
+static void place_outputs( struct dwm_output_config *configs, UINT primary )
+{
+    INT x = configs[primary].x, y = configs[primary].y;
+
+    for (UINT i = 0; i < output_count; i++)
+    {
+        configs[i].x -= x;
+        configs[i].y -= y;
+    }
+}
+
+/* The layout kept for this set of monitors. Every monitor has to be in it
+ * with a mode it still has, or the whole layout is dropped: a monitor swapped
+ * for another one gets a fresh one. */
+static BOOL saved_layout( struct dwm_output_config *configs )
+{
+    HKEY hkey = open_configuration( FALSE );
+    BOOL ok = hkey != NULL;
+    UINT primary = 0;
+
+    for (UINT i = 0; ok && i < output_count; i++)
+    {
+        DWORD width = 0, height = 0, refresh = 0, size;
+        const struct dwm_mode *mode;
+        INT x = 0, y = 0;
+        WCHAR id[64];
+        HKEY monitor;
+
+        monitor_id( &outputs[i], id, ARRAY_SIZE(id) );
+        if (RegOpenKeyExW( hkey, id, 0, KEY_QUERY_VALUE, &monitor ))
+        {
+            ok = FALSE;
+            break;
+        }
+        size = sizeof(DWORD);
+        RegQueryValueExW( monitor, L"PrimSurfSize.cx", NULL, NULL, (BYTE *)&width, &size );
+        size = sizeof(DWORD);
+        RegQueryValueExW( monitor, L"PrimSurfSize.cy", NULL, NULL, (BYTE *)&height, &size );
+        size = sizeof(DWORD);
+        RegQueryValueExW( monitor, L"VSyncFreq.Numerator", NULL, NULL, (BYTE *)&refresh, &size );
+        size = sizeof(DWORD);
+        RegQueryValueExW( monitor, L"Position.cx", NULL, NULL, (BYTE *)&x, &size );
+        size = sizeof(DWORD);
+        RegQueryValueExW( monitor, L"Position.cy", NULL, NULL, (BYTE *)&y, &size );
+        RegCloseKey( monitor );
+
+        if (!width || !height || !(mode = find_mode( &outputs[i], width, height, refresh ))) ok = FALSE;
+        else
+        {
+            config_from_mode( configs + i, &outputs[i], mode, x, y );
+            if (!x && !y) primary = i;
+        }
+    }
+    if (hkey) RegCloseKey( hkey );
+    if (ok) place_outputs( configs, primary );
+    return ok;
+}
+
+/* No layout for these monitors: each one at the size it was made for and the
+ * fastest refresh rate it takes there, side by side, the way Windows extends
+ * the desktop onto a monitor it sees for the first time. A monitor that is
+ * already showing something keeps it, so that plugging in a second one does
+ * not disturb the first. */
+static void default_layout( struct dwm_output_config *configs, UINT attempt )
+{
+    UINT primary = 0;
+    INT right = 0;
+
+    for (UINT i = 0; i < output_count; i++)
+        if (outputs[i].internal) primary = i;
+
+    for (UINT i = 0; i < output_count; i++)
+    {
+        const struct dwm_output *output = &outputs[i];
+        const struct dwm_mode *mode;
+
+        if (output->enabled && attempt == 0)
+        {
+            config_from_mode( configs + i, output, &output->modes[output->mode], output->x, output->y );
+            right = max( right, output->x + (INT)output->modes[output->mode].width );
+            if (!output->x && !output->y) primary = i;
+            continue;
+        }
+        if (!(mode = mode_for_attempt( output, attempt ))) continue;
+        config_from_mode( configs + i, output, mode, i == primary ? 0 : right, 0 );
+        if (i != primary) right += mode->width;
+    }
+    /* the primary monitor's place decides where the others are */
+    for (UINT i = 0; i < output_count; i++)
+        if (configs[i].enabled && !configs[i].x && !configs[i].y) primary = i;
+    place_outputs( configs, primary );
+}
+
+static BOOL apply_layout( struct dwm_output_config *configs )
+{
+    struct dwm_set_config_params params = { .count = output_count, .configs = configs };
+
+    return !WINE_UNIX_CALL( unix_dwm_set_config, &params );
+}
+
+/* Gives every monitor a mode. Called once at start and whenever monitors
+ * come or go. */
+static void configure_monitors(void)
+{
+    struct dwm_output_config configs[DWM_MAX_OUTPUTS];
+
+    if (!read_outputs())
+    {
+        ERR( "no monitor is connected\n" );
+        return;
+    }
+
+    memset( configs, 0, sizeof(configs) );
+    if (saved_layout( configs ) && apply_layout( configs )) return;
+
+    for (UINT attempt = 0; attempt < 4; attempt++)
+    {
+        memset( configs, 0, sizeof(configs) );
+        default_layout( configs, attempt );
+        if (apply_layout( configs )) return;
+    }
+    ERR( "no mode any monitor takes\n" );
+}
+
+/* Keeps what a program applied with CDS_UPDATEREGISTRY, so that this set of
+ * monitors comes up the same way next time. */
+static void save_monitors(void)
+{
+    HKEY hkey;
+
+    if (!read_outputs() || !(hkey = open_configuration( TRUE )))
+    {
+        WARN( "cannot keep the display settings\n" );
+        return;
+    }
+    for (UINT i = 0; i < output_count; i++)
+    {
+        const struct dwm_output *output = &outputs[i];
+        DWORD value;
+        WCHAR id[64];
+        HKEY monitor;
+
+        if (!output->enabled) continue;
+        monitor_id( output, id, ARRAY_SIZE(id) );
+        if (RegCreateKeyExW( hkey, id, 0, NULL, 0, KEY_SET_VALUE, NULL, &monitor, NULL )) continue;
+        value = output->modes[output->mode].width;
+        RegSetValueExW( monitor, L"PrimSurfSize.cx", 0, REG_DWORD, (BYTE *)&value, sizeof(value) );
+        value = output->modes[output->mode].height;
+        RegSetValueExW( monitor, L"PrimSurfSize.cy", 0, REG_DWORD, (BYTE *)&value, sizeof(value) );
+        value = output->modes[output->mode].refresh;
+        RegSetValueExW( monitor, L"VSyncFreq.Numerator", 0, REG_DWORD, (BYTE *)&value, sizeof(value) );
+        value = 1000;
+        RegSetValueExW( monitor, L"VSyncFreq.Denominator", 0, REG_DWORD, (BYTE *)&value, sizeof(value) );
+        value = output->x;
+        RegSetValueExW( monitor, L"Position.cx", 0, REG_DWORD, (BYTE *)&value, sizeof(value) );
+        value = output->y;
+        RegSetValueExW( monitor, L"Position.cy", 0, REG_DWORD, (BYTE *)&value, sizeof(value) );
+        RegCloseKey( monitor );
+    }
+    RegCloseKey( hkey );
+}
+
+/**********************************************************************
+ *          The windows
+ */
 
 static struct composition_window *list;
 static struct dwm_window           *windows;
@@ -136,12 +442,19 @@ DWORD WINAPI DwmCoreRun(void)
         ERR( "cannot take the display: %#lx\n", status );
         return status;
     }
+    /* the display layout is kept in HKLM, as Windows keeps it */
+    if ((status = NtSetInformationProcess( GetCurrentProcess(), ProcessWineGrantAdminToken, NULL, 0 )))
+        WARN( "no admin token: %#lx\n", status );
+    configure_monitors();
+
     /* wininit.exe starts csrss.exe on this: the display driver connects as it loads */
     SetEvent( CreateEventW( NULL, TRUE, FALSE, L"__arctic_dwm_ready" ) );
     grow( 256 );
     for (;;)
     {
         if ((status = WINE_UNIX_CALL( unix_dwm_dispatch, &dispatch ))) return status;
+        if (dispatch.events & DWM_EVENT_HOTPLUG) configure_monitors();
+        if (dispatch.events & DWM_EVENT_SAVE) save_monitors();
         update_windows();
     }
 }

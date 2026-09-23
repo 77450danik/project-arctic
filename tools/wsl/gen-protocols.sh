@@ -13,7 +13,7 @@ DST=$ROOT/runtime/wine/modules/dlls/dwmcore
 fix_includes() { sed -E 's/#include "(wayland-[a-z-]+\.h)"/#include <\1>/'; }
 
 # standard protocols come from Wine's tree, ours (arctic-*) live next to dwmcore
-for proto in xdg-shell viewporter arctic-shell-v1; do
+for proto in xdg-shell viewporter xdg-output-unstable-v1 arctic-shell-v1 arctic-display-v1; do
     src=$XML/$proto.xml
     case $proto in arctic-*) src=$DST/$proto.xml ;; esac
     wayland-scanner server-header "$src" /dev/stdout | fix_includes > "$DST/$proto-server-protocol.h"

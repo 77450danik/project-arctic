@@ -12,14 +12,23 @@
 
 #include "wine/unixlib.h"
 
+#define DWM_MAX_OUTPUTS 8
+#define DWM_MAX_MODES   160
+#define DWM_MAX_EDID    2048
+
 struct dwm_start_params
 {
     UINT32 background;  /* COLORREF of the desktop */
 };
 
+/* what happened while dispatching, for the Windows side to act on */
+#define DWM_EVENT_HOTPLUG 0x1  /* monitors came or went: they need a layout */
+#define DWM_EVENT_SAVE    0x2  /* a program applied a layout to be kept */
+
 struct dwm_dispatch_params
 {
     UINT32 timeout_ms;
+    UINT32 events;      /* out: DWM_EVENT_* */
 };
 
 /* a toplevel window as wineserver sees it */
@@ -42,12 +51,60 @@ struct dwm_set_cursor_params
     INT32 x, y;  /* screen coordinates */
 };
 
+#define DWM_MODE_PREFERRED 0x1  /* the monitor's native mode */
+
+struct dwm_mode
+{
+    UINT32 width, height;
+    UINT32 refresh;     /* mHz */
+    UINT32 flags;       /* DWM_MODE_* */
+};
+
+/* a connected monitor */
+struct dwm_output
+{
+    UINT32          id;           /* connector id */
+    char            name[32];     /* connector, e.g. HDMI-A-1 */
+    UINT32          internal;     /* a laptop's own panel */
+    UINT32          enabled;
+    INT32           x, y;         /* in the virtual screen, when enabled */
+    UINT32          mode;         /* index into modes, when enabled */
+    UINT32          mode_count;
+    struct dwm_mode modes[DWM_MAX_MODES];
+    UINT32          edid_len;
+    BYTE            edid[DWM_MAX_EDID];
+};
+
+struct dwm_get_outputs_params
+{
+    UINT32             count;     /* out */
+    struct dwm_output *outputs;   /* DWM_MAX_OUTPUTS of them */
+};
+
+/* what one monitor should show */
+struct dwm_output_config
+{
+    UINT32 id;
+    UINT32 enabled;
+    INT32  x, y;
+    UINT32 width, height;
+    UINT32 refresh;     /* mHz */
+};
+
+struct dwm_set_config_params
+{
+    UINT32                          count;
+    const struct dwm_output_config *configs;  /* monitors not named keep theirs */
+};
+
 enum dwm_funcs
 {
     unix_dwm_start,        /* take the display, start serving buffers */
     unix_dwm_dispatch,     /* serve clients and compose, for up to timeout_ms */
     unix_dwm_set_windows,  /* the toplevel windows, from wineserver */
     unix_dwm_set_cursor,   /* the cursor position, from wineserver */
+    unix_dwm_get_outputs,  /* the connected monitors with their modes */
+    unix_dwm_set_config,   /* modes and positions of the monitors */
     unix_funcs_count
 };
 

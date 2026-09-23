@@ -3,13 +3,14 @@
  *
  * Serves window buffers over the Wayland wire protocol on
  * $XDG_RUNTIME_DIR/arctic-0 and composes them on the CPU into the KMS
- * framebuffer. This step speaks the standard protocols Wine's own Wayland
- * driver needs (wl_compositor, wl_shm, wl_subcompositor, xdg_wm_base,
- * wp_viewporter, wl_output), plus arctic_shell_v1, through which a client
- * says which Win32 window a surface shows. Where those windows are, whether
- * they are visible and how they are stacked comes from wineserver (patch
- * 0001, read by the PE side), never from the client. Surfaces without a
- * window keep a simple cascade.
+ * framebuffer of every monitor. This step speaks the standard protocols
+ * Wine's own Wayland driver needs (wl_compositor, wl_shm, wl_subcompositor,
+ * xdg_wm_base, wp_viewporter, wl_output, xdg_output), plus arctic_shell_v1,
+ * through which a client says which Win32 window a surface shows, and
+ * arctic_display_v1, through which it reads the EDID of a monitor and
+ * changes modes. Where those windows are, whether they are visible and how
+ * they are stacked comes from wineserver (patch 0001, read by the PE side),
+ * never from the client. Surfaces without a window keep a simple cascade.
  *
  * Buffers are copied at commit and released at once, so clients never wait
  * on the compositor; the copy is what the next frame is composed from.
@@ -26,6 +27,7 @@
 
 #include "config.h"
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -36,7 +38,9 @@
 
 #include "xdg-shell-server-protocol.h"
 #include "viewporter-server-protocol.h"
+#include "xdg-output-unstable-v1-server-protocol.h"
 #include "arctic-shell-v1-server-protocol.h"
+#include "arctic-display-v1-server-protocol.h"
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -92,17 +96,32 @@ struct surface
     struct wl_list      stack_link;          /* toplevels, bottom to top */
 };
 
+/* one monitor, as the clients see it */
+struct output
+{
+    struct kms_output *kms;                  /* NULL once it is unplugged */
+    struct wl_global  *global;
+    struct wl_list     link;                 /* outputs, then dying_outputs */
+    struct wl_list     resources;            /* wl_output */
+    struct wl_list     xdg_resources;        /* zxdg_output_v1 */
+    uint32_t           expire;               /* when an unplugged monitor is let go */
+};
+
 static struct wl_display      *display;
 static struct wl_event_source *frame_timer;
 static struct wl_list          all_surfaces;
 static struct wl_list          toplevels;
+static struct wl_list          outputs;      /* struct output */
+static struct wl_list          dying_outputs;  /* unplugged, until their clients let go */
 static uint32_t                background;   /* XRGB */
 static uint32_t               *shadow;       /* frame composed in RAM, then copied out */
+static RECT                    screen;       /* the virtual screen every monitor is placed in */
 static bool                    dirty = true;
 static int                     cascade;
 static struct dwm_window      *windows;      /* from wineserver, topmost first */
 static uint32_t                window_count;
 static int                     cursor_x, cursor_y;
+static uint32_t                pending_events;  /* DWM_EVENT_*, for the PE side */
 
 static uint32_t now_ms(void)
 {
@@ -160,15 +179,15 @@ static void blit( const struct surface *s, int x0, int y0 )
         const uint32_t *src;
         uint32_t *dst;
 
-        if (py < 0 || py >= (int)kms.height) continue;
+        if (py < screen.top || py >= screen.bottom) continue;
         src = s->pixels + (size_t)(sy0 + (dh == sh ? y : sh * y / dh)) * s->width + sx0;
-        dst = shadow + (size_t)py * kms.width;
+        dst = shadow + (size_t)(py - screen.top) * (screen.right - screen.left) - screen.left;
         for (int x = 0; x < dw; x++)
         {
             int px = x0 + x;
             uint32_t p;
 
-            if (px < 0 || px >= (int)kms.width) continue;
+            if (px < screen.left || px >= screen.right) continue;
             p = src[dw == sw ? x : sw * x / dw];
             if (!s->alpha || (p >> 24) == 0xff) dst[px] = p | 0xff000000;
             else if (p >> 24) dst[px] = over( p, dst[px] );
@@ -219,15 +238,63 @@ static void draw_cursor(void)
     {
         int py = cursor_y + y;
 
-        if (py < 0 || py >= (int)kms.height) continue;
+        if (py < screen.top || py >= screen.bottom) continue;
         for (int x = 0; arrow[y][x]; x++)
         {
             int px = cursor_x + x;
 
-            if (px < 0 || px >= (int)kms.width || arrow[y][x] == ' ') continue;
-            shadow[(size_t)py * kms.width + px] = arrow[y][x] == 'B' ? 0xff000000 : 0xffffffff;
+            if (px < screen.left || px >= screen.right || arrow[y][x] == ' ') continue;
+            shadow[(size_t)(py - screen.top) * (screen.right - screen.left) + px - screen.left] =
+                arrow[y][x] == 'B' ? 0xff000000 : 0xffffffff;
         }
     }
+}
+
+/* frames are composed as often as the fastest monitor shows them */
+static uint32_t screen_refresh_hz(void)
+{
+    uint32_t hz = 0;
+
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        struct kms_output *o = &kms.outputs[i];
+        uint32_t refresh;
+
+        if (!o->connector_id || !o->enabled) continue;
+        refresh = (o->modes[o->mode].refresh + 500) / 1000;
+        if (refresh > hz) hz = refresh;
+    }
+    return hz ? hz : 60;
+}
+
+/* the rectangle every monitor stands in, and the buffer frames are composed in */
+static bool update_screen(void)
+{
+    RECT rect = { INT_MAX, INT_MAX, INT_MIN, INT_MIN };
+    uint32_t *buffer;
+
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        struct kms_output *o = &kms.outputs[i];
+
+        if (!o->connector_id || !o->enabled) continue;
+        rect.left = min( rect.left, o->x );
+        rect.top = min( rect.top, o->y );
+        rect.right = max( rect.right, o->x + (int32_t)o->fb.width );
+        rect.bottom = max( rect.bottom, o->y + (int32_t)o->fb.height );
+    }
+    if (rect.left > rect.right) return false;
+    if (!memcmp( &rect, &screen, sizeof(rect) )) return true;
+
+    if (!(buffer = realloc( shadow, (size_t)(rect.right - rect.left) * (rect.bottom - rect.top) * 4 )))
+    {
+        ERR( "no memory for a %dx%d screen\n", (int)(rect.right - rect.left), (int)(rect.bottom - rect.top) );
+        return false;
+    }
+    shadow = buffer;
+    screen = rect;
+    dirty = true;
+    return true;
 }
 
 static struct surface *surface_for_hwnd( uint32_t hwnd )
@@ -241,9 +308,12 @@ static struct surface *surface_for_hwnd( uint32_t hwnd )
 
 static void compose(void)
 {
+    uint32_t width = screen.right - screen.left, height = screen.bottom - screen.top;
+    size_t count = (size_t)width * height;
+    struct output *output;
     struct surface *s;
-    size_t count = (size_t)kms.width * kms.height;
 
+    if (!shadow) return;
     for (size_t i = 0; i < count; i++) shadow[i] = background;
 
     /* Win32 windows, bottom to top, where wineserver has them */
@@ -257,9 +327,21 @@ static void compose(void)
     wl_list_for_each( s, &toplevels, stack_link )
         if (!s->hwnd) draw_tree( s, s->x, s->y );
     draw_cursor();
-    for (uint32_t y = 0; y < kms.height; y++)
-        memcpy( (uint8_t *)kms.pixels + (size_t)y * kms.pitch, shadow + (size_t)y * kms.width, kms.width * 4 );
-    kms_flush();
+
+    /* the part of the virtual screen each monitor stands on */
+    wl_list_for_each( output, &outputs, link )
+    {
+        struct kms_output *o = output->kms;
+        uint32_t rows;
+
+        if (!o || !o->enabled) continue;
+        rows = min( o->fb.height, height - (o->y - screen.top) );
+        for (uint32_t y = 0; y < rows; y++)
+            memcpy( (uint8_t *)o->fb.pixels + (size_t)y * o->fb.pitch,
+                    shadow + (size_t)(o->y - screen.top + y) * width + (o->x - screen.left),
+                    min( o->fb.width, width ) * 4 );
+        kms_flush( o );
+    }
 }
 
 static int frame_tick( void *data )
@@ -281,7 +363,7 @@ static int frame_tick( void *data )
             wl_resource_destroy( cb );
         }
     }
-    wl_event_source_timer_update( frame_timer, 1000000 / (kms.refresh_mhz ? kms.refresh_mhz : 60000) );
+    wl_event_source_timer_update( frame_timer, 1000 / screen_refresh_hz() );
     return 0;
 }
 
@@ -293,10 +375,10 @@ static void map_toplevel( struct surface *s )
 {
     int step = 32 * (cascade++ % 12);
 
-    s->x = 48 + step;
-    s->y = 48 + step;
-    if (s->x + s->width > (int)kms.width) s->x = 0;
-    if (s->y + s->height > (int)kms.height) s->y = 0;
+    s->x = screen.left + 48 + step;
+    s->y = screen.top + 48 + step;
+    if (s->x + s->width > screen.right) s->x = screen.left;
+    if (s->y + s->height > screen.bottom) s->y = screen.top;
     s->mapped = true;
     wl_list_insert( toplevels.prev, &s->stack_link );
 }
@@ -1015,8 +1097,59 @@ static void bind_shell( struct wl_client *client, void *data, uint32_t version, 
 }
 
 /**********************************************************************
- *          wl_output
+ *          Monitors: wl_output, xdg_output and arctic_display_v1
  */
+
+static struct output *output_from_resource( struct wl_resource *resource )
+{
+    return resource ? wl_resource_get_user_data( resource ) : NULL;
+}
+
+static void output_send_state( struct output *output, struct wl_resource *only )
+{
+    struct kms_output *o = output->kms;
+    struct wl_resource *resource;
+    const struct kms_mode *mode;
+
+    if (!o || !o->enabled) return;
+    mode = &o->modes[o->mode];
+
+    wl_resource_for_each( resource, &output->resources )
+    {
+        if (only && resource != only) continue;
+        /* a monitor that does not say its size is taken for 96 dpi */
+        wl_output_send_geometry( resource, o->x, o->y,
+                                 o->mm_width ? o->mm_width : mode->info.hdisplay * 254 / 960,
+                                 o->mm_height ? o->mm_height : mode->info.vdisplay * 254 / 960,
+                                 WL_OUTPUT_SUBPIXEL_UNKNOWN, "Arctic", o->name, WL_OUTPUT_TRANSFORM_NORMAL );
+        for (uint32_t i = 0; i < o->mode_count; i++)
+            wl_output_send_mode( resource, (i == o->mode ? WL_OUTPUT_MODE_CURRENT : 0) |
+                                 (i == o->preferred ? WL_OUTPUT_MODE_PREFERRED : 0),
+                                 o->modes[i].info.hdisplay, o->modes[i].info.vdisplay, o->modes[i].refresh );
+        if (wl_resource_get_version( resource ) >= WL_OUTPUT_SCALE_SINCE_VERSION)
+            wl_output_send_scale( resource, 1 );
+    }
+
+    wl_resource_for_each( resource, &output->xdg_resources )
+    {
+        zxdg_output_v1_send_logical_position( resource, o->x, o->y );
+        zxdg_output_v1_send_logical_size( resource, mode->info.hdisplay, mode->info.vdisplay );
+        if (wl_resource_get_version( resource ) < ZXDG_OUTPUT_V1_DONE_SINCE_VERSION)
+            zxdg_output_v1_send_done( resource );
+    }
+
+    wl_resource_for_each( resource, &output->resources )
+    {
+        if (only && resource != only) continue;
+        if (wl_resource_get_version( resource ) >= WL_OUTPUT_DONE_SINCE_VERSION)
+            wl_output_send_done( resource );
+    }
+}
+
+static void output_resource_destroyed( struct wl_resource *resource )
+{
+    wl_list_remove( wl_resource_get_link( resource ) );
+}
 
 static const struct wl_output_interface output_impl =
 {
@@ -1026,44 +1159,317 @@ static const struct wl_output_interface output_impl =
 static void bind_output( struct wl_client *client, void *data, uint32_t version, uint32_t id )
 {
     struct wl_resource *resource = wl_resource_create( client, &wl_output_interface, version, id );
+    struct output *output = data;
 
     if (!resource) return;
-    wl_resource_set_implementation( resource, &output_impl, NULL, NULL );
-    /* physical size as if 96 dpi, until EDID is read */
-    wl_output_send_geometry( resource, 0, 0, kms.width * 254 / 960, kms.height * 254 / 960,
-                             WL_OUTPUT_SUBPIXEL_UNKNOWN, "Arctic", "Display", WL_OUTPUT_TRANSFORM_NORMAL );
-    wl_output_send_mode( resource, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
-                         kms.width, kms.height, kms.refresh_mhz );
-    if (version >= WL_OUTPUT_SCALE_SINCE_VERSION) wl_output_send_scale( resource, 1 );
-    if (version >= WL_OUTPUT_DONE_SINCE_VERSION) wl_output_send_done( resource );
+    wl_resource_set_implementation( resource, &output_impl, output, output_resource_destroyed );
+    wl_list_insert( &output->resources, wl_resource_get_link( resource ) );
+    output_send_state( output, resource );
+}
+
+/* the clients see a monitor once it shows something */
+static void update_globals(void)
+{
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        struct kms_output *o = &kms.outputs[i];
+        struct output *output = o->user;
+
+        if (!o->connector_id) continue;
+        if (o->enabled && !output)
+        {
+            if (!(output = calloc( 1, sizeof(*output) ))) continue;
+            output->kms = o;
+            wl_list_init( &output->resources );
+            wl_list_init( &output->xdg_resources );
+            wl_list_insert( outputs.prev, &output->link );
+            o->user = output;
+            output->global = wl_global_create( display, &wl_output_interface, 2, output, bind_output );
+        }
+        else if (!o->enabled && output)
+        {
+            compositor_output_removed( o );
+        }
+    }
+}
+
+/* a monitor that was unplugged or turned off: it stops being a global, and
+ * what a client still holds of it goes quiet until the client lets it go */
+void compositor_output_removed( struct kms_output *o )
+{
+    struct output *output = o->user;
+
+    if (!output) return;
+    o->user = NULL;
+    output->kms = NULL;
+    if (output->global) wl_global_remove( output->global );
+    output->expire = now_ms() + 3000;
+    wl_list_remove( &output->link );
+    wl_list_insert( dying_outputs.prev, &output->link );
+    dirty = true;
+}
+
+static void reap_outputs(void)
+{
+    struct wl_resource *resource, *next_resource;
+    struct output *output, *next;
+
+    wl_list_for_each_safe( output, next, &dying_outputs, link )
+    {
+        if ((int32_t)(now_ms() - output->expire) < 0) continue;
+        wl_resource_for_each_safe( resource, next_resource, &output->resources )
+        {
+            wl_resource_set_user_data( resource, NULL );
+            wl_list_remove( wl_resource_get_link( resource ) );
+            wl_list_init( wl_resource_get_link( resource ) );
+        }
+        wl_resource_for_each_safe( resource, next_resource, &output->xdg_resources )
+        {
+            wl_resource_set_user_data( resource, NULL );
+            wl_list_remove( wl_resource_get_link( resource ) );
+            wl_list_init( wl_resource_get_link( resource ) );
+        }
+        if (output->global) wl_global_destroy( output->global );
+        wl_list_remove( &output->link );
+        free( output );
+    }
+}
+
+/**********************************************************************
+ *          xdg_output
+ */
+
+static void xdg_output_destroyed( struct wl_resource *resource )
+{
+    wl_list_remove( wl_resource_get_link( resource ) );
+}
+
+static const struct zxdg_output_v1_interface xdg_output_impl =
+{
+    .destroy = resource_destroy,
+};
+
+static void xdg_output_manager_get( struct wl_client *client, struct wl_resource *manager,
+                                    uint32_t id, struct wl_resource *output_resource )
+{
+    struct output *output = output_from_resource( output_resource );
+    struct wl_resource *resource;
+    uint32_t version = wl_resource_get_version( manager );
+
+    if (!(resource = wl_resource_create( client, &zxdg_output_v1_interface, version, id ))) return;
+    wl_resource_set_implementation( resource, &xdg_output_impl, output, xdg_output_destroyed );
+    if (!output || !output->kms)
+    {
+        wl_list_init( wl_resource_get_link( resource ) );
+        return;
+    }
+    wl_list_insert( &output->xdg_resources, wl_resource_get_link( resource ) );
+    if (version >= ZXDG_OUTPUT_V1_NAME_SINCE_VERSION)
+    {
+        zxdg_output_v1_send_name( resource, output->kms->name );
+        zxdg_output_v1_send_description( resource, output->kms->name );
+    }
+    output_send_state( output, NULL );
+}
+
+static const struct zxdg_output_manager_v1_interface xdg_output_manager_impl =
+{
+    .destroy = resource_destroy,
+    .get_xdg_output = xdg_output_manager_get,
+};
+
+static void bind_xdg_output_manager( struct wl_client *client, void *data, uint32_t version, uint32_t id )
+{
+    struct wl_resource *resource = wl_resource_create( client, &zxdg_output_manager_v1_interface, version, id );
+    if (resource) wl_resource_set_implementation( resource, &xdg_output_manager_impl, NULL, NULL );
+}
+
+/**********************************************************************
+ *          arctic_display_v1
+ */
+
+/* Modes and positions for every monitor at once, the way
+ * ChangeDisplaySettingsEx changes them. */
+static bool apply_configuration( const struct dwm_output_config *configs, uint32_t count, bool test, bool persist )
+{
+    struct output *output;
+
+    if (!kms_apply( configs, count, test )) return false;
+    if (test) return true;
+
+    update_globals();
+    update_screen();
+    wl_list_for_each( output, &outputs, link ) output_send_state( output, NULL );
+    if (persist) pending_events |= DWM_EVENT_SAVE;
+    dirty = true;
+    return true;
+}
+
+struct configuration
+{
+    struct dwm_output_config configs[KMS_MAX_OUTPUTS];
+    uint32_t                 count;
+    bool                     invalid;
+};
+
+static void configuration_set_mode( struct wl_client *client, struct wl_resource *resource,
+                                    struct wl_resource *output_resource, int32_t x, int32_t y,
+                                    int32_t width, int32_t height, int32_t refresh )
+{
+    struct configuration *config = wl_resource_get_user_data( resource );
+    struct output *output = output_from_resource( output_resource );
+    struct dwm_output_config *entry = NULL;
+
+    if (!output || !output->kms || width <= 0 || height <= 0)
+    {
+        config->invalid = true;
+        return;
+    }
+    for (uint32_t i = 0; i < config->count; i++)
+        if (config->configs[i].id == output->kms->connector_id) entry = &config->configs[i];
+    if (!entry && config->count < ARRAY_SIZE(config->configs)) entry = &config->configs[config->count++];
+    if (!entry)
+    {
+        config->invalid = true;
+        return;
+    }
+    entry->id = output->kms->connector_id;
+    entry->enabled = 1;
+    entry->x = x;
+    entry->y = y;
+    entry->width = width;
+    entry->height = height;
+    entry->refresh = refresh;
+}
+
+static void configuration_apply( struct wl_client *client, struct wl_resource *resource, uint32_t flags )
+{
+    struct configuration *config = wl_resource_get_user_data( resource );
+    bool ok;
+
+    ok = !config->invalid && config->count &&
+         apply_configuration( config->configs, config->count, !!(flags & ARCTIC_CONFIGURATION_V1_APPLY_FLAGS_TEST),
+                              !!(flags & ARCTIC_CONFIGURATION_V1_APPLY_FLAGS_PERSIST) );
+    config->count = 0;
+    config->invalid = false;
+    if (ok) arctic_configuration_v1_send_succeeded( resource );
+    else arctic_configuration_v1_send_failed( resource );
+}
+
+static void configuration_destroyed( struct wl_resource *resource )
+{
+    free( wl_resource_get_user_data( resource ) );
+}
+
+static const struct arctic_configuration_v1_interface configuration_impl =
+{
+    .destroy = resource_destroy,
+    .set_mode = configuration_set_mode,
+    .apply = configuration_apply,
+};
+
+static const struct arctic_output_v1_interface arctic_output_impl =
+{
+    .destroy = resource_destroy,
+};
+
+static void display_get_output( struct wl_client *client, struct wl_resource *display_resource,
+                                uint32_t id, struct wl_resource *output_resource )
+{
+    struct output *output = output_from_resource( output_resource );
+    struct wl_resource *resource;
+    struct wl_array edid;
+
+    if (!(resource = wl_resource_create( client, &arctic_output_v1_interface,
+                                         wl_resource_get_version( display_resource ), id )))
+        return;
+    wl_resource_set_implementation( resource, &arctic_output_impl, NULL, NULL );
+    wl_array_init( &edid );
+    if (output && output->kms && output->kms->edid_len)
+    {
+        void *data = wl_array_add( &edid, output->kms->edid_len );
+        if (data) memcpy( data, output->kms->edid, output->kms->edid_len );
+    }
+    arctic_output_v1_send_edid( resource, &edid );
+    wl_array_release( &edid );
+}
+
+static void display_create_configuration( struct wl_client *client, struct wl_resource *display_resource,
+                                          uint32_t id )
+{
+    struct configuration *config = calloc( 1, sizeof(*config) );
+    struct wl_resource *resource;
+
+    if (!config) return;
+    if (!(resource = wl_resource_create( client, &arctic_configuration_v1_interface,
+                                         wl_resource_get_version( display_resource ), id )))
+    {
+        free( config );
+        return;
+    }
+    wl_resource_set_implementation( resource, &configuration_impl, config, configuration_destroyed );
+}
+
+static const struct arctic_display_v1_interface display_impl =
+{
+    .destroy = resource_destroy,
+    .get_output = display_get_output,
+    .create_configuration = display_create_configuration,
+};
+
+static void bind_display( struct wl_client *client, void *data, uint32_t version, uint32_t id )
+{
+    struct wl_resource *resource = wl_resource_create( client, &arctic_display_v1_interface, version, id );
+
+    if (!resource) return;
+    wl_resource_set_implementation( resource, &display_impl, NULL, NULL );
+    arctic_display_v1_send_adapter( resource, kms.vendor, kms.device, kms.subsystem, kms.revision,
+                                    kms.description );
 }
 
 /**********************************************************************
  *          Unix calls
  */
 
+static int hotplug_event( int fd, uint32_t mask, void *data )
+{
+    if (!kms_hotplug_event( fd )) return 0;
+    if (!kms_probe()) return 0;
+
+    /* a monitor that went stops showing at once; a new one waits for the
+     * Windows side to give it a mode (dwmcore.c) */
+    update_globals();
+    update_screen();
+    pending_events |= DWM_EVENT_HOTPLUG;
+    dirty = true;
+    return 0;
+}
+
 static NTSTATUS dwm_start( void *args )
 {
     const struct dwm_start_params *params = args;
     struct wl_event_loop *loop;
+    int hotplug;
 
     /* COLORREF is 0x00BBGGRR, the framebuffer wants 0x00RRGGBB */
     background = 0xff000000 | ((params->background & 0xff) << 16) | (params->background & 0xff00) |
                  ((params->background >> 16) & 0xff);
 
-    if (kms_init()) return STATUS_DEVICE_NOT_CONNECTED;
-    if (!(shadow = malloc( (size_t)kms.width * kms.height * 4 ))) return STATUS_NO_MEMORY;
+    if (kms_open()) return STATUS_DEVICE_NOT_CONNECTED;
 
     wl_list_init( &all_surfaces );
     wl_list_init( &toplevels );
+    wl_list_init( &outputs );
+    wl_list_init( &dying_outputs );
     if (!(display = wl_display_create())) return STATUS_UNSUCCESSFUL;
     wl_display_init_shm( display );
     wl_global_create( display, &wl_compositor_interface, 4, NULL, bind_compositor );
     wl_global_create( display, &wl_subcompositor_interface, 1, NULL, bind_subcompositor );
     wl_global_create( display, &wp_viewporter_interface, 1, NULL, bind_viewporter );
     wl_global_create( display, &xdg_wm_base_interface, 2, NULL, bind_wm_base );
-    wl_global_create( display, &wl_output_interface, 2, NULL, bind_output );
+    wl_global_create( display, &zxdg_output_manager_v1_interface, 3, NULL, bind_xdg_output_manager );
     wl_global_create( display, &arctic_shell_v1_interface, 1, NULL, bind_shell );
+    wl_global_create( display, &arctic_display_v1_interface, 1, NULL, bind_display );
 
     if (wl_display_add_socket( display, SOCKET_NAME ))
     {
@@ -1073,6 +1479,8 @@ static NTSTATUS dwm_start( void *args )
     loop = wl_display_get_event_loop( display );
     frame_timer = wl_event_loop_add_timer( loop, frame_tick, NULL );
     wl_event_source_timer_update( frame_timer, 1 );
+    if ((hotplug = kms_hotplug_socket()) >= 0)
+        wl_event_loop_add_fd( loop, hotplug, WL_EVENT_READABLE, hotplug_event, NULL );
     MESSAGE( "dwm: serving %s/%s\n", getenv( "XDG_RUNTIME_DIR" ), SOCKET_NAME );
     return STATUS_SUCCESS;
 }
@@ -1081,10 +1489,13 @@ static NTSTATUS dwm_start( void *args )
  * between calls the PE side asks wineserver about the windows */
 static NTSTATUS dwm_dispatch( void *args )
 {
-    const struct dwm_dispatch_params *params = args;
+    struct dwm_dispatch_params *params = args;
 
     wl_event_loop_dispatch( wl_display_get_event_loop( display ), (int)params->timeout_ms );
     wl_display_flush_clients( display );
+    reap_outputs();
+    params->events = pending_events;
+    pending_events = 0;
     return STATUS_SUCCESS;
 }
 
@@ -1112,12 +1523,57 @@ static NTSTATUS dwm_set_cursor( void *args )
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS dwm_get_outputs( void *args )
+{
+    struct dwm_get_outputs_params *params = args;
+
+    params->count = 0;
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        struct kms_output *o = &kms.outputs[i];
+        struct dwm_output *info = &params->outputs[params->count];
+
+        if (!o->connector_id) continue;
+        memset( info, 0, sizeof(*info) );
+        info->id = o->connector_id;
+        strcpy( info->name, o->name );
+        info->internal = o->connector_type == 7 /* LVDS */ || o->connector_type == 14 /* eDP */ ||
+                         o->connector_type == 16 /* DSI */;
+        info->enabled = o->enabled;
+        info->x = o->x;
+        info->y = o->y;
+        info->mode = o->mode;
+        info->mode_count = min( o->mode_count, DWM_MAX_MODES );
+        for (uint32_t k = 0; k < info->mode_count; k++)
+        {
+            info->modes[k].width = o->modes[k].info.hdisplay;
+            info->modes[k].height = o->modes[k].info.vdisplay;
+            info->modes[k].refresh = o->modes[k].refresh;
+            info->modes[k].flags = k == o->preferred ? DWM_MODE_PREFERRED : 0;
+        }
+        info->edid_len = min( o->edid_len, DWM_MAX_EDID );
+        memcpy( info->edid, o->edid, info->edid_len );
+        params->count++;
+    }
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS dwm_set_config( void *args )
+{
+    const struct dwm_set_config_params *params = args;
+
+    return apply_configuration( params->configs, params->count, false, false ) ?
+           STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
+}
+
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     dwm_start,
     dwm_dispatch,
     dwm_set_windows,
     dwm_set_cursor,
+    dwm_get_outputs,
+    dwm_set_config,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
