@@ -84,13 +84,16 @@ static void load_graphics_driver( const GUID *guid )
 }
 
 /* a window the screen no longer has room for comes back onto the primary
- * monitor, as it does in Windows when its monitor is unplugged */
+ * monitor, as it does in Windows when its monitor is unplugged. The shell's
+ * own windows place themselves: the taskbar docks where it belongs, and
+ * moving it here would only take it out of its place at the top */
 static BOOL CALLBACK bring_window_on_screen( HWND hwnd, LPARAM param )
 {
     RECT rect, work;
     int x, y;
 
     if (!IsWindowVisible( hwnd ) || IsIconic( hwnd )) return TRUE;
+    if (GetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_TOOLWINDOW) return TRUE;
     if (MonitorFromWindow( hwnd, MONITOR_DEFAULTTONULL )) return TRUE;
     if (!GetWindowRect( hwnd, &rect ) || !SystemParametersInfoW( SPI_GETWORKAREA, 0, &work, 0 )) return TRUE;
 

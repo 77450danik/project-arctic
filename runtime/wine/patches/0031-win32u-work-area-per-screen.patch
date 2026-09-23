@@ -1,0 +1,51 @@
+From 4c68c5aaa574aa44f78c647f699c307773440dc5 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 23 Sep 2026 12:45:41 +0300
+Subject: [PATCH] win32u: A screen of another size gets a work area of its own.
+
+The work area a shell sets is remembered until a shell sets it again, so
+after a display mode change every program still laid itself out for the
+old screen. It is forgotten now, and until the shell sets a new one the
+monitor's own work area answers.
+---
+ dlls/win32u/sysparams.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 4715ee4..fc1d5a5 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -4432,10 +4432,17 @@ static BOOL get_primary_source_mode( DEVMODEW *mode )
+     return ret;
+ }
+ 
++static void forget_work_area(void);
++
+ static void display_mode_changed( BOOL broadcast )
+ {
+     DEVMODEW current_mode = {.dmSize = sizeof(DEVMODEW)};
+ 
++    /* A screen of another size has a work area of its own; the one a shell
++     * set for the old screen would keep every program to the old bounds
++     * until the shell got round to setting it again. */
++    forget_work_area();
++
+     if (!update_display_cache( TRUE ))
+     {
+         ERR( "Failed to update display cache after mode change.\n" );
+@@ -5818,6 +5825,12 @@ enum spi_index
+ /* indicators whether system parameter value is loaded */
+ static char spi_loaded[SPI_INDEX_COUNT];
+ 
++/* the work area a shell set belongs to the screen it set it for */
++static void forget_work_area(void)
++{
++    spi_loaded[SPI_SETWORKAREA_IDX] = FALSE;
++}
++
+ static struct sysparam_rgb_entry system_colors[] =
+ {
+ #define RGB_ENTRY(name,val,reg) { { get_rgb_entry, set_rgb_entry, init_rgb_entry, COLORS_KEY, reg }, (val) }
+-- 
+2.55.0
+

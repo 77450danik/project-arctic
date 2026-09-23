@@ -1,0 +1,55 @@
+From 0278132681e1a2c13b78ab9716a7a5bf2e1c46b6 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 23 Sep 2026 12:43:54 +0300
+Subject: [PATCH] shell32: The desktop follows the screen when the display mode
+ changes.
+
+The desktop window was the size of the screen it was made on and stayed
+there: on a smaller screen it hung over the edges and hid the taskbar,
+on a larger one it left a strip of nothing. Windows resizes it from
+win32k; here it follows WM_DISPLAYCHANGE itself.
+---
+ dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+index 2583a06..4751c03 100644
+--- a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
++++ b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+@@ -107,6 +107,7 @@ public:
+     LRESULT OnDeviceChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT OnShowOptionsDlg(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT OnSaveState(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
++    LRESULT OnDisplayChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+ 
+ DECLARE_WND_CLASS_EX(szProgmanClassName, CS_DBLCLKS, COLOR_DESKTOP)
+ 
+@@ -115,6 +116,7 @@ BEGIN_MSG_MAP(CBaseBar)
+     MESSAGE_HANDLER(WM_SIZE, OnSize)
+     MESSAGE_HANDLER(WM_SYSCOLORCHANGE, OnSettingChange)
+     MESSAGE_HANDLER(WM_SETTINGCHANGE, OnSettingChange)
++    MESSAGE_HANDLER(WM_DISPLAYCHANGE, OnDisplayChange)
+     MESSAGE_HANDLER(WM_CLOSE, OnClose)
+     MESSAGE_HANDLER(WM_EXPLORER_OPEN_NEW_WINDOW, OnOpenNewWindow)
+     MESSAGE_HANDLER(WM_COMMAND, OnCommand)
+@@ -459,6 +461,17 @@ LRESULT CDesktopBrowser::OnSettingChange(UINT uMsg, WPARAM wParam, LPARAM lParam
+     return 0;
+ }
+ 
++/* A screen of another size leaves the desktop the size of the old one until
++ * the taskbar gets round to setting the work area, and a window manager is
++ * not there to do it either: the desktop follows the screen itself. */
++LRESULT CDesktopBrowser::OnDisplayChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
++{
++    if (m_hWndShellView)
++        _Resize();
++
++    return 0;
++}
++
+ LRESULT CDesktopBrowser::OnClose(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
+     return _NotifyTray(TWM_DOEXITWINDOWS, 0, 0);
+-- 
+2.55.0
+
