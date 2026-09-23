@@ -683,18 +683,20 @@ int kms_hotplug_socket(void)
     if (fd < 0) return -1;
     if (bind( fd, (struct sockaddr *)&addr, sizeof(addr) ))
     {
-        WARN( "no display hotplug: %s\n", strerror( errno ) );
+        ERR( "no display hotplug: %s\n", strerror( errno ) );
         close( fd );
         return -1;
     }
     return fd;
 }
 
-/* "change@/devices/.../drm/card1" SUBSYSTEM=drm HOTPLUG=1 DEVNAME=dri/card1 */
+/* "change@/devices/.../drm/card1" SUBSYSTEM=drm ACTION=change DEVNAME=dri/card1.
+ * A monitor plugged in or out comes with HOTPLUG=1, but not every driver
+ * says so, and rereading the connectors of our own card costs little. */
 bool kms_hotplug_event( int fd )
 {
     const char *card = kms.name + strlen( "/dev/" );
-    bool drm = false, hotplug = false, ours = false;
+    bool drm = false, change = false, ours = false;
     char buffer[4096];
     ssize_t len;
 
@@ -703,8 +705,8 @@ bool kms_hotplug_event( int fd )
     for (char *p = buffer; p < buffer + len; p += strlen( p ) + 1)
     {
         if (!strcmp( p, "SUBSYSTEM=drm" )) drm = true;
-        else if (!strcmp( p, "HOTPLUG=1" )) hotplug = true;
+        else if (!strncmp( p, "ACTION=", 7 )) change = !strcmp( p + 7, "change" );
         else if (!strncmp( p, "DEVNAME=", 8 ) && !strcmp( p + 8, card )) ours = true;
     }
-    return drm && hotplug && ours;
+    return drm && change && ours;
 }
