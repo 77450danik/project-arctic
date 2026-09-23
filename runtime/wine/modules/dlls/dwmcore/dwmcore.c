@@ -262,34 +262,48 @@ static void default_layout( struct dwm_output_config *configs, UINT attempt )
     UINT primary = 0;
     INT right = 0;
 
-    for (UINT i = 0; i < output_count; i++)
+    /* a laptop's own panel is the primary monitor, else the first one */
+    for (UINT i = output_count; i--;)
         if (outputs[i].internal) primary = i;
 
-    for (UINT i = 0; i < output_count; i++)
+    /* a monitor that already shows something keeps it, so that plugging in
+     * a second one does not disturb the first */
+    for (UINT i = 0; attempt == 0 && i < output_count; i++)
     {
         const struct dwm_output *output = &outputs[i];
-        const struct dwm_mode *mode;
 
-        if (output->enabled && attempt == 0)
-        {
-            config_from_mode( configs + i, output, &output->modes[output->mode], output->x, output->y );
-            right = max( right, output->x + (INT)output->modes[output->mode].width );
-            if (!output->x && !output->y) primary = i;
-            continue;
-        }
-        if (!(mode = mode_for_attempt( output, attempt ))) continue;
-        config_from_mode( configs + i, output, mode, i == primary ? 0 : right, 0 );
-        if (i != primary) right += mode->width;
+        if (!output->enabled) continue;
+        config_from_mode( configs + i, output, &output->modes[output->mode], output->x, output->y );
+        right = max( right, output->x + (INT)output->modes[output->mode].width );
+        if (!output->x && !output->y) primary = i;
     }
-    /* the primary monitor's place decides where the others are */
-    for (UINT i = 0; i < output_count; i++)
-        if (configs[i].enabled && !configs[i].x && !configs[i].y) primary = i;
+
+    /* the primary monitor comes first, at 0,0; the rest stand to its right */
+    for (UINT pass = 0; pass < 2; pass++)
+    {
+        for (UINT i = 0; i < output_count; i++)
+        {
+            const struct dwm_mode *mode;
+
+            if (configs[i].enabled || (i == primary) != (pass == 0)) continue;
+            if (!(mode = mode_for_attempt( &outputs[i], attempt ))) continue;
+            config_from_mode( configs + i, &outputs[i], mode, i == primary ? 0 : right, 0 );
+            right = max( right, configs[i].x + (INT)mode->width );
+        }
+    }
     place_outputs( configs, primary );
 }
 
-static BOOL apply_layout( struct dwm_output_config *configs )
+/* A monitor with no mode in the layout is left out of it, not turned off:
+ * dwm.exe keeps what such a monitor shows. */
+static BOOL apply_layout( const struct dwm_output_config *configs )
 {
-    struct dwm_set_config_params params = { .count = output_count, .configs = configs };
+    struct dwm_output_config wanted[DWM_MAX_OUTPUTS];
+    struct dwm_set_config_params params = { .configs = wanted };
+
+    for (UINT i = 0; i < output_count; i++)
+        if (configs[i].id) wanted[params.count++] = configs[i];
+    if (!params.count) return FALSE;
 
     return !WINE_UNIX_CALL( unix_dwm_set_config, &params );
 }
