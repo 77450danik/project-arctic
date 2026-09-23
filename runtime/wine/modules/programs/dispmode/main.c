@@ -84,6 +84,50 @@ static BOOL CALLBACK print_window( HWND hwnd, LPARAM param )
     return TRUE;
 }
 
+/* the monitor's own name, the way the Display control panel asks for it */
+static void print_monitor_names(void)
+{
+    UINT32 path_count = 0, mode_count = 0;
+    DISPLAYCONFIG_PATH_INFO *paths;
+    DISPLAYCONFIG_MODE_INFO *modes;
+    LONG result;
+
+    printf( "sizeof: path %u mode %u source name %u target name %u header %u\n",
+            (UINT)sizeof(DISPLAYCONFIG_PATH_INFO), (UINT)sizeof(DISPLAYCONFIG_MODE_INFO),
+            (UINT)sizeof(DISPLAYCONFIG_SOURCE_DEVICE_NAME), (UINT)sizeof(DISPLAYCONFIG_TARGET_DEVICE_NAME),
+            (UINT)sizeof(DISPLAYCONFIG_DEVICE_INFO_HEADER) );
+
+    if ((result = GetDisplayConfigBufferSizes( QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count )))
+    {
+        printf( "GetDisplayConfigBufferSizes: %ld\n", result );
+        return;
+    }
+    paths = malloc( path_count * sizeof(*paths) );
+    modes = malloc( mode_count * sizeof(*modes) );
+    if (!paths || !modes) return;
+
+    if ((result = QueryDisplayConfig( QDC_ONLY_ACTIVE_PATHS, &path_count, paths, &mode_count, modes, NULL )))
+    {
+        printf( "QueryDisplayConfig: %ld\n", result );
+        return;
+    }
+
+    for (UINT32 i = 0; i < path_count; i++)
+    {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {{ DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(source),
+                                                     paths[i].sourceInfo.adapterId, paths[i].sourceInfo.id }};
+        DISPLAYCONFIG_TARGET_DEVICE_NAME target = {{ DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof(target),
+                                                     paths[i].targetInfo.adapterId, paths[i].targetInfo.id }};
+
+        result = DisplayConfigGetDeviceInfo( &source.header );
+        printf( "path %u: source %ls (%ld)\n", i, source.viewGdiDeviceName, result );
+        result = DisplayConfigGetDeviceInfo( &target.header );
+        printf( "path %u: monitor %ls (%ld)\n", i, target.monitorFriendlyDeviceName, result );
+    }
+    free( paths );
+    free( modes );
+}
+
 static const char *result_text( LONG result )
 {
     switch (result)
@@ -114,6 +158,12 @@ int wmain( int argc, WCHAR *argv[] )
     if (!wanted)
     {
         print_devices();
+        return 0;
+    }
+
+    if (!wcscmp( wanted, L"names" ))
+    {
+        print_monitor_names();
         return 0;
     }
 

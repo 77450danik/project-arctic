@@ -1,6 +1,6 @@
-From bc26a43c7a8f49d3492bf2413c1d70ea62a497ef Mon Sep 17 00:00:00 2001
+From fa21c415e8af74399caaf8c8c7202df958bb91c2 Mon Sep 17 00:00:00 2001
 From: 77450danik <dnsystems@email.ua>
-Date: Wed, 23 Sep 2026 12:31:12 +0300
+Date: Wed, 23 Sep 2026 13:43:30 +0300
 Subject: [PATCH] desk: The refresh rate under the resolution, and the monitor
  by name.
 
@@ -10,18 +10,23 @@ mode of the monitor and the refresh rate sits right under the
 resolution, where the display settings of Windows 10 have it; a
 resolution starts at the fastest rate the monitor takes there.
 
-The Display line names the monitor the way its EDID does, which needs
-the display configuration API of Windows 7 (monitorname.c, the only file
-built for it), and several monitors stand where the desktop has them
-instead of a fixed 1280 apart.
+The Display line names the monitor the way its EDID does. Asking for
+that name needs the display configuration API of Windows 7, whose
+structures monitorname.c writes out itself: their enums mix negative
+values with 0xFFFFFFFF, which MSVC keeps in four bytes and GCC widens to
+eight, so structures built from the headers on this toolchain do not
+match the ones the system reads.
+
+Several monitors stand where the desktop has them instead of a fixed
+1280 apart.
 ---
  dll/cpl/desk/CMakeLists.txt |   3 +-
  dll/cpl/desk/lang/en-US.rc  |  32 ++++---
  dll/cpl/desk/lang/uk-UA.rc  |  32 ++++---
- dll/cpl/desk/monitorname.c  |  87 ++++++++++++++++++
+ dll/cpl/desk/monitorname.c  | 159 +++++++++++++++++++++++++++++++++
  dll/cpl/desk/resource.h     |   4 +
  dll/cpl/desk/settings.c     | 173 +++++++++++++++++++++++++++++++++---
- 6 files changed, 292 insertions(+), 39 deletions(-)
+ 6 files changed, 364 insertions(+), 39 deletions(-)
  create mode 100644 dll/cpl/desk/monitorname.c
 
 diff --git a/dll/cpl/desk/CMakeLists.txt b/dll/cpl/desk/CMakeLists.txt
@@ -142,10 +147,10 @@ index 184d874..d58dd0b 100644
  STRINGTABLE
 diff --git a/dll/cpl/desk/monitorname.c b/dll/cpl/desk/monitorname.c
 new file mode 100644
-index 0000000..32922e1
+index 0000000..f39aeaf
 --- /dev/null
 +++ b/dll/cpl/desk/monitorname.c
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,159 @@
 +/*
 + * COPYRIGHT:       See COPYING in the top level directory
 + * PROJECT:         ReactOS Display Control Panel
@@ -153,29 +158,101 @@ index 0000000..32922e1
 + * PROGRAMMERS:     Project Arctic contributors
 + */
 +
-+/* The display configuration API is Windows 7, and the applet is built for
-+ * Vista; this file is the only one that needs it, and it is kept out of the
-+ * shared header so that nothing else changes. */
-+#undef WINVER
-+#define WINVER 0x601
-+#undef _WIN32_WINNT
-+#define _WIN32_WINNT 0x601
-+
 +#include <windows.h>
 +#include <string.h>
 +#include <strsafe.h>
++
++/*
++ * The display configuration API is Windows 7, and this applet is built for
++ * Vista, so its structures are laid out here instead of coming from the
++ * headers. They have to be written out in any case: their enums mix negative
++ * values with 0xFFFFFFFF, which MSVC keeps in four bytes and GCC widens to
++ * eight, so a structure built from them on this toolchain does not match the
++ * one the system reads.
++ */
++
++#define QDC_ONLY_ACTIVE_PATHS_ 0x00000002
++#define DEVICE_INFO_GET_SOURCE_NAME 1
++#define DEVICE_INFO_GET_TARGET_NAME 2
++
++typedef struct _PATH_SOURCE_INFO
++{
++    LUID adapterId;
++    UINT32 id;
++    UINT32 modeInfoIdx;
++    UINT32 statusFlags;
++} PATH_SOURCE_INFO;
++
++typedef struct _PATH_TARGET_INFO
++{
++    LUID adapterId;
++    UINT32 id;
++    UINT32 modeInfoIdx;
++    UINT32 outputTechnology;
++    UINT32 rotation;
++    UINT32 scaling;
++    UINT32 refreshRateNumerator;
++    UINT32 refreshRateDenominator;
++    UINT32 scanLineOrdering;
++    BOOL targetAvailable;
++    UINT32 statusFlags;
++} PATH_TARGET_INFO;
++
++typedef struct _PATH_INFO
++{
++    PATH_SOURCE_INFO sourceInfo;
++    PATH_TARGET_INFO targetInfo;
++    UINT32 flags;
++} PATH_INFO;
++
++/* the modes are only carried through, never read here */
++typedef struct _MODE_INFO
++{
++    UINT32 data[16];
++} MODE_INFO;
++
++typedef struct _DEVICE_INFO_HEADER
++{
++    UINT32 type;
++    UINT32 size;
++    LUID adapterId;
++    UINT32 id;
++} DEVICE_INFO_HEADER;
++
++typedef struct _SOURCE_DEVICE_NAME
++{
++    DEVICE_INFO_HEADER header;
++    WCHAR viewGdiDeviceName[CCHDEVICENAME];
++} SOURCE_DEVICE_NAME;
++
++typedef struct _TARGET_DEVICE_NAME
++{
++    DEVICE_INFO_HEADER header;
++    UINT32 flags;
++    UINT32 outputTechnology;
++    UINT16 edidManufactureId;
++    UINT16 edidProductCodeId;
++    UINT32 connectorInstance;
++    WCHAR monitorFriendlyDeviceName[64];
++    WCHAR monitorDevicePath[128];
++} TARGET_DEVICE_NAME;
++
++C_ASSERT(sizeof(PATH_INFO) == 72);
++C_ASSERT(sizeof(MODE_INFO) == 64);
++C_ASSERT(sizeof(SOURCE_DEVICE_NAME) == 84);
++C_ASSERT(sizeof(TARGET_DEVICE_NAME) == 420);
++
++typedef LONG (WINAPI *PGETSIZES)(UINT32, UINT32 *, UINT32 *);
++typedef LONG (WINAPI *PQUERY)(UINT32, UINT32 *, PATH_INFO *, UINT32 *, MODE_INFO *, VOID *);
++typedef LONG (WINAPI *PGETINFO)(DEVICE_INFO_HEADER *);
 +
 +/* Walks the active display paths and takes the friendly name of the monitor
 + * on the given adapter, the way the display settings of Windows show it. */
 +BOOL
 +GetMonitorName(IN LPCWSTR pszDevice, OUT LPWSTR pszName, IN DWORD cchName)
 +{
-+    typedef LONG (WINAPI *PGETSIZES)(UINT32, UINT32 *, UINT32 *);
-+    typedef LONG (WINAPI *PQUERY)(UINT32, UINT32 *, DISPLAYCONFIG_PATH_INFO *, UINT32 *,
-+                                  DISPLAYCONFIG_MODE_INFO *, DISPLAYCONFIG_TOPOLOGY_ID *);
-+    typedef LONG (WINAPI *PGETINFO)(DISPLAYCONFIG_DEVICE_INFO_HEADER *);
-+    DISPLAYCONFIG_PATH_INFO *pPaths;
-+    DISPLAYCONFIG_MODE_INFO *pModes;
++    PATH_INFO *pPaths;
++    MODE_INFO *pModes;
 +    PGETSIZES pGetSizes;
 +    PGETINFO pGetInfo;
 +    PQUERY pQuery;
@@ -190,21 +267,21 @@ index 0000000..32922e1
 +    if (pGetSizes == NULL || pQuery == NULL || pGetInfo == NULL)
 +        return FALSE;
 +
-+    if (pGetSizes(QDC_ONLY_ACTIVE_PATHS, &cPaths, &cModes) != ERROR_SUCCESS || cPaths == 0)
++    if (pGetSizes(QDC_ONLY_ACTIVE_PATHS_, &cPaths, &cModes) != ERROR_SUCCESS || cPaths == 0)
 +        return FALSE;
 +
 +    pPaths = HeapAlloc(GetProcessHeap(), 0, cPaths * sizeof(*pPaths));
 +    pModes = HeapAlloc(GetProcessHeap(), 0, cModes * sizeof(*pModes));
 +    if (pPaths != NULL && pModes != NULL &&
-+        pQuery(QDC_ONLY_ACTIVE_PATHS, &cPaths, pPaths, &cModes, pModes, NULL) == ERROR_SUCCESS)
++        pQuery(QDC_ONLY_ACTIVE_PATHS_, &cPaths, pPaths, &cModes, pModes, NULL) == ERROR_SUCCESS)
 +    {
 +        for (i = 0; i < cPaths && !bFound; i++)
 +        {
-+            DISPLAYCONFIG_SOURCE_DEVICE_NAME Source;
-+            DISPLAYCONFIG_TARGET_DEVICE_NAME Target;
++            SOURCE_DEVICE_NAME Source;
++            TARGET_DEVICE_NAME Target;
 +
 +            ZeroMemory(&Source, sizeof(Source));
-+            Source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
++            Source.header.type = DEVICE_INFO_GET_SOURCE_NAME;
 +            Source.header.size = sizeof(Source);
 +            Source.header.adapterId = pPaths[i].sourceInfo.adapterId;
 +            Source.header.id = pPaths[i].sourceInfo.id;
@@ -215,7 +292,7 @@ index 0000000..32922e1
 +            }
 +
 +            ZeroMemory(&Target, sizeof(Target));
-+            Target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
++            Target.header.type = DEVICE_INFO_GET_TARGET_NAME;
 +            Target.header.size = sizeof(Target);
 +            Target.header.adapterId = pPaths[i].targetInfo.adapterId;
 +            Target.header.id = pPaths[i].targetInfo.id;

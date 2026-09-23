@@ -618,15 +618,15 @@ static void read_adapter(void)
     kms.subsystem = read_sysfs_hex( card, "subsystem_device" ) << 16 | read_sysfs_hex( card, "subsystem_vendor" );
     kms.revision = read_sysfs_hex( card, "revision" );
 
-    if (!kms.vendor)
-        strcpy( kms.description, "Microsoft Basic Display Adapter" );
-    else if (pci_ids_name( kms.vendor, kms.device, model, sizeof(model) ))
+    if (kms.vendor && pci_ids_name( kms.vendor, kms.device, model, sizeof(model) ))
     {
         const char *vendor = kms.vendor == 0x1002 ? "AMD " : kms.vendor == 0x10de ? "NVIDIA " :
                              kms.vendor == 0x8086 ? "Intel " : "";
         snprintf( kms.description, sizeof(kms.description), "%s%s", vendor, model );
     }
-    else snprintf( kms.description, sizeof(kms.description), "%s display adapter", kms.driver );
+    /* a card nothing knows a name for is the basic adapter, as in Windows;
+     * the name of the Linux driver is not for the user to see */
+    else strcpy( kms.description, "Microsoft Basic Display Adapter" );
 }
 
 /* one pass over the cards; with report, says why each one did not do */
