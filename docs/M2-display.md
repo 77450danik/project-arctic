@@ -62,17 +62,26 @@ desk.cpl → ChangeDisplaySettingsEx(1280x800@75, CDS_UPDATEREGISTRY)
 `dispmode.exe` у dev-збірці (serial-shell):
 
 ```
-setpriv --reuid=1000 --regid=1000 --init-groups env WINEPREFIX=/run/nt \
-    HOME=/run/nt/home XDG_RUNTIME_DIR=/run/nt/xdg WAYLAND_DISPLAY=arctic-0 \
-    wine dispmode.exe            # список пристроїв, моніторів і режимів
-    wine dispmode.exe 1024x768@60   # перемкнути
-    wine dispmode.exe restore       # повернути збережений режим
+chpst -u nt env WINEPREFIX=/run/nt HOME=/run/nt/home USER=User \
+    XDG_RUNTIME_DIR=/run/nt/xdg WAYLAND_DISPLAY=arctic-0 wine dispmode.exe ...
 ```
+
+| Аргумент | Що робить |
+|---|---|
+| (немає) | пристрої, монітори, поточний режим і всі режими |
+| `1024x768@60` | перемкнути (з `CDS_UPDATEREGISTRY`, як Панель керування) |
+| `restore` | повернути збережений режим |
+| `windows` | вікна верхнього рівня в z-порядку: де стоять оболонка й панель задач |
+| `broadcast` | сказати всім вікнам, що екран змінився |
+
+Другий монітор у QEMU: `python tools/vm-test.py --monitors 2` (virtio-gpu
+замість std VGA); знімок його екрана —
+`python ci/qmp-shot.py tcp:127.0.0.1:4455 out/test-local/m2.ppm out/test-local/m2.png 1`.
 
 ## Що ще лишилось у M2
 
-- Кілька моніторів у QEMU не перевірити: у std VGA один вихід. Перевірка — на
-  залізі (два виходи RX 580).
+- Кілька моніторів у QEMU перевіряються на virtio-gpu (`--monitors 2`); на
+  залізі — два виходи RX 580.
 - Перетягування моніторів у desk.cpl (зміна розкладки) поки не працює: позиції
   показуються, але не застосовуються.
 - «Додатково…» у desk.cpl показує лише загальну сторінку: `deskadp` і `deskmon`
