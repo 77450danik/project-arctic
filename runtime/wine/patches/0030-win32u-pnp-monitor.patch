@@ -1,0 +1,53 @@
+From b982e5d6e139a3d715947c3e94596bac939fbcd8 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 23 Sep 2026 11:55:48 +0300
+Subject: [PATCH] win32u: A monitor that names itself in an EDID is plug and
+ play.
+
+Windows calls a monitor with an EDID "Generic PnP Monitor"; ours said
+"Generic Non-PnP Monitor" for every monitor, which is what the Display
+control panel shows when the monitor has no friendly name of its own.
+---
+ dlls/win32u/sysparams.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 7737ce0..4715ee4 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -1928,6 +1928,11 @@ static void add_source( const char *name, UINT state_flags, UINT dpi, void *para
+     }
+ }
+ 
++static BOOL monitor_is_pnp( const struct monitor *monitor )
++{
++    return !!(monitor->edid_info.flags & MONITOR_INFO_HAS_MONITOR_ID);
++}
++
+ static BOOL write_monitor_to_registry( struct monitor *monitor, const BYTE *edid, UINT edid_len )
+ {
+     char buffer[1024], *tmp;
+@@ -1937,7 +1942,9 @@ static BOOL write_monitor_to_registry( struct monitor *monitor, const BYTE *edid
+ 
+     if (!(hkey = reg_create_ascii_key( enum_key, monitor->path, 0, NULL ))) return FALSE;
+ 
+-    set_reg_ascii_value( hkey, "DeviceDesc", "Generic Non-PnP Monitor" );
++    /* a monitor that names itself in an EDID is plug and play, as in Windows */
++    set_reg_ascii_value( hkey, "DeviceDesc", monitor_is_pnp( monitor ) ? "Generic PnP Monitor"
++                                                                      : "Generic Non-PnP Monitor" );
+ 
+     set_reg_ascii_value( hkey, "Class", "Monitor" );
+     snprintf( buffer, sizeof(buffer), "%s\\%04X", guid_devclass_monitorA, monitor->output_id );
+@@ -3973,7 +3980,8 @@ NTSTATUS WINAPI NtUserEnumDisplayDevices( UNICODE_STRING *device, DWORD index,
+         }
+         if (info->cb >= offsetof(DISPLAY_DEVICEW, DeviceString) + sizeof(info->DeviceString))
+         {
+-            if (monitor) asciiz_to_unicode( info->DeviceString, "Generic Non-PnP Monitor" );
++            if (monitor) asciiz_to_unicode( info->DeviceString, monitor_is_pnp( monitor ) ? "Generic PnP Monitor"
++                                                                                           : "Generic Non-PnP Monitor" );
+             else lstrcpynW( info->DeviceString, source->gpu->name, ARRAY_SIZE(info->DeviceString) );
+         }
+         if (info->cb >= offsetof(DISPLAY_DEVICEW, StateFlags) + sizeof(info->StateFlags))
+-- 
+2.55.0
+

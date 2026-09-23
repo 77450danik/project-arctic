@@ -83,6 +83,45 @@ static void load_graphics_driver( const GUID *guid )
     RegCloseKey( hkey );
 }
 
+/* a window the screen no longer has room for comes back onto the primary
+ * monitor, as it does in Windows when its monitor is unplugged */
+static BOOL CALLBACK bring_window_on_screen( HWND hwnd, LPARAM param )
+{
+    RECT rect, work;
+    int x, y;
+
+    if (!IsWindowVisible( hwnd ) || IsIconic( hwnd )) return TRUE;
+    if (MonitorFromWindow( hwnd, MONITOR_DEFAULTTONULL )) return TRUE;
+    if (!GetWindowRect( hwnd, &rect ) || !SystemParametersInfoW( SPI_GETWORKAREA, 0, &work, 0 )) return TRUE;
+
+    x = min( max( rect.left, work.left ), max( work.right - (rect.right - rect.left), work.left ) );
+    y = min( max( rect.top, work.top ), max( work.bottom - (rect.bottom - rect.top), work.top ) );
+    SetWindowPos( hwnd, 0, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE );
+    return TRUE;
+}
+
+static int monitor_count;
+
+/* The desktop has just changed size or shape. win32u tells the programs
+ * itself when one of them asked for it; a monitor plugged in or unplugged
+ * comes from the display driver, and then this is the only place that knows. */
+static void display_changed(void)
+{
+    int count = GetSystemMetrics( SM_CMONITORS );
+    DEVMODEW mode = { .dmSize = sizeof(mode) };
+
+    EnumWindows( bring_window_on_screen, 0 );
+    if (count == monitor_count) return;
+    monitor_count = count;
+    ClipCursor( NULL );
+
+    if (!EnumDisplaySettingsExW( NULL, ENUM_CURRENT_SETTINGS, &mode, 0 )) return;
+    MESSAGE( "csrss: %d monitor%s, desktop %ux%u\n", count, count == 1 ? "" : "s",
+             GetSystemMetrics( SM_CXVIRTUALSCREEN ), GetSystemMetrics( SM_CYVIRTUALSCREEN ) );
+    SendMessageTimeoutW( HWND_BROADCAST, WM_DISPLAYCHANGE, mode.dmBitsPerPel,
+                         MAKELPARAM( mode.dmPelsWidth, mode.dmPelsHeight ), SMTO_ABORTIFHUNG, 2000, NULL );
+}
+
 static LRESULT WINAPI desktop_wnd_proc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
 {
     static UINT input_language_message;
@@ -101,6 +140,13 @@ static LRESULT WINAPI desktop_wnd_proc( HWND hwnd, UINT message, WPARAM wp, LPAR
     case WM_SYSCOMMAND:
         if ((wp & 0xfff0) == SC_CLOSE) return 0;
         break;
+    case WM_DISPLAYCHANGE:
+    {
+        /* the desktop window follows the monitors first */
+        LRESULT ret = desktop_orig_wndproc( hwnd, message, wp, lp );
+        display_changed();
+        return ret;
+    }
     case WM_CLOSE:
         /* wineserver's word that no other process uses the desktop any more:
          * the session's desktop lives as long as the session, as in Windows,
@@ -225,6 +271,7 @@ NTSTATUS WINAPI UserServerDllInitialization( void *server_dll )
                   GetSystemMetrics( SM_CXVIRTUALSCREEN ), GetSystemMetrics( SM_CYVIRTUALSCREEN ), SWP_SHOWWINDOW );
     ClipCursor( NULL );
     SetCursorPos( GetSystemMetrics( SM_CXSCREEN ) / 2, GetSystemMetrics( SM_CYSCREEN ) / 2 );
+    monitor_count = GetSystemMetrics( SM_CMONITORS );
     store_display_settings();
     if ((thread = CreateThread( NULL, 0, display_settings_restorer_thread, NULL, 0, NULL ))) CloseHandle( thread );
 
