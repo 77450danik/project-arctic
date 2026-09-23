@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds the parts of ReactOS that Arctic takes: the shell (explorer.exe,
 # shell32, browseui, shdocvw, shlwapi, comctl32, uxtheme, compressed folders,
-# Safely Remove Hardware in the notification area),
+# Safely Remove Hardware in the notification area), the Display control
+# panel (desk.cpl),
 # the Mizu theme and the keyboard layouts. They are built with
 # ReactOS's own toolchain (RosBE), the way ReactOS's CI builds them, and go
 # to C: as native Windows binaries. Output: out/reactos, laid out as on C:.
@@ -19,7 +20,8 @@ ARCH=amd64
 KEYBOARDS="kbdus kbdur kbdru"
 SHELL_DLLS="shell32 browseui shdocvw shlwapi comctl32 uxtheme"
 SHELL_EXTENSIONS="zipfldr stobject"
-TARGETS="explorer $SHELL_DLLS $SHELL_EXTENSIONS mizu.msstyles $KEYBOARDS"
+CONTROL_PANELS="desk"
+TARGETS="explorer $SHELL_DLLS $SHELL_EXTENSIONS $CONTROL_PANELS mizu.msstyles $KEYBOARDS"
 
 ROSBE_SCRIPT=https://gist.githubusercontent.com/zefklop/b2d6a0b470c70183e93d5285a03f5899/raw/build_rosbe_ci.sh
 ROSBE_SCRIPT_SHA256=ea42b032fdf9b8b51e993ebe0d1aedc8714f7eff522f4a2fbac7b9aa32a9263c
@@ -73,12 +75,15 @@ done
 for ext in $SHELL_EXTENSIONS; do
     cp "build/dll/shellext/$ext/$ext.dll" "$OUT/Windows/System32/"
 done
+for cpl in $CONTROL_PANELS; do
+    cp "build/dll/cpl/$cpl/$cpl.cpl" "$OUT/Windows/System32/"
+done
 for kbd in $KEYBOARDS; do
     # the layouts are linked straight into dll/keyboard, not into a folder each
     cp "$(find build/dll/keyboard -name "$kbd.dll" -print -quit)" "$OUT/Windows/System32/"
 done
 cp build/media/themes/Mizu/mizu.msstyles/mizu.msstyles "$OUT/Windows/Resources/Themes/Mizu/"
-python3 "$ROOT/ci/fix-reactos-imports.py" "$OUT"/Windows/System32/*.dll "$OUT"/Windows/*.exe
+python3 "$ROOT/ci/fix-reactos-imports.py" "$OUT"/Windows/System32/*.dll "$OUT"/Windows/System32/*.cpl "$OUT"/Windows/*.exe
 # the debug files stay out of the image; they turn a crash address into a line
 if [ -d "$WORK/build/symbols" ]; then
     mkdir -p "$OUT/symbols"

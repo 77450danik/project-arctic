@@ -1,0 +1,474 @@
+From 8b0439e3a5138f5e6e1cf9655694114194d8aff9 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 23 Sep 2026 11:48:06 +0300
+Subject: [PATCH] desk: The refresh rate under the resolution, and the monitor
+ by name.
+
+The Settings page lists every mode of the monitor, not only those at the
+rate it runs at now, and the refresh rate is chosen right under the
+resolution, where Windows 10 has it. A resolution starts at the fastest
+rate the monitor takes there. The Display line names the monitor the way
+its EDID does, and several monitors stand where the desktop has them.
+---
+ dll/cpl/desk/lang/en-US.rc |  32 ++---
+ dll/cpl/desk/lang/uk-UA.rc |  32 ++---
+ dll/cpl/desk/resource.h    |   4 +
+ dll/cpl/desk/settings.c    | 236 +++++++++++++++++++++++++++++++++++--
+ 4 files changed, 266 insertions(+), 38 deletions(-)
+
+diff --git a/dll/cpl/desk/lang/en-US.rc b/dll/cpl/desk/lang/en-US.rc
+index ece4c14..a5b3970 100644
+--- a/dll/cpl/desk/lang/en-US.rc
++++ b/dll/cpl/desk/lang/en-US.rc
+@@ -128,21 +128,23 @@ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Settings"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    CONTROL "", IDC_RESOLUTION_PREVIEW, "Static", SS_OWNERDRAW, 70, 10, 105, 74
+-    LTEXT "Drag the monitor icons to match the physical arrangement of your monitors.", IDC_SETTINGS_MONTEXT, 3, 3, 240, 20
++    CONTROL "", IDC_RESOLUTION_PREVIEW, "Static", SS_OWNERDRAW, 70, 4, 105, 74
++    LTEXT "Drag the monitor icons to match the physical arrangement of your monitors.", IDC_SETTINGS_MONTEXT, 3, 1, 240, 17
+     CONTROL "", IDC_SETTINGS_MONSEL, "MONITORSELWNDCLASS", WS_CHILD | WS_VISIBLE |
+-            WS_TABSTOP, 3, 23, 240, 82, WS_EX_CLIENTEDGE
+-    LTEXT "&Display:", 1820, 3, 107, 70, 9
+-    LTEXT "<none>", IDC_SETTINGS_DEVICE, 3, 116, 224, 9
+-    GROUPBOX "&Screen area", 1818, 3, 127, 115, 43
+-    CONTROL "", IDC_SETTINGS_RESOLUTION, "msctls_trackbar32", TBS_AUTOTICKS | WS_TABSTOP, 30, 137, 58, 17
+-    RTEXT "Less", 1815, 5, 137, 25, 9, NOT WS_GROUP
+-    LTEXT "More", 1816, 89, 137, 27, 9, NOT WS_GROUP
+-    CTEXT "", IDC_SETTINGS_RESOLUTION_TEXT, 10, 157, 100, 10, NOT WS_GROUP
+-    GROUPBOX "&Colors", 1817, 125, 127, 115, 43
+-    COMBOBOX IDC_SETTINGS_BPP, 131, 137, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+-    CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 155, 103, 9
+-    PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 174, 70, 15
++            WS_TABSTOP, 3, 18, 240, 76, WS_EX_CLIENTEDGE
++    LTEXT "&Display:", 1820, 3, 98, 70, 9
++    LTEXT "<none>", IDC_SETTINGS_DEVICE, 3, 107, 224, 9
++    GROUPBOX "Screen &resolution", 1818, 3, 119, 115, 63
++    CONTROL "", IDC_SETTINGS_RESOLUTION, "msctls_trackbar32", TBS_AUTOTICKS | WS_TABSTOP, 30, 129, 58, 17
++    RTEXT "Less", 1815, 5, 129, 25, 9, NOT WS_GROUP
++    LTEXT "More", 1816, 89, 129, 27, 9, NOT WS_GROUP
++    CTEXT "", IDC_SETTINGS_RESOLUTION_TEXT, 8, 148, 105, 10, NOT WS_GROUP
++    LTEXT "Screen re&fresh rate:", IDC_SETTINGS_REFRESH_TEXT, 8, 160, 105, 9, NOT WS_GROUP
++    COMBOBOX IDC_SETTINGS_REFRESH, 8, 169, 105, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    GROUPBOX "&Color quality", 1817, 125, 119, 115, 63
++    COMBOBOX IDC_SETTINGS_BPP, 131, 129, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
++    CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 148, 103, 9
++    PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 185, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -252,6 +254,8 @@ BEGIN
+     IDS_COLOR_24BIT "True Color (24 Bit)"
+     IDS_COLOR_32BIT "True Color (32 Bit)"
+     IDS_PIXEL "%lux%lu pixels"
++    IDS_HERTZ "%lu Hertz"
++    IDS_MONITOR_ON_ADAPTER "%s on %s"
+ END
+ 
+ STRINGTABLE
+diff --git a/dll/cpl/desk/lang/uk-UA.rc b/dll/cpl/desk/lang/uk-UA.rc
+index 184d874..d58dd0b 100644
+--- a/dll/cpl/desk/lang/uk-UA.rc
++++ b/dll/cpl/desk/lang/uk-UA.rc
+@@ -138,21 +138,23 @@ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Параметри"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    CONTROL "", IDC_RESOLUTION_PREVIEW, "Static", SS_OWNERDRAW, 70, 10, 105, 74
+-    LTEXT "Розташуйте значки моніторів відповідно до фактичного розташування моніторів.", IDC_SETTINGS_MONTEXT, 3, 3, 240, 20
++    CONTROL "", IDC_RESOLUTION_PREVIEW, "Static", SS_OWNERDRAW, 70, 4, 105, 74
++    LTEXT "Розташуйте значки моніторів відповідно до фактичного розташування моніторів.", IDC_SETTINGS_MONTEXT, 3, 1, 240, 17
+     CONTROL "", IDC_SETTINGS_MONSEL, "MONITORSELWNDCLASS", WS_CHILD | WS_VISIBLE |
+-            WS_TABSTOP, 3, 23, 240, 82, WS_EX_CLIENTEDGE
+-    LTEXT "&Дисплей:", 1820, 3, 107, 70, 9
+-    LTEXT "<немає>", IDC_SETTINGS_DEVICE, 3, 116, 224, 9
+-    GROUPBOX "&Область екрану", 1818, 3, 127, 115, 43
+-    CONTROL "", IDC_SETTINGS_RESOLUTION, "msctls_trackbar32", TBS_AUTOTICKS | WS_TABSTOP, 30, 137, 58, 17
+-    RTEXT "Менше", 1815, 5, 137, 25, 9, NOT WS_GROUP
+-    LTEXT "Більше", 1816, 89, 137, 27, 9, NOT WS_GROUP
+-    CTEXT "", IDC_SETTINGS_RESOLUTION_TEXT, 10, 157, 100, 10, NOT WS_GROUP
+-    GROUPBOX "&Якість кольоропередачі", 1817, 125, 127, 115, 43
+-    COMBOBOX IDC_SETTINGS_BPP, 131, 137, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+-    CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 155, 103, 9
+-    PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 174, 70, 15
++            WS_TABSTOP, 3, 18, 240, 76, WS_EX_CLIENTEDGE
++    LTEXT "&Дисплей:", 1820, 3, 98, 70, 9
++    LTEXT "<немає>", IDC_SETTINGS_DEVICE, 3, 107, 224, 9
++    GROUPBOX "&Область екрану", 1818, 3, 119, 115, 63
++    CONTROL "", IDC_SETTINGS_RESOLUTION, "msctls_trackbar32", TBS_AUTOTICKS | WS_TABSTOP, 30, 129, 58, 17
++    RTEXT "Менше", 1815, 5, 129, 25, 9, NOT WS_GROUP
++    LTEXT "Більше", 1816, 89, 129, 27, 9, NOT WS_GROUP
++    CTEXT "", IDC_SETTINGS_RESOLUTION_TEXT, 8, 148, 105, 10, NOT WS_GROUP
++    LTEXT "&Частота оновлення екрана:", IDC_SETTINGS_REFRESH_TEXT, 8, 160, 105, 9, NOT WS_GROUP
++    COMBOBOX IDC_SETTINGS_REFRESH, 8, 169, 105, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    GROUPBOX "&Якість кольоропередачі", 1817, 125, 119, 115, 63
++    COMBOBOX IDC_SETTINGS_BPP, 131, 129, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
++    CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 148, 103, 9
++    PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 185, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -262,6 +264,8 @@ BEGIN
+     IDS_COLOR_24BIT "Висока (24 біта)"
+     IDS_COLOR_32BIT "Найвища (32 біта)"
+     IDS_PIXEL "%lu на %lu крапок"
++    IDS_HERTZ "%lu Гц"
++    IDS_MONITOR_ON_ADAPTER "%s на %s"
+ END
+ 
+ STRINGTABLE
+diff --git a/dll/cpl/desk/resource.h b/dll/cpl/desk/resource.h
+index 503077f..865cab5 100644
+--- a/dll/cpl/desk/resource.h
++++ b/dll/cpl/desk/resource.h
+@@ -69,6 +69,8 @@
+ #define IDC_SETTINGS_MONSEL          206
+ #define IDC_SETTINGS_SPECTRUM        207
+ #define IDC_SETTINGS_MONTEXT         208
++#define IDC_SETTINGS_REFRESH         212
++#define IDC_SETTINGS_REFRESH_TEXT    213
+ 
+ #define IDB_SPECTRUM_4  209
+ #define IDB_SPECTRUM_8  210
+@@ -87,6 +89,8 @@
+ 
+ /* Settings Page */
+ #define IDS_PIXEL       2301
++#define IDS_HERTZ       2302
++#define IDS_MONITOR_ON_ADAPTER 2303
+ #define IDS_COLOR_4BIT  2904
+ #define IDS_COLOR_8BIT  2908
+ #define IDS_COLOR_16BIT 2916
+diff --git a/dll/cpl/desk/settings.c b/dll/cpl/desk/settings.c
+index beb9593..28c5e24 100644
+--- a/dll/cpl/desk/settings.c
++++ b/dll/cpl/desk/settings.c
+@@ -24,6 +24,9 @@ typedef struct _TIMEOUTDATA
+     INT nTimeout;
+ } TIMEOUTDATA, *PTIMEOUTDATA;
+ 
++static VOID
++UpdateRefreshRates(IN HWND hwndDlg, IN PSETTINGS_DATA pData);
++
+ static VOID
+ UpdateDisplay(IN HWND hwndDlg, PSETTINGS_DATA pData, IN BOOL bUpdateThumb)
+ {
+@@ -50,6 +53,8 @@ UpdateDisplay(IN HWND hwndDlg, PSETTINGS_DATA pData, IN BOOL bUpdateThumb)
+     if (LoadString(hApplet, (2900 + pData->CurrentDisplayDevice->CurrentSettings->dmBitsPerPel), Buffer, _countof(Buffer)))
+         SendDlgItemMessage(hwndDlg, IDC_SETTINGS_BPP, CB_SELECTSTRING, (WPARAM)-1, (LPARAM)Buffer);
+ 
++    UpdateRefreshRates(hwndDlg, pData);
++
+     hwndMonSel = GetDlgItem(hwndDlg, IDC_SETTINGS_MONSEL);
+     index = (INT)SendMessage(hwndMonSel, MSLM_GETCURSEL, 0, 0);
+     if (index != (DWORD)-1 && SendMessage(hwndMonSel, MSLM_GETMONITORINFO, index, (LPARAM)&info))
+@@ -119,7 +124,6 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+ 
+         if (devmode.dmPelsWidth < 640 ||
+             devmode.dmPelsHeight < 480 ||
+-            devmode.dmDisplayFrequency != curDispFreq ||
+             (devmode.dmBitsPerPel != 4 &&
+              devmode.dmBitsPerPel != 8 &&
+              devmode.dmBitsPerPel != 16 &&
+@@ -129,6 +133,23 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+             continue;
+         }
+ 
++        /* One entry per resolution and colour depth: the refresh rate is
++         * chosen on its own, and an entry starts at the fastest one the
++         * monitor takes there */
++        for (Current = Settings; Current != NULL; Current = Current->Flink)
++        {
++            if (Current->dmPelsWidth == devmode.dmPelsWidth &&
++                Current->dmPelsHeight == devmode.dmPelsHeight &&
++                Current->dmBitsPerPel == devmode.dmBitsPerPel)
++            {
++                if (Current->dmDisplayFrequency < devmode.dmDisplayFrequency)
++                    Current->dmDisplayFrequency = devmode.dmDisplayFrequency;
++                break;
++            }
++        }
++        if (Current != NULL)
++            continue;
++
+         Current = HeapAlloc(GetProcessHeap(), 0, sizeof(SETTINGS_ENTRY));
+         if (Current != NULL)
+         {
+@@ -163,10 +184,156 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+         }
+     }
+ 
++    /* the mode on the screen right now runs at its own refresh rate */
++    if (*CurrentSettings != NULL)
++        (*CurrentSettings)->dmDisplayFrequency = curDispFreq;
++
+     *pSettingsCount = NbSettings;
+     return Settings;
+ }
+ 
++/* The refresh rates the monitor takes at one resolution and colour depth,
++ * slowest first. */
++static DWORD
++GetRefreshRates(IN LPCTSTR DeviceName, IN PSETTINGS_ENTRY pSettings,
++                OUT DWORD *pRates, IN DWORD cRates)
++{
++    DEVMODE devmode;
++    DWORD iMode = 0, count = 0, i;
++
++    devmode.dmSize = (WORD)sizeof(devmode);
++    devmode.dmDriverExtra = 0;
++
++    while (count < cRates && EnumDisplaySettingsEx(DeviceName, iMode++, &devmode, 0))
++    {
++        if (devmode.dmPelsWidth != pSettings->dmPelsWidth ||
++            devmode.dmPelsHeight != pSettings->dmPelsHeight ||
++            devmode.dmBitsPerPel != pSettings->dmBitsPerPel ||
++            devmode.dmDisplayFrequency <= 1) /* 0 and 1 mean the hardware default */
++        {
++            continue;
++        }
++
++        for (i = 0; i < count; i++)
++        {
++            if (pRates[i] == devmode.dmDisplayFrequency)
++                break;
++        }
++        if (i < count)
++            continue;
++
++        for (i = count; i > 0 && pRates[i - 1] > devmode.dmDisplayFrequency; i--)
++            pRates[i] = pRates[i - 1];
++        pRates[i] = devmode.dmDisplayFrequency;
++        count++;
++    }
++
++    return count;
++}
++
++/* The refresh rate list under the resolution, with the rate of the mode that
++ * is chosen. Nothing to choose from leaves it greyed, as Windows does. */
++static VOID
++UpdateRefreshRates(IN HWND hwndDlg, IN PSETTINGS_DATA pData)
++{
++    PSETTINGS_ENTRY pSettings = pData->CurrentDisplayDevice->CurrentSettings;
++    HWND hwndCombo = GetDlgItem(hwndDlg, IDC_SETTINGS_REFRESH);
++    TCHAR Buffer[64], Hertz[64];
++    DWORD rates[64], count, i;
++
++    if (hwndCombo == NULL)
++        return;
++
++    count = GetRefreshRates(pData->CurrentDisplayDevice->DeviceName, pSettings, rates, _countof(rates));
++    LoadString(hApplet, IDS_HERTZ, Hertz, _countof(Hertz));
++
++    SendMessage(hwndCombo, CB_RESETCONTENT, 0, 0);
++    for (i = 0; i < count; i++)
++    {
++        DWORD index;
++
++        _stprintf(Buffer, Hertz, rates[i]);
++        index = (DWORD)SendMessage(hwndCombo, CB_ADDSTRING, 0, (LPARAM)Buffer);
++        SendMessage(hwndCombo, CB_SETITEMDATA, index, rates[i]);
++        if (rates[i] == pSettings->dmDisplayFrequency)
++            SendMessage(hwndCombo, CB_SETCURSEL, index, 0);
++    }
++    if (count != 0 && SendMessage(hwndCombo, CB_GETCURSEL, 0, 0) == CB_ERR)
++        SendMessage(hwndCombo, CB_SETCURSEL, count - 1, 0);
++
++    EnableWindow(hwndCombo, count > 1);
++    EnableWindow(GetDlgItem(hwndDlg, IDC_SETTINGS_REFRESH_TEXT), count > 1);
++}
++
++/* The monitor's own name, which it gives in its EDID, as Windows shows it
++ * next to the adapter: "Dell U2415 on AMD Radeon RX 580". */
++static BOOL
++GetMonitorName(IN LPCWSTR pszDevice, OUT LPWSTR pszName, IN DWORD cchName)
++{
++    typedef LONG (WINAPI *PGETSIZES)(UINT32, UINT32 *, UINT32 *);
++    typedef LONG (WINAPI *PQUERY)(UINT32, UINT32 *, DISPLAYCONFIG_PATH_INFO *, UINT32 *,
++                                  DISPLAYCONFIG_MODE_INFO *, DISPLAYCONFIG_TOPOLOGY_ID *);
++    typedef LONG (WINAPI *PGETINFO)(DISPLAYCONFIG_DEVICE_INFO_HEADER *);
++    DISPLAYCONFIG_PATH_INFO *pPaths;
++    DISPLAYCONFIG_MODE_INFO *pModes;
++    PGETSIZES pGetSizes;
++    PGETINFO pGetInfo;
++    PQUERY pQuery;
++    HMODULE hUser32;
++    UINT32 cPaths = 0, cModes = 0, i;
++    BOOL bFound = FALSE;
++
++    hUser32 = GetModuleHandleW(L"user32.dll");
++    pGetSizes = (PGETSIZES)GetProcAddress(hUser32, "GetDisplayConfigBufferSizes");
++    pQuery = (PQUERY)GetProcAddress(hUser32, "QueryDisplayConfig");
++    pGetInfo = (PGETINFO)GetProcAddress(hUser32, "DisplayConfigGetDeviceInfo");
++    if (pGetSizes == NULL || pQuery == NULL || pGetInfo == NULL)
++        return FALSE;
++
++    if (pGetSizes(QDC_ONLY_ACTIVE_PATHS, &cPaths, &cModes) != ERROR_SUCCESS || cPaths == 0)
++        return FALSE;
++
++    pPaths = HeapAlloc(GetProcessHeap(), 0, cPaths * sizeof(*pPaths));
++    pModes = HeapAlloc(GetProcessHeap(), 0, cModes * sizeof(*pModes));
++    if (pPaths != NULL && pModes != NULL &&
++        pQuery(QDC_ONLY_ACTIVE_PATHS, &cPaths, pPaths, &cModes, pModes, NULL) == ERROR_SUCCESS)
++    {
++        for (i = 0; i < cPaths && !bFound; i++)
++        {
++            DISPLAYCONFIG_SOURCE_DEVICE_NAME Source;
++            DISPLAYCONFIG_TARGET_DEVICE_NAME Target;
++
++            ZeroMemory(&Source, sizeof(Source));
++            Source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
++            Source.header.size = sizeof(Source);
++            Source.header.adapterId = pPaths[i].sourceInfo.adapterId;
++            Source.header.id = pPaths[i].sourceInfo.id;
++            if (pGetInfo(&Source.header) != ERROR_SUCCESS ||
++                _wcsicmp(Source.viewGdiDeviceName, pszDevice) != 0)
++            {
++                continue;
++            }
++
++            ZeroMemory(&Target, sizeof(Target));
++            Target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
++            Target.header.size = sizeof(Target);
++            Target.header.adapterId = pPaths[i].targetInfo.adapterId;
++            Target.header.id = pPaths[i].targetInfo.id;
++            if (pGetInfo(&Target.header) == ERROR_SUCCESS && Target.monitorFriendlyDeviceName[0] != L'\0')
++            {
++                StringCchCopyW(pszName, cchName, Target.monitorFriendlyDeviceName);
++                bFound = TRUE;
++            }
++        }
++    }
++
++    if (pPaths != NULL)
++        HeapFree(GetProcessHeap(), 0, pPaths);
++    if (pModes != NULL)
++        HeapFree(GetProcessHeap(), 0, pModes);
++    return bFound;
++}
++
+ static BOOL
+ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice)
+ {
+@@ -176,6 +343,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+     LPTSTR key = NULL;
+     LPTSTR devid = NULL;
+     SIZE_T descriptionSize, nameSize, keySize, devidSize;
++    TCHAR szMonitor[64], szDescription[256];
+     PSETTINGS_ENTRY Current;
+     DWORD ResolutionsCount = 1;
+     DWORD i;
+@@ -220,7 +388,21 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+             i++;
+         }
+     }
+-    descriptionSize = (_tcslen(DisplayDevice->DeviceString) + 1) * sizeof(TCHAR);
++    if (GetMonitorName(DisplayDevice->DeviceName, szMonitor, _countof(szMonitor)))
++    {
++        TCHAR szFormat[64];
++
++        LoadString(hApplet, IDS_MONITOR_ON_ADAPTER, szFormat, _countof(szFormat));
++        _sntprintf(szDescription, _countof(szDescription), szFormat, szMonitor, DisplayDevice->DeviceString);
++        szDescription[_countof(szDescription) - 1] = _T('\0');
++    }
++    else
++    {
++        _tcsncpy(szDescription, DisplayDevice->DeviceString, _countof(szDescription) - 1);
++        szDescription[_countof(szDescription) - 1] = _T('\0');
++    }
++
++    descriptionSize = (_tcslen(szDescription) + 1) * sizeof(TCHAR);
+     description = HeapAlloc(GetProcessHeap(), 0, descriptionSize);
+     if (!description) goto ByeBye;
+ 
+@@ -236,7 +418,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+     devid = HeapAlloc(GetProcessHeap(), 0, devidSize);
+     if (!devid) goto ByeBye;
+ 
+-    memcpy(description, DisplayDevice->DeviceString, descriptionSize);
++    memcpy(description, szDescription, descriptionSize);
+     memcpy(name, DisplayDevice->DeviceName, nameSize);
+     memcpy(key, DisplayDevice->DeviceKey, keySize);
+     memcpy(devid, DisplayDevice->DeviceID, devidSize);
+@@ -383,13 +565,26 @@ SettingsOnInitDialog(IN HWND hwndDlg)
+         pMonitors = (PMONSL_MONINFO)HeapAlloc(GetProcessHeap(), 0, sizeof(MONSL_MONINFO) * Result);
+         if (pMonitors)
+         {
+-            DWORD hack = 1280;
+-            for (i = 0; i < Result; i++)
++            PDISPLAY_DEVICE_ENTRY Current = pData->DisplayDeviceList;
++
++            for (i = 0; i < Result && Current != NULL; i++, Current = Current->Flink)
+             {
+-                pMonitors[i].Position.x = hack * i;
+-                pMonitors[i].Position.y = 0;
+-                pMonitors[i].Size.cx = pData->DisplayDeviceList->CurrentSettings->dmPelsWidth;
+-                pMonitors[i].Size.cy = pData->DisplayDeviceList->CurrentSettings->dmPelsHeight;
++                DEVMODE devmode;
++
++                ZeroMemory(&devmode, sizeof(devmode));
++                devmode.dmSize = (WORD)sizeof(devmode);
++                if (EnumDisplaySettingsEx(Current->DeviceName, ENUM_CURRENT_SETTINGS, &devmode, 0) &&
++                    (devmode.dmFields & DM_POSITION))
++                {
++                    pMonitors[i].Position = devmode.dmPosition;
++                }
++                else
++                {
++                    pMonitors[i].Position.x = 0;
++                    pMonitors[i].Position.y = 0;
++                }
++                pMonitors[i].Size.cx = Current->CurrentSettings->dmPelsWidth;
++                pMonitors[i].Size.cy = Current->CurrentSettings->dmPelsHeight;
+                 pMonitors[i].Flags = 0;
+             }
+ 
+@@ -682,6 +877,24 @@ OnResolutionChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData, IN DWORD NewPositi
+     /* We shouldn't go there */
+ }
+ 
++static VOID
++OnRefreshChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData)
++{
++    PSETTINGS_ENTRY Current = pData->CurrentDisplayDevice->CurrentSettings;
++    DWORD index, dmNewDisplayFrequency;
++
++    index = (DWORD)SendDlgItemMessage(hwndDlg, IDC_SETTINGS_REFRESH, CB_GETCURSEL, 0, 0);
++    if (index == (DWORD)CB_ERR)
++        return;
++
++    dmNewDisplayFrequency = (DWORD)SendDlgItemMessage(hwndDlg, IDC_SETTINGS_REFRESH, CB_GETITEMDATA, index, 0);
++    if (dmNewDisplayFrequency == Current->dmDisplayFrequency)
++        return;
++
++    Current->dmDisplayFrequency = dmNewDisplayFrequency;
++    PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
++}
++
+ /* Property sheet page callback */
+ UINT CALLBACK
+ SettingsPageCallbackProc(HWND hwnd, UINT uMsg, LPPROPSHEETPAGE ppsp)
+@@ -960,6 +1173,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+             }
+             else if (controlId == IDC_SETTINGS_BPP && command == CBN_SELCHANGE)
+                 OnBPPChanged(hwndDlg, pData);
++            else if (controlId == IDC_SETTINGS_REFRESH && command == CBN_SELCHANGE)
++                OnRefreshChanged(hwndDlg, pData);
+             break;
+         }
+         case WM_HSCROLL:
+@@ -992,7 +1207,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+             {
+                 if (pData->CurrentDisplayDevice->CurrentSettings->dmPelsWidth != pData->CurrentDisplayDevice->InitialSettings.dmPelsWidth
+                  || pData->CurrentDisplayDevice->CurrentSettings->dmPelsHeight != pData->CurrentDisplayDevice->InitialSettings.dmPelsHeight
+-                 || pData->CurrentDisplayDevice->CurrentSettings->dmBitsPerPel != pData->CurrentDisplayDevice->InitialSettings.dmBitsPerPel)
++                 || pData->CurrentDisplayDevice->CurrentSettings->dmBitsPerPel != pData->CurrentDisplayDevice->InitialSettings.dmBitsPerPel
++                 || pData->CurrentDisplayDevice->CurrentSettings->dmDisplayFrequency != pData->CurrentDisplayDevice->InitialSettings.dmDisplayFrequency)
+                 {
+                     /* Apply new settings */
+                     ApplyDisplaySettings(hwndDlg, pData);
+-- 
+2.55.0
+
