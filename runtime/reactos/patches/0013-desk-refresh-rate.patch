@@ -1,22 +1,27 @@
-From e496e77349cefd9d2d7384df09f0d6bfbfd86cd8 Mon Sep 17 00:00:00 2001
+From bc26a43c7a8f49d3492bf2413c1d70ea62a497ef Mon Sep 17 00:00:00 2001
 From: 77450danik <dnsystems@email.ua>
-Date: Wed, 23 Sep 2026 12:25:22 +0300
+Date: Wed, 23 Sep 2026 12:31:12 +0300
 Subject: [PATCH] desk: The refresh rate under the resolution, and the monitor
  by name.
 
-The Settings page lists every mode of the monitor, not only those at the
-rate it runs at now, and the refresh rate is chosen right under the
-resolution, where Windows 10 has it. A resolution starts at the fastest
-rate the monitor takes there. The Display line names the monitor the way
-its EDID does, and several monitors stand where the desktop has them.
+The Settings page listed only the modes at the rate the screen already
+ran at, and the rate itself was nowhere to be chosen. It now lists every
+mode of the monitor and the refresh rate sits right under the
+resolution, where the display settings of Windows 10 have it; a
+resolution starts at the fastest rate the monitor takes there.
+
+The Display line names the monitor the way its EDID does, which needs
+the display configuration API of Windows 7 (monitorname.c, the only file
+built for it), and several monitors stand where the desktop has them
+instead of a fixed 1280 apart.
 ---
  dll/cpl/desk/CMakeLists.txt |   3 +-
  dll/cpl/desk/lang/en-US.rc  |  32 ++++---
  dll/cpl/desk/lang/uk-UA.rc  |  32 ++++---
  dll/cpl/desk/monitorname.c  |  87 ++++++++++++++++++
  dll/cpl/desk/resource.h     |   4 +
- dll/cpl/desk/settings.c     | 170 +++++++++++++++++++++++++++++++++---
- 6 files changed, 289 insertions(+), 39 deletions(-)
+ dll/cpl/desk/settings.c     | 173 +++++++++++++++++++++++++++++++++---
+ 6 files changed, 292 insertions(+), 39 deletions(-)
  create mode 100644 dll/cpl/desk/monitorname.c
 
 diff --git a/dll/cpl/desk/CMakeLists.txt b/dll/cpl/desk/CMakeLists.txt
@@ -251,10 +256,20 @@ index 503077f..865cab5 100644
  #define IDS_COLOR_8BIT  2908
  #define IDS_COLOR_16BIT 2916
 diff --git a/dll/cpl/desk/settings.c b/dll/cpl/desk/settings.c
-index beb9593..5f4cf82 100644
+index beb9593..2bed9bc 100644
 --- a/dll/cpl/desk/settings.c
 +++ b/dll/cpl/desk/settings.c
-@@ -50,6 +50,8 @@ UpdateDisplay(IN HWND hwndDlg, PSETTINGS_DATA pData, IN BOOL bUpdateThumb)
+@@ -24,6 +24,9 @@ typedef struct _TIMEOUTDATA
+     INT nTimeout;
+ } TIMEOUTDATA, *PTIMEOUTDATA;
+ 
++static VOID
++UpdateRefreshRates(IN HWND hwndDlg, IN PSETTINGS_DATA pData);
++
+ static VOID
+ UpdateDisplay(IN HWND hwndDlg, PSETTINGS_DATA pData, IN BOOL bUpdateThumb)
+ {
+@@ -50,6 +53,8 @@ UpdateDisplay(IN HWND hwndDlg, PSETTINGS_DATA pData, IN BOOL bUpdateThumb)
      if (LoadString(hApplet, (2900 + pData->CurrentDisplayDevice->CurrentSettings->dmBitsPerPel), Buffer, _countof(Buffer)))
          SendDlgItemMessage(hwndDlg, IDC_SETTINGS_BPP, CB_SELECTSTRING, (WPARAM)-1, (LPARAM)Buffer);
  
@@ -263,7 +278,7 @@ index beb9593..5f4cf82 100644
      hwndMonSel = GetDlgItem(hwndDlg, IDC_SETTINGS_MONSEL);
      index = (INT)SendMessage(hwndMonSel, MSLM_GETCURSEL, 0, 0);
      if (index != (DWORD)-1 && SendMessage(hwndMonSel, MSLM_GETMONITORINFO, index, (LPARAM)&info))
-@@ -119,7 +121,6 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+@@ -119,7 +124,6 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
  
          if (devmode.dmPelsWidth < 640 ||
              devmode.dmPelsHeight < 480 ||
@@ -271,7 +286,7 @@ index beb9593..5f4cf82 100644
              (devmode.dmBitsPerPel != 4 &&
               devmode.dmBitsPerPel != 8 &&
               devmode.dmBitsPerPel != 16 &&
-@@ -129,6 +130,23 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+@@ -129,6 +133,23 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
              continue;
          }
  
@@ -295,7 +310,7 @@ index beb9593..5f4cf82 100644
          Current = HeapAlloc(GetProcessHeap(), 0, sizeof(SETTINGS_ENTRY));
          if (Current != NULL)
          {
-@@ -163,10 +181,92 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+@@ -163,10 +184,92 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
          }
      }
  
@@ -388,7 +403,7 @@ index beb9593..5f4cf82 100644
  static BOOL
  AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice)
  {
-@@ -176,6 +276,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+@@ -176,6 +279,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
      LPTSTR key = NULL;
      LPTSTR devid = NULL;
      SIZE_T descriptionSize, nameSize, keySize, devidSize;
@@ -396,7 +411,7 @@ index beb9593..5f4cf82 100644
      PSETTINGS_ENTRY Current;
      DWORD ResolutionsCount = 1;
      DWORD i;
-@@ -220,7 +321,21 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+@@ -220,7 +324,21 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
              i++;
          }
      }
@@ -419,7 +434,7 @@ index beb9593..5f4cf82 100644
      description = HeapAlloc(GetProcessHeap(), 0, descriptionSize);
      if (!description) goto ByeBye;
  
-@@ -236,7 +351,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+@@ -236,7 +354,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
      devid = HeapAlloc(GetProcessHeap(), 0, devidSize);
      if (!devid) goto ByeBye;
  
@@ -428,7 +443,7 @@ index beb9593..5f4cf82 100644
      memcpy(name, DisplayDevice->DeviceName, nameSize);
      memcpy(key, DisplayDevice->DeviceKey, keySize);
      memcpy(devid, DisplayDevice->DeviceID, devidSize);
-@@ -383,13 +498,27 @@ SettingsOnInitDialog(IN HWND hwndDlg)
+@@ -383,13 +501,27 @@ SettingsOnInitDialog(IN HWND hwndDlg)
          pMonitors = (PMONSL_MONINFO)HeapAlloc(GetProcessHeap(), 0, sizeof(MONSL_MONINFO) * Result);
          if (pMonitors)
          {
@@ -462,7 +477,7 @@ index beb9593..5f4cf82 100644
                  pMonitors[i].Flags = 0;
              }
  
-@@ -682,6 +811,24 @@ OnResolutionChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData, IN DWORD NewPositi
+@@ -682,6 +814,24 @@ OnResolutionChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData, IN DWORD NewPositi
      /* We shouldn't go there */
  }
  
@@ -487,7 +502,7 @@ index beb9593..5f4cf82 100644
  /* Property sheet page callback */
  UINT CALLBACK
  SettingsPageCallbackProc(HWND hwnd, UINT uMsg, LPPROPSHEETPAGE ppsp)
-@@ -960,6 +1107,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+@@ -960,6 +1110,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
              }
              else if (controlId == IDC_SETTINGS_BPP && command == CBN_SELCHANGE)
                  OnBPPChanged(hwndDlg, pData);
@@ -496,7 +511,7 @@ index beb9593..5f4cf82 100644
              break;
          }
          case WM_HSCROLL:
-@@ -992,7 +1141,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+@@ -992,7 +1144,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
              {
                  if (pData->CurrentDisplayDevice->CurrentSettings->dmPelsWidth != pData->CurrentDisplayDevice->InitialSettings.dmPelsWidth
                   || pData->CurrentDisplayDevice->CurrentSettings->dmPelsHeight != pData->CurrentDisplayDevice->InitialSettings.dmPelsHeight

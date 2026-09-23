@@ -1,0 +1,12 @@
+# The Display control panel: resolution and refresh rate
+sleep 6
+move 27 789
+click                         # Пуск
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type control desk.cpl,,3
+key ret
+sleep 12
+shot d1-settings

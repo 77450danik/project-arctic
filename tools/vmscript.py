@@ -46,6 +46,25 @@ class Qmp:
         self.stream.readline()
         self.call("qmp_capabilities")
         self.width, self.height = 1280, 800
+        self.sync_size()
+
+    def sync_size(self):
+        """The pointer is absolute over the screen, so its size has to be the
+        one the guest shows right now: a changed display mode moves every
+        coordinate."""
+        ppm = os.path.join(RES, "size.ppm")
+        try:
+            self.call("screendump", {"filename": ppm})
+            time.sleep(0.3)
+            with open(ppm, "rb") as f:
+                if f.readline().strip() == b"P6":
+                    line = f.readline()
+                    while line.startswith(b"#"):
+                        line = f.readline()
+                    self.width, self.height = (int(n) for n in line.split()[:2])
+            os.remove(ppm)
+        except (OSError, ValueError, RuntimeError):
+            pass
 
     def call(self, command, arguments=None):
         request = {"execute": command}
@@ -100,6 +119,7 @@ class Qmp:
         time.sleep(0.5)
         subprocess.run([sys.executable, os.path.join(ROOT, "ci", "qmp-shot.py"), "--convert", ppm, png], check=True)
         os.remove(ppm)
+        self.sync_size()
         return png
 
 
