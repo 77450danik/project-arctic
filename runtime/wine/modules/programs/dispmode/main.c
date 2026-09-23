@@ -6,7 +6,7 @@
  * ChangeDisplaySettingsEx. Used to test the path from a Windows program to
  * KMS without a window.
  *
- * usage: dispmode.exe [\\.\DISPLAYn] [WIDTHxHEIGHT[@HZ] | restore | windows | broadcast]
+ * usage: dispmode.exe [\\.\DISPLAYn] [WIDTHxHEIGHT[@HZ] | restore | names | windows | broadcast]
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -191,7 +191,7 @@ int wmain( int argc, WCHAR *argv[] )
 
     if (swscanf( wanted, L"%ux%u@%u", &width, &height, &hz ) < 2)
     {
-        printf( "usage: dispmode.exe [\\\\.\\DISPLAYn] [WIDTHxHEIGHT[@HZ] | restore]\n" );
+        printf( "usage: dispmode.exe [\\\\.\\DISPLAYn] [WIDTHxHEIGHT[@HZ] | restore | names | windows | broadcast]\n" );
         return 1;
     }
 
