@@ -72,8 +72,11 @@ if [ -d "$REACTOS/Windows" ]; then
     cp -a "$REACTOS/Windows/System32/." "$PFX/drive_c/windows/system32/"
     find "$REACTOS/Windows" -maxdepth 1 -type f -exec cp -a {} "$PFX/drive_c/windows/" \;
     # There is one explorer.exe, in C:\Windows, as in Windows: Wine's own
-    # never runs, so it is not in the image at all
+    # never runs, so it is not in the image at all. Same for the Display
+    # control panel: Wine's desk.cpl is its virtual desktop settings, and the
+    # loader would take it over the one in System32
     rm -f "$PFX/drive_c/windows/system32/explorer.exe" "$RFS"/usr/lib/wine/*-windows/explorer.exe
+    rm -f "$RFS"/usr/lib/wine/*-windows/desk.cpl
     # into Wine's resources	hemes, which holds aero: C: shows one Resources folder
     if [ -d "$REACTOS/Windows/Resources/Themes" ]; then
         mkdir -p "$PFX/drive_c/windows/resources/themes"
