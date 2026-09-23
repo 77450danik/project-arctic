@@ -1,0 +1,17 @@
+# The Display control panel: a smaller resolution through the slider, kept
+sleep 2
+move 96 293
+click                         # the resolution slider
+sleep 1
+key left
+key left
+sleep 1
+shot r1-slider
+move 363 440
+click                         # Застосувати
+sleep 3
+shot r2-confirm
+move 278 192
+click                         # Так
+sleep 3
+shot r3-kept
