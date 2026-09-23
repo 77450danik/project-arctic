@@ -147,12 +147,21 @@ static const struct dwm_mode *find_mode( const struct dwm_output *output, UINT w
     return best;
 }
 
-/* the size the monitor was made for */
+/* the size the monitor was made for, or the largest it takes when it does
+ * not say (an old monitor on a cable without the data pins) */
 static const struct dwm_mode *native_mode( const struct dwm_output *output )
 {
+    const struct dwm_mode *largest = NULL;
+
     for (UINT i = 0; i < output->mode_count; i++)
-        if (output->modes[i].flags & DWM_MODE_PREFERRED) return &output->modes[i];
-    return output->mode_count ? &output->modes[0] : NULL;
+    {
+        const struct dwm_mode *mode = &output->modes[i];
+
+        if (mode->flags & DWM_MODE_PREFERRED) return mode;
+        if (!largest || (UINT64)mode->width * mode->height > (UINT64)largest->width * largest->height)
+            largest = mode;
+    }
+    return largest;
 }
 
 /* the fastest the monitor goes at that size, then the next fastest, and so

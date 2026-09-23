@@ -64,7 +64,7 @@ else:
 # One monitor is the standard VGA card, which is what a plain PC has; more
 # than one needs virtio-gpu, whose heads QEMU shows as separate monitors.
 if args.monitors > 1:
-    cmd += ["-device", "virtio-gpu-pci,max_outputs=%d" % args.monitors, "-vga", "none"]
+    cmd += ["-device", "virtio-gpu-pci,id=gpu,max_outputs=%d" % args.monitors, "-vga", "none"]
 else:
     cmd += ["-vga", "std"]
 

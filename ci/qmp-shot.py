@@ -39,6 +39,8 @@ def qmp(address, ppm_path, head=0):
     call("qmp_capabilities")
     arguments = {"filename": ppm_path}
     if head:
+        # a head other than the first belongs to a named device
+        arguments["device"] = "gpu"
         arguments["head"] = head
     call("screendump", arguments)
     sock.close()
