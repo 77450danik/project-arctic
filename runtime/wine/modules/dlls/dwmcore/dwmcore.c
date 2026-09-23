@@ -95,8 +95,11 @@ static void monitor_id( const struct dwm_output *output, WCHAR *id, SIZE_T size 
     manufacturer = (edid[8] << 8) | edid[9];
     product = edid[10] | (edid[11] << 8);
     serial = edid[12] | (edid[13] << 8) | (edid[14] << 16) | ((UINT)edid[15] << 24);
-    swprintf( id, size, L"%c%c%c%04X_%08X", 'A' + ((manufacturer >> 10) & 0x1f) - 1,
-              'A' + ((manufacturer >> 5) & 0x1f) - 1, 'A' + (manufacturer & 0x1f) - 1, product, serial );
+    /* two monitors of the same model can carry the same serial number, so
+     * the connector they hang on tells them apart */
+    swprintf( id, size, L"%c%c%c%04X_%08X#%hs", 'A' + ((manufacturer >> 10) & 0x1f) - 1,
+              'A' + ((manufacturer >> 5) & 0x1f) - 1, 'A' + (manufacturer & 0x1f) - 1, product, serial,
+              output->name );
 }
 
 /* one key per set of monitors, so that a laptop remembers each desk */
