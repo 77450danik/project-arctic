@@ -34,6 +34,7 @@ parser.add_argument("--keep", action="store_true", help="leave the VM running af
 parser.add_argument("--script", help="input steps to run once the desktop is up (tools/vmscript.py)")
 parser.add_argument("--usb", action="store_true", help="the image is a USB disk, not a CD")
 parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
+parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
 parser.add_argument("--disk", action="append", default=[],
                     help="a raw disk image attached as an internal disk (repeatable)")
 args = parser.parse_args()
@@ -47,7 +48,7 @@ for path in (serial, shot):
         os.remove(path)
 
 cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
-       "-vga", "std", "-display", "none" if args.headless else "gtk",
+       "-display", "none" if args.headless else "gtk",
        "-name", "Arctic", "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet", "-device", "usb-kbd",  # a USB keyboard, as real PCs have: the kernel repeats its keys
       
        "-serial", "file:" + serial, "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]
@@ -60,6 +61,13 @@ else:
     # the CD boots first even with other disks attached (--disk)
     cmd += ["-drive", "if=none,id=cd,media=cdrom,format=raw,readonly=on,file=" + args.iso,
             "-device", "ide-cd,drive=cd,bootindex=1"]
+# One monitor is the standard VGA card, which is what a plain PC has; more
+# than one needs virtio-gpu, whose heads QEMU shows as separate monitors.
+if args.monitors > 1:
+    cmd += ["-device", "virtio-gpu-pci,max_outputs=%d" % args.monitors, "-vga", "none"]
+else:
+    cmd += ["-vga", "std"]
+
 for disk in args.disk:
     cmd += ["-drive", "if=virtio,format=raw,file=" + os.path.abspath(disk)]
 if args.uefi:
