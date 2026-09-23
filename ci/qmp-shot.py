@@ -1,7 +1,10 @@
 """Takes a QEMU screenshot over QMP and saves it as PNG (standard library only).
 
-usage: qmp-shot.py <qmp socket> <tmp.ppm> <out.png>
+usage: qmp-shot.py <qmp socket> <tmp.ppm> <out.png> [monitor]
        qmp-shot.py --convert <in.ppm> <out.png>
+
+The monitor is the head of the card, 0 by default; a machine with two of
+them has a second screen to take a picture of.
 """
 import json
 import socket
@@ -11,7 +14,7 @@ import time
 import zlib
 
 
-def qmp(address, ppm_path):
+def qmp(address, ppm_path, head=0):
     # "tcp:HOST:PORT" (QEMU on Windows) or a unix socket path
     if address.startswith("tcp:"):
         host, port = address[4:].rsplit(":", 1)
@@ -34,7 +37,10 @@ def qmp(address, ppm_path):
                 return reply
 
     call("qmp_capabilities")
-    call("screendump", {"filename": ppm_path})
+    arguments = {"filename": ppm_path}
+    if head:
+        arguments["head"] = head
+    call("screendump", arguments)
     sock.close()
 
 
@@ -67,6 +73,6 @@ if __name__ == "__main__":
     if sys.argv[1] == "--convert":  # a screendump taken elsewhere
         ppm_to_png(sys.argv[2], sys.argv[3])
     else:
-        qmp(sys.argv[1], sys.argv[2])
+        qmp(sys.argv[1], sys.argv[2], int(sys.argv[4]) if len(sys.argv) > 4 else 0)
         time.sleep(1)
         ppm_to_png(sys.argv[2], sys.argv[3])
