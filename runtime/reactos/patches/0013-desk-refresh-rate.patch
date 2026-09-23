@@ -1,6 +1,6 @@
-From 8b0439e3a5138f5e6e1cf9655694114194d8aff9 Mon Sep 17 00:00:00 2001
+From e496e77349cefd9d2d7384df09f0d6bfbfd86cd8 Mon Sep 17 00:00:00 2001
 From: 77450danik <dnsystems@email.ua>
-Date: Wed, 23 Sep 2026 11:48:06 +0300
+Date: Wed, 23 Sep 2026 12:25:22 +0300
 Subject: [PATCH] desk: The refresh rate under the resolution, and the monitor
  by name.
 
@@ -10,12 +10,29 @@ resolution, where Windows 10 has it. A resolution starts at the fastest
 rate the monitor takes there. The Display line names the monitor the way
 its EDID does, and several monitors stand where the desktop has them.
 ---
- dll/cpl/desk/lang/en-US.rc |  32 ++---
- dll/cpl/desk/lang/uk-UA.rc |  32 ++---
- dll/cpl/desk/resource.h    |   4 +
- dll/cpl/desk/settings.c    | 236 +++++++++++++++++++++++++++++++++++--
- 4 files changed, 266 insertions(+), 38 deletions(-)
+ dll/cpl/desk/CMakeLists.txt |   3 +-
+ dll/cpl/desk/lang/en-US.rc  |  32 ++++---
+ dll/cpl/desk/lang/uk-UA.rc  |  32 ++++---
+ dll/cpl/desk/monitorname.c  |  87 ++++++++++++++++++
+ dll/cpl/desk/resource.h     |   4 +
+ dll/cpl/desk/settings.c     | 170 +++++++++++++++++++++++++++++++++---
+ 6 files changed, 289 insertions(+), 39 deletions(-)
+ create mode 100644 dll/cpl/desk/monitorname.c
 
+diff --git a/dll/cpl/desk/CMakeLists.txt b/dll/cpl/desk/CMakeLists.txt
+index 3531b4e..285bafa 100644
+--- a/dll/cpl/desk/CMakeLists.txt
++++ b/dll/cpl/desk/CMakeLists.txt
+@@ -24,7 +24,8 @@ list(APPEND SOURCE
+     muireg.c)
+ 
+ list(APPEND PCH_SKIP_SOURCE
+-    guid.c)
++    guid.c
++    monitorname.c)
+ 
+ file(GLOB desk_rc_deps resources/*.*)
+ add_rc_deps(desk.rc ${desk_rc_deps})
 diff --git a/dll/cpl/desk/lang/en-US.rc b/dll/cpl/desk/lang/en-US.rc
 index ece4c14..a5b3970 100644
 --- a/dll/cpl/desk/lang/en-US.rc
@@ -118,6 +135,99 @@ index 184d874..d58dd0b 100644
  END
  
  STRINGTABLE
+diff --git a/dll/cpl/desk/monitorname.c b/dll/cpl/desk/monitorname.c
+new file mode 100644
+index 0000000..32922e1
+--- /dev/null
++++ b/dll/cpl/desk/monitorname.c
+@@ -0,0 +1,87 @@
++/*
++ * COPYRIGHT:       See COPYING in the top level directory
++ * PROJECT:         ReactOS Display Control Panel
++ * PURPOSE:         The name a monitor gives for itself in its EDID
++ * PROGRAMMERS:     Project Arctic contributors
++ */
++
++/* The display configuration API is Windows 7, and the applet is built for
++ * Vista; this file is the only one that needs it, and it is kept out of the
++ * shared header so that nothing else changes. */
++#undef WINVER
++#define WINVER 0x601
++#undef _WIN32_WINNT
++#define _WIN32_WINNT 0x601
++
++#include <windows.h>
++#include <string.h>
++#include <strsafe.h>
++
++/* Walks the active display paths and takes the friendly name of the monitor
++ * on the given adapter, the way the display settings of Windows show it. */
++BOOL
++GetMonitorName(IN LPCWSTR pszDevice, OUT LPWSTR pszName, IN DWORD cchName)
++{
++    typedef LONG (WINAPI *PGETSIZES)(UINT32, UINT32 *, UINT32 *);
++    typedef LONG (WINAPI *PQUERY)(UINT32, UINT32 *, DISPLAYCONFIG_PATH_INFO *, UINT32 *,
++                                  DISPLAYCONFIG_MODE_INFO *, DISPLAYCONFIG_TOPOLOGY_ID *);
++    typedef LONG (WINAPI *PGETINFO)(DISPLAYCONFIG_DEVICE_INFO_HEADER *);
++    DISPLAYCONFIG_PATH_INFO *pPaths;
++    DISPLAYCONFIG_MODE_INFO *pModes;
++    PGETSIZES pGetSizes;
++    PGETINFO pGetInfo;
++    PQUERY pQuery;
++    HMODULE hUser32;
++    UINT32 cPaths = 0, cModes = 0, i;
++    BOOL bFound = FALSE;
++
++    hUser32 = GetModuleHandleW(L"user32.dll");
++    pGetSizes = (PGETSIZES)GetProcAddress(hUser32, "GetDisplayConfigBufferSizes");
++    pQuery = (PQUERY)GetProcAddress(hUser32, "QueryDisplayConfig");
++    pGetInfo = (PGETINFO)GetProcAddress(hUser32, "DisplayConfigGetDeviceInfo");
++    if (pGetSizes == NULL || pQuery == NULL || pGetInfo == NULL)
++        return FALSE;
++
++    if (pGetSizes(QDC_ONLY_ACTIVE_PATHS, &cPaths, &cModes) != ERROR_SUCCESS || cPaths == 0)
++        return FALSE;
++
++    pPaths = HeapAlloc(GetProcessHeap(), 0, cPaths * sizeof(*pPaths));
++    pModes = HeapAlloc(GetProcessHeap(), 0, cModes * sizeof(*pModes));
++    if (pPaths != NULL && pModes != NULL &&
++        pQuery(QDC_ONLY_ACTIVE_PATHS, &cPaths, pPaths, &cModes, pModes, NULL) == ERROR_SUCCESS)
++    {
++        for (i = 0; i < cPaths && !bFound; i++)
++        {
++            DISPLAYCONFIG_SOURCE_DEVICE_NAME Source;
++            DISPLAYCONFIG_TARGET_DEVICE_NAME Target;
++
++            ZeroMemory(&Source, sizeof(Source));
++            Source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
++            Source.header.size = sizeof(Source);
++            Source.header.adapterId = pPaths[i].sourceInfo.adapterId;
++            Source.header.id = pPaths[i].sourceInfo.id;
++            if (pGetInfo(&Source.header) != ERROR_SUCCESS ||
++                _wcsicmp(Source.viewGdiDeviceName, pszDevice) != 0)
++            {
++                continue;
++            }
++
++            ZeroMemory(&Target, sizeof(Target));
++            Target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
++            Target.header.size = sizeof(Target);
++            Target.header.adapterId = pPaths[i].targetInfo.adapterId;
++            Target.header.id = pPaths[i].targetInfo.id;
++            if (pGetInfo(&Target.header) == ERROR_SUCCESS && Target.monitorFriendlyDeviceName[0] != 0)
++            {
++                StringCchCopyW(pszName, cchName, Target.monitorFriendlyDeviceName);
++                bFound = TRUE;
++            }
++        }
++    }
++
++    if (pPaths != NULL)
++        HeapFree(GetProcessHeap(), 0, pPaths);
++    if (pModes != NULL)
++        HeapFree(GetProcessHeap(), 0, pModes);
++    return bFound;
++}
 diff --git a/dll/cpl/desk/resource.h b/dll/cpl/desk/resource.h
 index 503077f..865cab5 100644
 --- a/dll/cpl/desk/resource.h
@@ -141,20 +251,10 @@ index 503077f..865cab5 100644
  #define IDS_COLOR_8BIT  2908
  #define IDS_COLOR_16BIT 2916
 diff --git a/dll/cpl/desk/settings.c b/dll/cpl/desk/settings.c
-index beb9593..28c5e24 100644
+index beb9593..5f4cf82 100644
 --- a/dll/cpl/desk/settings.c
 +++ b/dll/cpl/desk/settings.c
-@@ -24,6 +24,9 @@ typedef struct _TIMEOUTDATA
-     INT nTimeout;
- } TIMEOUTDATA, *PTIMEOUTDATA;
- 
-+static VOID
-+UpdateRefreshRates(IN HWND hwndDlg, IN PSETTINGS_DATA pData);
-+
- static VOID
- UpdateDisplay(IN HWND hwndDlg, PSETTINGS_DATA pData, IN BOOL bUpdateThumb)
- {
-@@ -50,6 +53,8 @@ UpdateDisplay(IN HWND hwndDlg, PSETTINGS_DATA pData, IN BOOL bUpdateThumb)
+@@ -50,6 +50,8 @@ UpdateDisplay(IN HWND hwndDlg, PSETTINGS_DATA pData, IN BOOL bUpdateThumb)
      if (LoadString(hApplet, (2900 + pData->CurrentDisplayDevice->CurrentSettings->dmBitsPerPel), Buffer, _countof(Buffer)))
          SendDlgItemMessage(hwndDlg, IDC_SETTINGS_BPP, CB_SELECTSTRING, (WPARAM)-1, (LPARAM)Buffer);
  
@@ -163,7 +263,7 @@ index beb9593..28c5e24 100644
      hwndMonSel = GetDlgItem(hwndDlg, IDC_SETTINGS_MONSEL);
      index = (INT)SendMessage(hwndMonSel, MSLM_GETCURSEL, 0, 0);
      if (index != (DWORD)-1 && SendMessage(hwndMonSel, MSLM_GETMONITORINFO, index, (LPARAM)&info))
-@@ -119,7 +124,6 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+@@ -119,7 +121,6 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
  
          if (devmode.dmPelsWidth < 640 ||
              devmode.dmPelsHeight < 480 ||
@@ -171,7 +271,7 @@ index beb9593..28c5e24 100644
              (devmode.dmBitsPerPel != 4 &&
               devmode.dmBitsPerPel != 8 &&
               devmode.dmBitsPerPel != 16 &&
-@@ -129,6 +133,23 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+@@ -129,6 +130,23 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
              continue;
          }
  
@@ -195,7 +295,7 @@ index beb9593..28c5e24 100644
          Current = HeapAlloc(GetProcessHeap(), 0, sizeof(SETTINGS_ENTRY));
          if (Current != NULL)
          {
-@@ -163,10 +184,156 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
+@@ -163,10 +181,92 @@ GetPossibleSettings(IN LPCTSTR DeviceName, OUT DWORD* pSettingsCount, OUT PSETTI
          }
      }
  
@@ -281,78 +381,14 @@ index beb9593..28c5e24 100644
 +}
 +
 +/* The monitor's own name, which it gives in its EDID, as Windows shows it
-+ * next to the adapter: "Dell U2415 on AMD Radeon RX 580". */
-+static BOOL
-+GetMonitorName(IN LPCWSTR pszDevice, OUT LPWSTR pszName, IN DWORD cchName)
-+{
-+    typedef LONG (WINAPI *PGETSIZES)(UINT32, UINT32 *, UINT32 *);
-+    typedef LONG (WINAPI *PQUERY)(UINT32, UINT32 *, DISPLAYCONFIG_PATH_INFO *, UINT32 *,
-+                                  DISPLAYCONFIG_MODE_INFO *, DISPLAYCONFIG_TOPOLOGY_ID *);
-+    typedef LONG (WINAPI *PGETINFO)(DISPLAYCONFIG_DEVICE_INFO_HEADER *);
-+    DISPLAYCONFIG_PATH_INFO *pPaths;
-+    DISPLAYCONFIG_MODE_INFO *pModes;
-+    PGETSIZES pGetSizes;
-+    PGETINFO pGetInfo;
-+    PQUERY pQuery;
-+    HMODULE hUser32;
-+    UINT32 cPaths = 0, cModes = 0, i;
-+    BOOL bFound = FALSE;
-+
-+    hUser32 = GetModuleHandleW(L"user32.dll");
-+    pGetSizes = (PGETSIZES)GetProcAddress(hUser32, "GetDisplayConfigBufferSizes");
-+    pQuery = (PQUERY)GetProcAddress(hUser32, "QueryDisplayConfig");
-+    pGetInfo = (PGETINFO)GetProcAddress(hUser32, "DisplayConfigGetDeviceInfo");
-+    if (pGetSizes == NULL || pQuery == NULL || pGetInfo == NULL)
-+        return FALSE;
-+
-+    if (pGetSizes(QDC_ONLY_ACTIVE_PATHS, &cPaths, &cModes) != ERROR_SUCCESS || cPaths == 0)
-+        return FALSE;
-+
-+    pPaths = HeapAlloc(GetProcessHeap(), 0, cPaths * sizeof(*pPaths));
-+    pModes = HeapAlloc(GetProcessHeap(), 0, cModes * sizeof(*pModes));
-+    if (pPaths != NULL && pModes != NULL &&
-+        pQuery(QDC_ONLY_ACTIVE_PATHS, &cPaths, pPaths, &cModes, pModes, NULL) == ERROR_SUCCESS)
-+    {
-+        for (i = 0; i < cPaths && !bFound; i++)
-+        {
-+            DISPLAYCONFIG_SOURCE_DEVICE_NAME Source;
-+            DISPLAYCONFIG_TARGET_DEVICE_NAME Target;
-+
-+            ZeroMemory(&Source, sizeof(Source));
-+            Source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
-+            Source.header.size = sizeof(Source);
-+            Source.header.adapterId = pPaths[i].sourceInfo.adapterId;
-+            Source.header.id = pPaths[i].sourceInfo.id;
-+            if (pGetInfo(&Source.header) != ERROR_SUCCESS ||
-+                _wcsicmp(Source.viewGdiDeviceName, pszDevice) != 0)
-+            {
-+                continue;
-+            }
-+
-+            ZeroMemory(&Target, sizeof(Target));
-+            Target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
-+            Target.header.size = sizeof(Target);
-+            Target.header.adapterId = pPaths[i].targetInfo.adapterId;
-+            Target.header.id = pPaths[i].targetInfo.id;
-+            if (pGetInfo(&Target.header) == ERROR_SUCCESS && Target.monitorFriendlyDeviceName[0] != L'\0')
-+            {
-+                StringCchCopyW(pszName, cchName, Target.monitorFriendlyDeviceName);
-+                bFound = TRUE;
-+            }
-+        }
-+    }
-+
-+    if (pPaths != NULL)
-+        HeapFree(GetProcessHeap(), 0, pPaths);
-+    if (pModes != NULL)
-+        HeapFree(GetProcessHeap(), 0, pModes);
-+    return bFound;
-+}
++ * next to the adapter: "Dell U2415 on AMD Radeon RX 580". Reading it needs
++ * the display configuration API, which lives in monitorname.c. */
++BOOL GetMonitorName(IN LPCWSTR pszDevice, OUT LPWSTR pszName, IN DWORD cchName);
 +
  static BOOL
  AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice)
  {
-@@ -176,6 +343,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+@@ -176,6 +276,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
      LPTSTR key = NULL;
      LPTSTR devid = NULL;
      SIZE_T descriptionSize, nameSize, keySize, devidSize;
@@ -360,7 +396,7 @@ index beb9593..28c5e24 100644
      PSETTINGS_ENTRY Current;
      DWORD ResolutionsCount = 1;
      DWORD i;
-@@ -220,7 +388,21 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+@@ -220,7 +321,21 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
              i++;
          }
      }
@@ -383,7 +419,7 @@ index beb9593..28c5e24 100644
      description = HeapAlloc(GetProcessHeap(), 0, descriptionSize);
      if (!description) goto ByeBye;
  
-@@ -236,7 +418,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+@@ -236,7 +351,7 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
      devid = HeapAlloc(GetProcessHeap(), 0, devidSize);
      if (!devid) goto ByeBye;
  
@@ -392,7 +428,7 @@ index beb9593..28c5e24 100644
      memcpy(name, DisplayDevice->DeviceName, nameSize);
      memcpy(key, DisplayDevice->DeviceKey, keySize);
      memcpy(devid, DisplayDevice->DeviceID, devidSize);
-@@ -383,13 +565,26 @@ SettingsOnInitDialog(IN HWND hwndDlg)
+@@ -383,13 +498,27 @@ SettingsOnInitDialog(IN HWND hwndDlg)
          pMonitors = (PMONSL_MONINFO)HeapAlloc(GetProcessHeap(), 0, sizeof(MONSL_MONINFO) * Result);
          if (pMonitors)
          {
@@ -413,7 +449,8 @@ index beb9593..28c5e24 100644
 +                if (EnumDisplaySettingsEx(Current->DeviceName, ENUM_CURRENT_SETTINGS, &devmode, 0) &&
 +                    (devmode.dmFields & DM_POSITION))
 +                {
-+                    pMonitors[i].Position = devmode.dmPosition;
++                    pMonitors[i].Position.x = devmode.dmPosition.x;
++                    pMonitors[i].Position.y = devmode.dmPosition.y;
 +                }
 +                else
 +                {
@@ -425,7 +462,7 @@ index beb9593..28c5e24 100644
                  pMonitors[i].Flags = 0;
              }
  
-@@ -682,6 +877,24 @@ OnResolutionChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData, IN DWORD NewPositi
+@@ -682,6 +811,24 @@ OnResolutionChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData, IN DWORD NewPositi
      /* We shouldn't go there */
  }
  
@@ -450,7 +487,7 @@ index beb9593..28c5e24 100644
  /* Property sheet page callback */
  UINT CALLBACK
  SettingsPageCallbackProc(HWND hwnd, UINT uMsg, LPPROPSHEETPAGE ppsp)
-@@ -960,6 +1173,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+@@ -960,6 +1107,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
              }
              else if (controlId == IDC_SETTINGS_BPP && command == CBN_SELCHANGE)
                  OnBPPChanged(hwndDlg, pData);
@@ -459,7 +496,7 @@ index beb9593..28c5e24 100644
              break;
          }
          case WM_HSCROLL:
-@@ -992,7 +1207,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+@@ -992,7 +1141,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
              {
                  if (pData->CurrentDisplayDevice->CurrentSettings->dmPelsWidth != pData->CurrentDisplayDevice->InitialSettings.dmPelsWidth
                   || pData->CurrentDisplayDevice->CurrentSettings->dmPelsHeight != pData->CurrentDisplayDevice->InitialSettings.dmPelsHeight
