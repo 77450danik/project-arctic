@@ -22,7 +22,8 @@ sed -i 's/^#\?ParallelDownloads.*/ParallelDownloads = 8/' /etc/pacman.conf
 pacman -Syu --noconfirm --needed base-devel git ccache rsync mingw-w64-gcc perl \
     freetype2 gnutls alsa-lib vulkan-icd-loader vulkan-headers systemd-libs libusb \
     wayland libxkbcommon libinput \
-    arch-install-scripts squashfs-tools xorriso limine cpio zstd python-pillow noto-fonts ntfs-3g ntfsprogs
+    arch-install-scripts squashfs-tools xorriso limine cpio zstd python-pillow noto-fonts ntfs-3g ntfsprogs \
+    sbsigntools dosfstools mtools
 
 echo "cpus=$(nproc)"
 free -m | awk '/Mem:/{print "ram=" $2 "MB"} /Swap:/{print "swap=" $2 "MB"}'

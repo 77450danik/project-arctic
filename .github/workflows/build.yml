@@ -165,8 +165,11 @@ jobs:
         run: docker run --rm --privileged -v "$PWD:/work" archlinux:latest bash /work/ci/build-rootfs.sh
       - name: "C: image (NTFS)"
         run: bash ci/make-windows-img.sh
+      # Limine is signed with the Arctic Secure Boot key (ci/sign-efi.sh)
       - name: ISO
-        run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/build-image.sh
+        env:
+          ARCTIC_SB_KEY: ${{ secrets.ARCTIC_SB_KEY }}
+        run: docker run --rm -e ARCTIC_SB_KEY -e GITHUB_ACTIONS -v "$PWD:/work" archlinux:latest bash /work/ci/build-image.sh
       - name: USB image
         run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/make-usb-img.sh
       - run: sudo chown "$(id -u):$(id -g)" out out/arctic.iso out/arctic-usb.img
@@ -191,7 +194,9 @@ jobs:
           done
           notes="Commit ${GITHUB_SHA::7}. Kernel $(cat out/kernel/release), $(cat out/wine/version).
 
-          arctic-usb.img goes to a stick as it is (dd, or Rufus in DD mode) and boots both from UEFI and from BIOS/CSM. arctic.iso is for discs and virtual machines."
+          arctic-usb.img goes to a stick as it is (dd, or Rufus in DD mode) and boots both from UEFI and from BIOS/CSM. arctic.iso is for discs and virtual machines.
+
+          Secure Boot may stay on. The first time on each PC, shim opens MokManager: Enroll key from disk, ARCTIC.cer, Continue, Yes, Reboot (docs/boot.md)."
           gh release delete dev --cleanup-tag --yes || true
           gh release create dev out/arctic.iso out/arctic-usb.img --prerelease --target "$GITHUB_SHA" \
             --title "Arctic dev ${GITHUB_SHA::7}" --notes "$notes"

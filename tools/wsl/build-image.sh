@@ -3,6 +3,8 @@
 # CI's "kernel" artifact put there), else from the last CI ISO (out/arctic.iso
 # on G:, fetched by tools/get-iso.ps1); Wine from tools/wsl/build-wine.sh,
 # everything else from this checkout. Output: out/arctic-local.iso on G:.
+# UEFI is signed with ARCTIC_SB_KEY_FILE, the Arctic Secure Boot key; without it,
+# with a development key of its own (ci/sign-efi.sh).
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
