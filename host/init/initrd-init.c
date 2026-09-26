@@ -33,7 +33,7 @@
 #define NT_OPTS "uid=1000,gid=1000,umask=022"
 #define FONT "/bsod.font"
 
-static int kmsg = -1, splash = -1, dev_mode;
+static int kmsg = -1, console = -1, splash = -1, dev_mode;
 static char cmdline[4096];
 
 static void say(const char *fmt, ...)
@@ -53,9 +53,22 @@ static void say(const char *fmt, ...)
  * missing, UNMOUNTABLE_BOOT_VOLUME when C: fails, and so on. */
 static void fatal(const char *code, const char *what, const char *detail)
 {
+    char line[512];
+
     say("%s: %s", detail, strerror(errno));
-    if (kmsg >= 0)
-        dprintf(kmsg, "<3>ARCTIC: STOP %s (%s)", code, what);
+    /* One record per write(), the way say() and arctic-init do it: that is
+     * what /dev/kmsg takes, rather than leaving it to the C library. */
+    if (kmsg >= 0) {
+        snprintf(line, sizeof(line), "<3>ARCTIC: STOP %s (%s)", code, what);
+        write(kmsg, line, strlen(line));
+    }
+    /* And straight to the console, the way arctic-init announces a stop: a
+     * line written to /dev/kmsg reaches the console only when the next one
+     * pushes it out, and this is the last thing the initrd ever says. */
+    if (console >= 0) {
+        snprintf(line, sizeof(line), "ARCTIC: STOP %s (%s)\n", code, what);
+        write(console, line, strlen(line));
+    }
     stop_screen(splash, FONT, code, what, dev_mode);
     for (;;)
         pause();
@@ -260,6 +273,7 @@ int main(void)
     mount("proc", "/proc", "proc", 0, NULL);
     mount("sysfs", "/sys", "sysfs", 0, NULL);
     kmsg = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+    console = open("/dev/console", O_WRONLY | O_CLOEXEC);
     read_cmdline();
     say("start (dev=%d)", dev_mode);
 
