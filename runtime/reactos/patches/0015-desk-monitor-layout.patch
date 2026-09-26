@@ -1,0 +1,456 @@
+From 4838a576ec81efb9d4ac8f500fca2f4c36318525 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 26 Sep 2026 14:37:59 +0300
+Subject: [PATCH] desk: A monitor dragged in the Display panel stays where it
+ is put.
+
+The Settings page drew the monitors where the desktop has them but the
+drag always snapped back: the selection control moved a rectangle around
+and then threw it away, and nothing was ever told about it.
+
+A dropped monitor now keeps its place. The control scales the dropped
+rectangle back into monitor coordinates and reports it as
+MSLN_MONITORSMOVED, the page remembers it on the display device, and
+Apply writes every place with CDS_NORESET and then switches all of it on
+with one call, so the screens change together. The system puts the
+monitors side by side without gaps and holds the primary one at the
+origin, so the places that come back are not always the ones asked for
+and the page reads them again afterwards. Nothing moved if a place is
+refused, so the ones already written are taken back.
+---
+ dll/cpl/desk/desk.h     |   2 +
+ dll/cpl/desk/monslctl.c |  77 ++++++++++++-
+ dll/cpl/desk/monslctl.h |  11 ++
+ dll/cpl/desk/settings.c | 249 +++++++++++++++++++++++++++++++++-------
+ 4 files changed, 299 insertions(+), 40 deletions(-)
+
+diff --git a/dll/cpl/desk/desk.h b/dll/cpl/desk/desk.h
+index 8cb2886..6ca9d07 100644
+--- a/dll/cpl/desk/desk.h
++++ b/dll/cpl/desk/desk.h
+@@ -156,6 +156,8 @@ typedef struct _DISPLAY_DEVICE_ENTRY
+     DWORD ResolutionsCount;
+     PSETTINGS_ENTRY CurrentSettings; /* Points into Settings list */
+     SETTINGS_ENTRY InitialSettings;
++    POINT Position;        /* Where this monitor stands on the virtual screen */
++    POINT InitialPosition;
+ } DISPLAY_DEVICE_ENTRY, *PDISPLAY_DEVICE_ENTRY;
+ 
+ typedef struct _GLOBAL_DATA
+diff --git a/dll/cpl/desk/monslctl.c b/dll/cpl/desk/monslctl.c
+index 1d09206..9d728c5 100644
+--- a/dll/cpl/desk/monslctl.c
++++ b/dll/cpl/desk/monslctl.c
+@@ -1098,6 +1098,81 @@ MonSelCancelDragging(IN OUT PMONITORSELWND infoPtr)
+     }
+ }
+ 
++/* Where the dragged monitor was dropped, in monitor coordinates: the way
++ * back through the scaling MonSelUpdateMonitorsInfo did. */
++static VOID
++MonSelDragRectToPosition(IN PMONITORSELWND infoPtr,
++                         IN DWORD Index,
++                         OUT PPOINT pptPosition)
++{
++    SIZE Extent, Monitors;
++
++    Extent.cx = infoPtr->rcExtent.right - infoPtr->rcExtent.left;
++    Extent.cy = infoPtr->rcExtent.bottom - infoPtr->rcExtent.top;
++    Monitors.cx = infoPtr->rcMonitors.right - infoPtr->rcMonitors.left;
++    Monitors.cy = infoPtr->rcMonitors.bottom - infoPtr->rcMonitors.top;
++
++    if (Monitors.cx < 1 || Monitors.cy < 1)
++    {
++        *pptPosition = infoPtr->MonitorInfo[Index].Position;
++        return;
++    }
++
++    pptPosition->x = infoPtr->rcExtent.left +
++        (((infoPtr->rcDragging.left - infoPtr->rcMonitors.left) * Extent.cx) / Monitors.cx);
++    pptPosition->y = infoPtr->rcExtent.top +
++        (((infoPtr->rcDragging.top - infoPtr->rcMonitors.top) * Extent.cy) / Monitors.cy);
++}
++
++/* The user let a dragged monitor go: it stays where it was dropped and the
++ * parent is told, so that it can lay the monitors out and apply that. A
++ * press that never turned into a drag is just a click. */
++static VOID
++MonSelDropDragging(IN OUT PMONITORSELWND infoPtr)
++{
++    MONSL_MONNMHDR nmh;
++    POINT ptPosition;
++    DWORD Index;
++
++    if (infoPtr->DraggingMonitor < 0)
++        return;
++
++    if (!infoPtr->IsDraggingMonitor)
++    {
++        MonSelCancelDragging(infoPtr);
++        return;
++    }
++
++    Index = (DWORD)infoPtr->DraggingMonitor;
++    MonSelDragRectToPosition(infoPtr,
++                             Index,
++                             &ptPosition);
++
++    infoPtr->DraggingMonitor = -1;
++    infoPtr->IsDraggingMonitor = FALSE;
++
++    ReleaseCapture();
++
++    MonSelApplyCursorClipping(infoPtr,
++                              FALSE);
++
++    infoPtr->MonitorInfo[Index].Position = ptPosition;
++
++    /* The monitor that moved changes the extent of them all, so every
++     * rectangle is scaled anew */
++    MonSelUpdateMonitorsInfo(infoPtr,
++                             FALSE);
++
++    InvalidateRect(infoPtr->hSelf,
++                   NULL,
++                   TRUE);
++
++    MonSelNotifyMonitor(infoPtr,
++                        MSLN_MONITORSMOVED,
++                        (INT)Index,
++                        &nmh);
++}
++
+ static VOID
+ MonSelInitDragging(IN OUT PMONITORSELWND infoPtr,
+                    IN DWORD Index,
+@@ -1303,7 +1378,7 @@ MonitorSelWndProc(IN HWND hwnd,
+ 
+         case WM_LBUTTONUP:
+         {
+-            MonSelCancelDragging(infoPtr);
++            MonSelDropDragging(infoPtr);
+             infoPtr->LeftBtnDown = FALSE;
+             break;
+         }
+diff --git a/dll/cpl/desk/monslctl.h b/dll/cpl/desk/monslctl.h
+index 7ee3244..9d94025 100644
+--- a/dll/cpl/desk/monslctl.h
++++ b/dll/cpl/desk/monslctl.h
+@@ -77,6 +77,17 @@ typedef struct _MONSL_MONNMMONITORCHANGING
+  */
+ #define MSLN_RBUTTONUP  103
+ 
++/*
++ * MSLN_MONITORSMOVED
++ *   This notification code is sent through WM_NOTIFY after the user dropped
++ *   a monitor at another place. MonitorInfo carries the position it was
++ *   dropped at; the monitors keep it until the parent lays them out and
++ *   sends MSLM_SETMONITORSINFO.
++ *
++ *   lParam: PMONSL_MONNMHDR
++ */
++#define MSLN_MONITORSMOVED  104
++
+ /*
+  * MSLM_SETMONITORSINFO
+  *   wParam: DWORD
+diff --git a/dll/cpl/desk/settings.c b/dll/cpl/desk/settings.c
+index 2bed9bc..bb442d8 100644
+--- a/dll/cpl/desk/settings.c
++++ b/dll/cpl/desk/settings.c
+@@ -363,6 +363,23 @@ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice
+     newEntry->DeviceKey = key;
+     newEntry->DeviceID = devid;
+     newEntry->DeviceStateFlags = DisplayDevice->StateFlags;
++
++    /* Where this monitor stands on the virtual screen. A device that names no
++     * position of its own stays at the origin. */
++    {
++        DEVMODE devmode;
++
++        ZeroMemory(&devmode, sizeof(devmode));
++        devmode.dmSize = (WORD)sizeof(devmode);
++        if (EnumDisplaySettingsEx(DisplayDevice->DeviceName, ENUM_CURRENT_SETTINGS, &devmode, 0) &&
++            (devmode.dmFields & DM_POSITION))
++        {
++            newEntry->Position.x = devmode.dmPosition.x;
++            newEntry->Position.y = devmode.dmPosition.y;
++        }
++        newEntry->InitialPosition = newEntry->Position;
++    }
++
+     newEntry->Flink = pData->DisplayDeviceList;
+     pData->DisplayDeviceList = newEntry;
+     return TRUE;
+@@ -427,6 +444,112 @@ OnDisplayDeviceChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData, IN PDISPLAY_DEV
+     UpdateDisplay(hwndDlg, pData, TRUE);
+ }
+ 
++/* How many display devices the list holds */
++static DWORD
++CountDisplayDevices(IN PSETTINGS_DATA pData)
++{
++    PDISPLAY_DEVICE_ENTRY Current;
++    DWORD Count = 0;
++
++    for (Current = pData->DisplayDeviceList; Current != NULL; Current = Current->Flink)
++        Count++;
++
++    return Count;
++}
++
++/* The monitor at this index of the selection control */
++static PDISPLAY_DEVICE_ENTRY
++FindDisplayDeviceByIndex(IN PSETTINGS_DATA pData, IN INT Index)
++{
++    PDISPLAY_DEVICE_ENTRY Current = pData->DisplayDeviceList;
++    INT i;
++
++    if (Index < 0)
++        return NULL;
++
++    for (i = 0; i < Index && Current != NULL; i++)
++        Current = Current->Flink;
++
++    return Current;
++}
++
++/* Show the monitors where they stand now, with the size of the mode each one
++ * is set to. */
++static VOID
++UpdateMonitorLayout(IN HWND hwndDlg, IN PSETTINGS_DATA pData)
++{
++    PDISPLAY_DEVICE_ENTRY Current;
++    PMONSL_MONINFO pMonitors;
++    DWORD Count, i;
++
++    Count = CountDisplayDevices(pData);
++    if (Count == 0)
++        return;
++
++    pMonitors = (PMONSL_MONINFO)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(MONSL_MONINFO) * Count);
++    if (pMonitors == NULL)
++        return;
++
++    Current = pData->DisplayDeviceList;
++    for (i = 0; i < Count && Current != NULL; i++, Current = Current->Flink)
++    {
++        pMonitors[i].Position = Current->Position;
++        pMonitors[i].Size.cx = Current->CurrentSettings->dmPelsWidth;
++        pMonitors[i].Size.cy = Current->CurrentSettings->dmPelsHeight;
++        pMonitors[i].Flags = 0;
++    }
++
++    SendDlgItemMessage(hwndDlg,
++                       IDC_SETTINGS_MONSEL,
++                       MSLM_SETMONITORSINFO,
++                       Count,
++                       (LPARAM)pMonitors);
++
++    HeapFree(GetProcessHeap(), 0, pMonitors);
++}
++
++/* Read back where the monitors ended up: the system puts them side by side
++ * without gaps and holds the primary one at the origin, so the places it
++ * chose are not always the ones that were asked for. */
++static VOID
++ReloadMonitorPositions(IN PSETTINGS_DATA pData)
++{
++    PDISPLAY_DEVICE_ENTRY Current;
++
++    for (Current = pData->DisplayDeviceList; Current != NULL; Current = Current->Flink)
++    {
++        DEVMODE devmode;
++
++        ZeroMemory(&devmode, sizeof(devmode));
++        devmode.dmSize = (WORD)sizeof(devmode);
++        if (EnumDisplaySettingsEx(Current->DeviceName, ENUM_CURRENT_SETTINGS, &devmode, 0) &&
++            (devmode.dmFields & DM_POSITION))
++        {
++            Current->Position.x = devmode.dmPosition.x;
++            Current->Position.y = devmode.dmPosition.y;
++        }
++        Current->InitialPosition = Current->Position;
++    }
++}
++
++/* Has a monitor been dragged somewhere else? */
++static BOOL
++MonitorLayoutChanged(IN PSETTINGS_DATA pData)
++{
++    PDISPLAY_DEVICE_ENTRY Current;
++
++    for (Current = pData->DisplayDeviceList; Current != NULL; Current = Current->Flink)
++    {
++        if (Current->Position.x != Current->InitialPosition.x ||
++            Current->Position.y != Current->InitialPosition.y)
++        {
++            return TRUE;
++        }
++    }
++
++    return FALSE;
++}
++
+ static VOID
+ SettingsOnInitDialog(IN HWND hwndDlg)
+ {
+@@ -489,50 +612,13 @@ SettingsOnInitDialog(IN HWND hwndDlg)
+                    1,
+                    (LPARAM)&monitors);
+     }
+-    else /* FIXME: Incomplete! */
++    else
+     {
+-        PMONSL_MONINFO pMonitors;
+-        DWORD i;
+-
+         OnDisplayDeviceChanged(hwndDlg, pData, pData->DisplayDeviceList);
+ 
+         ShowWindow(GetDlgItem(hwndDlg, IDC_RESOLUTION_PREVIEW), SW_HIDE);
+ 
+-        pMonitors = (PMONSL_MONINFO)HeapAlloc(GetProcessHeap(), 0, sizeof(MONSL_MONINFO) * Result);
+-        if (pMonitors)
+-        {
+-            PDISPLAY_DEVICE_ENTRY Current = pData->DisplayDeviceList;
+-
+-            for (i = 0; i < Result && Current != NULL; i++, Current = Current->Flink)
+-            {
+-                DEVMODE devmode;
+-
+-                ZeroMemory(&devmode, sizeof(devmode));
+-                devmode.dmSize = (WORD)sizeof(devmode);
+-                if (EnumDisplaySettingsEx(Current->DeviceName, ENUM_CURRENT_SETTINGS, &devmode, 0) &&
+-                    (devmode.dmFields & DM_POSITION))
+-                {
+-                    pMonitors[i].Position.x = devmode.dmPosition.x;
+-                    pMonitors[i].Position.y = devmode.dmPosition.y;
+-                }
+-                else
+-                {
+-                    pMonitors[i].Position.x = 0;
+-                    pMonitors[i].Position.y = 0;
+-                }
+-                pMonitors[i].Size.cx = Current->CurrentSettings->dmPelsWidth;
+-                pMonitors[i].Size.cy = Current->CurrentSettings->dmPelsHeight;
+-                pMonitors[i].Flags = 0;
+-            }
+-
+-            SendDlgItemMessage(hwndDlg,
+-                       IDC_SETTINGS_MONSEL,
+-                       MSLM_SETMONITORSINFO,
+-                       Result,
+-                       (LPARAM)pMonitors);
+-
+-            HeapFree(GetProcessHeap(), 0, pMonitors);
+-        }
++        UpdateMonitorLayout(hwndDlg, pData);
+     }
+ 
+     /* Initialize the color spectrum bitmaps */
+@@ -1018,6 +1104,77 @@ FindBestElement(
+     return BestEntry;
+ }
+ 
++/* Write where every monitor is to stand, without moving anything yet. Each
++ * one keeps the mode it is set to. */
++static LONG
++WriteMonitorLayout(IN PSETTINGS_DATA pData, IN BOOL bInitial)
++{
++    PDISPLAY_DEVICE_ENTRY Current;
++    LONG rc = DISP_CHANGE_SUCCESSFUL;
++
++    for (Current = pData->DisplayDeviceList; Current != NULL; Current = Current->Flink)
++    {
++        DEVMODE devmode;
++
++        ZeroMemory(&devmode, sizeof(devmode));
++        devmode.dmSize = (WORD)sizeof(devmode);
++        devmode.dmPelsWidth = Current->CurrentSettings->dmPelsWidth;
++        devmode.dmPelsHeight = Current->CurrentSettings->dmPelsHeight;
++        devmode.dmBitsPerPel = Current->CurrentSettings->dmBitsPerPel;
++        devmode.dmDisplayFrequency = Current->CurrentSettings->dmDisplayFrequency;
++        devmode.dmPosition.x = bInitial ? Current->InitialPosition.x : Current->Position.x;
++        devmode.dmPosition.y = bInitial ? Current->InitialPosition.y : Current->Position.y;
++        devmode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL |
++                           DM_DISPLAYFREQUENCY | DM_POSITION;
++
++        rc = ChangeDisplaySettingsEx(Current->DeviceName,
++                                     &devmode,
++                                     NULL,
++                                     CDS_UPDATEREGISTRY | CDS_NORESET,
++                                     NULL);
++        if (rc != DISP_CHANGE_SUCCESSFUL)
++            break;
++    }
++
++    return rc;
++}
++
++/* The layout the monitors were dragged into. The places go in one by one and
++ * nothing moves until the last call, so the screens switch together; the
++ * system then puts them side by side without gaps and holds the primary one
++ * at the origin, the way Windows does. */
++static VOID
++ApplyMonitorLayout(IN HWND hwndDlg, IN PSETTINGS_DATA pData)
++{
++    TCHAR Message[1024], Title[256];
++    LONG rc;
++
++    rc = WriteMonitorLayout(pData, FALSE);
++    if (rc == DISP_CHANGE_SUCCESSFUL)
++        rc = ChangeDisplaySettingsEx(NULL, NULL, NULL, 0, NULL);
++
++    if (rc == DISP_CHANGE_RESTART)
++    {
++        /* The places are written and the screens take them after a restart */
++        LoadString(hApplet, IDS_DISPLAY_SETTINGS, Title, _countof(Title));
++        LoadString(hApplet, IDS_APPLY_NEEDS_RESTART, Message, _countof(Message));
++        MessageBox(hwndDlg, Message, Title, MB_OK | MB_ICONINFORMATION);
++    }
++    else if (rc != DISP_CHANGE_SUCCESSFUL)
++    {
++        /* Nothing has moved, so the places written so far are taken back */
++        WriteMonitorLayout(pData, TRUE);
++
++        LoadString(hApplet, IDS_DISPLAY_SETTINGS, Title, _countof(Title));
++        LoadString(hApplet, IDS_APPLY_FAILED, Message, _countof(Message));
++        MessageBox(hwndDlg, Message, Title, MB_OK | MB_ICONSTOP);
++    }
++
++    /* Wherever the monitors ended up, that is what the page shows from now on */
++    ReloadMonitorPositions(pData);
++    UpdateMonitorLayout(hwndDlg, pData);
++}
++
+ static VOID
+ ApplyDisplaySettings(HWND hwndDlg, PSETTINGS_DATA pData)
+ {
+@@ -1150,6 +1307,9 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+                     /* Apply new settings */
+                     ApplyDisplaySettings(hwndDlg, pData);
+                 }
++
++                if (MonitorLayoutChanged(pData))
++                    ApplyMonitorLayout(hwndDlg, pData);
+             }
+             else if (lpnm->code == MSLN_MONITORCHANGED)
+             {
+@@ -1160,6 +1320,17 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+                     Current = Current->Flink;
+                 OnDisplayDeviceChanged(hwndDlg, pData, Current);
+             }
++            else if (lpnm->code == MSLN_MONITORSMOVED)
++            {
++                PMONSL_MONNMHDR lpnmi = (PMONSL_MONNMHDR)lParam;
++                PDISPLAY_DEVICE_ENTRY Current = FindDisplayDeviceByIndex(pData, lpnmi->Index);
++
++                if (Current != NULL)
++                {
++                    Current->Position = lpnmi->MonitorInfo.Position;
++                    PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
++                }
++            }
+             break;
+         }
+ 
