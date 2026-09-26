@@ -11,3 +11,7 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", OWNER="nt"
 SUBSYSTEM=="block", ACTION=="add|change", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/bin/arctic-volume add"
 SUBSYSTEM=="block", ACTION=="change", ENV{ID_FS_USAGE}!="filesystem", RUN+="/usr/bin/arctic-volume remove"
 SUBSYSTEM=="block", ACTION=="remove", RUN+="/usr/bin/arctic-volume remove"
+
+# Display adapters: after module autoloading, arctic-gpu finishes choosing the
+# driver (nouveau for NVIDIA cards older than Turing, nvidia_drm for the rest)
+SUBSYSTEM=="pci", ACTION=="add", ATTR{class}=="0x03*", RUN+="/usr/bin/arctic-gpu"

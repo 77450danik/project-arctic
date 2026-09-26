@@ -28,8 +28,17 @@ wayland
 libxkbcommon
 libinput
 
+# GPU drivers' user space: OpenGL (radeonsi, iris, crocus, nouveau) and Vulkan
+# (radv, anv, NVK) with GBM and EGL. NVIDIA's own driver is installed apart,
+# at the version of its kernel modules (kernel/NVIDIA_VERSION)
+mesa
+vulkan-radeon
+vulkan-intel
+vulkan-nouveau
+
 # GPU and network firmware (the drivers come with the kernel)
 linux-firmware-amdgpu
 linux-firmware-radeon
 linux-firmware-intel
+linux-firmware-nvidia
 linux-firmware-realtek

@@ -19,6 +19,11 @@ rm -rf "$RFS" "$OUT/prefix" "$OUT/initrd"
 mkdir -p "$RFS"
 # shellcheck disable=SC2046
 pacstrap -C /tmp/pacman.conf -c -G -M "$RFS" $(grep -v '^[[:space:]]*#' "$ROOT/host/rootfs/packages.txt")
+# NVIDIA's user space, the same version as its kernel modules (build-kernel.sh):
+# the Arch archive keeps every release, the repository only the newest
+NV=$(cat "$ROOT/kernel/NVIDIA_VERSION")
+pacstrap -C /tmp/pacman.conf -c -G -M -U "$RFS" \
+    "https://archive.archlinux.org/packages/n/nvidia-utils/nvidia-utils-$NV-1-x86_64.pkg.tar.zst"
 
 chroot "$RFS" localedef -i uk_UA -f UTF-8 uk_UA.UTF-8
 chroot "$RFS" localedef -i en_US -f UTF-8 en_US.UTF-8
@@ -37,6 +42,7 @@ cp -a "$OUT/wine/usr/." "$RFS/usr/"
 INIT_SRC=("$ROOT"/host/init/{splash,screen,stop}.c)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"
 mkdir -p "$OUT/initrd/dev" "$OUT/initrd/proc" "$OUT/initrd/sys"
 gcc -static -Os -Wall -o "$OUT/initrd/init" "$ROOT/host/init/initrd-init.c" "${INIT_SRC[@]}"
 mknod -m 600 "$OUT/initrd/dev/console" c 5 1
@@ -111,6 +117,11 @@ mkdir -p "$PFX/drive_c/windows/system32/config"
 cp "$PFX/system.reg" "$PFX/user.reg" "$PFX/userdef.reg" "$PFX/.update-timestamp" "$PFX/drive_c/windows/system32/config/"
 mv "$PFX" "$OUT/prefix"
 rm -rf "$RFS/var/tmp/"*
+
+# NVIDIA's parts for X11, Vulkan SC, data-centre GPUs, CUDA debugging and daemons
+rm -rf "$RFS"/usr/lib/nvidia/xorg "$RFS"/usr/lib/xorg "$RFS"/usr/share/vulkansc
+rm -f "$RFS"/usr/lib/lib{nvidia-vksc-core,nvidia-imex,nvidia-fmdrv,nvidia-pkcs11,nvidia-pkcs11-openssl3,cudadebugger}.so* \
+    "$RFS"/usr/bin/nvidia-{bug-report.sh,cuda-mps-control,cuda-mps-server,debugdump,persistenced,powerd,pcc,xconfig,sleep.sh}
 
 # Nothing here is ever read on the running system
 rm -rf "$RFS"/usr/share/{man,doc,info,gtk-doc,help,i18n,locale} "$RFS/usr/include" "$RFS"/var/cache/pacman/pkg/*

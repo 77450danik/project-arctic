@@ -49,6 +49,20 @@ done < "$ROOT/kernel/arctic.config"
 echo "building with $(nproc) CPUs"
 make -j"$(nproc)" bzImage modules
 make INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
+
+# NVIDIA's open kernel modules (Turing and newer) for this very kernel, signed
+# with its key like the modules above. Their user space must be the same
+# version: build-rootfs.sh takes it from the Arch archive by this number.
+NV=$(cat "$ROOT/kernel/NVIDIA_VERSION")
+curl -fL --retry 5 -o "$WORK/nvidia.tar.gz" \
+    "https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/$NV.tar.gz"
+tar xf "$WORK/nvidia.tar.gz" -C "$WORK"
+make -C "$WORK/open-gpu-kernel-modules-$NV" -j"$(nproc)" SYSSRC="$PWD" SYSOUT="$PWD" modules
+make -C "$WORK/open-gpu-kernel-modules-$NV" SYSSRC="$PWD" SYSOUT="$PWD" \
+    INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
+depmod -b "$OUT" "$(make -s kernelrelease)"
+ls "$OUT"/lib/modules/*/kernel/drivers/video/nvidia*.ko*
+
 cp arch/x86/boot/bzImage "$OUT/vmlinuz"
 cp .config "$OUT/config"
 make -s kernelrelease > "$OUT/release"
