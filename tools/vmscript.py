@@ -34,7 +34,8 @@ ALIASES = {'ctrl': 'ctrl', 'alt': 'alt', 'shift': 'shift', 'win': 'meta_l', 'ent
 
 
 class Qmp:
-    def __init__(self, address="tcp:127.0.0.1:4455"):
+    def __init__(self, address="tcp:127.0.0.1:4455", heads=1):
+        self.heads = heads
         host, port = address[4:].rsplit(":", 1)
         for _ in range(50):
             try:
@@ -48,23 +49,49 @@ class Qmp:
         self.width, self.height = 1280, 800
         self.sync_size()
 
-    def sync_size(self):
-        """The pointer is absolute over the screen, so its size has to be the
-        one the guest shows right now: a changed display mode moves every
-        coordinate."""
+    def head_size(self, head):
+        """The size of one monitor, or None if the card has no such head.
+        A head other than the first belongs to a named device, the way
+        ci/qmp-shot.py asks for one."""
         ppm = os.path.join(RES, "size.ppm")
+        arguments = {"filename": ppm}
+        if head:
+            arguments["device"] = "gpu"
+            arguments["head"] = head
         try:
-            self.call("screendump", {"filename": ppm})
+            self.call("screendump", arguments)
             time.sleep(0.3)
             with open(ppm, "rb") as f:
-                if f.readline().strip() == b"P6":
+                if f.readline().strip() != b"P6":
+                    return None
+                line = f.readline()
+                while line.startswith(b"#"):
                     line = f.readline()
-                    while line.startswith(b"#"):
-                        line = f.readline()
-                    self.width, self.height = (int(n) for n in line.split()[:2])
-            os.remove(ppm)
+                return tuple(int(n) for n in line.split()[:2])
         except (OSError, ValueError, RuntimeError):
-            pass
+            return None
+        finally:
+            try:
+                os.remove(ppm)
+            except OSError:
+                pass
+
+    def sync_size(self):
+        """The pointer is absolute over the whole desktop, so its size has to
+        be the one the guest shows right now: a changed display mode moves
+        every coordinate. With several monitors the desktop is all of them,
+        not the first one, and they stand side by side as dwm puts them.
+        The count comes from the caller: asking the card for a head it does
+        not have takes QEMU down with it."""
+        width = height = 0
+        for head in range(self.heads):
+            size = self.head_size(head)
+            if size is None:
+                break
+            width += size[0]
+            height = max(height, size[1])
+        if width and height:
+            self.width, self.height = width, height
 
     def call(self, command, arguments=None):
         request = {"execute": command}
@@ -188,5 +215,5 @@ def run(qmp, steps):
 
 
 if __name__ == "__main__":
-    q = Qmp()
+    q = Qmp(heads=int(sys.argv[2]) if len(sys.argv) > 2 else 1)
     run(q, open(sys.argv[1], encoding="utf-8").read().splitlines())

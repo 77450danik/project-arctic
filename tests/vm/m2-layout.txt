@@ -1,0 +1,20 @@
+# Two monitors dragged into another order, and the screens really swap.
+# Needs the machine to have two of them: vm-test.py --monitors 2
+sleep 6
+move 18 467
+click                         # Пуск
+sleep 2
+move 90 397
+click                         # Виконати...
+sleep 3
+type control desk.cpl,,3
+key ret
+sleep 14
+shot y1-two                   # 2 on the left, 1 on the right
+drag 160 163 360 163          # the left monitor over to the right
+sleep 2
+shot y2-dropped               # it stays where it was dropped, Застосувати wakes up
+move 364 440
+click                         # Застосувати
+sleep 6
+shot y3-applied               # side by side again, in the new order
