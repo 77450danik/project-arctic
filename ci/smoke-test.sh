@@ -78,7 +78,7 @@ STICK=(-device qemu-xhci -drive if=none,id=stick,format=raw,snapshot=on,file="$U
 # Arctic certificate in MokList, as MokManager leaves it on a real PC
 secure() {
     local vars="$RES/$1-vars.fd" mok=()
-    [ "$2" = mok ] && mok=(--add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$ROOT/image/secureboot/arctic-sb.crt")
+    [ "${2:-}" = mok ] && mok=(--add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$ROOT/image/secureboot/arctic-sb.crt")
     virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$vars" --secure-boot "${mok[@]}" >/dev/null
     SECURE=(-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on
         -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
