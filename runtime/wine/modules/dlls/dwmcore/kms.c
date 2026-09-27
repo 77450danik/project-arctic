@@ -1087,6 +1087,35 @@ static bool pci_ids_name( uint16_t vendor, uint16_t device, char *name, size_t s
     return false;
 }
 
+/* AMD names its cards by chip and revision, as its Windows driver does: 67DF
+ * is an RX 480 at revision C7 and an RX 580 at E7. libdrm keeps that table. */
+static bool amdgpu_ids_name( uint16_t device, uint8_t revision, char *name, size_t size )
+{
+    char line[256];
+    FILE *f;
+
+    if (!(f = fopen( "/usr/share/libdrm/amdgpu.ids", "r" ))) return false;
+    while (fgets( line, sizeof(line), f ))
+    {
+        char *end, *text;
+        unsigned int id, rev;
+
+        if (line[0] == '#') continue;
+        id = strtoul( line, &end, 16 );
+        if (*end != ',' || id != device) continue;
+        rev = strtoul( end + 1, &end, 16 );
+        if (*end != ',' || rev != revision) continue;
+        for (text = end + 1; *text == ' ' || *text == '\t'; text++);
+        text[strcspn( text, "\r\n" )] = 0;
+        if (!*text) break;
+        snprintf( name, size, "%s", text );
+        fclose( f );
+        return true;
+    }
+    fclose( f );
+    return false;
+}
+
 static void read_adapter(void)
 {
     struct drm_version version = { .name_len = sizeof(kms.driver) - 1, .name = kms.driver };
@@ -1100,7 +1129,9 @@ static void read_adapter(void)
     kms.subsystem = read_sysfs_hex( card, "subsystem_device" ) << 16 | read_sysfs_hex( card, "subsystem_vendor" );
     kms.revision = read_sysfs_hex( card, "revision" );
 
-    if (kms.vendor && pci_ids_name( kms.vendor, kms.device, model, sizeof(model) ))
+    if (kms.vendor == 0x1002 && amdgpu_ids_name( kms.device, kms.revision, model, sizeof(model) ))
+        snprintf( kms.description, sizeof(kms.description), "%s", model );
+    else if (kms.vendor && pci_ids_name( kms.vendor, kms.device, model, sizeof(model) ))
     {
         const char *vendor = kms.vendor == 0x1002 ? "AMD " : kms.vendor == 0x10de ? "NVIDIA " :
                              kms.vendor == 0x8086 ? "Intel " : "";
