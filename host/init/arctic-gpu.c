@@ -64,7 +64,7 @@ static const char *driver(const char *dir)
     if ((len = readlink(path, target, sizeof(target) - 1)) <= 0)
         return "";
     target[len] = 0;
-    snprintf(name, sizeof(name), "%s", strrchr(target, '/') ? strrchr(target, '/') + 1 : target);
+    snprintf(name, sizeof(name), "%.63s", strrchr(target, '/') ? strrchr(target, '/') + 1 : target);
     return name;
 }
 
