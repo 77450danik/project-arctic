@@ -1,6 +1,6 @@
 diff -ruN a/dll/cpl/desk/desk.h b/dll/cpl/desk/desk.h
---- a/dll/cpl/desk/desk.h	2026-09-27 17:35:37.589996047 +0300
-+++ b/dll/cpl/desk/desk.h	2026-09-27 17:35:37.874483865 +0300
+--- a/dll/cpl/desk/desk.h	2026-09-27 19:30:38.702491400 +0300
++++ b/dll/cpl/desk/desk.h	2026-09-27 19:30:39.030941500 +0300
 @@ -158,6 +158,10 @@
      SETTINGS_ENTRY InitialSettings;
      POINT Position;        /* Where this monitor stands on the virtual screen */
@@ -13,8 +13,8 @@ diff -ruN a/dll/cpl/desk/desk.h b/dll/cpl/desk/desk.h
  
  typedef struct _GLOBAL_DATA
 diff -ruN a/dll/cpl/desk/lang/en-US.rc b/dll/cpl/desk/lang/en-US.rc
---- a/dll/cpl/desk/lang/en-US.rc	2026-09-27 17:35:37.574388146 +0300
-+++ b/dll/cpl/desk/lang/en-US.rc	2026-09-27 17:35:37.874811865 +0300
+--- a/dll/cpl/desk/lang/en-US.rc	2026-09-27 19:30:38.683964100 +0300
++++ b/dll/cpl/desk/lang/en-US.rc	2026-09-27 19:30:39.031262800 +0300
 @@ -144,6 +144,7 @@
      GROUPBOX "&Color quality", 1817, 125, 119, 115, 63
      COMBOBOX IDC_SETTINGS_BPP, 131, 129, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
@@ -24,8 +24,8 @@ diff -ruN a/dll/cpl/desk/lang/en-US.rc b/dll/cpl/desk/lang/en-US.rc
  END
  
 diff -ruN a/dll/cpl/desk/lang/uk-UA.rc b/dll/cpl/desk/lang/uk-UA.rc
---- a/dll/cpl/desk/lang/uk-UA.rc	2026-09-27 17:35:37.574470246 +0300
-+++ b/dll/cpl/desk/lang/uk-UA.rc	2026-09-27 17:35:37.875008465 +0300
+--- a/dll/cpl/desk/lang/uk-UA.rc	2026-09-27 19:30:38.684068100 +0300
++++ b/dll/cpl/desk/lang/uk-UA.rc	2026-09-27 19:30:39.031541400 +0300
 @@ -154,6 +154,7 @@
      GROUPBOX "&Якість кольоропередачі", 1817, 125, 119, 115, 63
      COMBOBOX IDC_SETTINGS_BPP, 131, 129, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
@@ -35,8 +35,8 @@ diff -ruN a/dll/cpl/desk/lang/uk-UA.rc b/dll/cpl/desk/lang/uk-UA.rc
  END
  
 diff -ruN a/dll/cpl/desk/monitorname.c b/dll/cpl/desk/monitorname.c
---- a/dll/cpl/desk/monitorname.c	2026-09-27 17:35:37.574470246 +0300
-+++ b/dll/cpl/desk/monitorname.c	2026-09-27 17:35:37.873757765 +0300
+--- a/dll/cpl/desk/monitorname.c	2026-09-27 19:30:38.684068100 +0300
++++ b/dll/cpl/desk/monitorname.c	2026-09-27 19:30:39.030761500 +0300
 @@ -1,7 +1,7 @@
  /*
   * COPYRIGHT:       See COPYING in the top level directory
@@ -92,7 +92,7 @@ diff -ruN a/dll/cpl/desk/monitorname.c b/dll/cpl/desk/monitorname.c
          }
      }
  
-@@ -157,3 +152,38 @@
+@@ -157,3 +152,41 @@
          HeapFree(GetProcessHeap(), 0, pModes);
      return bFound;
  }
@@ -110,7 +110,7 @@ diff -ruN a/dll/cpl/desk/monitorname.c b/dll/cpl/desk/monitorname.c
 +}
 +
 +/* "ACR0A2B", the Plug and Play id of the monitor on the given adapter, taken
-+ * from its device path \\?\DISPLAY\ACR0A2B\... A monitor without an EDID has
++ * from its device path \\?\DISPLAY#ACR0A2B#... A monitor without an EDID has
 + * none. */
 +BOOL
 +GetMonitorPnpId(IN LPCWSTR pszDevice, OUT LPWSTR pszId, IN DWORD cchId)
@@ -120,10 +120,13 @@ diff -ruN a/dll/cpl/desk/monitorname.c b/dll/cpl/desk/monitorname.c
 +
 +    if (!GetMonitorTarget(pszDevice, &Target))
 +        return FALSE;
-+    if (_wcsnicmp(Target.monitorDevicePath, L"\\\\?\\DISPLAY\\", 12) != 0)
++    if (_wcsnicmp(Target.monitorDevicePath, L"\\\\?\\DISPLAY", 11) != 0 ||
++        (Target.monitorDevicePath[11] != L'#' && Target.monitorDevicePath[11] != L'\\'))
++    {
 +        return FALSE;
++    }
 +    pszStart = Target.monitorDevicePath + 12;
-+    if (!(pszEnd = wcschr(pszStart, L'\\')) || pszEnd == pszStart ||
++    if (!(pszEnd = wcspbrk(pszStart, L"#\\")) || pszEnd == pszStart ||
 +        (DWORD)(pszEnd - pszStart) >= cchId || _wcsnicmp(pszStart, L"Default_Monitor", 15) == 0)
 +    {
 +        return FALSE;
@@ -132,8 +135,8 @@ diff -ruN a/dll/cpl/desk/monitorname.c b/dll/cpl/desk/monitorname.c
 +    return TRUE;
 +}
 diff -ruN a/dll/cpl/desk/resource.h b/dll/cpl/desk/resource.h
---- a/dll/cpl/desk/resource.h	2026-09-27 17:35:37.574530746 +0300
-+++ b/dll/cpl/desk/resource.h	2026-09-27 17:35:37.874649565 +0300
+--- a/dll/cpl/desk/resource.h	2026-09-27 19:30:38.684128700 +0300
++++ b/dll/cpl/desk/resource.h	2026-09-27 19:30:39.031112500 +0300
 @@ -71,6 +71,7 @@
  #define IDC_SETTINGS_MONTEXT         208
  #define IDC_SETTINGS_REFRESH         212
@@ -143,8 +146,8 @@ diff -ruN a/dll/cpl/desk/resource.h b/dll/cpl/desk/resource.h
  #define IDB_SPECTRUM_4  209
  #define IDB_SPECTRUM_8  210
 diff -ruN a/dll/cpl/desk/settings.c b/dll/cpl/desk/settings.c
---- a/dll/cpl/desk/settings.c	2026-09-27 17:35:37.590101847 +0300
-+++ b/dll/cpl/desk/settings.c	2026-09-27 17:35:37.875710965 +0300
+--- a/dll/cpl/desk/settings.c	2026-09-27 19:30:38.702602600 +0300
++++ b/dll/cpl/desk/settings.c	2026-09-27 19:30:39.031926300 +0300
 @@ -269,6 +269,58 @@
   * next to the adapter: "Dell U2415 on AMD Radeon RX 580". Reading it needs
   * the display configuration API, which lives in monitorname.c. */
