@@ -1,0 +1,70 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Subject: [PATCH] drm/amd/display: Read the AMD VSDB of HDMI monitors without DMCU
+
+FreeSync over HDMI is found by the DMCU or DMUB firmware parsing the AMD
+vendor specific data block of the EDID. DCE display engines (Polaris and
+older) have no such parser, so an HDMI FreeSync monitor never became
+vrr_capable on them, although the hardware and the Windows driver do
+FreeSync over HDMI. Parse the block on the CPU there.
+
+---
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+@@ -13866,6 +13866,44 @@
+ 	return vsdb_info->freesync_supported;
+ }
+ 
++/*
++ * The AMD vendor specific data block of a CEA extension read on the CPU, for
++ * display engines that have no firmware to read it (DCE: Polaris and older,
++ * which do FreeSync over HDMI with the Windows driver). After the OUI
++ * 00-00-1A: version, feature flags (bit 0: FreeSync), minimum and maximum
++ * refresh rate in Hz.
++ */
++static bool parse_edid_cea_sw(u8 *edid_ext, int len,
++			      struct amdgpu_hdmi_vsdb_info *vsdb_info)
++{
++	int i, end = edid_ext[2];
++
++	if (end < 4 || end > len)
++		end = len;
++
++	for (i = 4; i < end; ) {
++		u8 tag = edid_ext[i] >> 5, size = edid_ext[i] & 0x1f;
++
++		if (i + 1 + size > end)
++			break;
++		if (tag == 3 && size >= 7 && edid_ext[i + 1] == 0x1a &&
++		    edid_ext[i + 2] == 0x00 && edid_ext[i + 3] == 0x00) {
++			if (!(edid_ext[i + 5] & 1) || !edid_ext[i + 6] ||
++			    edid_ext[i + 7] <= edid_ext[i + 6])
++				return false;
++			vsdb_info->freesync_supported = 1;
++			vsdb_info->amd_vsdb_version = edid_ext[i + 4];
++			vsdb_info->min_refresh_rate_hz = edid_ext[i + 6];
++			vsdb_info->max_refresh_rate_hz = edid_ext[i + 7];
++			/* as with the DMCU: the range is not switched over MCCS */
++			vsdb_info->freesync_mccs_vcp_code = 0;
++			return true;
++		}
++		i += 1 + size;
++	}
++	return false;
++}
++
+ static bool parse_edid_cea(struct amdgpu_dm_connector *aconnector,
+ 		u8 *edid_ext, int len,
+ 		struct amdgpu_hdmi_vsdb_info *vsdb_info)
+@@ -13876,8 +13914,11 @@
+ 	mutex_lock(&adev->dm.dc_lock);
+ 	if (adev->dm.dmub_srv)
+ 		ret = parse_edid_cea_dmub(&adev->dm, edid_ext, len, vsdb_info);
+-	else
++	else if (adev->dm.dc->res_pool->dmcu &&
++		 adev->dm.dc->res_pool->dmcu->funcs->send_edid_cea)
+ 		ret = parse_edid_cea_dmcu(&adev->dm, edid_ext, len, vsdb_info);
++	else
++		ret = parse_edid_cea_sw(edid_ext, len, vsdb_info);
+ 	mutex_unlock(&adev->dm.dc_lock);
+ 	return ret;
+ }
