@@ -4,6 +4,9 @@
  * Draws a changing colour through a Vulkan swapchain, to see that the path
  * from a Windows program to the display works: vulkan-1 -> winevulkan ->
  * the ICD -> the display driver -> dwm.exe. Prints the device it runs on.
+ * "vktest fullscreen" fills the primary monitor without a frame, the way a
+ * game does, so dwm.exe shows it directly and with variable refresh; Esc
+ * closes it.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -300,6 +303,7 @@ static void draw( int frame )
 static LRESULT WINAPI window_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
     if (msg == WM_DESTROY) PostQuitMessage( 0 );
+    if (msg == WM_KEYDOWN && wp == VK_ESCAPE) DestroyWindow( hwnd );
     return DefWindowProcW( hwnd, msg, wp, lp );
 }
 
@@ -314,8 +318,13 @@ int WINAPI wWinMain( HINSTANCE instance_handle, HINSTANCE prev, WCHAR *cmdline, 
 
     if (!load_vulkan() || !create_instance()) return 1;
     RegisterClassW( &class );
-    hwnd = CreateWindowExW( 0, class.lpszClassName, L"Vulkan", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                            CW_USEDEFAULT, CW_USEDEFAULT, 640, 480, 0, 0, instance_handle, NULL );
+    if (!wcsicmp( cmdline, L"fullscreen" ))
+        hwnd = CreateWindowExW( 0, class.lpszClassName, L"Vulkan", WS_POPUP | WS_VISIBLE, 0, 0,
+                                GetSystemMetrics( SM_CXSCREEN ), GetSystemMetrics( SM_CYSCREEN ), 0, 0,
+                                instance_handle, NULL );
+    else
+        hwnd = CreateWindowExW( 0, class.lpszClassName, L"Vulkan", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                CW_USEDEFAULT, CW_USEDEFAULT, 640, 480, 0, 0, instance_handle, NULL );
     if (!hwnd) return 1;
 
     surface_info.hinstance = instance_handle;

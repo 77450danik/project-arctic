@@ -1,0 +1,26 @@
+# Vulkan in a window, then over the whole screen, then back to the desktop:
+# page flips, the composition of a GPU buffer and a window that fills the monitor
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type vktest
+key ret
+sleep 8
+shot g1-window
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type vktest fullscreen
+key ret
+sleep 8
+shot g2-fullscreen
+key esc
+sleep 3
+shot g3-desktop
