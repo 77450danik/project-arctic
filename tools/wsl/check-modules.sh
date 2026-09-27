@@ -36,7 +36,7 @@ pe() {
     done
 }
 
-unix dlls/dwmcore wayland-server kms.c compositor.c xdg-shell-protocol.c viewporter-protocol.c \
+unix dlls/dwmcore wayland-server kms.c compositor.c dmabuf.c linux-dmabuf-v1-protocol.c xdg-shell-protocol.c viewporter-protocol.c \
     xdg-output-unstable-v1-protocol.c arctic-shell-v1-protocol.c arctic-display-v1-protocol.c
 pe dlls/dwmcore dwmcore.c
 unix dlls/winsrv "libinput libudev" libinput.c

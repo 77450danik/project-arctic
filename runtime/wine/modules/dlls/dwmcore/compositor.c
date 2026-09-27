@@ -12,8 +12,15 @@
  * they are stacked comes from wineserver (patch 0001, read by the PE side),
  * never from the client. Surfaces without a window keep a simple cascade.
  *
- * Buffers are copied at commit and released at once, so clients never wait
- * on the compositor; the copy is what the next frame is composed from.
+ * Buffers in shared memory are copied at commit and released at once, so
+ * clients never wait on the compositor. GPU buffers (zwp_linux_dmabuf_v1,
+ * dmabuf.c) are kept: a window that fills a monitor with one, as a game does
+ * full screen, is flipped to by the monitor directly, with variable refresh
+ * when the monitor has it; otherwise it is read when it is composed.
+ *
+ * A frame is made when something changed and the monitor has shown the last
+ * one (the page flip finished), so each monitor is paced by its own refresh,
+ * or, with variable refresh, by the game.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -27,6 +34,7 @@
 
 #include "config.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -39,6 +47,7 @@
 #include "xdg-shell-server-protocol.h"
 #include "viewporter-server-protocol.h"
 #include "xdg-output-unstable-v1-server-protocol.h"
+#include "linux-dmabuf-v1-server-protocol.h"
 #include "arctic-shell-v1-server-protocol.h"
 #include "arctic-display-v1-server-protocol.h"
 
@@ -72,6 +81,8 @@ struct surface
     /* committed content */
     uint32_t           *pixels;
     int                 width, height;
+    struct dmabuf      *dmabuf;              /* a GPU buffer, kept while it is the content */
+    bool                stale;               /* pixels are older than the dmabuf */
     bool                alpha;               /* premultiplied ARGB */
     int                 src_x, src_y, src_width, src_height; /* wp_viewport source, width 0 if unset */
     int                 dst_width, dst_height; /* wp_viewport destination, 0 if unset */
@@ -105,6 +116,9 @@ struct output
     struct wl_list     resources;            /* wl_output */
     struct wl_list     xdg_resources;        /* zxdg_output_v1 */
     uint32_t           expire;               /* when an unplugged monitor is let go */
+    bool               needs_frame;          /* something it shows changed */
+    uint64_t           not_before;           /* µs: flips that finish at once are paced */
+    uint32_t           direct_hwnd;          /* the window it shows directly, not composed */
 };
 
 static struct wl_display      *display;
@@ -121,7 +135,14 @@ static int                     cascade;
 static struct dwm_window      *windows;      /* from wineserver, topmost first */
 static uint32_t                window_count;
 static int                     cursor_x, cursor_y;
+static bool                    cursor_hidden;  /* the window under it hides it */
 static uint32_t                pending_events;  /* DWM_EVENT_*, for the PE side */
+static bool                    vrr_allowed = true;  /* the Windows setting */
+static bool                    hw_cursor;    /* the card has a cursor plane for directly shown windows */
+static uint64_t                last_callbacks;  /* µs, when clients were last told a frame was shown */
+
+/* something changed: every monitor gets a new frame */
+static void damage(void);
 
 static uint32_t now_ms(void)
 {
@@ -195,10 +216,19 @@ static void blit( const struct surface *s, int x0, int y0 )
     }
 }
 
-static void draw_tree( const struct surface *s, int x, int y )
+/* a GPU buffer is read by the CPU only when it is composed */
+static void read_dmabuf( struct surface *s )
 {
-    const struct surface *child;
+    s->stale = false;
+    if (!s->pixels && !(s->pixels = malloc( (size_t)s->width * s->height * 4 ))) return;
+    if (!dmabuf_read( s->dmabuf, s->pixels )) memset( s->pixels, 0, (size_t)s->width * s->height * 4 );
+}
 
+static void draw_tree( struct surface *s, int x, int y )
+{
+    struct surface *child;
+
+    if (s->dmabuf && s->stale) read_dmabuf( s );
     if (s->pixels) blit( s, x, y );
     wl_list_for_each( child, &s->children, child_link )
     {
@@ -232,8 +262,19 @@ static const char arrow[][13] =
     "        BB  ",
 };
 
+static void set_cursor_image(void)
+{
+    uint32_t argb[ARRAY_SIZE(arrow) * 12] = {0};
+
+    for (int y = 0; y < (int)ARRAY_SIZE(arrow); y++)
+        for (int x = 0; arrow[y][x]; x++)
+            if (arrow[y][x] != ' ') argb[y * 12 + x] = arrow[y][x] == 'B' ? 0xff000000 : 0xffffffff;
+    hw_cursor = kms_set_cursor_image( argb, 12, ARRAY_SIZE(arrow) );
+}
+
 static void draw_cursor(void)
 {
+    if (cursor_hidden) return;
     for (int y = 0; y < (int)ARRAY_SIZE(arrow); y++)
     {
         int py = cursor_y + y;
@@ -280,8 +321,8 @@ static bool update_screen(void)
         if (!o->connector_id || !o->enabled) continue;
         rect.left = min( rect.left, o->x );
         rect.top = min( rect.top, o->y );
-        rect.right = max( rect.right, o->x + (int32_t)o->fb.width );
-        rect.bottom = max( rect.bottom, o->y + (int32_t)o->fb.height );
+        rect.right = max( rect.right, o->x + (int32_t)o->fbs[0].width );
+        rect.bottom = max( rect.bottom, o->y + (int32_t)o->fbs[0].height );
     }
     if (rect.left > rect.right) return false;
     if (!memcmp( &rect, &screen, sizeof(rect) )) return true;
@@ -293,7 +334,7 @@ static bool update_screen(void)
     }
     shadow = buffer;
     screen = rect;
-    dirty = true;
+    damage();
     return true;
 }
 
@@ -306,11 +347,32 @@ static struct surface *surface_for_hwnd( uint32_t hwnd )
     return NULL;
 }
 
+static void damage(void)
+{
+    struct output *output;
+
+    dirty = true;
+    wl_list_for_each( output, &outputs, link ) output->needs_frame = true;
+}
+
+static bool has_content( const struct surface *s )
+{
+    return s->pixels || s->dmabuf;
+}
+
+/* a window a monitor shows directly is not composed: no other monitor shows it */
+static bool shown_directly( uint32_t hwnd )
+{
+    struct output *output;
+
+    wl_list_for_each( output, &outputs, link ) if (output->direct_hwnd == hwnd) return true;
+    return false;
+}
+
+/* the virtual screen, in RAM */
 static void compose(void)
 {
-    uint32_t width = screen.right - screen.left, height = screen.bottom - screen.top;
-    size_t count = (size_t)width * height;
-    struct output *output;
+    size_t count = (size_t)(screen.right - screen.left) * (screen.bottom - screen.top);
     struct surface *s;
 
     if (!shadow) return;
@@ -322,39 +384,34 @@ static void compose(void)
         const struct dwm_window *w = &windows[i];
 
         if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE)) continue;
+        if (shown_directly( w->hwnd )) continue;
         if ((s = surface_for_hwnd( w->hwnd ))) draw_tree( s, w->left, w->top );
     }
     wl_list_for_each( s, &toplevels, stack_link )
         if (!s->hwnd) draw_tree( s, s->x, s->y );
     draw_cursor();
-
-    /* the part of the virtual screen each monitor stands on */
-    wl_list_for_each( output, &outputs, link )
-    {
-        struct kms_output *o = output->kms;
-        uint32_t rows;
-
-        if (!o || !o->enabled) continue;
-        rows = min( o->fb.height, height - (o->y - screen.top) );
-        for (uint32_t y = 0; y < rows; y++)
-            memcpy( (uint8_t *)o->fb.pixels + (size_t)y * o->fb.pitch,
-                    shadow + (size_t)(o->y - screen.top + y) * width + (o->x - screen.left),
-                    min( o->fb.width, width ) * 4 );
-        kms_flush( o );
-    }
+    dirty = false;
 }
 
-static int frame_tick( void *data )
+/* the part of the virtual screen the monitor stands on */
+static void copy_shadow( const struct kms_output *o, struct kms_fb *fb )
+{
+    uint32_t width = screen.right - screen.left, height = screen.bottom - screen.top;
+    uint32_t rows = min( fb->height, height - (o->y - screen.top) );
+
+    if (!shadow) return;
+    for (uint32_t y = 0; y < rows; y++)
+        memcpy( (uint8_t *)fb->pixels + (size_t)y * fb->pitch,
+                shadow + (size_t)(o->y - screen.top + y) * width + (o->x - screen.left),
+                min( fb->width, width ) * 4 );
+}
+
+static void send_frame_callbacks(void)
 {
     struct wl_resource *cb, *tmp;
     struct surface *s;
     uint32_t time = now_ms();
 
-    if (dirty)
-    {
-        compose();
-        dirty = false;
-    }
     wl_list_for_each( s, &all_surfaces, all_link )
     {
         wl_resource_for_each_safe( cb, tmp, &s->frames )
@@ -363,7 +420,211 @@ static int frame_tick( void *data )
             wl_resource_destroy( cb );
         }
     }
-    wl_event_source_timer_update( frame_timer, 1000 / screen_refresh_hz() );
+    last_callbacks = kms_now();
+}
+
+static bool cursor_on( const struct kms_output *o )
+{
+    const struct kms_mode *mode = &o->modes[o->mode];
+
+    return !cursor_hidden && cursor_x >= o->x && cursor_y >= o->y && cursor_x < o->x + (int)mode->info.hdisplay &&
+           cursor_y < o->y + (int)mode->info.vdisplay;
+}
+
+/* The buffer of a window that fills the monitor, with nothing over it: a game
+ * or a video full screen. The client surface it draws in lies over the
+ * window's own (the GDI part) and must cover all of it. */
+static struct surface *fullscreen_content( const struct kms_output *o, uint32_t *hwnd )
+{
+    const struct kms_mode *mode = &o->modes[o->mode];
+    RECT rect = { o->x, o->y, o->x + mode->info.hdisplay, o->y + mode->info.vdisplay };
+    struct surface *s, *top, *child;
+
+    wl_list_for_each( s, &toplevels, stack_link )
+        if (!s->hwnd && s->x < rect.right && s->y < rect.bottom &&
+            s->x + s->width > rect.left && s->y + s->height > rect.top) return NULL;
+
+    for (uint32_t i = 0; i < window_count; i++)
+    {
+        const struct dwm_window *w = &windows[i];
+        int x, y, width, height;
+
+        if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE)) continue;
+        if (w->right <= rect.left || w->left >= rect.right || w->bottom <= rect.top || w->top >= rect.bottom) continue;
+        /* the topmost window on the monitor is the one that fills it */
+        if (w->left != rect.left || w->top != rect.top || w->right != rect.right || w->bottom != rect.bottom)
+            return NULL;
+        if (!(s = surface_for_hwnd( w->hwnd ))) return NULL;
+        top = s;
+        wl_list_for_each( child, &s->children, child_link )
+            if (!child->hwnd && has_content( child )) top = child;
+        if (!top->dmabuf || top->src_x || top->src_y) return NULL;
+        wl_list_for_each( child, &top->children, child_link )
+            if (!child->hwnd && has_content( child )) return NULL;
+        x = w->left + (top == s ? 0 : top->sub_x);
+        y = w->top + (top == s ? 0 : top->sub_y);
+        width = top->dst_width ? top->dst_width : top->src_width > 0 ? top->src_width : top->width;
+        height = top->dst_height ? top->dst_height : top->src_height > 0 ? top->src_height : top->height;
+        if (x != rect.left || y != rect.top || width != rect.right - rect.left || height != rect.bottom - rect.top)
+            return NULL;
+        *hwnd = w->hwnd;
+        return top;
+    }
+    return NULL;
+}
+
+static uint32_t source_width( const struct surface *s )
+{
+    return s->src_width > 0 ? min( s->src_width, s->width ) : s->width;
+}
+
+static uint32_t source_height( const struct surface *s )
+{
+    return s->src_height > 0 ? min( s->src_height, s->height ) : s->height;
+}
+
+/* Whether the monitor can show the buffer as it is, the way Windows flips a
+ * full screen game's swap chain to the display without DWM composing it. */
+static bool can_show_directly( struct kms_output *o, struct surface *content )
+{
+    struct dmabuf *buffer = content->dmabuf;
+    uint32_t fb;
+
+    if (!hw_cursor || !o->plane || !(fb = dmabuf_fb( buffer ))) return false;
+    if (buffer->scanout_tested != o->crtc_id)
+    {
+        buffer->scanout_tested = o->crtc_id;
+        buffer->scanout_ok = kms_can_scanout( o, fb, source_width( content ), source_height( content ) );
+        if (!buffer->scanout_ok) TRACE( "%s cannot scan out a %ux%u buffer\n", o->name, buffer->width, buffer->height );
+    }
+    /* the pointer cannot be drawn into the game's buffer: it goes to the cursor plane */
+    return buffer->scanout_ok && kms_show_cursor( o, cursor_on( o ), cursor_x - o->x, cursor_y - o->y );
+}
+
+static void present_directly( struct output *output, struct surface *content, bool vrr )
+{
+    struct kms_output *o = output->kms;
+    struct dmabuf *buffer = content->dmabuf;
+
+    /* the same buffer again (the pointer moved, another window changed): nothing new to show */
+    if (o->front_buffer == buffer &&
+        o->vrr_on == (vrr && o->vrr_capable && o->vrr_prop && !o->vrr_refused)) return;
+    dmabuf_ref( buffer );
+    if (kms_present( o, buffer->fb, source_width( content ), source_height( content ), vrr, buffer )) return;
+    if (errno == EBUSY)
+    {
+        dmabuf_unref( buffer );
+        output->needs_frame = true;  /* the card is still busy with the last one */
+        return;
+    }
+    dmabuf_unref( buffer );
+    /* the flip did not take it after all: it is composed from now on */
+    buffer->scanout_ok = false;
+    output->direct_hwnd = 0;
+    damage();
+}
+
+static void present_composed( struct output *output, bool vrr )
+{
+    struct kms_output *o = output->kms;
+    struct kms_fb *fb;
+
+    kms_show_cursor( o, false, 0, 0 );
+    if (!o->no_flip && (fb = kms_back_buffer( o )))
+    {
+        copy_shadow( o, fb );
+        if (kms_present( o, fb->fb_id, fb->width, fb->height, vrr, NULL )) return;
+    }
+    if (!o->no_flip)
+    {
+        output->needs_frame = true;  /* busy: the next tick tries again */
+        return;
+    }
+    /* a driver that cannot flip: the frame is drawn where it shows */
+    copy_shadow( o, kms_front_buffer( o ) );
+    kms_flush( o );
+    output->not_before = kms_now() + kms_frame_time( o );
+    send_frame_callbacks();
+}
+
+/* A frame for every monitor that needs one and has shown its last one. A
+ * window that fills a monitor with a GPU buffer turns variable refresh on
+ * there: the monitor then waits for the game's frames. */
+static void repaint(void)
+{
+    struct { struct output *output; struct surface *content; bool vrr; } ready[KMS_MAX_OUTPUTS];
+    uint64_t now = kms_now();
+    struct output *output;
+    int count = 0;
+    bool composed = false;
+
+    wl_list_for_each( output, &outputs, link )
+    {
+        struct kms_output *o = output->kms;
+        struct surface *content;
+        uint32_t hwnd = 0;
+
+        if (!o || !o->enabled || !output->needs_frame || o->queued_fb || now < output->not_before) continue;
+        if (count == ARRAY_SIZE(ready)) break;
+        content = fullscreen_content( o, &hwnd );
+        ready[count].output = output;
+        ready[count].vrr = content && vrr_allowed;
+        ready[count].content = content && can_show_directly( o, content ) ? content : NULL;
+        if (ready[count].content) output->direct_hwnd = hwnd;
+        else
+        {
+            /* a window shown directly until now must be composed again */
+            if (output->direct_hwnd) dirty = true;
+            output->direct_hwnd = 0;
+            composed = true;
+        }
+        output->needs_frame = false;
+        count++;
+    }
+    if (composed && dirty) compose();
+
+    for (int i = 0; i < count; i++)
+    {
+        if (ready[i].content) present_directly( ready[i].output, ready[i].content, ready[i].vrr );
+        else present_composed( ready[i].output, ready[i].vrr );
+    }
+}
+
+void compositor_flip_done( struct kms_output *o, void *buffer )
+{
+    struct output *output = o->user;
+
+    if (buffer) dmabuf_unref( buffer );
+    if (output && o->fake_vblank) output->not_before = o->done_time + kms_frame_time( o );
+    send_frame_callbacks();
+}
+
+void compositor_buffer_unused( void *buffer )
+{
+    dmabuf_unref( buffer );
+}
+
+static bool flips_pending(void)
+{
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++) if (kms.outputs[i].queued_fb) return true;
+    return false;
+}
+
+/* frames a flip could not take yet, the pacing of flips that finish at once,
+ * and frame callbacks of surfaces while nothing is flipped */
+static int frame_tick( void *data )
+{
+    uint32_t hz = screen_refresh_hz();
+
+    repaint();
+    if (kms_now() - last_callbacks >= 1000000 / hz && !flips_pending()) send_frame_callbacks();
+    wl_event_source_timer_update( frame_timer, max( 1, 1000 / hz ) );
+    return 0;
+}
+
+static int kms_event( int fd, uint32_t mask, void *data )
+{
+    kms_dispatch();
     return 0;
 }
 
@@ -487,13 +748,52 @@ static void copy_buffer( struct surface *s, struct wl_resource *buffer )
     s->alpha = wl_shm_buffer_get_format( shm ) == WL_SHM_FORMAT_ARGB8888;
 }
 
+/* A game's frame changes only the monitor that shows it directly: the others
+ * are not composed again for it. */
+static bool wake_direct_output( struct surface *s )
+{
+    struct output *output;
+
+    while (s->parent && !s->hwnd) s = s->parent;
+    if (!s->hwnd) return false;
+    wl_list_for_each( output, &outputs, link )
+    {
+        if (output->direct_hwnd != s->hwnd) continue;
+        output->needs_frame = true;
+        return true;
+    }
+    return false;
+}
+
 static void surface_commit( struct wl_client *client, struct wl_resource *resource )
 {
     struct surface *s = get_surface( resource );
 
     if (s->pending_attach)
     {
-        if (s->pending_buffer)
+        struct dmabuf *buffer = dmabuf_from_resource( s->pending_buffer );
+
+        if (buffer != s->dmabuf)
+        {
+            if (buffer) dmabuf_ref( buffer );
+            if (s->dmabuf) dmabuf_unref( s->dmabuf );
+            s->dmabuf = buffer;
+        }
+        if (buffer)
+        {
+            if (buffer->width != s->width || buffer->height != s->height)
+            {
+                free( s->pixels );
+                s->pixels = NULL;
+            }
+            s->width = buffer->width;
+            s->height = buffer->height;
+            s->alpha = buffer->alpha;
+            s->stale = true;
+            wl_list_remove( &s->pending_buffer_destroy.link );
+            wl_list_init( &s->pending_buffer_destroy.link );
+        }
+        else if (s->pending_buffer)
         {
             copy_buffer( s, s->pending_buffer );
             wl_buffer_send_release( s->pending_buffer );
@@ -515,10 +815,10 @@ static void surface_commit( struct wl_client *client, struct wl_resource *resour
     if (s->xdg_toplevel)
     {
         if (!s->configured) send_configure( s );
-        else if (s->pixels && !s->mapped) map_toplevel( s );
-        else if (!s->pixels) unmap_toplevel( s );
+        else if (has_content( s ) && !s->mapped) map_toplevel( s );
+        else if (!has_content( s )) unmap_toplevel( s );
     }
-    dirty = true;
+    if (!wake_direct_output( s )) damage();
 }
 
 static void surface_set_buffer_transform( struct wl_client *client, struct wl_resource *resource, int32_t transform )
@@ -571,9 +871,10 @@ static void surface_destroyed( struct wl_resource *resource )
     if (s->xdg_toplevel) wl_resource_set_user_data( s->xdg_toplevel, NULL );
     if (s->viewport) wl_resource_set_user_data( s->viewport, NULL );
     if (s->arctic_window) wl_resource_set_user_data( s->arctic_window, NULL );
+    if (s->dmabuf) dmabuf_unref( s->dmabuf );
     free( s->pixels );
     free( s );
-    dirty = true;
+    damage();
 }
 
 /**********************************************************************
@@ -649,7 +950,7 @@ static void subsurface_set_position( struct wl_client *client, struct wl_resourc
     if (!s) return;
     s->sub_x = x;
     s->sub_y = y;
-    dirty = true;
+    damage();
 }
 
 static void subsurface_place( struct wl_client *client, struct wl_resource *resource, struct wl_resource *sibling )
@@ -682,7 +983,7 @@ static void subsurface_destroyed( struct wl_resource *resource )
         s->parent = NULL;
     }
     s->subsurface = NULL;
-    dirty = true;
+    damage();
 }
 
 static void subcompositor_get_subsurface( struct wl_client *client, struct wl_resource *resource, uint32_t id,
@@ -700,7 +1001,7 @@ static void subcompositor_get_subsurface( struct wl_client *client, struct wl_re
     s->subsurface = sub;
     s->parent = p;
     wl_list_insert( p->children.prev, &s->child_link );
-    dirty = true;
+    damage();
 }
 
 static const struct wl_subcompositor_interface subcompositor_impl =
@@ -736,7 +1037,7 @@ static void viewport_set_source( struct wl_client *client, struct wl_resource *r
         s->src_width = wl_fixed_to_int( width );
         s->src_height = wl_fixed_to_int( height );
     }
-    dirty = true;
+    damage();
 }
 
 static void viewport_set_destination( struct wl_client *client, struct wl_resource *resource,
@@ -747,7 +1048,7 @@ static void viewport_set_destination( struct wl_client *client, struct wl_resour
     if (!s) return;
     s->dst_width = width > 0 ? width : 0;
     s->dst_height = height > 0 ? height : 0;
-    dirty = true;
+    damage();
 }
 
 static const struct wp_viewport_interface viewport_impl =
@@ -765,7 +1066,7 @@ static void viewport_destroyed( struct wl_resource *resource )
     s->viewport = NULL;
     s->src_x = s->src_y = s->src_width = s->src_height = 0;
     s->dst_width = s->dst_height = 0;
-    dirty = true;
+    damage();
 }
 
 static void viewporter_get_viewport( struct wl_client *client, struct wl_resource *resource, uint32_t id,
@@ -941,7 +1242,7 @@ static void toplevel_destroyed( struct wl_resource *resource )
     unmap_toplevel( s );
     s->xdg_toplevel = NULL;
     s->configured = false;
-    dirty = true;
+    damage();
 }
 
 static void xdg_surface_get_toplevel( struct wl_client *client, struct wl_resource *resource, uint32_t id )
@@ -1064,7 +1365,7 @@ static void arctic_window_destroyed( struct wl_resource *resource )
     if (!s) return;
     s->hwnd = 0;
     s->arctic_window = NULL;
-    dirty = true;
+    damage();
 }
 
 static void shell_get_window( struct wl_client *client, struct wl_resource *resource, uint32_t id,
@@ -1081,7 +1382,7 @@ static void shell_get_window( struct wl_client *client, struct wl_resource *reso
     wl_resource_set_implementation( window, &arctic_window_impl, s, arctic_window_destroyed );
     s->hwnd = hwnd;
     s->arctic_window = window;
-    dirty = true;
+    damage();
 }
 
 static const struct arctic_shell_v1_interface shell_impl =
@@ -1206,7 +1507,7 @@ void compositor_output_removed( struct kms_output *o )
     output->expire = now_ms() + 3000;
     wl_list_remove( &output->link );
     wl_list_insert( dying_outputs.prev, &output->link );
-    dirty = true;
+    damage();
 }
 
 static void reap_outputs(void)
@@ -1301,7 +1602,7 @@ static bool apply_configuration( const struct dwm_output_config *configs, uint32
     update_screen();
     wl_list_for_each( output, &outputs, link ) output_send_state( output, NULL );
     if (persist) pending_events |= DWM_EVENT_SAVE;
-    dirty = true;
+    damage();
     return true;
 }
 
@@ -1441,7 +1742,7 @@ static int hotplug_event( int fd, uint32_t mask, void *data )
     update_globals();
     update_screen();
     pending_events |= DWM_EVENT_HOTPLUG;
-    dirty = true;
+    damage();
     return 0;
 }
 
@@ -1470,6 +1771,7 @@ static NTSTATUS dwm_start( void *args )
     wl_global_create( display, &zxdg_output_manager_v1_interface, 3, NULL, bind_xdg_output_manager );
     wl_global_create( display, &arctic_shell_v1_interface, 1, NULL, bind_shell );
     wl_global_create( display, &arctic_display_v1_interface, 1, NULL, bind_display );
+    dmabuf_init( display );
 
     if (wl_display_add_socket( display, SOCKET_NAME ))
     {
@@ -1479,6 +1781,8 @@ static NTSTATUS dwm_start( void *args )
     loop = wl_display_get_event_loop( display );
     frame_timer = wl_event_loop_add_timer( loop, frame_tick, NULL );
     wl_event_source_timer_update( frame_timer, 1 );
+    wl_event_loop_add_fd( loop, kms.fd, WL_EVENT_READABLE, kms_event, NULL );
+    set_cursor_image();
     if ((hotplug = kms_hotplug_socket()) >= 0)
         wl_event_loop_add_fd( loop, hotplug, WL_EVENT_READABLE, hotplug_event, NULL );
     MESSAGE( "dwm: serving %s/%s\n", getenv( "XDG_RUNTIME_DIR" ), SOCKET_NAME );
@@ -1492,6 +1796,7 @@ static NTSTATUS dwm_dispatch( void *args )
     struct dwm_dispatch_params *params = args;
 
     wl_event_loop_dispatch( wl_display_get_event_loop( display ), (int)params->timeout_ms );
+    repaint();
     wl_display_flush_clients( display );
     reap_outputs();
     params->events = pending_events;
@@ -1509,7 +1814,7 @@ static NTSTATUS dwm_set_windows( void *args )
     free( windows );
     windows = copy;
     window_count = params->count;
-    dirty = true;
+    damage();
     return STATUS_SUCCESS;
 }
 
@@ -1517,8 +1822,24 @@ static NTSTATUS dwm_set_cursor( void *args )
 {
     const struct dwm_set_cursor_params *params = args;
 
+    struct output *output;
+
     cursor_x = params->x;
     cursor_y = params->y;
+    cursor_hidden = params->hidden;
+    /* monitors showing a window directly move the cursor plane; the others compose */
+    wl_list_for_each( output, &outputs, link )
+    {
+        struct kms_output *o = output->kms;
+
+        if (!o || !o->enabled) continue;
+        if (!output->direct_hwnd) output->needs_frame = true;
+        else if (!kms_show_cursor( o, cursor_on( o ), cursor_x - o->x, cursor_y - o->y ))
+        {
+            hw_cursor = false;
+            output->needs_frame = true;
+        }
+    }
     dirty = true;
     return STATUS_SUCCESS;
 }
@@ -1566,6 +1887,16 @@ static NTSTATUS dwm_set_config( void *args )
            STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
+static NTSTATUS dwm_set_options( void *args )
+{
+    const struct dwm_set_options_params *params = args;
+
+    if (vrr_allowed != !!params->vrr) MESSAGE( "dwm: variable refresh %s\n", params->vrr ? "allowed" : "not allowed" );
+    vrr_allowed = !!params->vrr;
+    damage();
+    return STATUS_SUCCESS;
+}
+
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     dwm_start,
@@ -1574,6 +1905,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     dwm_set_cursor,
     dwm_get_outputs,
     dwm_set_config,
+    dwm_set_options,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );

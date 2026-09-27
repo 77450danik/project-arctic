@@ -1,10 +1,14 @@
 /*
  * Arctic desktop composition engine: display ownership (DRM/KMS)
  *
- * Takes DRM master of the first card with a connected monitor and drives
- * every connected monitor of it, each from a dumb framebuffer of its own.
- * Works on any KMS driver, simpledrm included, so it needs no GPU driver:
- * this is the CPU ("basic") composition path.
+ * Takes DRM master of the first card with a connected monitor (the one the
+ * firmware showed its picture on, if more have one) and drives every
+ * connected monitor of it. Frames composed on the CPU go to a pair of dumb
+ * framebuffers per monitor, one on screen while the other is drawn, and are
+ * shown by page flips; a client's GPU buffer that fills a monitor is flipped
+ * to directly, with variable refresh if the monitor has it. Works on any KMS
+ * driver, simpledrm included, so it needs no GPU driver: a driver that cannot
+ * flip gets its frames drawn where they are shown, as before.
  *
  * Which mode each monitor shows and where it sits is decided on the Windows
  * side (dwmcore.c, or a program through ChangeDisplaySettingsEx); this file
@@ -24,9 +28,11 @@
 
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/netlink.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +40,8 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "ntstatus.h"
@@ -78,6 +86,105 @@ static uint32_t whole_hz( uint32_t refresh )
     return (refresh + 500) / 1000;
 }
 
+uint64_t kms_now(void)
+{
+    struct timespec ts;
+
+    clock_gettime( CLOCK_MONOTONIC, &ts );
+    return (uint64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+uint32_t kms_frame_time( const struct kms_output *out )
+{
+    uint32_t refresh = out->mode_count ? out->modes[out->mode].refresh : 0;
+    return refresh ? 1000000000u / refresh : 16667;
+}
+
+/* The ids (and values) of the named properties of a KMS object; 0 for those
+ * it does not have. */
+static void object_properties( uint32_t obj, uint32_t type, const char *const *names, uint32_t count,
+                               uint32_t *ids, uint64_t *values )
+{
+    struct drm_mode_obj_get_properties get = { .obj_id = obj, .obj_type = type };
+    uint32_t *props, allocated;
+    uint64_t *vals;
+
+    memset( ids, 0, count * sizeof(*ids) );
+    if (ioctl( kms.fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &get ) || !get.count_props) return;
+    allocated = get.count_props;
+    props = zalloc( allocated, sizeof(*props) );
+    vals = zalloc( allocated, sizeof(*vals) );
+    get.props_ptr = (uintptr_t)props;
+    get.prop_values_ptr = (uintptr_t)vals;
+    if (props && vals && !ioctl( kms.fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &get ))
+    {
+        for (uint32_t i = 0; i < min( get.count_props, allocated ); i++)
+        {
+            struct drm_mode_get_property prop = { .prop_id = props[i] };
+
+            if (ioctl( kms.fd, DRM_IOCTL_MODE_GETPROPERTY, &prop )) continue;
+            for (uint32_t k = 0; k < count; k++)
+            {
+                if (strcmp( prop.name, names[k] )) continue;
+                ids[k] = props[i];
+                if (values) values[k] = vals[i];
+            }
+        }
+    }
+    free( props );
+    free( vals );
+}
+
+enum { PLANE_FB_ID, PLANE_CRTC_ID, PLANE_SRC_X, PLANE_SRC_Y, PLANE_SRC_W, PLANE_SRC_H,
+       PLANE_CRTC_X, PLANE_CRTC_Y, PLANE_CRTC_W, PLANE_CRTC_H, PLANE_TYPE, PLANE_PROP_COUNT };
+
+/* the properties a flip sets, looked up once per plane */
+static const uint32_t *plane_properties( uint32_t plane )
+{
+    static const char *const names[PLANE_PROP_COUNT] =
+    {
+        "FB_ID", "CRTC_ID", "SRC_X", "SRC_Y", "SRC_W", "SRC_H", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "type"
+    };
+    static struct { uint32_t plane, ids[PLANE_PROP_COUNT]; } cache[32];
+    int slot = 0;
+
+    for (int i = 0; i < ARRAY_SIZE(cache); i++)
+    {
+        if (cache[i].plane == plane) return cache[i].ids;
+        if (!cache[i].plane && !slot) slot = i;
+    }
+    cache[slot].plane = plane;
+    object_properties( plane, DRM_MODE_OBJECT_PLANE, names, PLANE_PROP_COUNT, cache[slot].ids, NULL );
+    return cache[slot].ids;
+}
+
+/* the primary plane the CRTC shows its framebuffer on, after a modeset */
+static uint32_t primary_plane( uint32_t crtc )
+{
+    struct drm_mode_get_plane_res res = {0};
+    uint32_t *planes, found = 0;
+
+    if (ioctl( kms.fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &res ) || !res.count_planes) return 0;
+    if (!(planes = zalloc( res.count_planes, sizeof(*planes) ))) return 0;
+    res.plane_id_ptr = (uintptr_t)planes;
+    if (!ioctl( kms.fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &res ))
+    {
+        for (uint32_t i = 0; i < res.count_planes && !found; i++)
+        {
+            static const char *const type_name[] = { "type" };
+            struct drm_mode_get_plane plane = { .plane_id = planes[i] };
+            uint32_t id;
+            uint64_t type;
+
+            if (ioctl( kms.fd, DRM_IOCTL_MODE_GETPLANE, &plane ) || plane.crtc_id != crtc) continue;
+            object_properties( planes[i], DRM_MODE_OBJECT_PLANE, type_name, 1, &id, &type );
+            if (id && type == 1 /* primary */) found = planes[i];
+        }
+    }
+    free( planes );
+    return found;
+}
+
 /* Windows lists each size once per whole Hz, progressive only: of modes that
  * round to the same Hz, the monitor's preferred one or else the first stays */
 static void read_modes( struct kms_output *out, const struct drm_mode_modeinfo *modes, uint32_t count )
@@ -109,26 +216,33 @@ static void read_modes( struct kms_output *out, const struct drm_mode_modeinfo *
     }
 }
 
-static void read_edid( const uint32_t *props, const uint64_t *values, uint32_t count, struct kms_output *out )
+static void read_edid( uint64_t blob_id, struct kms_output *out )
+{
+    struct drm_mode_get_blob blob = { .blob_id = blob_id };
+    void *data;
+
+    if (!blob_id || ioctl( kms.fd, DRM_IOCTL_MODE_GETPROPBLOB, &blob ) || !blob.length) return;
+    if (!(data = malloc( blob.length ))) return;
+    blob.data = (uintptr_t)data;
+    if (ioctl( kms.fd, DRM_IOCTL_MODE_GETPROPBLOB, &blob ) || blob.length > DWM_MAX_EDID)
+    {
+        free( data );
+        return;
+    }
+    out->edid = data;
+    out->edid_len = blob.length;
+}
+
+/* the EDID, and whether the monitor and the link take a variable refresh */
+static void read_properties( const uint32_t *props, const uint64_t *values, uint32_t count, struct kms_output *out )
 {
     for (uint32_t i = 0; i < count; i++)
     {
         struct drm_mode_get_property prop = { .prop_id = props[i] };
-        struct drm_mode_get_blob blob = { .blob_id = values[i] };
-        void *data;
 
-        if (ioctl( kms.fd, DRM_IOCTL_MODE_GETPROPERTY, &prop ) || strcmp( prop.name, "EDID" )) continue;
-        if (!values[i] || ioctl( kms.fd, DRM_IOCTL_MODE_GETPROPBLOB, &blob ) || !blob.length) return;
-        if (!(data = malloc( blob.length ))) return;
-        blob.data = (uintptr_t)data;
-        if (ioctl( kms.fd, DRM_IOCTL_MODE_GETPROPBLOB, &blob ) || blob.length > DWM_MAX_EDID)
-        {
-            free( data );
-            return;
-        }
-        out->edid = data;
-        out->edid_len = blob.length;
-        return;
+        if (ioctl( kms.fd, DRM_IOCTL_MODE_GETPROPERTY, &prop )) continue;
+        if (!strcmp( prop.name, "EDID" )) read_edid( values[i], out );
+        else if (!strcmp( prop.name, "vrr_capable" )) out->vrr_capable = values[i] != 0;
     }
 }
 
@@ -183,7 +297,7 @@ static bool read_connector( uint32_t id, struct kms_output *out )
         out->mm_width = conn.mm_width;
         out->mm_height = conn.mm_height;
         read_modes( out, modes, conn.count_modes );
-        read_edid( props, values, conn.count_props, out );
+        read_properties( props, values, conn.count_props, out );
 
         for (uint32_t i = 0; i < conn.count_encoders; i++)
         {
@@ -280,11 +394,23 @@ static int crtc_index( uint32_t crtc )
     return -1;
 }
 
+/* the client buffers the monitor shows or is about to show go back */
+static void drop_scanout( struct kms_output *out )
+{
+    if (out->queued_buffer) compositor_buffer_unused( out->queued_buffer );
+    if (out->front_buffer) compositor_buffer_unused( out->front_buffer );
+    out->queued_buffer = out->front_buffer = NULL;
+    out->queued_fb = out->front_fb = 0;
+    if (out->cursor_on) kms_show_cursor( out, false, 0, 0 );
+}
+
 static void free_output( struct kms_output *out )
 {
     compositor_output_removed( out );
     if (out->enabled) set_crtc( out->crtc_id, 0, 0, NULL );
-    destroy_fb( &out->fb );
+    drop_scanout( out );
+    destroy_fb( &out->fbs[0] );
+    destroy_fb( &out->fbs[1] );
     free( out->modes );
     free( out->edid );
     memset( out, 0, sizeof(*out) );
@@ -323,6 +449,9 @@ bool kms_probe(void)
             if (kms.outputs[slot].connector_id == found.connector_id) break;
         if (slot < KMS_MAX_OUTPUTS && same_monitor( &kms.outputs[slot], &found ))
         {
+            if (kms.outputs[slot].vrr_capable != found.vrr_capable)
+                MESSAGE( "dwm: %s variable refresh %s\n", found.name, found.vrr_capable ? "supported" : "not supported" );
+            kms.outputs[slot].vrr_capable = found.vrr_capable;
             seen[slot] = true;
             free( found.modes );
             free( found.edid );
@@ -343,9 +472,10 @@ bool kms_probe(void)
         kms.outputs[free_slot] = found;
         seen[free_slot] = true;
         changed = true;
-        MESSAGE( "dwm: monitor on %s, %u modes, native %ux%u@%u, EDID %u bytes\n", found.name, found.mode_count,
+        MESSAGE( "dwm: monitor on %s, %u modes, native %ux%u@%u, EDID %u bytes%s\n", found.name, found.mode_count,
                  found.modes[found.preferred].info.hdisplay, found.modes[found.preferred].info.vdisplay,
-                 whole_hz( found.modes[found.preferred].refresh ), found.edid_len );
+                 whole_hz( found.modes[found.preferred].refresh ), found.edid_len,
+                 found.vrr_capable ? ", variable refresh" : "" );
     }
 
     for (int slot = 0; slot < KMS_MAX_OUTPUTS; slot++)
@@ -378,6 +508,346 @@ struct kms_mode *kms_find_mode( struct kms_output *out, uint32_t width, uint32_t
     }
     return best;
 }
+
+/**********************************************************************
+ *          Frames
+ */
+
+static void flip_finished( struct kms_output *out )
+{
+    void *off_screen = out->front_buffer;
+    uint64_t now = kms_now();
+
+    /* a real vertical blank never comes twice within one refresh */
+    if (!out->fake_vblank && out->done_time && now - out->done_time < kms_frame_time( out ) * 3 / 4)
+    {
+        MESSAGE( "dwm: %s flips without a vertical blank: frames are paced by a timer\n", out->name );
+        out->fake_vblank = true;
+    }
+    out->done_time = now;
+    out->front_fb = out->queued_fb;
+    out->front_buffer = out->queued_buffer;
+    out->queued_fb = 0;
+    out->queued_buffer = NULL;
+    compositor_flip_done( out, off_screen );
+}
+
+void kms_dispatch(void)
+{
+    char buffer[1024];
+    ssize_t len;
+
+    while ((len = read( kms.fd, buffer, sizeof(buffer) )) > 0)
+    {
+        for (char *p = buffer; p + sizeof(struct drm_event) <= buffer + len;)
+        {
+            const struct drm_event *event = (const struct drm_event *)p;
+            const struct drm_event_vblank *vblank = (const struct drm_event_vblank *)p;
+            uint32_t crtc;
+
+            if (event->length < sizeof(*event) || p + event->length > buffer + len) break;
+            p += event->length;
+            if (event->type != DRM_EVENT_FLIP_COMPLETE || event->length < sizeof(*vblank)) continue;
+            crtc = vblank->crtc_id ? vblank->crtc_id : (uint32_t)vblank->user_data;
+            for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+            {
+                struct kms_output *out = &kms.outputs[i];
+
+                if (!out->connector_id || !out->queued_fb || out->crtc_id != crtc) continue;
+                flip_finished( out );
+                break;
+            }
+        }
+    }
+}
+
+/* before a modeset: the flips on their way land first */
+static void wait_flips(void)
+{
+    uint64_t start = kms_now();
+
+    for (;;)
+    {
+        struct pollfd pfd = { .fd = kms.fd, .events = POLLIN };
+        bool pending = false;
+
+        for (int i = 0; i < KMS_MAX_OUTPUTS; i++) pending |= kms.outputs[i].queued_fb != 0;
+        if (!pending) return;
+        if (kms_now() - start > 500000) break;
+        if (poll( &pfd, 1, 50 ) > 0) kms_dispatch();
+    }
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        struct kms_output *out = &kms.outputs[i];
+
+        if (!out->queued_fb) continue;
+        WARN( "%s: a flip never finished\n", out->name );
+        if (out->queued_buffer) compositor_buffer_unused( out->queued_buffer );
+        out->queued_fb = 0;
+        out->queued_buffer = NULL;
+    }
+}
+
+/* after a modeset: the plane flips go to, and the CRTC's variable refresh */
+static void read_crtc_state( struct kms_output *out )
+{
+    static const char *const vrr_name[] = { "VRR_ENABLED" };
+    const uint32_t *prop;
+    uint64_t value = 0;
+
+    out->plane = kms.atomic ? primary_plane( out->crtc_id ) : 0;
+    if (out->plane)
+    {
+        prop = plane_properties( out->plane );
+        for (int i = 0; i < PLANE_TYPE; i++) if (!prop[i]) out->plane = 0;
+    }
+    object_properties( out->crtc_id, DRM_MODE_OBJECT_CRTC, vrr_name, 1, &out->vrr_prop, &value );
+    out->vrr_on = out->vrr_prop && value;
+    out->vrr_refused = false;
+}
+
+/* the whole of src_width x src_height of fb over the whole mode */
+static bool flip_atomic( struct kms_output *out, uint32_t fb, uint32_t src_width, uint32_t src_height, bool vrr,
+                         uint32_t flags )
+{
+    const struct drm_mode_modeinfo *mode = &out->modes[out->mode].info;
+    const uint32_t *prop = plane_properties( out->plane );
+    const uint64_t plane_values[PLANE_TYPE] =
+    {
+        fb, out->crtc_id, 0, 0, (uint64_t)src_width << 16, (uint64_t)src_height << 16, 0, 0, mode->hdisplay, mode->vdisplay
+    };
+    uint32_t objs[2] = { out->plane, out->crtc_id }, counts[2] = { PLANE_TYPE, 1 }, props[PLANE_TYPE + 1];
+    uint64_t values[PLANE_TYPE + 1];
+    struct drm_mode_atomic atomic =
+    {
+        .flags = flags,
+        .count_objs = vrr != out->vrr_on ? 2 : 1,
+        .objs_ptr = (uintptr_t)objs,
+        .count_props_ptr = (uintptr_t)counts,
+        .props_ptr = (uintptr_t)props,
+        .prop_values_ptr = (uintptr_t)values,
+        .user_data = out->crtc_id,
+    };
+
+    for (int i = 0; i < PLANE_TYPE; i++)
+    {
+        props[i] = prop[i];
+        values[i] = plane_values[i];
+    }
+    props[PLANE_TYPE] = out->vrr_prop;
+    values[PLANE_TYPE] = vrr;
+    return !ioctl( kms.fd, DRM_IOCTL_MODE_ATOMIC, &atomic );
+}
+
+static bool flip_legacy( struct kms_output *out, uint32_t fb )
+{
+    struct drm_mode_crtc_page_flip flip =
+    {
+        .crtc_id = out->crtc_id, .fb_id = fb, .flags = DRM_MODE_PAGE_FLIP_EVENT, .user_data = out->crtc_id
+    };
+
+    if (!ioctl( kms.fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip )) return true;
+    if (errno != EBUSY)
+    {
+        MESSAGE( "dwm: %s cannot flip (%s): frames are drawn where they show\n", out->name, strerror( errno ) );
+        out->no_flip = true;
+    }
+    return false;
+}
+
+bool kms_present( struct kms_output *out, uint32_t fb, uint32_t src_width, uint32_t src_height,
+                  bool vrr, void *buffer )
+{
+    uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
+    bool vrr_before = out->vrr_on;
+
+    if (!out->enabled || out->queued_fb || out->no_flip) return false;
+    vrr = vrr && out->vrr_capable && out->vrr_prop && !out->vrr_refused;
+
+    if (out->plane && flip_atomic( out, fb, src_width, src_height, vrr, flags ))
+        out->vrr_on = vrr;
+    else if (out->plane && errno == EBUSY)
+        return false;
+    else if (out->plane && vrr != out->vrr_on && flip_atomic( out, fb, src_width, src_height, out->vrr_on, flags ))
+    {
+        /* switching it would take a modeset, which blanks the screen: not in the middle of a game */
+        MESSAGE( "dwm: %s cannot switch variable refresh without a modeset\n", out->name );
+        out->vrr_refused = true;
+    }
+    else if (buffer)
+        return false;  /* composed instead */
+    else
+    {
+        if (out->plane)
+        {
+            WARN( "%s: atomic flip failed: %s\n", out->name, strerror( errno ) );
+            out->plane = 0;
+        }
+        if (!flip_legacy( out, fb )) return false;
+    }
+
+    if (out->vrr_on != vrr_before)
+        MESSAGE( "dwm: %s variable refresh %s\n", out->name, out->vrr_on ? "on" : "off" );
+    out->queued_fb = fb;
+    out->queued_buffer = buffer;
+    out->submit_time = kms_now();
+    return true;
+}
+
+/* the frame buffer to compose into: neither on screen nor about to be */
+struct kms_fb *kms_back_buffer( struct kms_output *out )
+{
+    if (!out->fbs[1].fb_id && out->fbs[0].fb_id)
+        create_fb( out->fbs[0].width, out->fbs[0].height, &out->fbs[1] );
+    for (int i = 0; i < 2; i++)
+        if (out->fbs[i].fb_id && out->fbs[i].fb_id != out->front_fb && out->fbs[i].fb_id != out->queued_fb)
+            return &out->fbs[i];
+    return NULL;
+}
+
+/* the frame buffer on screen, for a driver that cannot flip */
+struct kms_fb *kms_front_buffer( struct kms_output *out )
+{
+    return out->fbs[1].fb_id && out->fbs[1].fb_id == out->front_fb ? &out->fbs[1] : &out->fbs[0];
+}
+
+bool kms_can_scanout( struct kms_output *out, uint32_t fb, uint32_t src_width, uint32_t src_height )
+{
+    return out->enabled && out->plane &&
+           flip_atomic( out, fb, src_width, src_height, out->vrr_on, DRM_MODE_ATOMIC_TEST_ONLY );
+}
+
+/* client buffers imported as framebuffers, with the GEM handles they hold */
+static struct { uint32_t fb, handle; } imported[64];
+
+/* a GEM handle belongs to the buffer object, shared by every import of it */
+static void close_handle( uint32_t handle )
+{
+    struct drm_gem_close gem = { .handle = handle };
+
+    for (int i = 0; i < ARRAY_SIZE(imported); i++)
+        if (imported[i].fb && imported[i].handle == handle) return;
+    ioctl( kms.fd, DRM_IOCTL_GEM_CLOSE, &gem );
+}
+
+uint32_t kms_add_dmabuf( int fd, uint32_t width, uint32_t height, uint32_t format, uint32_t offset,
+                         uint32_t stride, uint64_t modifier )
+{
+    struct drm_prime_handle prime = { .fd = fd };
+    struct drm_mode_fb_cmd2 cmd = { .width = width, .height = height, .pixel_format = format };
+    int slot;
+
+    for (slot = 0; slot < ARRAY_SIZE(imported) && imported[slot].fb; slot++);
+    if (slot == ARRAY_SIZE(imported)) return 0;
+    if (ioctl( kms.fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime )) return 0;
+
+    cmd.handles[0] = prime.handle;
+    cmd.pitches[0] = stride;
+    cmd.offsets[0] = offset;
+    if (modifier != DRM_FORMAT_MOD_INVALID)
+    {
+        cmd.flags = DRM_MODE_FB_MODIFIERS;
+        cmd.modifier[0] = modifier;
+    }
+    if (ioctl( kms.fd, DRM_IOCTL_MODE_ADDFB2, &cmd ))
+    {
+        cmd.fb_id = 0;
+        /* a driver that knows no modifiers takes a linear buffer without one */
+        if (modifier == DRM_FORMAT_MOD_LINEAR)
+        {
+            cmd.flags = 0;
+            cmd.modifier[0] = 0;
+            if (ioctl( kms.fd, DRM_IOCTL_MODE_ADDFB2, &cmd )) cmd.fb_id = 0;
+        }
+    }
+    if (!cmd.fb_id)
+    {
+        close_handle( prime.handle );
+        return 0;
+    }
+    imported[slot].fb = cmd.fb_id;
+    imported[slot].handle = prime.handle;
+    return cmd.fb_id;
+}
+
+void kms_remove_dmabuf( uint32_t fb )
+{
+    for (int i = 0; i < ARRAY_SIZE(imported); i++)
+    {
+        uint32_t handle = imported[i].handle;
+
+        if (imported[i].fb != fb) continue;
+        ioctl( kms.fd, DRM_IOCTL_MODE_RMFB, &fb );
+        imported[i].fb = 0;
+        close_handle( handle );
+        return;
+    }
+}
+
+/* the hardware cursor: one image for every CRTC */
+static struct { uint32_t handle, width, height; } cursor;
+
+bool kms_set_cursor_image( const uint32_t *argb, uint32_t width, uint32_t height )
+{
+    struct drm_get_cap cap_width = { .capability = DRM_CAP_CURSOR_WIDTH };
+    struct drm_get_cap cap_height = { .capability = DRM_CAP_CURSOR_HEIGHT };
+    struct drm_mode_create_dumb create = { .bpp = 32 };
+    struct drm_mode_destroy_dumb destroy = {0};
+    struct drm_mode_map_dumb map = {0};
+    uint8_t *pixels;
+
+    create.width = !ioctl( kms.fd, DRM_IOCTL_GET_CAP, &cap_width ) && cap_width.value ? cap_width.value : 64;
+    create.height = !ioctl( kms.fd, DRM_IOCTL_GET_CAP, &cap_height ) && cap_height.value ? cap_height.value : 64;
+    if (width > create.width || height > create.height) return false;
+    if (ioctl( kms.fd, DRM_IOCTL_MODE_CREATE_DUMB, &create )) return false;
+    map.handle = destroy.handle = create.handle;
+    if (ioctl( kms.fd, DRM_IOCTL_MODE_MAP_DUMB, &map ) ||
+        (pixels = mmap( NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED, kms.fd, (off_t)map.offset )) == MAP_FAILED)
+    {
+        ioctl( kms.fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy );
+        return false;
+    }
+    memset( pixels, 0, create.size );
+    for (uint32_t y = 0; y < height; y++)
+        memcpy( pixels + (size_t)y * create.pitch, argb + (size_t)y * width, width * 4 );
+    munmap( pixels, create.size );
+    cursor.handle = create.handle;
+    cursor.width = create.width;
+    cursor.height = create.height;
+    return true;
+}
+
+bool kms_show_cursor( struct kms_output *out, bool show, int32_t x, int32_t y )
+{
+    struct drm_mode_cursor set = { .crtc_id = out->crtc_id };
+
+    if (!show)
+    {
+        if (!out->cursor_on) return true;
+        set.flags = DRM_MODE_CURSOR_BO;  /* no buffer: hidden */
+        ioctl( kms.fd, DRM_IOCTL_MODE_CURSOR, &set );
+        out->cursor_on = false;
+        return true;
+    }
+    if (!cursor.handle) return false;
+    set.flags = DRM_MODE_CURSOR_MOVE;
+    set.x = x;
+    set.y = y;
+    if (!out->cursor_on)
+    {
+        set.flags |= DRM_MODE_CURSOR_BO;
+        set.handle = cursor.handle;
+        set.width = cursor.width;
+        set.height = cursor.height;
+    }
+    if (ioctl( kms.fd, DRM_IOCTL_MODE_CURSOR, &set )) return false;
+    out->cursor_on = true;
+    return true;
+}
+
+/**********************************************************************
+ *          Modes
+ */
 
 /* Modes, positions and CRTCs for every monitor at once. If one modeset fails,
  * the ones already made are undone: the screen stays as it was. */
@@ -468,6 +938,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         return false;
     }
     if (test) return true;
+    wait_flips();
 
     /* a framebuffer of the new size where the mode changes; same size keeps its own */
     for (i = 0; i < KMS_MAX_OUTPUTS; i++)
@@ -479,8 +950,8 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         next[i].modeset = !out->enabled || next[i].mode != out->mode || next[i].crtc != out->crtc_id;
         if (!next[i].modeset) continue;
         m = &out->modes[next[i].mode].info;
-        if (out->enabled && out->fb.width == m->hdisplay && out->fb.height == m->vdisplay)
-            next[i].fb = out->fb;
+        if (out->enabled && out->fbs[0].width == m->hdisplay && out->fbs[0].height == m->vdisplay)
+            next[i].fb = out->fbs[0];
         else if (create_fb( m->hdisplay, m->vdisplay, &next[i].fb ))
             next[i].new_fb = true;
         else
@@ -515,8 +986,18 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         struct kms_output *out = &kms.outputs[i];
 
         if (!out->connector_id) continue;
-        if ((next[i].modeset && next[i].new_fb) || !next[i].enabled) destroy_fb( &out->fb );
-        if (next[i].modeset) out->fb = next[i].fb;
+        /* a modeset shows our first frame buffer, whatever was on screen */
+        if (next[i].modeset || !next[i].enabled) drop_scanout( out );
+        if ((next[i].modeset && next[i].new_fb) || !next[i].enabled)
+        {
+            destroy_fb( &out->fbs[0] );
+            destroy_fb( &out->fbs[1] );
+        }
+        if (next[i].modeset)
+        {
+            out->fbs[0] = next[i].fb;
+            out->front_fb = next[i].fb.fb_id;
+        }
         if (next[i].enabled && (next[i].modeset || !out->enabled || next[i].x != out->x || next[i].y != out->y))
             MESSAGE( "dwm: %s %ux%u@%u at %d,%d\n", out->name, out->modes[next[i].mode].info.hdisplay,
                      out->modes[next[i].mode].info.vdisplay, whole_hz( out->modes[next[i].mode].refresh ),
@@ -528,6 +1009,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         out->crtc_id = next[i].crtc;
         out->x = next[i].x;
         out->y = next[i].y;
+        if (next[i].modeset) read_crtc_state( out );
     }
     return true;
 
@@ -539,7 +1021,7 @@ restore:
     {
         struct kms_output *out = &kms.outputs[i];
         if (out->connector_id && out->enabled)
-            set_crtc( out->crtc_id, out->connector_id, out->fb.fb_id, &out->modes[out->mode].info );
+            set_crtc( out->crtc_id, out->connector_id, out->front_fb, &out->modes[out->mode].info );
     }
 undo:
     for (i = 0; i < KMS_MAX_OUTPUTS; i++) if (next[i].new_fb) destroy_fb( &next[i].fb );
@@ -548,7 +1030,7 @@ undo:
 
 void kms_flush( struct kms_output *out )
 {
-    struct drm_mode_fb_dirty_cmd dirty = { .fb_id = out->fb.fb_id };
+    struct drm_mode_fb_dirty_cmd dirty = { .fb_id = out->front_fb };
 
     ioctl( kms.fd, DRM_IOCTL_MODE_DIRTYFB, &dirty );
 }
@@ -629,37 +1111,51 @@ static void read_adapter(void)
     else strcpy( kms.description, "Microsoft Basic Display Adapter" );
 }
 
-/* one pass over the cards; with report, says why each one did not do */
+/* A card with a monitor, the one firmware showed its picture on first: on a
+ * PC with two, that is the one Windows would start on too. With report, says
+ * why each one did not do. */
 static bool try_cards( bool report )
 {
-    for (int i = 0; i < 8; i++)
+    for (int pass = 0; pass < 2; pass++)
     {
-        bool connected = false;
+        for (int i = 0; i < 8; i++)
+        {
+            char card[16];
+            bool connected = false;
 
-        snprintf( kms.name, sizeof(kms.name), "/dev/dri/card%d", i );
-        if ((kms.fd = open( kms.name, O_RDWR | O_CLOEXEC )) < 0)
-        {
-            if (report && errno != ENOENT) ERR( "%s: %s\n", kms.name, strerror( errno ) );
-            continue;
-        }
-        if (ioctl( kms.fd, DRM_IOCTL_SET_MASTER, 0 ))
-        {
-            if (report) ERR( "%s: DRM master is held elsewhere\n", kms.name );
-        }
-        else
-        {
-            kms_probe();
-            for (int k = 0; k < KMS_MAX_OUTPUTS; k++) connected |= !!kms.outputs[k].connector_id;
-            if (connected)
+            snprintf( card, sizeof(card), "card%d", i );
+            if ((read_sysfs_hex( card, "boot_vga" ) == 1) != (pass == 0)) continue;
+            snprintf( kms.name, sizeof(kms.name), "/dev/dri/%s", card );
+            if ((kms.fd = open( kms.name, O_RDWR | O_CLOEXEC | O_NONBLOCK )) < 0)
             {
-                read_adapter();
-                MESSAGE( "dwm: display %s (%s, %04x:%04x)\n", kms.name, kms.driver, kms.vendor, kms.device );
-                return true;
+                if (report && errno != ENOENT) ERR( "%s: %s\n", kms.name, strerror( errno ) );
+                continue;
             }
-            if (report) ERR( "%s: no connected monitor\n", kms.name );
+            if (ioctl( kms.fd, DRM_IOCTL_SET_MASTER, 0 ))
+            {
+                if (report) ERR( "%s: DRM master is held elsewhere\n", kms.name );
+            }
+            else
+            {
+                kms_probe();
+                for (int k = 0; k < KMS_MAX_OUTPUTS; k++) connected |= !!kms.outputs[k].connector_id;
+                if (connected)
+                {
+                    struct drm_set_client_cap atomic = { .capability = DRM_CLIENT_CAP_ATOMIC, .value = 1 };
+                    struct stat st;
+
+                    kms.atomic = !ioctl( kms.fd, DRM_IOCTL_SET_CLIENT_CAP, &atomic );
+                    kms.devnum = fstat( kms.fd, &st ) ? 0 : st.st_rdev;
+                    read_adapter();
+                    MESSAGE( "dwm: display %s (%s, %04x:%04x%s)\n", kms.name, kms.driver, kms.vendor, kms.device,
+                             kms.atomic ? ", atomic" : "" );
+                    return true;
+                }
+                if (report) ERR( "%s: no connected monitor\n", kms.name );
+            }
+            close( kms.fd );
+            kms.fd = -1;
         }
-        close( kms.fd );
-        kms.fd = -1;
     }
     return false;
 }

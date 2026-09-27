@@ -10,8 +10,10 @@ SOURCES = \
 	arctic-display-v1-protocol.c \
 	arctic-shell-v1-protocol.c \
 	compositor.c \
+	dmabuf.c \
 	dwmcore.c \
 	kms.c \
+	linux-dmabuf-v1-protocol.c \
 	viewporter-protocol.c \
 	xdg-output-unstable-v1-protocol.c \
 	xdg-shell-protocol.c

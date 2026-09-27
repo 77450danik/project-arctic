@@ -17,6 +17,9 @@
 
 #define KMS_MAX_OUTPUTS 8
 
+struct wl_display;
+struct wl_resource;
+
 struct kms_mode
 {
     struct drm_mode_modeinfo info;
@@ -46,13 +49,29 @@ struct kms_output
     uint32_t         mode_count;
     uint32_t         preferred;            /* index into modes */
     uint32_t         possible_crtcs;       /* bit per CRTC of the card */
+    bool             vrr_capable;          /* the monitor and the link take a variable refresh */
 
     /* what it shows */
     bool             enabled;
     uint32_t         crtc_id;              /* when off: the one firmware used, 0 if none */
     uint32_t         mode;                 /* index into modes */
     int32_t          x, y;                 /* in the virtual screen */
-    struct kms_fb    fb;
+    struct kms_fb    fbs[2];               /* composed frames: one on screen while the other is drawn */
+
+    /* scanout, when the monitor is on */
+    uint32_t         front_fb;             /* the framebuffer on screen */
+    uint32_t         queued_fb;            /* a flip to it is pending, 0 if none */
+    void            *front_buffer;         /* the client buffers they are, NULL for our own frames */
+    void            *queued_buffer;
+    bool             no_flip;              /* the driver cannot flip: frames are drawn where they show */
+    bool             fake_vblank;          /* flips complete at once: frames are paced by a timer */
+    uint64_t         submit_time;          /* µs, CLOCK_MONOTONIC */
+    uint64_t         done_time;
+    uint32_t         plane;                /* primary plane (atomic) */
+    uint32_t         vrr_prop;             /* the CRTC's VRR_ENABLED, 0 if it has none */
+    bool             vrr_on;               /* what the CRTC runs with now */
+    bool             vrr_refused;          /* the driver would not switch it without a modeset */
+    bool             cursor_on;            /* the hardware cursor is shown on this CRTC */
 
     void            *user;                 /* the compositor's */
 };
@@ -66,6 +85,8 @@ struct kms_card
     uint16_t          vendor, device;      /* PCI ids, 0 if not on PCI */
     uint32_t          subsystem;
     uint8_t           revision;
+    uint64_t          devnum;              /* dev_t of the card node */
+    bool              atomic;              /* atomic modesetting: page flips of any buffer, VRR */
     uint32_t          crtcs[32];
     uint32_t          crtc_count;
     struct kms_output outputs[KMS_MAX_OUTPUTS];
@@ -83,7 +104,59 @@ int  kms_hotplug_socket(void);        /* kernel uevents, -1 if none */
 bool kms_hotplug_event( int fd );     /* reads one; true if it was a display hotplug */
 struct kms_mode *kms_find_mode( struct kms_output *output, uint32_t width, uint32_t height, uint32_t refresh );
 
+/* Frames. kms_present queues a flip to fb, showing src_width x src_height of
+ * it over the whole mode, with variable refresh on or off; buffer is what the
+ * compositor gets back once it is off screen. It returns false if the flip
+ * cannot be made; output->no_flip then says whether it never will. */
+bool kms_present( struct kms_output *output, uint32_t fb, uint32_t src_width, uint32_t src_height,
+                  bool vrr, void *buffer );
+struct kms_fb *kms_back_buffer( struct kms_output *output );   /* NULL if both are busy */
+struct kms_fb *kms_front_buffer( struct kms_output *output );
+bool kms_can_scanout( struct kms_output *output, uint32_t fb, uint32_t src_width, uint32_t src_height );
+void kms_dispatch(void);              /* reads the card's events: finished flips */
+uint64_t kms_now(void);               /* µs */
+uint32_t kms_frame_time( const struct kms_output *output );  /* µs one refresh takes */
+
+/* a client's buffer as a framebuffer, 0 if the card cannot take it */
+uint32_t kms_add_dmabuf( int fd, uint32_t width, uint32_t height, uint32_t format, uint32_t offset,
+                         uint32_t stride, uint64_t modifier );
+void kms_remove_dmabuf( uint32_t fb );
+
+/* the hardware cursor, for monitors that show a client buffer directly */
+bool kms_set_cursor_image( const uint32_t *argb, uint32_t width, uint32_t height );
+bool kms_show_cursor( struct kms_output *output, bool show, int32_t x, int32_t y );  /* false if it cannot */
+
 /* called by kms_probe for a monitor that was unplugged, before its slot is freed */
 void compositor_output_removed( struct kms_output *output );
+/* called by kms_dispatch when a flip finished; buffer is what went off screen */
+void compositor_flip_done( struct kms_output *output, void *buffer );
+/* a buffer given to kms_present that will not be shown after all */
+void compositor_buffer_unused( void *buffer );
+
+/* Client GPU buffers (zwp_linux_dmabuf_v1). A buffer lives on while the
+ * compositor uses it, after the client destroyed it. */
+struct dmabuf
+{
+    struct wl_resource *resource;          /* the wl_buffer, NULL once destroyed */
+    uint32_t            refs;              /* the compositor's uses: a surface, a monitor */
+    int                 fd;
+    uint32_t            width, height, format, offset, stride;
+    uint64_t            modifier;
+    bool                alpha;
+    uint32_t            fb;                /* as a framebuffer, 0 until needed */
+    bool                fb_failed;         /* the card cannot take it */
+    uint32_t            scanout_tested;    /* CRTC it was tried on, 0 if none */
+    bool                scanout_ok;
+    void               *map;               /* for composition on the CPU */
+    size_t              map_size;
+    bool                map_failed;
+};
+
+void dmabuf_init( struct wl_display *display );
+struct dmabuf *dmabuf_from_resource( struct wl_resource *buffer );
+void dmabuf_ref( struct dmabuf *buffer );
+void dmabuf_unref( struct dmabuf *buffer );  /* the client gets its buffer back at the last one */
+bool dmabuf_read( struct dmabuf *buffer, uint32_t *pixels );  /* width x height, packed */
+uint32_t dmabuf_fb( struct dmabuf *buffer );  /* 0 if the card cannot scan it out */
 
 #endif

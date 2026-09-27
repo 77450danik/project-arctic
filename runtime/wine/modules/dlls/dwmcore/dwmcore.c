@@ -55,6 +55,29 @@ static COLORREF desktop_color(void)
     return RGB( 58, 110, 165 );
 }
 
+/* Variable refresh follows the Windows graphics setting: on, unless the
+ * user's DirectX settings say VRROptimizeEnable=0 */
+static HKEY   gpu_preferences;
+static HANDLE gpu_preferences_changed;
+
+static void update_options(void)
+{
+    struct dwm_set_options_params params = { .vrr = TRUE };
+    WCHAR value[512];
+    DWORD size = sizeof(value) - sizeof(WCHAR), type;
+
+    if (gpu_preferences &&
+        !RegQueryValueExW( gpu_preferences, L"DirectXUserGlobalSettings", NULL, &type, (BYTE *)value, &size ) &&
+        type == REG_SZ)
+    {
+        value[size / sizeof(WCHAR)] = 0;
+        if (wcsstr( value, L"VRROptimizeEnable=0" )) params.vrr = FALSE;
+    }
+    WINE_UNIX_CALL( unix_dwm_set_options, &params );
+    if (gpu_preferences)
+        RegNotifyChangeKeyValue( gpu_preferences, FALSE, REG_NOTIFY_CHANGE_LAST_SET, gpu_preferences_changed, TRUE );
+}
+
 /**********************************************************************
  *          The monitors
  *
@@ -391,6 +414,7 @@ static struct dwm_window           *windows;
 static int                          capacity;
 static UINT64                       serial = ~(UINT64)0;
 static POINT                        cursor = { -1, -1 };
+static BOOL                         cursor_hidden;
 
 static BOOL grow( int count )
 {
@@ -426,16 +450,18 @@ static void update_windows(void)
             count = reply->count;
             pos.x = reply->cursor_x;
             pos.y = reply->cursor_y;
+            pos.hidden = reply->cursor_hidden;
             got = wine_server_reply_size( reply ) / sizeof(*list);
         }
         SERVER_END_REQ;
         if (status || count <= got || !grow( count )) break;
     }
     if (status) return;
-    if (pos.x != cursor.x || pos.y != cursor.y)
+    if (pos.x != cursor.x || pos.y != cursor.y || pos.hidden != cursor_hidden)
     {
         cursor.x = pos.x;
         cursor.y = pos.y;
+        cursor_hidden = pos.hidden;
         WINE_UNIX_CALL( unix_dwm_set_cursor, &pos );
     }
     if (new_serial == serial) return;
@@ -472,6 +498,10 @@ DWORD WINAPI DwmCoreRun(void)
     if ((status = NtSetInformationProcess( GetCurrentProcess(), ProcessWineGrantAdminToken, NULL, 0 )))
         WARN( "no admin token: %#lx\n", status );
     configure_monitors();
+    RegCreateKeyExW( HKEY_CURRENT_USER, L"Software\\Microsoft\\DirectX\\UserGpuPreferences", 0, NULL, 0,
+                     KEY_QUERY_VALUE | KEY_NOTIFY, NULL, &gpu_preferences, NULL );
+    gpu_preferences_changed = CreateEventW( NULL, FALSE, FALSE, NULL );
+    update_options();
 
     /* wininit.exe starts csrss.exe on this: the display driver connects as it loads */
     SetEvent( CreateEventW( NULL, TRUE, FALSE, L"__arctic_dwm_ready" ) );
@@ -481,6 +511,7 @@ DWORD WINAPI DwmCoreRun(void)
         if ((status = WINE_UNIX_CALL( unix_dwm_dispatch, &dispatch ))) return status;
         if (dispatch.events & DWM_EVENT_HOTPLUG) configure_monitors();
         if (dispatch.events & DWM_EVENT_SAVE) save_monitors();
+        if (!WaitForSingleObject( gpu_preferences_changed, 0 )) update_options();
         update_windows();
     }
 }

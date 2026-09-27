@@ -48,7 +48,8 @@ struct dwm_set_windows_params
 
 struct dwm_set_cursor_params
 {
-    INT32 x, y;  /* screen coordinates */
+    INT32  x, y;    /* screen coordinates */
+    UINT32 hidden;  /* the window under it hides it */
 };
 
 #define DWM_MODE_PREFERRED 0x1  /* the monitor's native mode */
@@ -97,6 +98,11 @@ struct dwm_set_config_params
     const struct dwm_output_config *configs;  /* monitors not named keep theirs */
 };
 
+struct dwm_set_options_params
+{
+    UINT32 vrr;         /* variable refresh for games that fill a monitor */
+};
+
 enum dwm_funcs
 {
     unix_dwm_start,        /* take the display, start serving buffers */
@@ -105,6 +111,7 @@ enum dwm_funcs
     unix_dwm_set_cursor,   /* the cursor position, from wineserver */
     unix_dwm_get_outputs,  /* the connected monitors with their modes */
     unix_dwm_set_config,   /* modes and positions of the monitors */
+    unix_dwm_set_options,  /* Windows settings the compositor follows */
     unix_funcs_count
 };
 
