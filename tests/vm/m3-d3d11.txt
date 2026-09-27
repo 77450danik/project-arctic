@@ -1,0 +1,26 @@
+# Direct3D 11 through DXVK, from the test programs' disk
+# (vm-test.py --disk out/test-local/tools.img, it becomes D:)
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type D:\d3d11test.exe
+key ret
+sleep 12
+shot d1-window
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type D:\d3d11test.exe fullscreen
+key ret
+sleep 12
+shot d2-fullscreen
+key esc
+sleep 3
+shot d3-desktop
