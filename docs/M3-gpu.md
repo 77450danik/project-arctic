@@ -120,11 +120,18 @@ desktop 1280x800`, а після прибирання старого — зно�
 - Увімкнення/вимкнення: `dwm: DP-1 variable refresh on` / `off`.
 - Якщо драйвер не дає перемкнути VRR без повного modeset (екран блимнув би) —
   dwm не перемикає і пише `cannot switch variable refresh without a modeset`.
-- **Налаштування Windows:** `HKCU\Software\Microsoft\DirectX\UserGpuPreferences`,
-  `DirectXUserGlobalSettings` — той самий рядок, який пише перемикач «Змінна
-  частота оновлення» у Windows 11. `VRROptimizeEnable=0` вимикає VRR, без
-  значення або з `=1` — увімкнено. dwm стежить за ключем і підхоплює зміну
-  одразу.
+- **Для користувача — у Панелі керування.** «Екран» → «Параметри»: під
+  частотою оновлення з'являється прапорець «Змінна частота оновлення», але
+  лише для монітора, який разом із відеокартою її підтримує (як перемикач
+  FreeSync у панелі AMD). За замовчуванням увімкнено; «Застосувати» діє
+  одразу, без перезавантаження. Вибір — окремо для кожного монітора.
+- **Де це лежить:** `HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\MonitorDataStore\<PnP-ID>`
+  (PnP-ID з EDID, напр. `AUS27B1`, як win32u називає пристрій монітора):
+  `VariableRefreshCapable` пише dwm, `VariableRefresh` — панель (патч ReactOS
+  `0016`). dwm стежить за ключем.
+- Додатково діє загальне налаштування DirectX Windows 11
+  (`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`,
+  `DirectXUserGlobalSettings`, `VRROptimizeEnable=0` вимикає для всіх).
 
 ## Пряме сканування
 
@@ -149,11 +156,15 @@ Independent Flip):
 
 ## Перевірка
 
-- `vktest.exe` — Vulkan-вікно 640x480; `vktest.exe fullscreen` — на весь
-  основний монітор без рамки, Esc закриває. На залізі з VRR-монітором у
-  `dwm.log` має з'явитися `variable refresh on`, а після Esc — `off`.
-- У QEMU (`virtio-gpu`, `bochs`) VRR немає і пряме сканування чужих буферів
-  карти не приймають, тож там перевіряється шлях flip і композиція.
+- Користувач: «Екран» → «Параметри» — прапорець «Змінна частота оновлення»
+  видно лише на моніторі з FreeSync / G-SYNC Compatible. Гра на весь екран з
+  увімкненим прапорцем іде зі змінною частотою (видно в OSD монітора, якщо він
+  показує поточну частоту).
+- Розробник: `vktest.exe fullscreen` (Esc закриває), у `nt.log` —
+  `variable refresh on` / `off`.
+- У QEMU (`virtio-gpu`, `bochs`) VRR немає, тож прапорця там не видно, а
+  пряме сканування чужих буферів карти не приймають: перевіряється шлях flip
+  і композиція.
 
 ## Що далі
 

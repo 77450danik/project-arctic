@@ -141,6 +141,8 @@ static int                     cursor_x, cursor_y;
 static bool                    cursor_hidden;  /* the window under it hides it */
 static uint32_t                pending_events;  /* DWM_EVENT_*, for the PE side */
 static bool                    vrr_allowed = true;  /* the Windows setting */
+static uint32_t                vrr_off[DWM_MAX_OUTPUTS];  /* connectors it is turned off for */
+static uint32_t                vrr_off_count;
 static bool                    hw_cursor;    /* the card has a cursor plane for directly shown windows */
 static uint64_t                last_callbacks;  /* µs, when clients were last told a frame was shown */
 
@@ -504,6 +506,13 @@ static bool can_show_directly( struct kms_output *o, struct surface *content )
     return buffer->scanout_ok && kms_show_cursor( o, cursor_on( o ), cursor_x - o->x, cursor_y - o->y );
 }
 
+/* the display settings of the Control Panel turned it off for this monitor */
+static bool vrr_turned_off( const struct kms_output *o )
+{
+    for (uint32_t i = 0; i < vrr_off_count; i++) if (vrr_off[i] == o->connector_id) return true;
+    return false;
+}
+
 static void present_directly( struct output *output, struct surface *content, bool vrr )
 {
     struct kms_output *o = output->kms;
@@ -571,7 +580,7 @@ static void repaint(void)
         if (count == ARRAY_SIZE(ready)) break;
         content = fullscreen_content( o, &hwnd );
         ready[count].output = output;
-        ready[count].vrr = content && vrr_allowed;
+        ready[count].vrr = content && vrr_allowed && !vrr_turned_off( o );
         ready[count].content = content && can_show_directly( o, content ) ? content : NULL;
         if (ready[count].content) output->direct_hwnd = hwnd;
         else
@@ -1952,6 +1961,7 @@ static NTSTATUS dwm_get_outputs( void *args )
             info->modes[k].refresh = o->modes[k].refresh;
             info->modes[k].flags = k == o->preferred ? DWM_MODE_PREFERRED : 0;
         }
+        info->vrr_capable = o->vrr_capable;
         info->edid_len = min( o->edid_len, DWM_MAX_EDID );
         memcpy( info->edid, o->edid, info->edid_len );
         params->count++;
@@ -1973,6 +1983,8 @@ static NTSTATUS dwm_set_options( void *args )
 
     if (vrr_allowed != !!params->vrr) MESSAGE( "dwm: variable refresh %s\n", params->vrr ? "allowed" : "not allowed" );
     vrr_allowed = !!params->vrr;
+    vrr_off_count = min( params->vrr_off_count, ARRAY_SIZE(vrr_off) );
+    memcpy( vrr_off, params->vrr_off, vrr_off_count * sizeof(*vrr_off) );
     damage();
     return STATUS_SUCCESS;
 }

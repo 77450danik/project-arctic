@@ -55,28 +55,6 @@ static COLORREF desktop_color(void)
     return RGB( 58, 110, 165 );
 }
 
-/* Variable refresh follows the Windows graphics setting: on, unless the
- * user's DirectX settings say VRROptimizeEnable=0 */
-static HKEY   gpu_preferences;
-static HANDLE gpu_preferences_changed;
-
-static void update_options(void)
-{
-    struct dwm_set_options_params params = { .vrr = TRUE };
-    WCHAR value[512];
-    DWORD size = sizeof(value) - sizeof(WCHAR), type;
-
-    if (gpu_preferences &&
-        !RegQueryValueExW( gpu_preferences, L"DirectXUserGlobalSettings", NULL, &type, (BYTE *)value, &size ) &&
-        type == REG_SZ)
-    {
-        value[size / sizeof(WCHAR)] = 0;
-        if (wcsstr( value, L"VRROptimizeEnable=0" )) params.vrr = FALSE;
-    }
-    WINE_UNIX_CALL( unix_dwm_set_options, &params );
-    if (gpu_preferences)
-        RegNotifyChangeKeyValue( gpu_preferences, FALSE, REG_NOTIFY_CHANGE_LAST_SET, gpu_preferences_changed, TRUE );
-}
 
 /**********************************************************************
  *          The monitors
@@ -92,6 +70,83 @@ static const WCHAR configuration_keyW[] =
 
 static struct dwm_output *outputs;
 static UINT               output_count;
+
+/**********************************************************************
+ *          Variable refresh
+ *
+ * On for a monitor that takes it, as the drivers of Windows have FreeSync
+ * and G-SYNC on, unless the user turned it off for that monitor in the
+ * display settings of the Control Panel (VariableRefresh=0 in its key of
+ * the monitor data store) or for all of them in the DirectX settings
+ * (VRROptimizeEnable=0). Whether a monitor takes it is kept in the same
+ * key, so that the Control Panel offers the switch only where it works.
+ */
+
+static const WCHAR monitor_store_keyW[] =
+    L"System\\CurrentControlSet\\Control\\GraphicsDrivers\\MonitorDataStore";
+static HKEY   gpu_preferences, monitor_store;
+static HANDLE options_changed;
+
+/* "ACR0A2B", the Plug and Play id of the monitor from its EDID, as win32u
+ * names the monitor device */
+static BOOL monitor_pnp_id( const struct dwm_output *output, WCHAR *id, SIZE_T size )
+{
+    UINT manufacturer;
+
+    if (output->edid_len < 128) return FALSE;
+    manufacturer = (output->edid[8] << 8) | output->edid[9];
+    swprintf( id, size, L"%c%c%c%04X", 'A' + ((manufacturer >> 10) & 0x1f) - 1,
+              'A' + ((manufacturer >> 5) & 0x1f) - 1, 'A' + (manufacturer & 0x1f) - 1,
+              output->edid[10] | (output->edid[11] << 8) );
+    return TRUE;
+}
+
+static void publish_vrr_capability(void)
+{
+    WCHAR id[16];
+    HKEY hkey;
+
+    if (!monitor_store) return;
+    for (UINT i = 0; i < output_count; i++)
+    {
+        DWORD capable = outputs[i].vrr_capable;
+
+        if (!monitor_pnp_id( &outputs[i], id, ARRAY_SIZE(id) )) continue;
+        if (RegCreateKeyExW( monitor_store, id, 0, NULL, 0, KEY_SET_VALUE, NULL, &hkey, NULL )) continue;
+        RegSetValueExW( hkey, L"VariableRefreshCapable", 0, REG_DWORD, (BYTE *)&capable, sizeof(capable) );
+        RegCloseKey( hkey );
+    }
+}
+
+static void update_options(void)
+{
+    struct dwm_set_options_params params = { .vrr = TRUE };
+    WCHAR value[512], id[16];
+    DWORD size = sizeof(value) - sizeof(WCHAR), type;
+
+    if (gpu_preferences &&
+        !RegQueryValueExW( gpu_preferences, L"DirectXUserGlobalSettings", NULL, &type, (BYTE *)value, &size ) &&
+        type == REG_SZ)
+    {
+        value[size / sizeof(WCHAR)] = 0;
+        if (wcsstr( value, L"VRROptimizeEnable=0" )) params.vrr = FALSE;
+    }
+    for (UINT i = 0; i < output_count && params.vrr_off_count < ARRAY_SIZE(params.vrr_off); i++)
+    {
+        DWORD on = 1;
+
+        size = sizeof(on);
+        if (!monitor_store || !monitor_pnp_id( &outputs[i], id, ARRAY_SIZE(id) )) continue;
+        if (!RegGetValueW( monitor_store, id, L"VariableRefresh", RRF_RT_REG_DWORD, NULL, &on, &size ) && !on)
+            params.vrr_off[params.vrr_off_count++] = outputs[i].id;
+    }
+    WINE_UNIX_CALL( unix_dwm_set_options, &params );
+    if (gpu_preferences)
+        RegNotifyChangeKeyValue( gpu_preferences, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
+    if (monitor_store)
+        RegNotifyChangeKeyValue( monitor_store, TRUE, REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME,
+                                 options_changed, TRUE );
+}
 
 static BOOL read_outputs(void)
 {
@@ -500,7 +555,10 @@ DWORD WINAPI DwmCoreRun(void)
     configure_monitors();
     RegCreateKeyExW( HKEY_CURRENT_USER, L"Software\\Microsoft\\DirectX\\UserGpuPreferences", 0, NULL, 0,
                      KEY_QUERY_VALUE | KEY_NOTIFY, NULL, &gpu_preferences, NULL );
-    gpu_preferences_changed = CreateEventW( NULL, FALSE, FALSE, NULL );
+    RegCreateKeyExW( HKEY_LOCAL_MACHINE, monitor_store_keyW, 0, NULL, 0,
+                     KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_NOTIFY, NULL, &monitor_store, NULL );
+    options_changed = CreateEventW( NULL, FALSE, FALSE, NULL );
+    publish_vrr_capability();
     update_options();
 
     /* wininit.exe starts csrss.exe on this: the display driver connects as it loads */
@@ -509,9 +567,14 @@ DWORD WINAPI DwmCoreRun(void)
     for (;;)
     {
         if ((status = WINE_UNIX_CALL( unix_dwm_dispatch, &dispatch ))) return status;
-        if (dispatch.events & DWM_EVENT_HOTPLUG) configure_monitors();
+        if (dispatch.events & DWM_EVENT_HOTPLUG)
+        {
+            configure_monitors();
+            publish_vrr_capability();
+            update_options();
+        }
         if (dispatch.events & DWM_EVENT_SAVE) save_monitors();
-        if (!WaitForSingleObject( gpu_preferences_changed, 0 )) update_options();
+        if (!WaitForSingleObject( options_changed, 0 )) update_options();
         update_windows();
     }
 }

@@ -74,6 +74,7 @@ struct dwm_output
     struct dwm_mode modes[DWM_MAX_MODES];
     UINT32          edid_len;
     BYTE            edid[DWM_MAX_EDID];
+    UINT32          vrr_capable;  /* the monitor and the card take a variable refresh */
 };
 
 struct dwm_get_outputs_params
@@ -101,6 +102,8 @@ struct dwm_set_config_params
 struct dwm_set_options_params
 {
     UINT32 vrr;         /* variable refresh for games that fill a monitor */
+    UINT32 vrr_off_count;
+    UINT32 vrr_off[DWM_MAX_OUTPUTS];  /* connectors whose monitor the user turned it off for */
 };
 
 enum dwm_funcs

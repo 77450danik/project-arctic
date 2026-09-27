@@ -1,0 +1,255 @@
+diff -ruN a/dll/cpl/desk/desk.h b/dll/cpl/desk/desk.h
+--- a/dll/cpl/desk/desk.h	2026-09-27 17:35:37.589996047 +0300
++++ b/dll/cpl/desk/desk.h	2026-09-27 17:35:37.874483865 +0300
+@@ -158,6 +158,10 @@
+     SETTINGS_ENTRY InitialSettings;
+     POINT Position;        /* Where this monitor stands on the virtual screen */
+     POINT InitialPosition;
++    WCHAR PnpId[16];       /* The monitor's Plug and Play id, from its EDID */
++    BOOL VrrCapable;       /* The monitor and the card take a variable refresh */
++    BOOL VrrEnabled;
++    BOOL InitialVrrEnabled;
+ } DISPLAY_DEVICE_ENTRY, *PDISPLAY_DEVICE_ENTRY;
+ 
+ typedef struct _GLOBAL_DATA
+diff -ruN a/dll/cpl/desk/lang/en-US.rc b/dll/cpl/desk/lang/en-US.rc
+--- a/dll/cpl/desk/lang/en-US.rc	2026-09-27 17:35:37.574388146 +0300
++++ b/dll/cpl/desk/lang/en-US.rc	2026-09-27 17:35:37.874811865 +0300
+@@ -144,6 +144,7 @@
+     GROUPBOX "&Color quality", 1817, 125, 119, 115, 63
+     COMBOBOX IDC_SETTINGS_BPP, 131, 129, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+     CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 148, 103, 9
++    AUTOCHECKBOX "Varia&ble refresh rate", IDC_SETTINGS_VRR, 8, 187, 150, 10
+     PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 185, 70, 15
+ END
+ 
+diff -ruN a/dll/cpl/desk/lang/uk-UA.rc b/dll/cpl/desk/lang/uk-UA.rc
+--- a/dll/cpl/desk/lang/uk-UA.rc	2026-09-27 17:35:37.574470246 +0300
++++ b/dll/cpl/desk/lang/uk-UA.rc	2026-09-27 17:35:37.875008465 +0300
+@@ -154,6 +154,7 @@
+     GROUPBOX "&Якість кольоропередачі", 1817, 125, 119, 115, 63
+     COMBOBOX IDC_SETTINGS_BPP, 131, 129, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+     CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 148, 103, 9
++    AUTOCHECKBOX "&Змінна частота оновлення", IDC_SETTINGS_VRR, 8, 187, 150, 10
+     PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 185, 70, 15
+ END
+ 
+diff -ruN a/dll/cpl/desk/monitorname.c b/dll/cpl/desk/monitorname.c
+--- a/dll/cpl/desk/monitorname.c	2026-09-27 17:35:37.574470246 +0300
++++ b/dll/cpl/desk/monitorname.c	2026-09-27 17:35:37.873757765 +0300
+@@ -1,7 +1,7 @@
+ /*
+  * COPYRIGHT:       See COPYING in the top level directory
+  * PROJECT:         ReactOS Display Control Panel
+- * PURPOSE:         The name a monitor gives for itself in its EDID
++ * PURPOSE:         The name and the Plug and Play id a monitor gives in its EDID
+  * PROGRAMMERS:     Project Arctic contributors
+  */
+ 
+@@ -93,10 +93,10 @@
+ typedef LONG (WINAPI *PQUERY)(UINT32, UINT32 *, PATH_INFO *, UINT32 *, MODE_INFO *, VOID *);
+ typedef LONG (WINAPI *PGETINFO)(DEVICE_INFO_HEADER *);
+ 
+-/* Walks the active display paths and takes the friendly name of the monitor
+- * on the given adapter, the way the display settings of Windows show it. */
+-BOOL
+-GetMonitorName(IN LPCWSTR pszDevice, OUT LPWSTR pszName, IN DWORD cchName)
++/* Walks the active display paths and takes what the system knows of the
++ * monitor on the given adapter, the way the display settings of Windows do. */
++static BOOL
++GetMonitorTarget(IN LPCWSTR pszDevice, OUT TARGET_DEVICE_NAME *pTarget)
+ {
+     PATH_INFO *pPaths;
+     MODE_INFO *pModes;
+@@ -125,7 +125,6 @@
+         for (i = 0; i < cPaths && !bFound; i++)
+         {
+             SOURCE_DEVICE_NAME Source;
+-            TARGET_DEVICE_NAME Target;
+ 
+             ZeroMemory(&Source, sizeof(Source));
+             Source.header.type = DEVICE_INFO_GET_SOURCE_NAME;
+@@ -138,16 +137,12 @@
+                 continue;
+             }
+ 
+-            ZeroMemory(&Target, sizeof(Target));
+-            Target.header.type = DEVICE_INFO_GET_TARGET_NAME;
+-            Target.header.size = sizeof(Target);
+-            Target.header.adapterId = pPaths[i].targetInfo.adapterId;
+-            Target.header.id = pPaths[i].targetInfo.id;
+-            if (pGetInfo(&Target.header) == ERROR_SUCCESS && Target.monitorFriendlyDeviceName[0] != 0)
+-            {
+-                StringCchCopyW(pszName, cchName, Target.monitorFriendlyDeviceName);
+-                bFound = TRUE;
+-            }
++            ZeroMemory(pTarget, sizeof(*pTarget));
++            pTarget->header.type = DEVICE_INFO_GET_TARGET_NAME;
++            pTarget->header.size = sizeof(*pTarget);
++            pTarget->header.adapterId = pPaths[i].targetInfo.adapterId;
++            pTarget->header.id = pPaths[i].targetInfo.id;
++            bFound = pGetInfo(&pTarget->header) == ERROR_SUCCESS;
+         }
+     }
+ 
+@@ -157,3 +152,38 @@
+         HeapFree(GetProcessHeap(), 0, pModes);
+     return bFound;
+ }
++
++/* The friendly name of the monitor on the given adapter */
++BOOL
++GetMonitorName(IN LPCWSTR pszDevice, OUT LPWSTR pszName, IN DWORD cchName)
++{
++    TARGET_DEVICE_NAME Target;
++
++    if (!GetMonitorTarget(pszDevice, &Target) || Target.monitorFriendlyDeviceName[0] == 0)
++        return FALSE;
++    StringCchCopyW(pszName, cchName, Target.monitorFriendlyDeviceName);
++    return TRUE;
++}
++
++/* "ACR0A2B", the Plug and Play id of the monitor on the given adapter, taken
++ * from its device path \\?\DISPLAY\ACR0A2B\... A monitor without an EDID has
++ * none. */
++BOOL
++GetMonitorPnpId(IN LPCWSTR pszDevice, OUT LPWSTR pszId, IN DWORD cchId)
++{
++    TARGET_DEVICE_NAME Target;
++    LPCWSTR pszStart, pszEnd;
++
++    if (!GetMonitorTarget(pszDevice, &Target))
++        return FALSE;
++    if (_wcsnicmp(Target.monitorDevicePath, L"\\\\?\\DISPLAY\\", 12) != 0)
++        return FALSE;
++    pszStart = Target.monitorDevicePath + 12;
++    if (!(pszEnd = wcschr(pszStart, L'\\')) || pszEnd == pszStart ||
++        (DWORD)(pszEnd - pszStart) >= cchId || _wcsnicmp(pszStart, L"Default_Monitor", 15) == 0)
++    {
++        return FALSE;
++    }
++    StringCchCopyNW(pszId, cchId, pszStart, pszEnd - pszStart);
++    return TRUE;
++}
+diff -ruN a/dll/cpl/desk/resource.h b/dll/cpl/desk/resource.h
+--- a/dll/cpl/desk/resource.h	2026-09-27 17:35:37.574530746 +0300
++++ b/dll/cpl/desk/resource.h	2026-09-27 17:35:37.874649565 +0300
+@@ -71,6 +71,7 @@
+ #define IDC_SETTINGS_MONTEXT         208
+ #define IDC_SETTINGS_REFRESH         212
+ #define IDC_SETTINGS_REFRESH_TEXT    213
++#define IDC_SETTINGS_VRR             214
+ 
+ #define IDB_SPECTRUM_4  209
+ #define IDB_SPECTRUM_8  210
+diff -ruN a/dll/cpl/desk/settings.c b/dll/cpl/desk/settings.c
+--- a/dll/cpl/desk/settings.c	2026-09-27 17:35:37.590101847 +0300
++++ b/dll/cpl/desk/settings.c	2026-09-27 17:35:37.875710965 +0300
+@@ -269,6 +269,58 @@
+  * next to the adapter: "Dell U2415 on AMD Radeon RX 580". Reading it needs
+  * the display configuration API, which lives in monitorname.c. */
+ BOOL GetMonitorName(IN LPCWSTR pszDevice, OUT LPWSTR pszName, IN DWORD cchName);
++BOOL GetMonitorPnpId(IN LPCWSTR pszDevice, OUT LPWSTR pszId, IN DWORD cchId);
++
++/* Variable refresh (FreeSync, G-SYNC) of each monitor. dwm.exe keeps in the
++ * monitor's key of the monitor data store whether the monitor and the card
++ * take it, and follows the user's choice kept next to it. */
++#define MONITOR_STORE_KEY L"System\\CurrentControlSet\\Control\\GraphicsDrivers\\MonitorDataStore"
++
++static VOID
++ReadVariableRefresh(IN PDISPLAY_DEVICE_ENTRY Entry, IN LPCWSTR DeviceName)
++{
++    WCHAR szKey[128];
++    DWORD Value, Size, Type;
++    HKEY hKey;
++
++    Entry->VrrCapable = FALSE;
++    Entry->VrrEnabled = Entry->InitialVrrEnabled = TRUE;
++    if (!GetMonitorPnpId(DeviceName, Entry->PnpId, _countof(Entry->PnpId)))
++        return;
++    _snwprintf(szKey, _countof(szKey), L"%s\\%s", MONITOR_STORE_KEY, Entry->PnpId);
++    szKey[_countof(szKey) - 1] = 0;
++    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, szKey, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
++        return;
++    Size = sizeof(Value);
++    if (RegQueryValueExW(hKey, L"VariableRefreshCapable", NULL, &Type, (LPBYTE)&Value, &Size) == ERROR_SUCCESS &&
++        Type == REG_DWORD)
++    {
++        Entry->VrrCapable = Value != 0;
++    }
++    Size = sizeof(Value);
++    if (RegQueryValueExW(hKey, L"VariableRefresh", NULL, &Type, (LPBYTE)&Value, &Size) == ERROR_SUCCESS &&
++        Type == REG_DWORD)
++    {
++        Entry->VrrEnabled = Entry->InitialVrrEnabled = Value != 0;
++    }
++    RegCloseKey(hKey);
++}
++
++static VOID
++WriteVariableRefresh(IN PDISPLAY_DEVICE_ENTRY Entry)
++{
++    WCHAR szKey[128];
++    DWORD Value = Entry->VrrEnabled ? 1 : 0;
++    HKEY hKey;
++
++    _snwprintf(szKey, _countof(szKey), L"%s\\%s", MONITOR_STORE_KEY, Entry->PnpId);
++    szKey[_countof(szKey) - 1] = 0;
++    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, szKey, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS)
++        return;
++    if (RegSetValueExW(hKey, L"VariableRefresh", 0, REG_DWORD, (const BYTE *)&Value, sizeof(Value)) == ERROR_SUCCESS)
++        Entry->InitialVrrEnabled = Entry->VrrEnabled;
++    RegCloseKey(hKey);
++}
+ 
+ static BOOL
+ AddDisplayDevice(IN PSETTINGS_DATA pData, IN const DISPLAY_DEVICE *DisplayDevice)
+@@ -338,6 +390,8 @@
+         szDescription[_countof(szDescription) - 1] = _T('\0');
+     }
+ 
++    ReadVariableRefresh(newEntry, DisplayDevice->DeviceName);
++
+     descriptionSize = (_tcslen(szDescription) + 1) * sizeof(TCHAR);
+     description = HeapAlloc(GetProcessHeap(), 0, descriptionSize);
+     if (!description) goto ByeBye;
+@@ -441,6 +495,10 @@
+     SendDlgItemMessage(hwndDlg, IDC_SETTINGS_RESOLUTION, TBM_CLEARTICS, TRUE, 0);
+     SendDlgItemMessage(hwndDlg, IDC_SETTINGS_RESOLUTION, TBM_SETRANGE, TRUE, MAKELONG(0, pDeviceEntry->ResolutionsCount - 1));
+ 
++    /* Variable refresh, only where the monitor and the card take it */
++    ShowWindow(GetDlgItem(hwndDlg, IDC_SETTINGS_VRR), pDeviceEntry->VrrCapable ? SW_SHOW : SW_HIDE);
++    CheckDlgButton(hwndDlg, IDC_SETTINGS_VRR, pDeviceEntry->VrrEnabled ? BST_CHECKED : BST_UNCHECKED);
++
+     UpdateDisplay(hwndDlg, pData, TRUE);
+ }
+ 
+@@ -1269,6 +1327,11 @@
+                 OnBPPChanged(hwndDlg, pData);
+             else if (controlId == IDC_SETTINGS_REFRESH && command == CBN_SELCHANGE)
+                 OnRefreshChanged(hwndDlg, pData);
++            else if (controlId == IDC_SETTINGS_VRR && command == BN_CLICKED)
++            {
++                pData->CurrentDisplayDevice->VrrEnabled = IsDlgButtonChecked(hwndDlg, IDC_SETTINGS_VRR) == BST_CHECKED;
++                PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
++            }
+             break;
+         }
+         case WM_HSCROLL:
+@@ -1310,6 +1373,16 @@
+ 
+                 if (MonitorLayoutChanged(pData))
+                     ApplyMonitorLayout(hwndDlg, pData);
++
++                {
++                    PDISPLAY_DEVICE_ENTRY Entry;
++
++                    for (Entry = pData->DisplayDeviceList; Entry != NULL; Entry = Entry->Flink)
++                    {
++                        if (Entry->VrrCapable && Entry->VrrEnabled != Entry->InitialVrrEnabled)
++                            WriteVariableRefresh(Entry);
++                    }
++                }
+             }
+             else if (lpnm->code == MSLN_MONITORCHANGED)
+             {
