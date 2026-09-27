@@ -1,0 +1,102 @@
+From 65add7b6d61c47d1b9ddb03d42be1ddc4808299e Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 27 Sep 2026 16:26:18 +0300
+Subject: [PATCH] winewayland: Update the display devices in the process that
+ made the desktop.
+
+The display devices are updated when an output comes, goes or changes,
+but only from the desktop process, and a process found out whether it is
+that one by asking for its desktop window from the thread that reads
+Wayland events. In csrss.exe that thread belongs to the desktop it was
+started on, not to the one csrss owns, so no monitor change ever reached
+win32u: a monitor plugged in, or the display moving to another card,
+left the desktop at its old size. The driver now notes the desktop window
+when its own process creates it.
+---
+ dlls/winewayland.drv/wayland_output.c  | 10 ++++++----
+ dlls/winewayland.drv/waylanddrv.h      |  2 ++
+ dlls/winewayland.drv/waylanddrv_main.c |  1 +
+ dlls/winewayland.drv/window.c          | 13 +++++++++++++
+ 4 files changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/winewayland.drv/wayland_output.c b/dlls/winewayland.drv/wayland_output.c
+index 4078a90..f91d094 100644
+--- a/dlls/winewayland.drv/wayland_output.c
++++ b/dlls/winewayland.drv/wayland_output.c
+@@ -114,11 +114,13 @@ static void maybe_init_display_devices(void)
+      * process init time, since it may not be safe. */
+     if (!process_wayland.initialized) return;
+ 
+-    desktop_hwnd = NtUserGetDesktopWindow();
+-    NtUserGetWindowThread(desktop_hwnd, &desktop_pid);
+-
+     /* We only update the display devices from the desktop process. */
+-    if (GetCurrentProcessId() != desktop_pid) return;
++    if (!(desktop_hwnd = process_wayland.desktop_hwnd))
++    {
++        desktop_hwnd = NtUserGetDesktopWindow();
++        NtUserGetWindowThread(desktop_hwnd, &desktop_pid);
++        if (GetCurrentProcessId() != desktop_pid) return;
++    }
+ 
+     NtUserPostMessage(desktop_hwnd, WM_WAYLAND_INIT_DISPLAY_DEVICES, 0, 0);
+ }
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index 9d48082..24f524e 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -175,6 +175,7 @@ struct wayland_adapter
+ struct wayland
+ {
+     BOOL initialized;
++    HWND desktop_hwnd; /* the desktop window, when this process created it */
+     struct wl_display *wl_display;
+     struct wl_event_queue *wl_event_queue;
+     struct wl_registry *wl_registry;
+@@ -486,6 +487,7 @@ UINT WAYLAND_UpdateDisplayDevices(const struct gdi_device_manager *device_manage
+ LONG WAYLAND_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd,
+                                    DWORD flags, LPVOID lparam);
+ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
++BOOL WAYLAND_CreateWindow(HWND hwnd);
+ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
+                               const struct window_rects *new_rects, struct window_surface *surface);
+ BOOL WAYLAND_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects);
+diff --git a/dlls/winewayland.drv/waylanddrv_main.c b/dlls/winewayland.drv/waylanddrv_main.c
+index c18d15a..a8016fd 100644
+--- a/dlls/winewayland.drv/waylanddrv_main.c
++++ b/dlls/winewayland.drv/waylanddrv_main.c
+@@ -52,6 +52,7 @@ static const struct user_driver_funcs waylanddrv_funcs =
+     .pUpdateLayeredWindow = WAYLAND_UpdateLayeredWindow,
+     .pUpdateDisplayDevices = WAYLAND_UpdateDisplayDevices,
+     .pWindowMessage = WAYLAND_WindowMessage,
++    .pCreateWindow = WAYLAND_CreateWindow,
+     .pWindowPosChanged = WAYLAND_WindowPosChanged,
+     .pWindowPosChanging = WAYLAND_WindowPosChanging,
+     .pCreateClientSurface = WAYLAND_CreateClientSurface,
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 0321acf..2297287 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -610,6 +610,19 @@ static void wayland_configure_window(HWND hwnd)
+     NtUserSetRawWindowPos(hwnd, rect, flags, FALSE);
+ }
+ 
++/**********************************************************************
++ *           WAYLAND_CreateWindow
++ *
++ * Notes the desktop window when this process creates it: the thread that
++ * reads Wayland events may belong to another desktop than the one the
++ * desktop process owns, so it cannot tell by asking for its own.
++ */
++BOOL WAYLAND_CreateWindow(HWND hwnd)
++{
++    if (hwnd == NtUserGetDesktopWindow()) process_wayland.desktop_hwnd = hwnd;
++    return TRUE;
++}
++
+ /**********************************************************************
+  *           WAYLAND_WindowMessage
+  */
+-- 
+2.55.0
+

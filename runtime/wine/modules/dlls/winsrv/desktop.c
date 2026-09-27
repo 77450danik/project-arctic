@@ -103,19 +103,41 @@ static BOOL CALLBACK bring_window_on_screen( HWND hwnd, LPARAM param )
     return TRUE;
 }
 
-static int monitor_count;
+static WCHAR monitor_set[1024];
+
+/* the monitors the desktop stands on, each by its id: a monitor that took the
+ * place of another (the display moved to another card) is a new one too */
+static void read_monitor_set( WCHAR *set, SIZE_T size )
+{
+    DISPLAY_DEVICEW adapter = { .cb = sizeof(adapter) }, monitor = { .cb = sizeof(monitor) };
+    SIZE_T len = 0;
+
+    set[0] = 0;
+    for (DWORD i = 0; EnumDisplayDevicesW( NULL, i, &adapter, 0 ); i++)
+    {
+        for (DWORD j = 0; EnumDisplayDevicesW( adapter.DeviceName, j, &monitor, 0 ); j++)
+        {
+            if (!(monitor.StateFlags & DISPLAY_DEVICE_ACTIVE)) continue;
+            len += swprintf( set + len, size - len, L"%s;", monitor.DeviceID );
+            if (len >= size - 1) return;
+        }
+    }
+}
 
 /* The desktop has just changed size or shape. win32u tells the programs
- * itself when one of them asked for it; a monitor plugged in or unplugged
- * comes from the display driver, and then this is the only place that knows. */
+ * itself when one of them asked for it; a monitor plugged in, unplugged or
+ * replaced comes from the display driver, and then this is the only place
+ * that knows. */
 static void display_changed(void)
 {
     int count = GetSystemMetrics( SM_CMONITORS );
     DEVMODEW mode = { .dmSize = sizeof(mode) };
+    WCHAR set[ARRAY_SIZE(monitor_set)];
 
     EnumWindows( bring_window_on_screen, 0 );
-    if (count == monitor_count) return;
-    monitor_count = count;
+    read_monitor_set( set, ARRAY_SIZE(set) );
+    if (!wcscmp( set, monitor_set )) return;
+    wcscpy( monitor_set, set );
     ClipCursor( NULL );
 
     if (!EnumDisplaySettingsExW( NULL, ENUM_CURRENT_SETTINGS, &mode, 0 )) return;
@@ -274,7 +296,7 @@ NTSTATUS WINAPI UserServerDllInitialization( void *server_dll )
                   GetSystemMetrics( SM_CXVIRTUALSCREEN ), GetSystemMetrics( SM_CYVIRTUALSCREEN ), SWP_SHOWWINDOW );
     ClipCursor( NULL );
     SetCursorPos( GetSystemMetrics( SM_CXSCREEN ) / 2, GetSystemMetrics( SM_CYSCREEN ) / 2 );
-    monitor_count = GetSystemMetrics( SM_CMONITORS );
+    read_monitor_set( monitor_set, ARRAY_SIZE(monitor_set) );
     store_display_settings();
     if ((thread = CreateThread( NULL, 0, display_settings_restorer_thread, NULL, 0, NULL ))) CloseHandle( thread );
 
