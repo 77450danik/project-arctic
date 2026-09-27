@@ -112,7 +112,7 @@ struct output
 {
     struct kms_output *kms;                  /* NULL once it is unplugged */
     struct wl_global  *global;
-    struct wl_list     link;                 /* outputs, then dying_outputs */
+    struct wl_list     link;                 /* outputs, then parked_outputs or dying_outputs */
     struct wl_list     resources;            /* wl_output */
     struct wl_list     xdg_resources;        /* zxdg_output_v1 */
     uint32_t           expire;               /* when an unplugged monitor is let go */
@@ -127,6 +127,9 @@ static struct wl_list          all_surfaces;
 static struct wl_list          toplevels;
 static struct wl_list          outputs;      /* struct output */
 static struct wl_list          dying_outputs;  /* unplugged, until their clients let go */
+static struct wl_list          parked_outputs; /* of a card that went away, until the next one shows */
+static bool                    parking;      /* the card is being replaced */
+static uint32_t                parked_expire;  /* when the parked outputs go, 0 if not yet known */
 static uint32_t                background;   /* XRGB */
 static uint32_t               *shadow;       /* frame composed in RAM, then copied out */
 static RECT                    screen;       /* the virtual screen every monitor is placed in */
@@ -1503,6 +1506,15 @@ void compositor_output_removed( struct kms_output *o )
     if (!output) return;
     o->user = NULL;
     output->kms = NULL;
+    /* while the card is replaced the clients keep seeing the monitors they
+     * had: a desktop with no monitor at all is not something Windows has */
+    if (parking)
+    {
+        wl_list_remove( &output->link );
+        wl_list_insert( parked_outputs.prev, &output->link );
+        damage();
+        return;
+    }
     if (output->global) wl_global_remove( output->global );
     output->expire = now_ms() + 3000;
     wl_list_remove( &output->link );
@@ -1514,6 +1526,18 @@ static void reap_outputs(void)
 {
     struct wl_resource *resource, *next_resource;
     struct output *output, *next;
+
+    if (parked_expire && (int32_t)(now_ms() - parked_expire) >= 0)
+    {
+        parked_expire = 0;
+        wl_list_for_each_safe( output, next, &parked_outputs, link )
+        {
+            if (output->global) wl_global_remove( output->global );
+            output->expire = now_ms() + 3000;
+            wl_list_remove( &output->link );
+            wl_list_insert( dying_outputs.prev, &output->link );
+        }
+    }
 
     wl_list_for_each_safe( output, next, &dying_outputs, link )
     {
@@ -1601,6 +1625,11 @@ static bool apply_configuration( const struct dwm_output_config *configs, uint32
     update_globals();
     update_screen();
     wl_list_for_each( output, &outputs, link ) output_send_state( output, NULL );
+    /* the monitors of the new card are up: those of the old one go a moment
+     * later, once the clients have taken the new ones in, the way a monitor
+     * unplugged next to another goes */
+    if (!wl_list_empty( &parked_outputs ) && !wl_list_empty( &outputs ) && !parked_expire)
+        parked_expire = now_ms() + 1000;
     if (persist) pending_events |= DWM_EVENT_SAVE;
     damage();
     return true;
@@ -1732,9 +1761,58 @@ static void bind_display( struct wl_client *client, void *data, uint32_t version
  *          Unix calls
  */
 
+static struct wl_event_source *kms_source, *switch_timer;
+static int switch_attempts;
+
+/* The card that shows the desktop changed: a GPU driver took the screen over
+ * from simpledrm after dwm started, the way Windows moves from the basic
+ * display adapter to the card's own driver without a restart. A new card
+ * needs a moment before udev lets us open it and its monitors are probed. */
+static int switch_card( void *data )
+{
+    if (kms.fd >= 0) return 0;
+    if (!kms_reopen())
+    {
+        if (++switch_attempts < 40) wl_event_source_timer_update( switch_timer, 250 );
+        else ERR( "no display card to go on with\n" );
+        return 0;
+    }
+    switch_attempts = 0;
+    kms_source = wl_event_loop_add_fd( wl_display_get_event_loop( display ), kms.fd, WL_EVENT_READABLE,
+                                       kms_event, NULL );
+    set_cursor_image();
+    /* the Windows side gives the monitors of the new card their modes */
+    update_globals();
+    update_screen();
+    pending_events |= DWM_EVENT_HOTPLUG;
+    damage();
+    return 0;
+}
+
 static int hotplug_event( int fd, uint32_t mask, void *data )
 {
-    if (!kms_hotplug_event( fd )) return 0;
+    switch (kms_hotplug_event( fd ))
+    {
+    case KMS_EVENT_NONE:
+        return 0;
+    case KMS_EVENT_CARD_GONE:
+        if (kms_source) wl_event_source_remove( kms_source );
+        kms_source = NULL;
+        parking = true;
+        kms_close();
+        parking = false;
+        /* the card that replaces it may be there already */
+        /* fall through */
+    case KMS_EVENT_CARD_ADDED:
+        if (kms.fd < 0)
+        {
+            switch_attempts = 0;
+            wl_event_source_timer_update( switch_timer, 250 );
+        }
+        return 0;
+    case KMS_EVENT_MONITORS:
+        break;
+    }
     if (!kms_probe()) return 0;
 
     /* a monitor that went stops showing at once; a new one waits for the
@@ -1762,6 +1840,7 @@ static NTSTATUS dwm_start( void *args )
     wl_list_init( &toplevels );
     wl_list_init( &outputs );
     wl_list_init( &dying_outputs );
+    wl_list_init( &parked_outputs );
     if (!(display = wl_display_create())) return STATUS_UNSUCCESSFUL;
     wl_display_init_shm( display );
     wl_global_create( display, &wl_compositor_interface, 4, NULL, bind_compositor );
@@ -1781,7 +1860,8 @@ static NTSTATUS dwm_start( void *args )
     loop = wl_display_get_event_loop( display );
     frame_timer = wl_event_loop_add_timer( loop, frame_tick, NULL );
     wl_event_source_timer_update( frame_timer, 1 );
-    wl_event_loop_add_fd( loop, kms.fd, WL_EVENT_READABLE, kms_event, NULL );
+    kms_source = wl_event_loop_add_fd( loop, kms.fd, WL_EVENT_READABLE, kms_event, NULL );
+    switch_timer = wl_event_loop_add_timer( loop, switch_card, NULL );
     set_cursor_image();
     if ((hotplug = kms_hotplug_socket()) >= 0)
         wl_event_loop_add_fd( loop, hotplug, WL_EVENT_READABLE, hotplug_event, NULL );

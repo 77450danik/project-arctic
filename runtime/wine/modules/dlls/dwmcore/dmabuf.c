@@ -66,7 +66,7 @@ static size_t format_table_size;
 
 static void buffer_free( struct dmabuf *buffer )
 {
-    if (buffer->fb) kms_remove_dmabuf( buffer->fb );
+    if (buffer->fb && buffer->fb_generation == kms.generation) kms_remove_dmabuf( buffer->fb );
     if (buffer->map) munmap( buffer->map, buffer->map_size );
     close( buffer->fd );
     free( buffer );
@@ -138,6 +138,14 @@ bool dmabuf_read( struct dmabuf *buffer, uint32_t *pixels )
 
 uint32_t dmabuf_fb( struct dmabuf *buffer )
 {
+    /* made on a card that is gone: this one tries afresh */
+    if (buffer->fb_generation != kms.generation)
+    {
+        buffer->fb = 0;
+        buffer->fb_failed = false;
+        buffer->scanout_tested = 0;
+        buffer->fb_generation = kms.generation;
+    }
     if (!buffer->fb && !buffer->fb_failed)
     {
         buffer->fb = kms_add_dmabuf( buffer->fd, buffer->width, buffer->height, buffer->format, buffer->offset,

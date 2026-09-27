@@ -1188,21 +1188,48 @@ int kms_hotplug_socket(void)
 
 /* "change@/devices/.../drm/card1" SUBSYSTEM=drm ACTION=change DEVNAME=dri/card1.
  * A monitor plugged in or out comes with HOTPLUG=1, but not every driver
- * says so, and rereading the connectors of our own card costs little. */
-bool kms_hotplug_event( int fd )
+ * says so, and rereading the connectors of our own card costs little. A card
+ * that comes or goes is a GPU driver taking the screen over from simpledrm. */
+enum kms_event kms_hotplug_event( int fd )
 {
-    const char *card = kms.name + strlen( "/dev/" );
-    bool drm = false, change = false, ours = false;
-    char buffer[4096];
+    const char *card = kms.fd >= 0 ? kms.name + strlen( "/dev/" ) : "";
+    bool drm = false, ours = false, is_card = false;
+    char buffer[4096], action[16] = "";
     ssize_t len;
 
-    if ((len = recv( fd, buffer, sizeof(buffer) - 1, 0 )) <= 0) return false;
+    if ((len = recv( fd, buffer, sizeof(buffer) - 1, 0 )) <= 0) return KMS_EVENT_NONE;
     buffer[len] = 0;
     for (char *p = buffer; p < buffer + len; p += strlen( p ) + 1)
     {
         if (!strcmp( p, "SUBSYSTEM=drm" )) drm = true;
-        else if (!strncmp( p, "ACTION=", 7 )) change = !strcmp( p + 7, "change" );
-        else if (!strncmp( p, "DEVNAME=", 8 ) && !strcmp( p + 8, card )) ours = true;
+        else if (!strncmp( p, "ACTION=", 7 )) snprintf( action, sizeof(action), "%s", p + 7 );
+        else if (!strncmp( p, "DEVNAME=dri/card", 16 ))
+        {
+            is_card = true;
+            ours = !strcmp( p + 8, card );
+        }
     }
-    return drm && change && ours;
+    if (!drm || !is_card) return KMS_EVENT_NONE;
+    if (!strcmp( action, "change" )) return ours ? KMS_EVENT_MONITORS : KMS_EVENT_NONE;
+    if (!strcmp( action, "remove" )) return ours ? KMS_EVENT_CARD_GONE : KMS_EVENT_NONE;
+    if (!strcmp( action, "add" )) return KMS_EVENT_CARD_ADDED;
+    return KMS_EVENT_NONE;
+}
+
+/* Our card is gone: its monitors are let go and nothing more is sent to it */
+void kms_close(void)
+{
+    MESSAGE( "dwm: %s went away\n", kms.name );
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+        if (kms.outputs[i].connector_id) free_output( &kms.outputs[i] );
+    memset( imported, 0, sizeof(imported) );
+    cursor.handle = 0;
+    close( kms.fd );
+    kms.fd = -1;
+    kms.generation++;
+}
+
+bool kms_reopen(void)
+{
+    return try_cards( false );
 }

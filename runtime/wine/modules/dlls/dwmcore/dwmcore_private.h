@@ -87,6 +87,8 @@ struct kms_card
     uint8_t           revision;
     uint64_t          devnum;              /* dev_t of the card node */
     bool              atomic;              /* atomic modesetting: page flips of any buffer, VRR */
+    uint32_t          generation;          /* counts the cards dwm has driven: framebuffers of an
+                                            * earlier one mean nothing to this one */
     uint32_t          crtcs[32];
     uint32_t          crtc_count;
     struct kms_output outputs[KMS_MAX_OUTPUTS];
@@ -101,7 +103,16 @@ bool kms_probe(void);                 /* rereads the connectors; true if monitor
 bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool test );
 void kms_flush( struct kms_output *output );  /* after drawing: shadow-buffered drivers copy only on this */
 int  kms_hotplug_socket(void);        /* kernel uevents, -1 if none */
-bool kms_hotplug_event( int fd );     /* reads one; true if it was a display hotplug */
+enum kms_event
+{
+    KMS_EVENT_NONE,
+    KMS_EVENT_MONITORS,               /* monitors of our card may have come or gone */
+    KMS_EVENT_CARD_GONE,              /* our card is no more */
+    KMS_EVENT_CARD_ADDED,             /* a card came */
+};
+enum kms_event kms_hotplug_event( int fd );  /* reads one */
+void kms_close(void);
+bool kms_reopen(void);                /* the best card there is now, once */
 struct kms_mode *kms_find_mode( struct kms_output *output, uint32_t width, uint32_t height, uint32_t refresh );
 
 /* Frames. kms_present queues a flip to fb, showing src_width x src_height of
@@ -144,6 +155,7 @@ struct dmabuf
     uint64_t            modifier;
     bool                alpha;
     uint32_t            fb;                /* as a framebuffer, 0 until needed */
+    uint32_t            fb_generation;     /* of the card it was made on */
     bool                fb_failed;         /* the card cannot take it */
     uint32_t            scanout_tested;    /* CRTC it was tried on, 0 if none */
     bool                scanout_ok;
