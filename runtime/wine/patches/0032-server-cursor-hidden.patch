@@ -1,0 +1,75 @@
+From 72b3464f6de5cc23bb3638f07ab57051f2c6d751 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 27 Sep 2026 13:46:46 +0300
+Subject: [PATCH] server: Tell the compositor whether the cursor is hidden.
+
+get_composition_list says whether the thread that owns the window under
+the cursor hides it (a negative ShowCursor count or no cursor set), as
+win32k decides it. dwm.exe then leaves the pointer out, so a full screen
+game that hides it does not get an arrow drawn over it.
+---
+ server/protocol.def | 1 +
+ server/queue.c      | 9 +++++++++
+ server/user.h       | 1 +
+ server/window.c     | 1 +
+ 4 files changed, 12 insertions(+)
+
+diff --git a/server/protocol.def b/server/protocol.def
+index ce15491..e4228e6 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2818,6 +2818,7 @@ enum message_type
+     int            count;         /* total count of toplevel windows */
+     int            cursor_x;      /* cursor position, in screen coordinates */
+     int            cursor_y;
++    int            cursor_hidden; /* the window under the cursor hides it (ShowCursor, SetCursor(NULL)) */
+     VARARG(windows,composition_windows); /* windows, topmost first */
+ @END
+ 
+diff --git a/server/queue.c b/server/queue.c
+index fedcba1..a53711e 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -504,6 +504,15 @@ static struct thread_input *get_desktop_cursor_thread_input( struct desktop *des
+     return input;
+ }
+ 
++/* whether the thread that owns the window under the cursor hides it, the way
++ * win32k decides whether the pointer shows */
++int is_desktop_cursor_hidden( struct desktop *desktop )
++{
++    struct thread_input *input = get_desktop_cursor_thread_input( desktop );
++
++    return input && (input->shared->cursor_count < 0 || !input->shared->cursor);
++}
++
+ static int update_desktop_cursor_window( struct desktop *desktop, user_handle_t win )
+ {
+     int updated = win != desktop->cursor_win;
+diff --git a/server/user.h b/server/user.h
+index a3c2e72..50c8984 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -122,6 +122,7 @@ extern void queue_cleanup_window( struct thread *thread, user_handle_t win );
+ extern int init_thread_queue( struct thread *thread );
+ extern void attach_thread_input( struct msg_queue *queue_from, struct msg_queue *queue_to );
+ extern void detach_thread_input( struct msg_queue *queue_from, struct msg_queue *queue_to, struct desktop *desktop );
++extern int is_desktop_cursor_hidden( struct desktop *desktop );
+ extern void set_clip_rectangle( struct desktop *desktop, const struct rectangle *rect,
+                                 unsigned int flags, int reset );
+ extern void update_cursor_pos( struct desktop *desktop );
+diff --git a/server/window.c b/server/window.c
+index 569a59a..2bd3b9c 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -2775,6 +2775,7 @@ DECL_HANDLER(get_composition_list)
+     reply->serial   = desktop->shared->composition_serial;
+     reply->cursor_x = desktop->shared->cursor.x;
+     reply->cursor_y = desktop->shared->cursor.y;
++    reply->cursor_hidden = is_desktop_cursor_hidden( desktop );
+     if (desktop->top_window)
+     {
+         LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry ) count++;
+-- 
+2.55.0
+
