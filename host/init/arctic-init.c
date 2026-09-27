@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/klog.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
@@ -118,6 +119,9 @@ static char *const nt_env[] = {
     "LOGNAME=User",
     "LANG=uk_UA.UTF-8",
     "PATH=/usr/bin",
+    /* games see an NVIDIA card as one (NVAPI, DLSS), not as the AMD card
+     * DXVK would otherwise make of it */
+    "DXVK_ENABLE_NVAPI=1",
     winedebug,
     "XDG_RUNTIME_DIR=" PREFIX "/xdg",
     "WAYLAND_DISPLAY=" WAYLAND_SOCKET,
@@ -152,6 +156,204 @@ static pid_t spawn(char *const argv[], int as_nt, int out)
     _exit(127);
 }
 
+/* Logs on the boot stick. A live system keeps C: in memory, so what went
+ * wrong on a PC is also kept where it can be read afterwards on any
+ * computer: arctic\logs on the stick, rewritten every half minute and
+ * before the power goes. A medium that cannot be written (a disc) keeps
+ * none. */
+#define MEDIUM "/run/arctic/media"
+#define MEDIUM_LOGS MEDIUM "/arctic/logs"
+
+static int medium_writable = -1; /* not tried yet */
+
+static void write_whole(const char *path, const char *data, size_t len)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+
+    if (fd < 0)
+        return;
+    while (len) {
+        ssize_t n = write(fd, data, len);
+        if (n <= 0)
+            break;
+        data += n;
+        len -= (size_t)n;
+    }
+    fsync(fd);
+    close(fd);
+}
+
+/* the last max bytes of a file, once it changed since the last copy */
+static void copy_tail(const char *from, const char *to, off_t max, off_t *copied)
+{
+    struct stat st;
+    char *data;
+    int fd;
+
+    if (stat(from, &st) || st.st_size == *copied)
+        return;
+    off_t start = st.st_size > max ? st.st_size - max : 0;
+    size_t len = (size_t)(st.st_size - start);
+    if ((fd = open(from, O_RDONLY | O_CLOEXEC)) < 0)
+        return;
+    if ((data = malloc(len ? len : 1)) && pread(fd, data, len, start) == (ssize_t)len) {
+        write_whole(to, data, len);
+        *copied = st.st_size;
+    }
+    free(data);
+    close(fd);
+}
+
+static void write_kernel_log(void)
+{
+    int size = klogctl(10 /* SYSLOG_ACTION_SIZE_BUFFER */, NULL, 0);
+    char *data;
+
+    if (size <= 0 || !(data = malloc((size_t)size)))
+        return;
+    if ((size = klogctl(3 /* SYSLOG_ACTION_READ_ALL */, data, size)) > 0)
+        write_whole(MEDIUM_LOGS "/kernel.log", data, (size_t)size);
+    free(data);
+}
+
+static void append(char **text, size_t *len, const char *fmt, ...)
+{
+    char line[1024];
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n <= 0)
+        return;
+    if (n >= (int)sizeof(line))
+        n = sizeof(line) - 1;
+    char *grown = realloc(*text, *len + (size_t)n + 1);
+    if (!grown)
+        return;
+    memcpy(grown + *len, line, (size_t)n + 1);
+    *text = grown;
+    *len += (size_t)n;
+}
+
+static void read_line(const char *path, char *buf, size_t size)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    ssize_t n = fd >= 0 ? read(fd, buf, size - 1) : -1;
+
+    if (fd >= 0)
+        close(fd);
+    buf[n > 0 ? n : 0] = 0;
+    buf[strcspn(buf, "\n")] = 0;
+}
+
+static void link_name(const char *path, char *buf, size_t size)
+{
+    char target[PATH_MAX];
+    ssize_t n = readlink(path, target, sizeof(target) - 1);
+
+    if (n <= 0) {
+        snprintf(buf, size, "-");
+        return;
+    }
+    target[n] = 0;
+    snprintf(buf, size, "%s", strrchr(target, '/') ? strrchr(target, '/') + 1 : target);
+}
+
+/* The PCI devices with their drivers, the display cards and their outputs:
+ * what the PC has and what took it */
+static void write_hardware(void)
+{
+    char *text = NULL, a[256], b[256], c[256], d[256], e[64], path[PATH_MAX];
+    size_t len = 0;
+    DIR *dir;
+
+    read_line("/proc/sys/kernel/osrelease", a, sizeof(a));
+    read_line("/proc/cmdline", b, sizeof(b));
+    append(&text, &len, "kernel %s\ncmdline %s\n\nPCI devices (vendor:device subsystem rev class driver)\n", a, b);
+    if ((dir = opendir("/sys/bus/pci/devices"))) {
+        for (struct dirent *de; (de = readdir(dir));) {
+            if (de->d_name[0] == '.')
+                continue;
+#define PCI_FILE(buf, name) \
+            snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/" name, de->d_name); \
+            read_line(path, buf, sizeof(buf))
+            PCI_FILE(a, "vendor");
+            PCI_FILE(b, "device");
+            PCI_FILE(c, "subsystem_vendor");
+            PCI_FILE(d, "subsystem_device");
+            PCI_FILE(e, "revision");
+            snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", de->d_name);
+            char class[32], driver[64];
+            read_line(path, class, sizeof(class));
+            snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/driver", de->d_name);
+            link_name(path, driver, sizeof(driver));
+            append(&text, &len, "%s %s:%s %s:%s %s %s %s\n", de->d_name, a + 2, b + 2, c + 2, d + 2, e + 2,
+                   class + 2, driver);
+#undef PCI_FILE
+        }
+        closedir(dir);
+    }
+
+    append(&text, &len, "\nDisplay (card, output, status, first mode)\n");
+    if ((dir = opendir("/sys/class/drm"))) {
+        for (struct dirent *de; (de = readdir(dir));) {
+            if (strncmp(de->d_name, "card", 4))
+                continue;
+            if (!strchr(de->d_name, '-')) {
+                snprintf(path, sizeof(path), "/sys/class/drm/%s/device/driver", de->d_name);
+                link_name(path, a, sizeof(a));
+                snprintf(path, sizeof(path), "/sys/class/drm/%s/device/boot_vga", de->d_name);
+                read_line(path, b, sizeof(b));
+                append(&text, &len, "%s driver %s boot_vga %s\n", de->d_name, a, b[0] ? b : "-");
+                continue;
+            }
+            snprintf(path, sizeof(path), "/sys/class/drm/%s/status", de->d_name);
+            read_line(path, a, sizeof(a));
+            snprintf(path, sizeof(path), "/sys/class/drm/%s/modes", de->d_name);
+            read_line(path, b, sizeof(b));
+            append(&text, &len, "%s %s %s\n", de->d_name, a, b[0] ? b : "-");
+        }
+        closedir(dir);
+    }
+
+    append(&text, &len, "\nModules\n");
+    if ((dir = opendir("/sys/module"))) {
+        for (struct dirent *de; (de = readdir(dir));) {
+            snprintf(path, sizeof(path), "/sys/module/%s/initstate", de->d_name);
+            if (!access(path, F_OK))
+                append(&text, &len, "%s\n", de->d_name);
+        }
+        closedir(dir);
+    }
+    if (text)
+        write_whole(MEDIUM_LOGS "/hardware.txt", text, len);
+    free(text);
+}
+
+static void save_logs(void)
+{
+    static off_t host_copied = -1, nt_copied = -1;
+    static int hardware_written;
+
+    if (medium_writable < 0) {
+        medium_writable = !mount(NULL, MEDIUM, NULL, MS_REMOUNT | MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
+        if (medium_writable && mkdir(MEDIUM_LOGS, 0755) && errno != EEXIST)
+            medium_writable = 0;
+        say("logs on the boot medium: %s", medium_writable ? MEDIUM_LOGS : "no, it cannot be written");
+    }
+    if (!medium_writable)
+        return;
+    if (!hardware_written) {
+        write_hardware();
+        hardware_written = 1;
+    }
+    write_kernel_log();
+    copy_tail(LOG_DIR "/host.log", MEDIUM_LOGS "/host.log", 4 << 20, &host_copied);
+    copy_tail(LOG_DIR "/nt.log", MEDIUM_LOGS "/nt.log", 16 << 20, &nt_copied);
+}
+
 /* The session asked for it (winlogon.exe): every process goes, then the machine */
 static void power_off(int restart)
 {
@@ -160,6 +362,9 @@ static void power_off(int restart)
     sleep(2);
     kill(-1, SIGKILL);
     sync();
+    save_logs();
+    if (medium_writable > 0)
+        mount(NULL, MEDIUM, NULL, MS_REMOUNT | MS_RDONLY, NULL);
     /* the other drives are written out whole before the power goes */
     DIR *drives = opendir("/run/arctic/drives");
     for (struct dirent *de; drives && (de = readdir(drives));) {
@@ -653,7 +858,7 @@ int main(void)
         }
     }
 
-    for (;;) {
+    for (unsigned int tick = 0;; tick++) {
         int status;
         pid_t r;
 
@@ -663,6 +868,9 @@ int main(void)
             start_shell();
         mirror_ntlog();
         serve_ejects();
+        /* the first copy once the desktop had time to come, then every half minute */
+        if (tick % 150 == 75)
+            save_logs();
         usleep(200000);
     }
 }
