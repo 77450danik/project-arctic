@@ -1,0 +1,18 @@
+REGEDIT4
+
+; Direct3D and DXGI are the DLLs in System32 (DXVK, vkd3d-proton), not Wine's
+[HKEY_CURRENT_USER\Software\Wine\DllOverrides]
+"d3d8"="native,builtin"
+"d3d9"="native,builtin"
+"d3d10core"="native,builtin"
+"d3d11"="native,builtin"
+"dxgi"="native,builtin"
+"d3d12"="native,builtin"
+"d3d12core"="native,builtin"
+"nvapi"="native"
+"nvapi64"="native"
+"nvofapi64"="native"
+
+; DLSS: NVIDIA's own NGX core, from its driver, in System32
+[HKEY_LOCAL_MACHINE\SOFTWARE\NVIDIA Corporation\Global\NGXCore]
+"FullPath"="C:\\Windows\\System32"

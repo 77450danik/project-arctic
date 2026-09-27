@@ -113,6 +113,22 @@ EOF
     timeout 900 arch-chroot "$RFS" /usr/bin/busybox sh /var/tmp/register.sh
 fi
 
+# Direct3D 8-12 on Vulkan and NVAPI as System32 / SysWOW64 DLLs
+# (runtime/manifest.txt), and NVIDIA's DLSS core from its driver
+GFX=$(mktemp -d)
+while read -r name url sum; do
+    case "$name" in ''|'#'*) continue ;; esac
+    curl -fL --retry 5 -o "$GFX/$name.pkg" "$url"
+    echo "$sum  $GFX/$name.pkg" | sha256sum -c -
+    mkdir -p "$GFX/$name"
+    tar xf "$GFX/$name.pkg" -C "$GFX/$name"
+    find "$GFX/$name" -path '*/x64/*.dll' -exec cp {} "$PFX/drive_c/windows/system32/" \;
+    find "$GFX/$name" \( -path '*/x32/*.dll' -o -path '*/x86/*.dll' \) -exec cp {} "$PFX/drive_c/windows/syswow64/" \;
+done < "$ROOT/runtime/manifest.txt"
+rm -rf "$GFX"
+ls -l "$PFX"/drive_c/windows/system32/{d3d9,d3d11,dxgi,d3d12,d3d12core,nvapi64}.dll
+cp "$RFS"/usr/lib/nvidia/wine/*.dll "$PFX/drive_c/windows/system32/" 2>/dev/null || true
+
 mkdir -p "$PFX/drive_c/windows/system32/config"
 cp "$PFX/system.reg" "$PFX/user.reg" "$PFX/userdef.reg" "$PFX/.update-timestamp" "$PFX/drive_c/windows/system32/config/"
 mv "$PFX" "$OUT/prefix"
