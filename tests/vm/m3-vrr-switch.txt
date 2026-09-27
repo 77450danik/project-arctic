@@ -1,0 +1,11 @@
+# The variable refresh switch of the Display settings, after m2-display.txt.
+# Shown only for a monitor that takes it: in QEMU the test marks it so first
+# (VariableRefreshCapable=1 in its key of the monitor data store).
+move 48 385
+click                         # Змінна частота оновлення: off
+sleep 1
+shot v1-unchecked             # Застосувати wakes up
+move 364 440
+click                         # Застосувати
+sleep 2
+shot v2-applied
