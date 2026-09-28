@@ -13,7 +13,10 @@ SUDO=sudo
 command -v mkntfs >/dev/null || $SUDO apt-get install -y -qq ntfs-3g >/dev/null
 
 used=$($SUDO du -sm "$DRIVE_C" | cut -f1)
-size=$((used * 13 / 10 + 512))
+# Room for programs installed in a session, the Steam client among them (its
+# CEF alone unpacks to about 1 GB). The empty part costs nothing: squashfs
+# keeps it sparse, and what is written goes to zram.
+size=$((used * 13 / 10 + 3072))
 $SUDO rm -f "$IMG"
 $SUDO truncate -s "${size}M" "$IMG"
 $SUDO mkntfs -F -Q -q -L ARCTIC -s 4096 -c 4096 "$IMG"
