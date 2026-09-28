@@ -270,11 +270,12 @@ EnumDisplayDevices / EnumDisplaySettingsEx
 ### 3.8 Мережа
 
 - **Сокети:** `ws2_32` → Linux-сокети напряму. TCP/IP-стек ядра відіграє роль tcpip.sys.
-- **Адреси:** служба `Dhcp` (PE, свій DHCP-клієнт) для Ethernet і Wi-Fi. Адреси й маршрути
-  через netlink застосовує hostd. DNS: `Dnscache`, а hostd пише `resolv.conf`.
-- **Wi-Fi:** `wlanapi.dll` + служба `Wlansvc` → iwd (D-Bus) → nl80211. Профілі збережених мереж
+- **Адреси:** на кабелі — udhcpc від arctic-init, на Wi-Fi — iwd; DNS збирає свій `resolvconf`
+  у `resolv.conf` (служби `Dhcp`/`Dnscache` на PE-боці — пізніше, якщо знадобляться).
+- **Wi-Fi:** `wlanapi.dll` → iwd (D-Bus) → nl80211. Профілі збережених мереж
   зберігаються як WLAN-профілі в реєстрі Windows; iwd лише асоціюється і робить WPA-рукостискання.
-- **Інтерфейс:** `ncpa.cpl` (netshell з ReactOS), іконка мережі в треї зі списком Wi-Fi (пишемо свою).
+- **Інтерфейс:** значок мережі в треї — свій `pnidui.dll` (Windows 7), папка «Мережні підключення»
+  — netshell з ReactOS (Windows XP). Деталі — `docs/M5-network.md`.
 - **NLA** (`netprofm`) повідомляє програмам, чи є інтернет.
 
 ### 3.9 Пристрої, диски, Windows-драйвери

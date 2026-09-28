@@ -8,3 +8,8 @@ REGEDIT4
 [HKEY_CLASSES_ROOT\CLSID\{7007ACCF-3202-11D1-AAD2-00805FC1270E}\InProcServer32]
 @="C:\\Windows\\System32\\pnidui.dll"
 "ThreadingModel"="Apartment"
+
+; Start > Settings > Network Connections opens as a menu of the connections,
+; like Connect To on Windows XP: a wireless one lists the networks in range
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced]
+"CascadeNetworkConnections"=dword:00000001
