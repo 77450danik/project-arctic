@@ -129,6 +129,104 @@ static char *const nt_env[] = {
 };
 static char *const host_env[] = {"PATH=/usr/bin", "LANG=C.UTF-8", NULL};
 
+static pid_t spawn(char *const argv[], int as_nt, int out);
+
+/* Networking. Wired interfaces get an address by DHCP as they come, the way
+ * Windows sets up an Ethernet port by itself: one busybox udhcpc each,
+ * started again if it ends. Wi-Fi belongs to iwd, which the Windows side
+ * (wlanapi.dll) tells what to join over the system bus. */
+static pid_t dbus_pid, iwd_pid;
+static struct {
+    char name[32];
+    pid_t pid;
+} wired[8];
+
+static void network_child_exited(pid_t pid)
+{
+    if (pid == dbus_pid) {
+        say("dbus-daemon exited");
+        dbus_pid = 0;
+    } else if (pid == iwd_pid) {
+        say("iwd exited");
+        iwd_pid = 0;
+    }
+    for (int i = 0; i < (int)(sizeof(wired) / sizeof(wired[0])); i++)
+        if (wired[i].pid == pid)
+            wired[i].pid = 0;
+}
+
+/* a real wired port: Ethernet, on a device, not Wi-Fi */
+static int is_wired(const char *name)
+{
+    char path[PATH_MAX], text[16] = "";
+    int fd;
+
+    snprintf(path, sizeof(path), "/sys/class/net/%s/wireless", name);
+    if (!access(path, F_OK))
+        return 0;
+    snprintf(path, sizeof(path), "/sys/class/net/%s/device", name);
+    if (access(path, F_OK))
+        return 0;
+    snprintf(path, sizeof(path), "/sys/class/net/%s/type", name);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) >= 0) {
+        if (read(fd, text, sizeof(text) - 1) < 0)
+            text[0] = 0;
+        close(fd);
+    }
+    return atoi(text) == 1; /* ARPHRD_ETHER */
+}
+
+static void serve_wired(void)
+{
+    DIR *dir = opendir("/sys/class/net");
+    struct dirent *de;
+
+    while (dir && (de = readdir(dir))) {
+        int i, slot = -1;
+
+        if (de->d_name[0] == '.' || strlen(de->d_name) >= sizeof(wired[0].name) || !is_wired(de->d_name))
+            continue;
+        for (i = 0; i < (int)(sizeof(wired) / sizeof(wired[0])); i++) {
+            if (!strcmp(wired[i].name, de->d_name))
+                break;
+            if (slot < 0 && !wired[i].name[0])
+                slot = i;
+        }
+        if (i < (int)(sizeof(wired) / sizeof(wired[0])))
+            slot = i;
+        if (slot < 0 || wired[slot].pid)
+            continue;
+        snprintf(wired[slot].name, sizeof(wired[slot].name), "%s", de->d_name);
+        char *udhcpc[] = {"/usr/bin/busybox", "udhcpc", "-f", "-S", "-R", "-i", wired[slot].name,
+                          "-s", "/usr/lib/arctic/udhcpc.script", "-x", "hostname:arctic", NULL};
+        wired[slot].pid = spawn(udhcpc, 0, hostlog);
+        say("wired network %s: DHCP", wired[slot].name);
+    }
+    if (dir)
+        closedir(dir);
+}
+
+static void start_network(void)
+{
+    char *dbus[] = {"/usr/bin/dbus-daemon", "--system", "--nofork", "--nopidfile", NULL};
+    char *iwd[] = {"/usr/lib/iwd/iwd", NULL};
+
+    mkdir("/run/dbus", 0755);
+    mkdir("/run/arctic/resolv.d", 0755);
+    /* the networks iwd knows live as long as the session; Windows keeps the profiles */
+    mkdir("/run/arctic/iwd", 0700);
+    /* wlanapi.dll hands iwd the key of a network as a file there */
+    if (chown("/run/arctic/iwd", nt_uid, nt_gid))
+        say("iwd state folder: %s", strerror(errno));
+    if (mount("/run/arctic/iwd", "/var/lib/iwd", NULL, MS_BIND, NULL))
+        say("no state folder for iwd: %s", strerror(errno));
+    dbus_pid = spawn(dbus, 0, hostlog);
+    for (int i = 0; i < 100 && access("/run/dbus/system_bus_socket", F_OK); i++)
+        usleep(50000);
+    iwd_pid = spawn(iwd, 0, hostlog);
+    serve_wired();
+}
+
 static pid_t spawn(char *const argv[], int as_nt, int out)
 {
     pid_t pid = fork();
@@ -407,6 +505,8 @@ static void child_exited(pid_t pid, int status)
         udevd_pid = 0;
     } else if (pid == shell_pid) {
         shell_pid = 0;
+    } else {
+        network_child_exited(pid);
     }
 }
 
@@ -803,6 +903,7 @@ int main(void)
     run(trig_dev, 0, hostlog, 60);
     run(settle, 0, hostlog, 90);
     splash = redraw_logo(splash);
+    start_network();
 
     /* The NT world */
     prepare_nt();
@@ -871,6 +972,9 @@ int main(void)
         /* the first copy once the desktop had time to come, then every half minute */
         if (tick % 150 == 75)
             save_logs();
+        /* a USB network adapter plugged in, a udhcpc that ended */
+        if (tick % 10 == 0)
+            serve_wired();
         usleep(200000);
     }
 }

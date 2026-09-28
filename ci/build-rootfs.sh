@@ -43,6 +43,14 @@ INIT_SRC=("$ROOT"/host/init/{splash,screen,stop}.c)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"
+# Networking: name servers of every interface in one resolv.conf on /run
+# (iwd and the wired DHCP script call resolvconf), names resolved by glibc
+gcc -O2 -Wall -o "$RFS/usr/bin/resolvconf" "$ROOT/host/init/arctic-resolv.c"
+chmod 755 "$RFS/usr/lib/arctic/udhcpc.script"
+ln -sf /run/arctic/resolv.conf "$RFS/etc/resolv.conf"
+sed -i 's/^hosts:.*/hosts: files dns/' "$RFS/etc/nsswitch.conf"
+mkdir -p "$RFS/var/lib/iwd"
+tr -d '-' < /proc/sys/kernel/random/uuid > "$RFS/etc/machine-id"
 mkdir -p "$OUT/initrd/dev" "$OUT/initrd/proc" "$OUT/initrd/sys"
 gcc -static -Os -Wall -o "$OUT/initrd/init" "$ROOT/host/init/initrd-init.c" "${INIT_SRC[@]}"
 mknod -m 600 "$OUT/initrd/dev/console" c 5 1
@@ -105,7 +113,7 @@ set -e
 # what it writes does not depend on the locale
 export WINEPREFIX=/var/tmp/prefix HOME=/var/tmp/home USER=User LOGNAME=User LANG=C
 export WINEDEBUG=-all
-for dll in shell32 browseui shdocvw shlwapi comctl32 uxtheme zipfldr stobject; do
+for dll in shell32 browseui shdocvw shlwapi comctl32 uxtheme zipfldr stobject netshell; do
     timeout 120 wine regsvr32.exe /s "$dll.dll" || echo "regsvr32 $dll: $?"
 done
 wineserver -w

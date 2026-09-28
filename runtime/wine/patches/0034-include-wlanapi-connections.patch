@@ -1,0 +1,106 @@
+From b4da07106aadf9703798b5b53deb32131516557a Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 28 Sep 2026 14:05:08 +0300
+Subject: [PATCH] include: Add the connection and profile parts of the WLAN
+ API.
+
+WLAN_CONNECTION_PARAMETERS, WLAN_CONNECTION_ATTRIBUTES with its
+association and security attributes, the profile list, and WlanConnect,
+WlanDisconnect and the profile functions, as the Windows SDK has them.
+---
+ include/wlanapi.h | 78 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 78 insertions(+)
+
+diff --git a/include/wlanapi.h b/include/wlanapi.h
+index 5150ff0..bd9febd 100644
+--- a/include/wlanapi.h
++++ b/include/wlanapi.h
+@@ -244,7 +244,85 @@ typedef struct _WLAN_HOSTED_NETWORK_STATUS
+     WLAN_HOSTED_NETWORK_PEER_STATE PeerList[1];
+ } WLAN_HOSTED_NETWORK_STATUS, *PWLAN_HOSTED_NETWORK_STATUS;
+ 
++#define WLAN_MAX_NAME_LENGTH 256
++
++#define WLAN_AVAILABLE_NETWORK_CONNECTED   0x00000001
++#define WLAN_AVAILABLE_NETWORK_HAS_PROFILE 0x00000002
++
++#define WLAN_PROFILE_GROUP_POLICY 0x00000001
++#define WLAN_PROFILE_USER         0x00000002
++
++typedef enum _WLAN_CONNECTION_MODE
++{
++    wlan_connection_mode_profile = 0,
++    wlan_connection_mode_temporary_profile,
++    wlan_connection_mode_discovery_secure,
++    wlan_connection_mode_discovery_unsecure,
++    wlan_connection_mode_auto,
++    wlan_connection_mode_invalid
++} WLAN_CONNECTION_MODE, *PWLAN_CONNECTION_MODE;
++
++typedef struct _DOT11_BSSID_LIST DOT11_BSSID_LIST, *PDOT11_BSSID_LIST;
++
++typedef struct _WLAN_CONNECTION_PARAMETERS
++{
++    WLAN_CONNECTION_MODE wlanConnectionMode;
++    LPCWSTR strProfile;
++    DOT11_SSID *pDot11Ssid;
++    DOT11_BSSID_LIST *pDesiredBssidList;
++    DOT11_BSS_TYPE dot11BssType;
++    DWORD dwFlags;
++} WLAN_CONNECTION_PARAMETERS, *PWLAN_CONNECTION_PARAMETERS;
++
++typedef struct _WLAN_ASSOCIATION_ATTRIBUTES
++{
++    DOT11_SSID dot11Ssid;
++    DOT11_BSS_TYPE dot11BssType;
++    DOT11_MAC_ADDRESS dot11Bssid;
++    DOT11_PHY_TYPE dot11PhyType;
++    ULONG uDot11PhyIndex;
++    WLAN_SIGNAL_QUALITY wlanSignalQuality;
++    ULONG ulRxRate;
++    ULONG ulTxRate;
++} WLAN_ASSOCIATION_ATTRIBUTES, *PWLAN_ASSOCIATION_ATTRIBUTES;
++
++typedef struct _WLAN_SECURITY_ATTRIBUTES
++{
++    BOOL bSecurityEnabled;
++    BOOL bOneXEnabled;
++    DOT11_AUTH_ALGORITHM dot11AuthAlgorithm;
++    DOT11_CIPHER_ALGORITHM dot11CipherAlgorithm;
++} WLAN_SECURITY_ATTRIBUTES, *PWLAN_SECURITY_ATTRIBUTES;
++
++typedef struct _WLAN_CONNECTION_ATTRIBUTES
++{
++    WLAN_INTERFACE_STATE isState;
++    WLAN_CONNECTION_MODE wlanConnectionMode;
++    WCHAR strProfileName[WLAN_MAX_NAME_LENGTH];
++    WLAN_ASSOCIATION_ATTRIBUTES wlanAssociationAttributes;
++    WLAN_SECURITY_ATTRIBUTES wlanSecurityAttributes;
++} WLAN_CONNECTION_ATTRIBUTES, *PWLAN_CONNECTION_ATTRIBUTES;
++
++typedef struct _WLAN_PROFILE_INFO
++{
++    WCHAR strProfileName[WLAN_MAX_NAME_LENGTH];
++    DWORD dwFlags;
++} WLAN_PROFILE_INFO, *PWLAN_PROFILE_INFO;
++
++typedef struct _WLAN_PROFILE_INFO_LIST
++{
++    DWORD dwNumberOfItems;
++    DWORD dwIndex;
++    WLAN_PROFILE_INFO ProfileInfo[1];
++} WLAN_PROFILE_INFO_LIST, *PWLAN_PROFILE_INFO_LIST;
++
+ DWORD WINAPI WlanCloseHandle(HANDLE, void *);
++DWORD WINAPI WlanConnect(HANDLE, const GUID *, const WLAN_CONNECTION_PARAMETERS *, void *);
++DWORD WINAPI WlanDeleteProfile(HANDLE, const GUID *, const WCHAR *, void *);
++DWORD WINAPI WlanDisconnect(HANDLE, const GUID *, void *);
++DWORD WINAPI WlanGetProfile(HANDLE, const GUID *, const WCHAR *, void *, WCHAR **, DWORD *, DWORD *);
++DWORD WINAPI WlanGetProfileList(HANDLE, const GUID *, void *, WLAN_PROFILE_INFO_LIST **);
++DWORD WINAPI WlanSetProfile(HANDLE, const GUID *, DWORD, const WCHAR *, const WCHAR *, BOOL, void *, DWORD *);
+ DWORD WINAPI WlanEnumInterfaces(HANDLE, void *, WLAN_INTERFACE_INFO_LIST **);
+ DWORD WINAPI WlanOpenHandle(DWORD, void *, DWORD *, HANDLE *);
+ void WINAPI WlanFreeMemory(void *);
+-- 
+2.55.0
+

@@ -40,6 +40,8 @@ unix dlls/dwmcore wayland-server kms.c compositor.c dmabuf.c linux-dmabuf-v1-pro
     xdg-output-unstable-v1-protocol.c arctic-shell-v1-protocol.c arctic-display-v1-protocol.c
 pe dlls/dwmcore dwmcore.c
 unix dlls/winsrv "libinput libudev" libinput.c
+unix dlls/wlanapi libsystemd unix.c
+pe dlls/wlanapi main.c
 pe dlls/winsrv desktop.c rit.c
 pe programs/csrss main.c
 pe programs/dwm main.c

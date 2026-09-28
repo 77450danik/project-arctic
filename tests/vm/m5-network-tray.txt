@@ -1,0 +1,8 @@
+# The network icon of the notification area (pnidui.dll): its tooltip and the
+# list of networks it opens, on the wired connection QEMU gives
+move 1157 786
+sleep 2
+shot n1-tooltip
+click
+sleep 2
+shot n2-flyout

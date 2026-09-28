@@ -1,0 +1,11 @@
+MODULE    = wlanapi.dll
+UNIXLIB   = wlanapi.so
+IMPORTLIB = wlanapi
+IMPORTS   = advapi32
+UNIX_LIBS = -lsystemd
+
+EXTRADLLFLAGS = -Wb,--prefer-native
+
+SOURCES = \
+	main.c \
+	unix.c

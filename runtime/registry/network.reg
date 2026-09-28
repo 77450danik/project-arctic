@@ -1,0 +1,10 @@
+REGEDIT4
+
+; The network icon of the notification area: the connections tray object,
+; which the taskbar's stobject.dll starts, lives in pnidui.dll as on Windows 7
+[HKEY_CLASSES_ROOT\CLSID\{7007ACCF-3202-11D1-AAD2-00805FC1270E}]
+@="Network Connections Tray"
+
+[HKEY_CLASSES_ROOT\CLSID\{7007ACCF-3202-11D1-AAD2-00805FC1270E}\InProcServer32]
+@="C:\\Windows\\System32\\pnidui.dll"
+"ThreadingModel"="Apartment"

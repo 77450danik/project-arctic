@@ -14,8 +14,15 @@ systemd
 # Names of PCI devices: dwm.exe names the display adapter from pci.ids
 hwdata
 
-# Serial shell in development builds
+# Serial shell in development builds; its udhcpc and ip configure wired networks
 busybox
+
+# Networking: Wi-Fi association and WPA (iwd, driven over the system bus by
+# the Windows side), the regulatory database, root certificates for TLS
+iwd
+dbus
+wireless-regdb
+ca-certificates
 
 # Libraries the Wine unix side loads
 freetype2
@@ -42,3 +49,6 @@ linux-firmware-radeon
 linux-firmware-intel
 linux-firmware-nvidia
 linux-firmware-realtek
+linux-firmware-mediatek
+linux-firmware-atheros
+linux-firmware-broadcom

@@ -1,0 +1,22 @@
+#!/usr/bin/busybox sh
+# Applies what busybox udhcpc got for a wired network: address, default
+# route, name servers. arctic-init runs one udhcpc per wired interface.
+# udhcpc passes the lease in $ip, $mask (prefix length), $router and $dns.
+IPCMD="/usr/bin/busybox ip"
+case "$1" in
+deconfig)
+    $IPCMD link set dev "$interface" up
+    $IPCMD -4 addr flush dev "$interface"
+    /usr/bin/resolvconf -d "$interface"
+    ;;
+bound|renew)
+    $IPCMD -4 addr flush dev "$interface"
+    $IPCMD addr add "$ip/${mask:-24}" dev "$interface"
+    for r in $router; do
+        $IPCMD route replace default via "$r" dev "$interface" metric 100
+        break
+    done
+    for d in $dns; do echo "nameserver $d"; done | /usr/bin/resolvconf -a "$interface"
+    ;;
+esac
+exit 0
