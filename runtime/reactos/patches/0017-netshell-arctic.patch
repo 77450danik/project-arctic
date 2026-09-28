@@ -1,8 +1,37 @@
 diff --git a/dll/shellext/netshell/connectmanager.cpp b/dll/shellext/netshell/connectmanager.cpp
-index 790a5dd..e8b097d 100644
+index 790a5dd..7988302 100644
 --- a/dll/shellext/netshell/connectmanager.cpp
 +++ b/dll/shellext/netshell/connectmanager.cpp
-@@ -359,7 +359,7 @@ CNetConnection::Rename(LPCWSTR pszwDuplicateName)
+@@ -237,11 +237,8 @@ CNetConnection::GetProperties(NETCON_PROPERTIES **ppProps)
+     /* get updated adapter characteristics */
+     ZeroMemory(&IfEntry, sizeof(IfEntry));
+     IfEntry.dwIndex = m_dwAdapterIndex;
+-    if (GetIfEntry(&IfEntry) != NO_ERROR)
+-        return NOERROR;
+-
+-    NormalizeOperStatus(&IfEntry, pProperties);
+-
++    if (GetIfEntry(&IfEntry) == NO_ERROR)
++        NormalizeOperStatus(&IfEntry, pProperties);
+ 
+     hr = StringFromCLSID((CLSID)m_Props.guidId, &pStr);
+     if (SUCCEEDED(hr))
+@@ -294,6 +291,14 @@ CNetConnection::GetProperties(NETCON_PROPERTIES **ppProps)
+         CoTaskMemFree(pStr);
+     }
+ 
++    /* Arctic: a connection nobody renamed has no key; it keeps the name it was listed with */
++    if (!pProperties->pszwName && m_Props.pszwName)
++    {
++        pProperties->pszwName = static_cast<PWSTR>(CoTaskMemAlloc((wcslen(m_Props.pszwName)+1)*sizeof(WCHAR)));
++        if (pProperties->pszwName)
++            wcscpy(pProperties->pszwName, m_Props.pszwName);
++    }
++
+     /* Enable 'Rename' and 'Delete' for Adminstrators only */
+     if (IsUserAdmin())
+     {
+@@ -359,7 +364,7 @@ CNetConnection::Rename(LPCWSTR pszwDuplicateName)
          wcscat(szName, pStr);
          wcscat(szName, L"\\Connection");
  
@@ -11,7 +40,7 @@ index 790a5dd..e8b097d 100644
          {
              RegSetValueExW(hKey, L"Name", NULL, REG_SZ, (LPBYTE)m_Props.pszwName, dwSize);
              RegCloseKey(hKey);
-@@ -514,141 +514,101 @@ NormalizeOperStatus(
+@@ -514,141 +519,101 @@ NormalizeOperStatus(
      }
  }
  
@@ -209,7 +238,7 @@ index 790a5dd..e8b097d 100644
              }
              dwSize = sizeof(dwShowIcon);
              if (RegQueryValueExW(hSubKey, L"ShowIcon", NULL, NULL, (LPBYTE)&dwShowIcon, &dwSize) == ERROR_SUCCESS)
-@@ -664,16 +624,10 @@ CNetConnectionManager::EnumerateINetConnections()
+@@ -664,16 +629,11 @@ CNetConnectionManager::EnumerateINetConnections()
              }
              RegCloseKey(hSubKey);
          }
@@ -224,12 +253,13 @@ index 790a5dd..e8b097d 100644
 -            if (pNew->Props.pszwDeviceName)
 -                SetupDiGetDeviceRegistryPropertyW(hInfo, &DevInfo, SPDRP_DEVICEDESC, NULL, (PBYTE)pNew->Props.pszwDeviceName, dwSize, &dwSize);
 -        }
-+        if (MultiByteToWideChar(CP_ACP, 0, pAdapter->Description, -1, szDescription, _countof(szDescription)))
-+            pNew->Props.pszwDeviceName = DuplicateString(szDescription);
++        if (!MultiByteToWideChar(CP_ACP, 0, pAdapter->Description, -1, szDescription, _countof(szDescription)))
++            szDescription[0] = L'\0';
++        pNew->Props.pszwDeviceName = DuplicateString(szDescription);
  
          if (pCurrent)
              pCurrent->Next = pNew;
-@@ -681,11 +635,9 @@ CNetConnectionManager::EnumerateINetConnections()
+@@ -681,11 +641,9 @@ CNetConnectionManager::EnumerateINetConnections()
              m_pHead = pNew;
  
          pCurrent = pNew;

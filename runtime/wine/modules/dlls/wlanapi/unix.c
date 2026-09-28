@@ -51,7 +51,7 @@ static sd_bus *get_bus(void)
 {
     if (!bus && sd_bus_open_system( &bus ) < 0)
     {
-        WARN( "no system bus\n" );
+        ERR( "no system bus\n" );
         bus = NULL;
     }
     return bus;
@@ -302,7 +302,7 @@ static BOOL write_psk_file( const char *ssid, const char *passphrase )
     snprintf( tmp, sizeof(tmp), "%s.new", path );
     if (!(f = fopen( tmp, "w" )))
     {
-        WARN( "cannot write %s: %s\n", tmp, strerror( errno ) );
+        ERR( "cannot write %s: %s\n", tmp, strerror( errno ) );
         return FALSE;
     }
     fprintf( f, "[Security]\nPassphrase=%s\n", passphrase );
@@ -347,6 +347,17 @@ static NTSTATUS wlan_connect( void *args )
     sd_bus_set_method_call_timeout( own, 30000000 );
     r = sd_bus_call_method( own, IWD, paths[i], IWD ".Network", "Connect", &error, NULL, "" );
     sd_bus_flush_close_unref( own );
+    /* iwd may already be joining it on its own, having just learnt the key */
+    if (r < 0 && (sd_bus_error_has_name( &error, IWD ".InProgress" ) || sd_bus_error_has_name( &error, IWD ".Busy" )))
+    {
+        for (int tries = 0; tries < 60 && r < 0; tries++)
+        {
+            usleep( 500000 );
+            pthread_mutex_lock( &bus_mutex );
+            if (get_bus() && get_bool( paths[i], IWD ".Network", "Connected" ) > 0) r = 0;
+            pthread_mutex_unlock( &bus_mutex );
+        }
+    }
     if (r < 0)
     {
         NTSTATUS status = sd_bus_error_has_name( &error, IWD ".NoAgent" ) ||
@@ -354,7 +365,7 @@ static NTSTATUS wlan_connect( void *args )
                           sd_bus_error_has_name( &error, IWD ".Failed" ) ? STATUS_LOGON_FAILURE :
                           sd_bus_error_has_name( &error, IWD ".AlreadyConnected" ) ? STATUS_SUCCESS :
                           bus_error( r );
-        WARN( "connect %s: %s\n", params->ssid, error.message );
+        ERR( "connect %s: %s %s\n", params->ssid, error.name, error.message );
         sd_bus_error_free( &error );
         return status;
     }

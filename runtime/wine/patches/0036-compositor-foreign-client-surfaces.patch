@@ -1,0 +1,244 @@
+From 82368943580fa6c6bda1dbe1c5646b0d56509dfd Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Mon, 28 Sep 2026 18:55:56 +0300
+Subject: [PATCH] Windows drawn by another process show: the compositor places
+ them
+
+A browser's GPU process draws into a window whose toplevel belongs to
+the browser process, and a Wayland subsurface cannot hang off a surface
+of another client, so Chrome and Firefox stayed white. Such a client
+surface now tells dwm.exe which window it shows (arctic_shell_v1), the
+window is marked with set_window_composited, and get_composition_list
+lists it above its toplevel with its screen rectangle, so dwm.exe
+composes it where wineserver has it, as DWM does on Windows.
+---
+ dlls/winewayland.drv/wayland_surface.c | 59 +++++++++++++++++++++++++-
+ dlls/winewayland.drv/waylanddrv.h      |  2 +
+ server/protocol.def                    |  8 ++++
+ server/window.c                        | 54 +++++++++++++++++++----
+ 4 files changed, 114 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/winewayland.drv/wayland_surface.c b/dlls/winewayland.drv/wayland_surface.c
+index 4d7b780..e7ad78a 100644
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -1160,12 +1160,53 @@ POINT map_point_from_surface(struct wayland_surface *surface, POINT point)
+     return point;
+ }
+ 
++static void set_window_composited(HWND hwnd, BOOL composited)
++{
++    SERVER_START_REQ(set_window_composited)
++    {
++        req->handle = wine_server_user_handle(hwnd);
++        req->composited = composited;
++        wine_server_call(req);
++    }
++    SERVER_END_REQ;
++}
++
++/* The window belongs to another process: a browser's GPU process draws into
++ * the browser's window. Its surface cannot be a subsurface of one another
++ * client made, so dwm.exe places it where wineserver has the window. */
++static void wayland_client_surface_attach_foreign(struct wayland_client_surface *client, HWND toplevel)
++{
++    HWND hwnd = client->client.hwnd;
++
++    if (!client->arctic_window_v1)
++    {
++        client->arctic_window_v1 = arctic_shell_v1_get_window(process_wayland.arctic_shell_v1,
++                                                              client->wl_surface, HandleToUlong(hwnd));
++        if (hwnd != toplevel) set_window_composited(hwnd, TRUE);
++        TRACE("hwnd=%p shown by the compositor in %p\n", hwnd, toplevel);
++    }
++    client->toplevel = toplevel;
++}
++
++static BOOL is_foreign_window(HWND hwnd)
++{
++    DWORD pid = 0;
++
++    NtUserGetWindowThread(hwnd, &pid);
++    return pid && pid != GetCurrentProcessId();
++}
++
+ static void wayland_client_surface_destroy(struct client_surface *client)
+ {
+     struct wayland_client_surface *surface = impl_from_client_surface(client);
+ 
+     TRACE("%s\n", debugstr_client_surface(client));
+ 
++    if (surface->arctic_window_v1)
++    {
++        arctic_window_v1_destroy(surface->arctic_window_v1);
++        set_window_composited(client->hwnd, FALSE);
++    }
+     if (surface->wp_viewport)
+         wp_viewport_destroy(surface->wp_viewport);
+     if (surface->wl_subsurface)
+@@ -1213,7 +1254,12 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
+     struct wayland_surface *wayland_surface;
+     struct wayland_win_data *data;
+ 
+-    if (!(data = wayland_win_data_get(toplevel))) return;
++    if (!(data = wayland_win_data_get(toplevel)))
++    {
++        /* a window of another process, which dwm.exe shows the surface in */
++        wayland_client_surface_attach(surface, toplevel, NULL);
++        return;
++    }
+ 
+     if ((wayland_surface = data->wayland_surface))
+     {
+@@ -1303,6 +1349,12 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
+             wl_subsurface_destroy(client->wl_subsurface);
+             client->wl_subsurface = NULL;
+         }
++        if (client->arctic_window_v1)
++        {
++            arctic_window_v1_destroy(client->arctic_window_v1);
++            client->arctic_window_v1 = NULL;
++            set_window_composited(client->client.hwnd, FALSE);
++        }
+ 
+         client->toplevel = 0;
+         return;
+@@ -1311,6 +1363,11 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
+     if (!(toplevel_data = wayland_win_data_get(toplevel)) || !(surface = toplevel_data->wayland_surface))
+     {
+         if (toplevel_data) wayland_win_data_release(toplevel_data);
++        else if (process_wayland.arctic_shell_v1 && is_foreign_window(toplevel))
++        {
++            if (client->toplevel != toplevel) wayland_client_surface_attach(client, NULL, NULL);
++            return wayland_client_surface_attach_foreign(client, toplevel);
++        }
+         return wayland_client_surface_attach(client, NULL, NULL);
+     }
+ 
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index 24f524e..44700c6 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -272,6 +272,8 @@ struct wayland_client_surface
+     struct wl_surface *wl_surface;
+     struct wl_subsurface *wl_subsurface;
+     struct wp_viewport *wp_viewport;
++    /* shown by dwm.exe in a window of another process */
++    struct arctic_window_v1 *arctic_window_v1;
+ };
+ 
+ extern struct wayland_client_surface *impl_from_client_surface(struct client_surface *client);
+diff --git a/server/protocol.def b/server/protocol.def
+index e4228e6..b319f71 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2811,6 +2811,14 @@ enum message_type
+ @END
+ 
+ 
++/* Mark a window as drawn by the compositor itself: a child window another
++ * process draws into (a browser's GPU process) is listed with the toplevels */
++@REQ(set_window_composited)
++    user_handle_t  handle;        /* the window */
++    int            composited;    /* listed or not */
++@END
++
++
+ /* Get the toplevel windows of the thread desktop in z-order, for the compositor */
+ @REQ(get_composition_list)
+ @REPLY
+diff --git a/server/window.c b/server/window.c
+index 2bd3b9c..ef25ab7 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -80,6 +80,7 @@ struct window
+     unsigned int     is_layered : 1;  /* has layered info been set? */
+     unsigned int     is_orphan : 1;   /* is window orphaned */
+     unsigned int     set_foreground : 1;/* has window been foreground once */
++    unsigned int     composited : 1;  /* listed for the compositor although it is a child */
+     unsigned int     color_key;       /* color key for a layered window */
+     unsigned int     alpha;           /* alpha value for a layered window */
+     unsigned int     layered_flags;   /* flags for a layered window */
+@@ -1980,7 +1981,8 @@ static void bump_composition_serial( struct desktop *desktop )
+ 
+ static void composition_changed( struct window *win )
+ {
+-    if (win->parent && win->parent == win->desktop->top_window) bump_composition_serial( win->desktop );
++    if (win->parent && (win->parent == win->desktop->top_window || win->composited))
++        bump_composition_serial( win->desktop );
+ }
+ 
+ static void set_window_pos( struct window *win, struct window *previous,
+@@ -2764,6 +2766,40 @@ DECL_HANDLER(register_shell_hook_window)
+ 
+ 
+ /* get the toplevel windows of the thread desktop in z-order, for the compositor */
++/* the composited descendants of a window, topmost first, from entry i on;
++ * returns the next entry, counting past max without writing */
++static int list_composited( struct window *parent, struct composition_window *data, int i, int max )
++{
++    struct window *win;
++
++    LIST_FOR_EACH_ENTRY( win, &parent->children, struct window, entry )
++    {
++        i = list_composited( win, data, i, max );
++        if (!win->composited) continue;
++        if (data && i < max)
++        {
++            data[i].handle       = win->handle;
++            data[i].style        = is_visible( win ) ? win->style : win->style & ~WS_VISIBLE;
++            data[i].ex_style     = win->ex_style;
++            data[i].visible_rect = win->visible_rect;
++            client_to_screen_rect( win->parent, &data[i].visible_rect );
++        }
++        i++;
++    }
++    return i;
++}
++
++/* mark a window as drawn by the compositor itself */
++DECL_HANDLER(set_window_composited)
++{
++    struct window *win = get_window( req->handle );
++
++    if (!win || is_desktop_window( win )) return;
++    if (win->composited == !!req->composited) return;
++    win->composited = !!req->composited;
++    bump_composition_serial( win->desktop );
++}
++
+ DECL_HANDLER(get_composition_list)
+ {
+     struct desktop *desktop = get_thread_desktop( current, 0 );
+@@ -2778,19 +2814,21 @@ DECL_HANDLER(get_composition_list)
+     reply->cursor_hidden = is_desktop_cursor_hidden( desktop );
+     if (desktop->top_window)
+     {
+-        LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry ) count++;
++        LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry )
++            count = list_composited( win, NULL, count, 0 ) + 1;
+         max = min( count, get_reply_max_size() / sizeof(*data) );
+         if (max && (data = set_reply_data_size( max * sizeof(*data) )))
+         {
+             int i = 0;
+             LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry )
+             {
+-                if (i++ == max) break;
+-                data->handle       = win->handle;
+-                data->style        = win->style;
+-                data->ex_style     = win->ex_style;
+-                data->visible_rect = win->visible_rect;
+-                data++;
++                i = list_composited( win, data, i, max );
++                if (i >= max) break;
++                data[i].handle       = win->handle;
++                data[i].style        = win->style;
++                data[i].ex_style     = win->ex_style;
++                data[i].visible_rect = win->visible_rect;
++                i++;
+             }
+         }
+     }
+-- 
+2.55.0
+

@@ -229,7 +229,8 @@ static void loopback_up(void)
 static void start_network(void)
 {
     char *dbus[] = {"/usr/bin/dbus-daemon", "--system", "--nofork", "--nopidfile", NULL};
-    char *iwd[] = {"/usr/lib/iwd/iwd", NULL};
+    /* how a join went (scan, association, handshake, DHCP) goes to host.log */
+    char *iwd[] = {"/usr/lib/iwd/iwd", "-d", "*station*:*netdev*:*eapol*:*network*", NULL};
 
     loopback_up();
     mkdir("/run/dbus", 0755);

@@ -114,6 +114,12 @@ bool dmabuf_read( struct dmabuf *buffer, uint32_t *pixels )
 {
     struct dma_buf_sync sync = { .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ };
 
+    /* video memory is read by the GPU: the CPU often may not map it at all */
+    if (!buffer->gpu_failed)
+    {
+        if (gpu_read_dmabuf( buffer, pixels )) return true;
+        buffer->gpu_failed = true;
+    }
     if (buffer->map_failed) return false;
     if (!buffer->map)
     {
@@ -121,7 +127,7 @@ bool dmabuf_read( struct dmabuf *buffer, uint32_t *pixels )
         buffer->map = mmap( NULL, buffer->map_size, PROT_READ, MAP_SHARED, buffer->fd, 0 );
         if (buffer->map == MAP_FAILED)
         {
-            WARN( "cannot map a %ux%u buffer: %s\n", buffer->width, buffer->height, strerror( errno ) );
+            ERR( "cannot map a %ux%u buffer to compose it: %s\n", buffer->width, buffer->height, strerror( errno ) );
             buffer->map = NULL;
             buffer->map_failed = true;
             return false;
@@ -261,8 +267,13 @@ static struct dmabuf *create_buffer( struct wl_client *client, struct wl_resourc
     if (!(buffer = params_buffer( params, width, height, format, flags, &error )))
     {
         if (error >= 0) wl_resource_post_error( resource, error, "%dx%d buffer rejected", width, height );
-        else WARN( "a %dx%d buffer of format %.4s, modifier %#llx is not taken\n", width, height,
-                   (const char *)&format, (unsigned long long)params->modifiers[0] );
+        else
+        {
+            static unsigned int logged;
+            if (logged++ < 8)
+                ERR( "a %dx%d buffer of format %.4s, modifier %#llx is not taken\n", width, height,
+                     (const char *)&format, (unsigned long long)params->modifiers[0] );
+        }
         return NULL;
     }
     if (!(buffer->resource = wl_resource_create( client, &wl_buffer_interface, 1, id )))

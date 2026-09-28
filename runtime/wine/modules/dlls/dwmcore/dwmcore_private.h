@@ -162,6 +162,7 @@ struct dmabuf
     void               *map;               /* for composition on the CPU */
     size_t              map_size;
     bool                map_failed;
+    bool                gpu_failed;        /* the GPU could not read it back */
 };
 
 void dmabuf_init( struct wl_display *display );
@@ -170,5 +171,8 @@ void dmabuf_ref( struct dmabuf *buffer );
 void dmabuf_unref( struct dmabuf *buffer );  /* the client gets its buffer back at the last one */
 bool dmabuf_read( struct dmabuf *buffer, uint32_t *pixels );  /* width x height, packed */
 uint32_t dmabuf_fb( struct dmabuf *buffer );  /* 0 if the card cannot scan it out */
+
+/* gpuread.c */
+bool gpu_read_dmabuf( struct dmabuf *buffer, uint32_t *pixels );
 
 #endif

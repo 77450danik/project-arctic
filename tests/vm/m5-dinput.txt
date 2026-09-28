@@ -1,0 +1,31 @@
+# The keyboard through DirectInput 8, as games read it (tests/tools/dinputtest.c
+# on the test programs' disk, D:): keys typed into the window must show up
+# both as WM_KEYDOWN and as DirectInput presses
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type D:\dinputtest.exe
+key ret
+sleep 6
+type asdf
+sleep 2
+shot k1-window
+key esc
+sleep 2
+move 27 789
+click
+sleep 2
+move 90 711
+click
+sleep 3
+type D:\dinputtest.exe fullscreen
+key ret
+sleep 6
+type asdf
+sleep 2
+shot k2-fullscreen
+key esc

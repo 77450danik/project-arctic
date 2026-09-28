@@ -374,6 +374,20 @@ static bool shown_directly( uint32_t hwnd )
     return false;
 }
 
+/* A window: its own surface, then what other surfaces show in it. Those
+ * come from another process than the window's (a browser's GPU process
+ * draws into the browser's window), so they cannot be subsurfaces of it;
+ * dwm places them where wineserver has the window, as DWM does on Windows. */
+static void draw_window( const struct dwm_window *w )
+{
+    struct surface *s;
+
+    wl_list_for_each( s, &all_surfaces, all_link )
+        if (s->hwnd == w->hwnd && s->xdg_toplevel) draw_tree( s, w->left, w->top );
+    wl_list_for_each( s, &all_surfaces, all_link )
+        if (s->hwnd == w->hwnd && !s->xdg_toplevel) draw_tree( s, w->left, w->top );
+}
+
 /* the virtual screen, in RAM */
 static void compose(void)
 {
@@ -390,7 +404,7 @@ static void compose(void)
 
         if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE)) continue;
         if (shown_directly( w->hwnd )) continue;
-        if ((s = surface_for_hwnd( w->hwnd ))) draw_tree( s, w->left, w->top );
+        draw_window( w );
     }
     wl_list_for_each( s, &toplevels, stack_link )
         if (!s->hwnd) draw_tree( s, s->x, s->y );

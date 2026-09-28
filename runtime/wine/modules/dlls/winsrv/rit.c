@@ -151,12 +151,34 @@ static WORD key_to_scan( UINT key )
     return 0;
 }
 
+/* The program keys go to, in the log whenever it changes: when a game hears
+ * no keys, this says whether it ever had the foreground */
+static void log_keyboard_target(void)
+{
+    static HWND last;
+    HWND hwnd = GetForegroundWindow();
+    WCHAR name[MAX_PATH] = L"-";
+    DWORD pid = 0, size = ARRAY_SIZE(name);
+    HANDLE process;
+
+    if (hwnd == last) return;
+    last = hwnd;
+    if (hwnd) GetWindowThreadProcessId( hwnd, &pid );
+    if (pid && (process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid )))
+    {
+        if (!QueryFullProcessImageNameW( process, 0, name, &size )) lstrcpyW( name, L"?" );
+        CloseHandle( process );
+    }
+    MESSAGE( "csrss: keyboard to %s (window %p)\n", debugstr_w( wcsrchr( name, '\\' ) ? wcsrchr( name, '\\' ) + 1 : name ), hwnd );
+}
+
 static void send_key( UINT key, BOOL pressed )
 {
     WORD scan = key_to_scan( key );
     INPUT input = { .type = INPUT_KEYBOARD };
 
     if (!scan) return;
+    if (pressed) log_keyboard_target();
     input.ki.wScan = (scan & 0x300) ? scan + 0xdf00 : scan;
     input.ki.dwFlags = KEYEVENTF_SCANCODE;
     if (scan & ~0xff) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;

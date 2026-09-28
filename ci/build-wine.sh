@@ -19,7 +19,7 @@ if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
     pacman -Syu --noconfirm --needed base-devel git rsync mingw-w64-gcc \
         freetype2 gnutls alsa-lib vulkan-icd-loader vulkan-headers systemd-libs libusb \
-        wayland libxkbcommon libinput
+        wayland libxkbcommon libinput mesa libglvnd
 fi
 
 # Pristine upstream, fetched once per tag

@@ -428,7 +428,7 @@ static void layout_flyout( int sel, BOOL reposition )
         rect.bottom = work.bottom - 8;
     }
     rect.top = rect.bottom - (list_height + link_height + 2);
-    SetWindowPos( flyout_hwnd, HWND_TOPMOST, rect.left, rect.top, FLYOUT_WIDTH, rect.bottom - rect.top, 0 );
+    SetWindowPos( flyout_hwnd, HWND_TOPMOST, rect.left, rect.top, FLYOUT_WIDTH, rect.bottom - rect.top, SWP_NOACTIVATE );
     MoveWindow( list_hwnd, 0, 0, FLYOUT_WIDTH - 2, list_height, TRUE );
     if (link_hwnd) MoveWindow( link_hwnd, 12, list_height + 7, FLYOUT_WIDTH - 24, 18, TRUE );
     InvalidateRect( list_hwnd, NULL, TRUE );
@@ -617,6 +617,8 @@ static INT_PTR CALLBACK key_dialog_proc( HWND dlg, UINT msg, WPARAM wp, LPARAM l
     return FALSE;
 }
 
+static BOOL asking_key;
+
 static void connect_row( UINT index )
 {
     struct row *row = &rows[index];
@@ -645,10 +647,17 @@ static void connect_row( UINT index )
     }
     else
     {
-        if (row->secured &&
-            DialogBoxParamW( pnidui_instance, MAKEINTRESOURCEW(IDD_NETWORK_KEY), flyout_hwnd, key_dialog_proc,
-                             (LPARAM)key ) != IDOK)
-            return;
+        INT_PTR ok = IDOK;
+
+        /* the list stays as it is while the key is typed: a refresh would take the focus */
+        if (row->secured)
+        {
+            asking_key = TRUE;
+            ok = DialogBoxParamW( pnidui_instance, MAKEINTRESOURCEW(IDD_NETWORK_KEY), flyout_hwnd, key_dialog_proc,
+                                  (LPARAM)key );
+            asking_key = FALSE;
+        }
+        if (ok != IDOK) return;
         xml_escape( row->text, name, ARRAY_SIZE(name) );
         xml_escape( key, material, ARRAY_SIZE(material) );
         swprintf( xml, ARRAY_SIZE(xml),
@@ -855,7 +864,8 @@ static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     {
     case WM_TIMER:
         update_icon();
-        if (flyout_hwnd && IsWindowVisible( flyout_hwnd ) && !connecting_ssid[0]) refresh_flyout( FALSE );
+        if (flyout_hwnd && IsWindowVisible( flyout_hwnd ) && !connecting_ssid[0] && !asking_key)
+            refresh_flyout( FALSE );
         return 0;
     case WM_TRAY_ICON:
         if (lp == WM_LBUTTONUP) toggle_flyout();
@@ -879,7 +889,7 @@ static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         if (wp == ACM_CONNECTION_COMPLETE) connecting_ssid[0] = 0;
         else if (wp == ACM_CONNECTION_ATTEMPT_FAIL) connection_failed( lp );
         update_icon();
-        if (flyout_hwnd && IsWindowVisible( flyout_hwnd )) refresh_flyout( FALSE );
+        if (flyout_hwnd && IsWindowVisible( flyout_hwnd ) && !asking_key) refresh_flyout( FALSE );
         return 0;
     case WM_CLOSE:
         DestroyWindow( hwnd );
