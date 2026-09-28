@@ -243,7 +243,7 @@ index 790a5dd..e8b097d 100644
      m_pCurrent = m_pHead;
      return (m_pHead != NULL ? S_OK : S_FALSE);
 diff --git a/dll/shellext/netshell/lang/en-US.rc b/dll/shellext/netshell/lang/en-US.rc
-index e1f86b6..88da849 100644
+index e1f86b6..f01afb6 100644
 --- a/dll/shellext/netshell/lang/en-US.rc
 +++ b/dll/shellext/netshell/lang/en-US.rc
 @@ -155,6 +155,8 @@ BEGIN
@@ -255,8 +255,16 @@ index e1f86b6..88da849 100644
      IDS_NET_ACTIVATE "Enable"
      IDS_NET_DEACTIVATE "Disable"
      IDS_NET_STATUS "Status"
+@@ -164,6 +166,7 @@ BEGIN
+     IDS_NET_RENAME "Rename"
+     IDS_NET_PROPERTIES "Properties"
+     IDS_NET_OPEN_CONNECTIONS "Open Network Connections"
++    IDS_NET_WIRELESS_NETWORKS "View Available Wireless Networks"
+     IDS_FORMAT_BIT "%u Bit/s"
+     IDS_FORMAT_KBIT "%u KBit/s"
+     IDS_FORMAT_MBIT "%u MBit/s"
 diff --git a/dll/shellext/netshell/lang/ru-RU.rc b/dll/shellext/netshell/lang/ru-RU.rc
-index 7c9de55..a887e82 100644
+index 7c9de55..c015253 100644
 --- a/dll/shellext/netshell/lang/ru-RU.rc
 +++ b/dll/shellext/netshell/lang/ru-RU.rc
 @@ -155,6 +155,8 @@ BEGIN
@@ -268,8 +276,16 @@ index 7c9de55..a887e82 100644
      IDS_NET_ACTIVATE "Включить"
      IDS_NET_DEACTIVATE "Отключить"
      IDS_NET_STATUS "Состояние"
+@@ -164,6 +166,7 @@ BEGIN
+     IDS_NET_RENAME "Переименовать"
+     IDS_NET_PROPERTIES "Свойства"
+     IDS_NET_OPEN_CONNECTIONS "Open Network Connections"
++    IDS_NET_WIRELESS_NETWORKS "Просмотр доступных беспроводных сетей"
+     IDS_FORMAT_BIT "%u бит/с"
+     IDS_FORMAT_KBIT "%u Кбит/с"
+     IDS_FORMAT_MBIT "%u Мбит/с"
 diff --git a/dll/shellext/netshell/lang/uk-UA.rc b/dll/shellext/netshell/lang/uk-UA.rc
-index cd9cae1..bd8b95d 100644
+index cd9cae1..2f50537 100644
 --- a/dll/shellext/netshell/lang/uk-UA.rc
 +++ b/dll/shellext/netshell/lang/uk-UA.rc
 @@ -161,6 +161,8 @@ BEGIN
@@ -281,6 +297,14 @@ index cd9cae1..bd8b95d 100644
      IDS_NET_ACTIVATE "Увімкнути"
      IDS_NET_DEACTIVATE "Вимкнути"
      IDS_NET_STATUS "Стан"
+@@ -170,6 +172,7 @@ BEGIN
+     IDS_NET_RENAME "Rename"
+     IDS_NET_PROPERTIES "Властивості"
+     IDS_NET_OPEN_CONNECTIONS "Open Network Connections"
++    IDS_NET_WIRELESS_NETWORKS "Перегляд доступних бездротових мереж"
+     IDS_FORMAT_BIT "%u біт/с"
+     IDS_FORMAT_KBIT "%u Кбіт/с"
+     IDS_FORMAT_MBIT "%u Мбіт/с"
 diff --git a/dll/shellext/netshell/lanstatusui.cpp b/dll/shellext/netshell/lanstatusui.cpp
 index ff0a43b..6d3b46c 100644
 --- a/dll/shellext/netshell/lanstatusui.cpp
@@ -354,10 +378,18 @@ index 103005a..cc13baa 100644
          {
              InprocServer32 = s '%MODULE%'
 diff --git a/dll/shellext/netshell/resource.h b/dll/shellext/netshell/resource.h
-index abc36be..34e0e77 100644
+index abc36be..e3d2018 100644
 --- a/dll/shellext/netshell/resource.h
 +++ b/dll/shellext/netshell/resource.h
-@@ -99,6 +99,8 @@
+@@ -62,6 +62,7 @@
+ #define IDM_NETICON_PROPERTIES          (IDM_NETICON_CONTEXT_BASE + 6)
+ 
+ #define IDS_NET_OPEN_CONNECTIONS    10108
++#define IDS_NET_WIRELESS_NETWORKS   10109
+ 
+ /* Network setup wizard pages */
+ #define IDD_NETWORKINITPAGE      3400
+@@ -99,6 +100,8 @@
  #define IDS_STATUS_CONNECTING      10011
  #define IDS_STATUS_CONNECTED       10012
  #define IDS_STATUS_OPERATIONAL     10013
@@ -367,7 +399,7 @@ index abc36be..34e0e77 100644
  #define IDS_NET_ACTIVATE   10100
  #define IDS_NET_DEACTIVATE 10101
 diff --git a/dll/shellext/netshell/shfldr_netconnect.cpp b/dll/shellext/netshell/shfldr_netconnect.cpp
-index dfd1a0d..52a9728 100644
+index dfd1a0d..5e19612 100644
 --- a/dll/shellext/netshell/shfldr_netconnect.cpp
 +++ b/dll/shellext/netshell/shfldr_netconnect.cpp
 @@ -42,7 +42,9 @@ CNetworkConnections::CNetworkConnections() :
@@ -381,3 +413,84 @@ index dfd1a0d..52a9728 100644
      if (FAILED_UNEXPECTEDLY(hr))
          m_lpOleCmd = NULL;
  }
+@@ -463,6 +465,39 @@ void WINAPI _InsertMenuItemW (
+     InsertMenuItemW( hmenu, indexMenu, fByPosition, &mii);
+ }
+ 
++/* Arctic: a wireless connection is told by its interface type */
++static BOOL
++IsWirelessConnection(const GUID *pGuid)
++{
++    IP_ADAPTER_INFO *pAdapterInfo, *pAdapter;
++    WCHAR szGuid[50];
++    GUID guid;
++    MIB_IFROW IfEntry;
++    DWORD dwSize = 0;
++    BOOL bWireless = FALSE;
++
++    if (GetAdaptersInfo(NULL, &dwSize) != ERROR_BUFFER_OVERFLOW)
++        return FALSE;
++    pAdapterInfo = static_cast<PIP_ADAPTER_INFO>(CoTaskMemAlloc(dwSize));
++    if (!pAdapterInfo)
++        return FALSE;
++    if (GetAdaptersInfo(pAdapterInfo, &dwSize) == NO_ERROR)
++    {
++        for (pAdapter = pAdapterInfo; pAdapter; pAdapter = pAdapter->Next)
++        {
++            if (!MultiByteToWideChar(CP_ACP, 0, pAdapter->AdapterName, -1, szGuid, _countof(szGuid)) ||
++                FAILED(CLSIDFromString(szGuid, &guid)) || !IsEqualGUID(guid, *pGuid))
++                continue;
++            ZeroMemory(&IfEntry, sizeof(IfEntry));
++            IfEntry.dwIndex = pAdapter->Index;
++            bWireless = GetIfEntry(&IfEntry) == NO_ERROR && IfEntry.dwType == IF_TYPE_IEEE80211;
++            break;
++        }
++    }
++    CoTaskMemFree(pAdapterInfo);
++    return bWireless;
++}
++
+ /**************************************************************************
+ * ISF_NetConnect_IContextMenu_QueryContextMenu()
+ */
+@@ -480,8 +515,15 @@ HRESULT WINAPI CNetConUiObject::QueryContextMenu(
+         return E_FAIL;
+     }
+ 
+-    if (pdata->Status == NCS_HARDWARE_DISABLED || pdata->Status == NCS_MEDIA_DISCONNECTED || pdata->Status == NCS_DISCONNECTED)
+-        _InsertMenuItemW(hMenu, indexMenu++, TRUE, idCmdFirst, MFT_STRING, MAKEINTRESOURCEW(IDS_NET_ACTIVATE), MFS_DEFAULT);
++    BOOL bWireless = IsWirelessConnection(&pdata->guidId);
++    BOOL bOffline = pdata->Status == NCS_HARDWARE_DISABLED || pdata->Status == NCS_MEDIA_DISCONNECTED || pdata->Status == NCS_DISCONNECTED;
++
++    /* Arctic: the networks in range, as Windows XP lists them for a wireless connection */
++    if (bWireless)
++        _InsertMenuItemW(hMenu, indexMenu++, TRUE, idCmdFirst + 8, MFT_STRING, MAKEINTRESOURCEW(IDS_NET_WIRELESS_NETWORKS), bOffline ? MFS_DEFAULT : MFS_ENABLED);
++
++    if (bOffline)
++        _InsertMenuItemW(hMenu, indexMenu++, TRUE, idCmdFirst, MFT_STRING, MAKEINTRESOURCEW(IDS_NET_ACTIVATE), bWireless ? MFS_ENABLED : MFS_DEFAULT);
+     else
+         _InsertMenuItemW(hMenu, indexMenu++, TRUE, idCmdFirst + 1, MFT_STRING, MAKEINTRESOURCEW(IDS_NET_DEACTIVATE), MFS_ENABLED);
+ 
+@@ -516,7 +558,7 @@ HRESULT WINAPI CNetConUiObject::QueryContextMenu(
+     else
+         _InsertMenuItemW(hMenu, indexMenu++, TRUE, idCmdFirst + 7, MFT_STRING, MAKEINTRESOURCEW(IDS_NET_PROPERTIES), MFS_DEFAULT);
+ 
+-    return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 9);
++    return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 10);
+ }
+ 
+ BOOL
+@@ -632,6 +674,13 @@ HRESULT WINAPI CNetConUiObject::InvokeCommand(LPCMINVOKECOMMANDINFO lpcmi)
+ {
+     UINT CmdId = LOWORD(lpcmi->lpVerb) + IDS_NET_ACTIVATE;
+ 
++    /* the list of pnidui.dll, the notification area's network icon */
++    if (IS_INTRESOURCE(lpcmi->lpVerb) && LOWORD(lpcmi->lpVerb) == 8)
++    {
++        ShellExecuteW(NULL, NULL, L"rundll32.exe", L"pnidui.dll,ShowNetworkList", NULL, SW_SHOWNORMAL);
++        return S_OK;
++    }
++
+     /* We should get this when F2 is pressed in explorer */
+     if (!IS_INTRESOURCE(lpcmi->lpVerb) && !strcmp(lpcmi->lpVerb, "rename"))
+     {

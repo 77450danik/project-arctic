@@ -34,6 +34,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(pnidui);
 
 #define WM_TRAY_ICON     (WM_APP + 1)
 #define WM_WLAN_NOTIFY   (WM_APP + 2)
+#define WM_SHOW_LIST     (WM_APP + 3)
 #define TIMER_REFRESH    1
 #define ICON_ID          1
 
@@ -871,6 +872,9 @@ static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
             DestroyMenu( menu );
         }
         return 0;
+    case WM_SHOW_LIST:
+        if (!flyout_hwnd || !IsWindowVisible( flyout_hwnd )) toggle_flyout();
+        return 0;
     case WM_WLAN_NOTIFY:
         if (wp == ACM_CONNECTION_COMPLETE) connecting_ssid[0] = 0;
         else if (wp == ACM_CONNECTION_ATTEMPT_FAIL) connection_failed( lp );
@@ -938,4 +942,19 @@ void tray_stop(void)
     WaitForSingleObject( thread, 5000 );
     CloseHandle( thread );
     thread = NULL;
+}
+
+/***********************************************************************
+ *          ShowNetworkList (PNIDUI.@)
+ *
+ * rundll32 pnidui.dll,ShowNetworkList: the icon's list of networks, opened
+ * from elsewhere (the Network Connections folder).
+ */
+void WINAPI ShowNetworkList( HWND hwnd, HINSTANCE instance, char *cmdline, int show )
+{
+    HWND tray = FindWindowW( L"PniduiTray", NULL );
+
+    if (!tray) return;
+    AllowSetForegroundWindow( ASFW_ANY );
+    PostMessageW( tray, WM_SHOW_LIST, 0, 0 );
 }
