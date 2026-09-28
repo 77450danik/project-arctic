@@ -1,0 +1,90 @@
+From fc580747000598b8b6b4200a967b4fb96392bdac Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Mon, 28 Sep 2026 23:36:50 +0300
+Subject: [PATCH] userenv: DeriveAppContainerSidFromAppContainerName
+
+Chromium's sandbox derives the SID of its app container at start; the
+missing function was a delay-load failure (c06d007f) that took Chrome,
+Supermium and Electron programs down. The SID is S-1-15-2 and seven
+numbers from the SHA-256 of the lowercase name, as on Windows.
+---
+ dlls/userenv/Makefile.in    |  2 +-
+ dlls/userenv/userenv.spec   |  1 +
+ dlls/userenv/userenv_main.c | 33 +++++++++++++++++++++++++++++++++
+ 3 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/userenv/Makefile.in b/dlls/userenv/Makefile.in
+index aa94f7b..8a06ab8 100644
+--- a/dlls/userenv/Makefile.in
++++ b/dlls/userenv/Makefile.in
+@@ -1,6 +1,6 @@
+ EXTRADEFS = -D_USERENV_
+ MODULE    = userenv.dll
+-IMPORTS   = advapi32
++IMPORTS   = advapi32 bcrypt
+ IMPORTLIB = userenv
+ 
+ SOURCES = \
+diff --git a/dlls/userenv/userenv.spec b/dlls/userenv/userenv.spec
+index 6395bba..8bfaccd 100644
+--- a/dlls/userenv/userenv.spec
++++ b/dlls/userenv/userenv.spec
+@@ -1,6 +1,7 @@
+ 138 stdcall @(long str str str str long str long long str str long) USERENV_138
+ 
+ @ stdcall CreateAppContainerProfile(wstr wstr wstr ptr long ptr)
++@ stdcall DeriveAppContainerSidFromAppContainerName(wstr ptr)
+ @ stdcall CreateEnvironmentBlock(ptr ptr long)
+ @ stdcall DestroyEnvironmentBlock(ptr)
+ @ stdcall EnterCriticalPolicySection(long)
+diff --git a/dlls/userenv/userenv_main.c b/dlls/userenv/userenv_main.c
+index 54f713e..4be268e 100644
+--- a/dlls/userenv/userenv_main.c
++++ b/dlls/userenv/userenv_main.c
+@@ -29,6 +29,7 @@
+ #include "sddl.h"
+ #include "objbase.h"
+ #include "userenv.h"
++#include "bcrypt.h"
+ 
+ #include "wine/debug.h"
+ 
+@@ -696,3 +697,35 @@ HRESULT WINAPI CreateAppContainerProfile(PCWSTR container_name, PCWSTR display_n
+ 
+     return E_NOTIMPL;
+ }
++
++/******************************************************************************
++ *              DeriveAppContainerSidFromAppContainerName   [USERENV.@]
++ *
++ * The SID of an app container is S-1-15-2 and seven numbers taken from the
++ * SHA-256 of its name in lowercase. Chromium's sandbox asks for it at start.
++ */
++HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(PCWSTR container_name, PSID *container_sid)
++{
++    SID_IDENTIFIER_AUTHORITY authority = { { 0, 0, 0, 0, 0, 15 } }; /* SECURITY_APP_PACKAGE_AUTHORITY */
++    DWORD hash[8];
++    WCHAR *lower;
++    NTSTATUS status;
++    int i, len;
++
++    TRACE("(%s, %p)\n", debugstr_w(container_name), container_sid);
++
++    if (!container_name || !container_sid) return E_INVALIDARG;
++    len = lstrlenW(container_name);
++    if (!len || len > 64) return E_INVALIDARG;
++    if (!(lower = HeapAlloc(GetProcessHeap(), 0, len * sizeof(WCHAR)))) return E_OUTOFMEMORY;
++    for (i = 0; i < len; i++) lower[i] = towlower(container_name[i]);
++    status = BCryptHash(BCRYPT_SHA256_ALG_HANDLE, NULL, 0, (UCHAR *)lower, len * sizeof(WCHAR),
++                        (UCHAR *)hash, sizeof(hash));
++    HeapFree(GetProcessHeap(), 0, lower);
++    if (status) return HRESULT_FROM_NT(status);
++
++    if (!AllocateAndInitializeSid(&authority, 8, 2 /* SECURITY_APP_PACKAGE_BASE_RID */, hash[0], hash[1],
++                                  hash[2], hash[3], hash[4], hash[5], hash[6], container_sid))
++        return HRESULT_FROM_WIN32(GetLastError());
++    return S_OK;
++}
+-- 
+2.55.0
+

@@ -452,6 +452,38 @@ static void write_hardware(void)
     free(text);
 }
 
+/* The logs of the last few starts stay: logs is this one, logs.1 the one
+ * before, up to logs.4. One PC tried after another no longer wipes the first. */
+#define KEPT_LOGS 4
+
+static void remove_logs(const char *dir)
+{
+    static const char *const files[] = {"hardware.txt", "host.log", "kernel.log", "nt.log"};
+    char path[PATH_MAX];
+
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        snprintf(path, sizeof(path), "%s/%s", dir, files[i]);
+        unlink(path);
+    }
+    rmdir(dir);
+}
+
+static void rotate_logs(void)
+{
+    char from[PATH_MAX], to[PATH_MAX];
+
+    snprintf(to, sizeof(to), MEDIUM_LOGS ".%d", KEPT_LOGS);
+    remove_logs(to);
+    for (int i = KEPT_LOGS - 1; i >= 0; i--) {
+        if (i)
+            snprintf(from, sizeof(from), MEDIUM_LOGS ".%d", i);
+        else
+            snprintf(from, sizeof(from), MEDIUM_LOGS);
+        snprintf(to, sizeof(to), MEDIUM_LOGS ".%d", i + 1);
+        rename(from, to);
+    }
+}
+
 static void save_logs(void)
 {
     static off_t host_copied = -1, nt_copied = -1;
@@ -459,6 +491,8 @@ static void save_logs(void)
 
     if (medium_writable < 0) {
         medium_writable = !mount(NULL, MEDIUM, NULL, MS_REMOUNT | MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
+        if (medium_writable)
+            rotate_logs();
         if (medium_writable && mkdir(MEDIUM_LOGS, 0755) && errno != EEXIST)
             medium_writable = 0;
         say("logs on the boot medium: %s", medium_writable ? MEDIUM_LOGS : "no, it cannot be written");

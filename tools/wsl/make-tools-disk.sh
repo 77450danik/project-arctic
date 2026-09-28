@@ -13,12 +13,13 @@ mkdir -p "$OUT"
 
 img="$OUT/tools.img"
 rm -f "$img"
-truncate -s 42M "$img"
+mb=$(( $(du -cm "$ROOT"/out/tests/*.exe | tail -1 | cut -f1) + 24 ))
+truncate -s $((mb + 2))M "$img"
 sfdisk -q "$img" <<EOF
 label: dos
 start=1MiB, type=c
 EOF
-truncate -s 40M "$TMP/fat"
+truncate -s ${mb}M "$TMP/fat"
 mkfs.vfat -F 32 -n TESTS "$TMP/fat" >/dev/null
 for f in "$ROOT"/out/tests/*.exe; do
     mcopy -i "$TMP/fat" "$f" "::$(basename "$f")"

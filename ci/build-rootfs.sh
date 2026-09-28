@@ -10,7 +10,7 @@ RFS="$OUT/rootfs"
 
 if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
-    pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts
+    pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts ttf-liberation python-fonttools
 fi
 
 # The container's NoExtract rules drop the locale sources we need
@@ -98,6 +98,11 @@ if [ -d "$REACTOS/Windows" ]; then
     fi
     # the font of the visual style
     cp "$ROOT"/runtime/fonts/*.ttf "$PFX/drive_c/windows/Fonts/"
+    # Arial, Times New Roman and Courier New, made from Liberation: Chromium
+    # draws no text without them (ci/windows-fonts.py)
+    python3 "$ROOT/ci/windows-fonts.py" /usr/share/fonts/liberation "$PFX/drive_c/windows/Fonts"
+    mkdir -p "$PFX/drive_c/windows/Licenses"
+    cp /usr/share/licenses/ttf-liberation/LICENSE "$PFX/drive_c/windows/Licenses/Liberation Fonts.txt"
     # The shell's manifest asks for common controls 6.0, so what it loads is the
     # side-by-side copy, not the one in system32
     for sxs in "$PFX"/drive_c/windows/winsxs/amd64_microsoft.windows.common-controls_*/comctl32.dll; do

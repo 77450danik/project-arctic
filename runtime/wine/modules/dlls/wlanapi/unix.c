@@ -77,6 +77,21 @@ static int get_string( const char *path, const char *iface, const char *name, ch
     return 0;
 }
 
+/* a property that is an object path (type o), which get_string cannot read */
+static int get_object( const char *path, const char *iface, const char *name, char *buf, size_t size )
+{
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = NULL;
+    const char *value = NULL;
+    int r = sd_bus_get_property( get_bus(), IWD, path, iface, name, &error, &reply, "o" );
+
+    sd_bus_error_free( &error );
+    if (r >= 0) r = sd_bus_message_read( reply, "o", &value );
+    if (r >= 0) snprintf( buf, size, "%s", value );
+    sd_bus_message_unref( reply );
+    return r < 0 ? r : 0;
+}
+
 static int get_bool( const char *path, const char *iface, const char *name )
 {
     sd_bus_error error = SD_BUS_ERROR_NULL;
@@ -202,7 +217,7 @@ static NTSTATUS wlan_interfaces( void *args )
             info->state = parse_state( state );
             info->scanning = get_bool( path, IWD ".Station", "Scanning" );
             if (info->state != WLAN_UNIX_DISCONNECTED &&
-                !get_string( path, IWD ".Station", "ConnectedNetwork", network, sizeof(network) ))
+                !get_object( path, IWD ".Station", "ConnectedNetwork", network, sizeof(network) ))
             {
                 char paths[WLAN_MAX_NETWORKS][128];
                 INT32 signals[WLAN_MAX_NETWORKS];
@@ -243,7 +258,7 @@ static NTSTATUS wlan_networks( void *args )
                         !strcmp( type, "wep" ) ? WLAN_UNIX_WEP : WLAN_UNIX_OPEN;
         net->signal = signals[i] / 100;
         net->connected = get_bool( paths[i], IWD ".Network", "Connected" );
-        net->known = !get_string( paths[i], IWD ".Network", "KnownNetwork", known, sizeof(known) ) && known[0];
+        net->known = !get_object( paths[i], IWD ".Network", "KnownNetwork", known, sizeof(known) ) && known[0];
         params->count++;
     }
     return STATUS_SUCCESS;

@@ -119,6 +119,10 @@ struct output
     bool               needs_frame;          /* something it shows changed */
     uint64_t           not_before;           /* µs: flips that finish at once are paced */
     uint32_t           direct_hwnd;          /* the window it shows directly, not composed */
+    /* frames of a window that fills it, for the log: how a game really runs */
+    uint32_t           stat_direct, stat_composed;
+    bool               stat_vrr;
+    uint64_t           stat_since;           /* µs */
 };
 
 static struct wl_display      *display;
@@ -573,6 +577,28 @@ static void present_composed( struct output *output, bool vrr )
     send_frame_callbacks();
 }
 
+/* While a window fills the monitor with a GPU buffer (a game), the log says
+ * every ten seconds how many frames a second it got, shown directly or
+ * composed, and whether the refresh followed them */
+static void count_frame( struct output *output, bool direct, bool vrr, uint64_t now )
+{
+    uint64_t elapsed;
+
+    if (!direct && !vrr && !output->stat_direct && !output->stat_composed) return;
+    if (!output->stat_since) output->stat_since = now;
+    if (direct) output->stat_direct++;
+    else output->stat_composed++;
+    output->stat_vrr |= vrr;
+    if ((elapsed = now - output->stat_since) < 10000000) return;
+    MESSAGE( "dwm: %s %u frames/s, %u%% shown directly, variable refresh %s\n", output->kms->name,
+             (unsigned int)((output->stat_direct + output->stat_composed) * 1000000ull / elapsed),
+             output->stat_direct * 100 / (output->stat_direct + output->stat_composed),
+             output->stat_vrr ? "on" : "off" );
+    output->stat_direct = output->stat_composed = 0;
+    output->stat_vrr = false;
+    output->stat_since = 0;
+}
+
 /* A frame for every monitor that needs one and has shown its last one. A
  * window that fills a monitor with a GPU buffer turns variable refresh on
  * there: the monitor then waits for the game's frames. */
@@ -613,6 +639,7 @@ static void repaint(void)
     {
         if (ready[i].content) present_directly( ready[i].output, ready[i].content, ready[i].vrr );
         else present_composed( ready[i].output, ready[i].vrr );
+        count_frame( ready[i].output, !!ready[i].content, ready[i].vrr, now );
     }
 }
 
