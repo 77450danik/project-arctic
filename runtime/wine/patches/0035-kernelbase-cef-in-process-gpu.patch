@@ -1,0 +1,68 @@
+From fc33e81680349a6c50561d396d8ee83975bbac10 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Mon, 28 Sep 2026 16:31:21 +0300
+Subject: [PATCH] kernelbase: CEF browsers draw their own windows
+ (--in-process-gpu)
+
+Chromium's GPU process draws into the browser's windows from another
+process, which the Wayland driver cannot show: Steam's window stayed
+black. steamwebhelper.exe and EpicWebHelper.exe get --in-process-gpu,
+as Proton gives CEF launchers.
+---
+ dlls/kernelbase/process.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index 25b3f4f..18f97ab 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -505,6 +505,33 @@ done:
+ /**********************************************************************
+  *           CreateProcessInternalW   (kernelbase.@)
+  */
++/* Arctic: the GPU process of Chromium draws into the browser's windows from
++ * another process, and the Wayland driver shows only what a window's own
++ * process draws. The browsers of CEF programs do that work themselves then,
++ * as Proton makes them. */
++static WCHAR *cef_command_line( const WCHAR *app_name, const WCHAR *cmd_line )
++{
++    static const WCHAR *browsers[] = { L"steamwebhelper.exe", L"EpicWebHelper.exe" };
++    static const WCHAR flag[] = L" --in-process-gpu";
++    const WCHAR *base = wcsrchr( app_name, '\\' );
++    WCHAR *ret;
++    unsigned int i;
++    size_t len;
++
++    base = base ? base + 1 : app_name;
++    for (i = 0; i < ARRAY_SIZE(browsers); i++) if (!wcsicmp( base, browsers[i] )) break;
++    if (i == ARRAY_SIZE(browsers)) return NULL;
++    /* only the browser process itself: its children are started with a --type */
++    if (wcsstr( cmd_line, L"--type=" ) || wcsstr( cmd_line, L"--in-process-gpu" )) return NULL;
++
++    len = lstrlenW( cmd_line ) + ARRAY_SIZE(flag);
++    if (!(ret = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) ))) return NULL;
++    lstrcpyW( ret, cmd_line );
++    lstrcatW( ret, flag );
++    TRACE( "%s\n", debugstr_w(ret) );
++    return ret;
++}
++
+ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR *app_name, WCHAR *cmd_line,
+                                                       SECURITY_ATTRIBUTES *process_attr,
+                                                       SECURITY_ATTRIBUTES *thread_attr,
+@@ -543,6 +570,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+         app_name = name;
+     }
+ 
++    if ((p = cef_command_line( app_name, tidy_cmdline )))
++    {
++        if (tidy_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, tidy_cmdline );
++        tidy_cmdline = p;
++    }
++
+     /* Warn if unsupported features are used */
+ 
+     if (flags & (IDLE_PRIORITY_CLASS | HIGH_PRIORITY_CLASS | REALTIME_PRIORITY_CLASS |
+-- 
+2.55.0
+

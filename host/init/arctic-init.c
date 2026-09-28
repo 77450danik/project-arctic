@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <limits.h>
+#include <net/if.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -24,6 +25,8 @@
 #include <sys/klog.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -206,11 +209,29 @@ static void serve_wired(void)
         closedir(dir);
 }
 
+/* 127.0.0.1: programs talk to their own parts over it (Steam to its UI) */
+static void loopback_up(void)
+{
+    struct ifreq ifr = {0};
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+
+    if (fd < 0)
+        return;
+    strcpy(ifr.ifr_name, "lo");
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) == 0) {
+        ifr.ifr_flags |= IFF_UP;
+        if (ioctl(fd, SIOCSIFFLAGS, &ifr))
+            say("loopback: %s", strerror(errno));
+    }
+    close(fd);
+}
+
 static void start_network(void)
 {
     char *dbus[] = {"/usr/bin/dbus-daemon", "--system", "--nofork", "--nopidfile", NULL};
     char *iwd[] = {"/usr/lib/iwd/iwd", NULL};
 
+    loopback_up();
     mkdir("/run/dbus", 0755);
     mkdir("/run/arctic/resolv.d", 0755);
     /* the networks iwd knows live as long as the session; Windows keeps the profiles */
@@ -878,6 +899,12 @@ int main(void)
     read_cmdline();
     open_logs();
     say("start (dev=%d)", dev_mode);
+    /* Every NT handle to a file, event or section is a descriptor in
+     * wineserver and often in the process too: Steam's browser alone runs
+     * past the kernel's 4096. Everything started from here inherits this. */
+    struct rlimit files = {524288, 524288};
+    if (setrlimit(RLIMIT_NOFILE, &files))
+        say("open files limit: %s", strerror(errno));
     start_shell();
 
     pw = getpwnam(NT_USER);

@@ -24,6 +24,7 @@ parser.add_argument("--iso", default=os.path.join(ROOT, "out", "arctic-local.iso
 parser.add_argument("--append", default="")
 parser.add_argument("--after", type=int, default=60, help="seconds to let it boot first")
 parser.add_argument("--keep", action="store_true")
+parser.add_argument("--memory", type=int, default=4096, help="MB of RAM")
 parser.add_argument("--put", action="append", default=[], help="LOCAL:REMOTE")
 parser.add_argument("--disk", action="append", default=[], help="a raw disk image attached as an internal disk")
 parser.add_argument("--stick", action="append", default=[], help="a raw disk image attached as a USB stick")
@@ -32,7 +33,7 @@ parser.add_argument("commands", nargs="*")
 args = parser.parse_args()
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
+cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", str(args.memory), "-smp", "4",
        "-drive", "if=none,id=cd,media=cdrom,format=raw,readonly=on,file=" + args.iso,
        "-device", "ide-cd,drive=cd,bootindex=1", "-display", "gtk", "-name", "Arctic",
        "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet", "-device", "usb-kbd",  # a USB keyboard, as real PCs have: the kernel repeats its keys
