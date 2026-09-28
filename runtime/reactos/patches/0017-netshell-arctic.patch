@@ -1,0 +1,383 @@
+diff --git a/dll/shellext/netshell/connectmanager.cpp b/dll/shellext/netshell/connectmanager.cpp
+index 790a5dd..e8b097d 100644
+--- a/dll/shellext/netshell/connectmanager.cpp
++++ b/dll/shellext/netshell/connectmanager.cpp
+@@ -359,7 +359,7 @@ CNetConnection::Rename(LPCWSTR pszwDuplicateName)
+         wcscat(szName, pStr);
+         wcscat(szName, L"\\Connection");
+ 
+-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, szName, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
++        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, szName, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+         {
+             RegSetValueExW(hKey, L"Name", NULL, REG_SZ, (LPBYTE)m_Props.pszwName, dwSize);
+             RegCloseKey(hKey);
+@@ -514,141 +514,101 @@ NormalizeOperStatus(
+     }
+ }
+ 
++static VOID
++DefaultConnectionName(UINT uResId, UINT uNumber, LPWSTR pszName, UINT cchName)
++{
++    WCHAR szBase[100];
++
++    if (!LoadStringW(netshell_hInstance, uResId, szBase, _countof(szBase)))
++        szBase[0] = L'\0';
++    if (uNumber > 1)
++        _snwprintf(pszName, cchName, L"%s %u", szBase, uNumber);
++    else
++        _snwprintf(pszName, cchName, L"%s", szBase);
++    pszName[cchName - 1] = L'\0';
++}
++
++static PWSTR
++DuplicateString(LPCWSTR pszSource)
++{
++    PWSTR pszCopy = static_cast<PWSTR>(CoTaskMemAlloc((wcslen(pszSource) + 1) * sizeof(WCHAR)));
++    if (pszCopy)
++        wcscpy(pszCopy, pszSource);
++    return pszCopy;
++}
++
++/* Arctic: the adapters are the network interfaces the IP helper lists; there is
++ * no Plug and Play network class behind them to walk */
+ HRESULT
+ CNetConnectionManager::EnumerateINetConnections()
+ {
+-    DWORD dwSize, dwResult, dwIndex, dwAdapterIndex, dwShowIcon, dwNotifyDisconnect;
+-    MIB_IFTABLE *pIfTable;
++    DWORD dwSize, dwResult, dwShowIcon, dwNotifyDisconnect;
+     MIB_IFROW IfEntry;
+-    IP_ADAPTER_INFO * pAdapterInfo;
+-    HDEVINFO hInfo;
+-    SP_DEVINFO_DATA DevInfo;
++    IP_ADAPTER_INFO *pAdapterInfo, *pAdapter;
+     HKEY hSubKey;
+     WCHAR szNetCfg[50];
+-    WCHAR szAdapterNetCfg[50];
+-    WCHAR szDetail[200] = L"SYSTEM\\CurrentControlSet\\Control\\Class\\";
+-    WCHAR szName[130] = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\";
++    WCHAR szConnName[130];
++    WCHAR szDescription[MAX_ADAPTER_DESCRIPTION_LENGTH + 4];
++    WCHAR szName[160];
++    UINT uLan = 0, uWireless = 0;
+     PINetConnectionItem pCurrent = NULL;
+ 
+-    /* get the IfTable */
+-    dwSize = 0;
+-    if (GetIfTable(NULL, &dwSize, TRUE) != ERROR_INSUFFICIENT_BUFFER)
+-        return E_FAIL;
+-
+-    pIfTable = static_cast<PMIB_IFTABLE>(CoTaskMemAlloc(dwSize));
+-    if (!pIfTable)
+-        return E_OUTOFMEMORY;
+-
+-    dwResult = GetIfTable(pIfTable, &dwSize, TRUE);
+-    if (dwResult != NO_ERROR)
+-    {
+-        CoTaskMemFree(pIfTable);
+-        return HRESULT_FROM_WIN32(dwResult);
+-    }
+-
+     dwSize = 0;
+     dwResult = GetAdaptersInfo(NULL, &dwSize);
+-    if (dwResult!= ERROR_BUFFER_OVERFLOW)
+-    {
+-        CoTaskMemFree(pIfTable);
++    if (dwResult == ERROR_NO_DATA)
++        return S_FALSE;
++    if (dwResult != ERROR_BUFFER_OVERFLOW)
+         return HRESULT_FROM_WIN32(dwResult);
+-    }
+ 
+     pAdapterInfo = static_cast<PIP_ADAPTER_INFO>(CoTaskMemAlloc(dwSize));
+     if (!pAdapterInfo)
+-    {
+-        CoTaskMemFree(pIfTable);
+         return E_OUTOFMEMORY;
+-    }
+ 
+     dwResult = GetAdaptersInfo(pAdapterInfo, &dwSize);
+     if (dwResult != NO_ERROR)
+     {
+-        CoTaskMemFree(pIfTable);
+         CoTaskMemFree(pAdapterInfo);
+         return HRESULT_FROM_WIN32(dwResult);
+     }
+ 
+-    hInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT );
+-    if (!hInfo)
++    for (pAdapter = pAdapterInfo; pAdapter; pAdapter = pAdapter->Next)
+     {
+-        CoTaskMemFree(pIfTable);
+-        CoTaskMemFree(pAdapterInfo);
+-        return E_FAIL;
+-    }
+-
+-    dwIndex = 0;
+-    do
+-    {
+-        ZeroMemory(&DevInfo, sizeof(SP_DEVINFO_DATA));
+-        DevInfo.cbSize = sizeof(DevInfo);
+-
+-        /* get device info */
+-        if (!SetupDiEnumDeviceInfo(hInfo, dwIndex++, &DevInfo))
+-            break;
+-
+-        /* get device software registry path */
+-        if (!SetupDiGetDeviceRegistryPropertyW(hInfo, &DevInfo, SPDRP_DRIVER, NULL, (LPBYTE)&szDetail[39], sizeof(szDetail)/sizeof(WCHAR) - 40, &dwSize))
+-            break;
+-
+-        /* open device registry key */
+-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, szDetail, 0, KEY_READ, &hSubKey) != ERROR_SUCCESS)
+-            break;
+-
+-        /* query NetCfgInstanceId for current device */
+-        dwSize = sizeof(szNetCfg);
+-        if (RegQueryValueExW(hSubKey, L"NetCfgInstanceId", NULL, NULL, (LPBYTE)szNetCfg, &dwSize) != ERROR_SUCCESS)
+-        {
+-            RegCloseKey(hSubKey);
+-            break;
+-        }
+-        RegCloseKey(hSubKey);
+-
+-        /* get the current adapter index from NetCfgInstanceId */
+-        if (!GetAdapterIndexFromNetCfgInstanceId(pAdapterInfo, szNetCfg, &dwAdapterIndex))
+-            continue;
+-
+-        /* get detailed adapter info */
+         ZeroMemory(&IfEntry, sizeof(IfEntry));
+-        IfEntry.dwIndex = dwAdapterIndex;
++        IfEntry.dwIndex = pAdapter->Index;
+         if (GetIfEntry(&IfEntry) != NO_ERROR)
+-            break;
++            continue;
++        if (IfEntry.dwType != IF_TYPE_ETHERNET_CSMACD && IfEntry.dwType != IF_TYPE_IEEE80211)
++            continue;
++
++        if (!MultiByteToWideChar(CP_ACP, 0, pAdapter->AdapterName, -1, szNetCfg, _countof(szNetCfg)))
++            continue;
+ 
+-        /* allocate new INetConnectionItem */
+         PINetConnectionItem pNew = static_cast<PINetConnectionItem>(CoTaskMemAlloc(sizeof(INetConnectionItem)));
+         if (!pNew)
+             break;
+ 
+         ZeroMemory(pNew, sizeof(INetConnectionItem));
+-        pNew->dwAdapterIndex = dwAdapterIndex;
+-        /* store NetCfgInstanceId */
++        pNew->dwAdapterIndex = pAdapter->Index;
+         CLSIDFromString(szNetCfg, &pNew->Props.guidId);
+         NormalizeOperStatus(&IfEntry, &pNew->Props);
++        pNew->Props.MediaType = NCM_LAN;
+ 
+-        switch (IfEntry.dwType)
+-        {
+-            case IF_TYPE_ETHERNET_CSMACD:
+-                pNew->Props.MediaType = NCM_LAN;
+-                break;
+-            case IF_TYPE_IEEE80211:
+-                pNew->Props.MediaType = NCM_SHAREDACCESSHOST_RAS;
+-                break;
+-            default:
+-                break;
+-        }
+-        /*  open network connections details */
+-        wcscpy(&szName[80], szNetCfg);
+-        wcscpy(&szName[118], L"\\Connection");
++        if (IfEntry.dwType == IF_TYPE_IEEE80211)
++            DefaultConnectionName(IDS_WIRELESS_CONNECTION, ++uWireless, szConnName, _countof(szConnName));
++        else
++            DefaultConnectionName(IDS_LAN_CONNECTION, ++uLan, szConnName, _countof(szConnName));
+ 
++        _snwprintf(szName, _countof(szName), L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\%s\\Connection", szNetCfg);
++        szName[_countof(szName) - 1] = L'\0';
+         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, szName, 0, KEY_READ, &hSubKey) == ERROR_SUCCESS)
+         {
+-            /* retrieve name of connection */
+-            dwSize = sizeof(szAdapterNetCfg);
+-            if (RegQueryValueExW(hSubKey, L"Name", NULL, NULL, (LPBYTE)szAdapterNetCfg, &dwSize) == ERROR_SUCCESS)
++            /* a name the user gave the connection */
++            dwSize = sizeof(szName);
++            if (RegQueryValueExW(hSubKey, L"Name", NULL, NULL, (LPBYTE)szName, &dwSize) == ERROR_SUCCESS && szName[0])
+             {
+-                pNew->Props.pszwName = static_cast<PWSTR>(CoTaskMemAlloc((wcslen(szAdapterNetCfg)+1) * sizeof(WCHAR)));
+-                if (pNew->Props.pszwName)
+-                    wcscpy(pNew->Props.pszwName, szAdapterNetCfg);
++                szName[_countof(szName) - 1] = L'\0';
++                wcsncpy(szConnName, szName, _countof(szConnName) - 1);
++                szConnName[_countof(szConnName) - 1] = L'\0';
+             }
+             dwSize = sizeof(dwShowIcon);
+             if (RegQueryValueExW(hSubKey, L"ShowIcon", NULL, NULL, (LPBYTE)&dwShowIcon, &dwSize) == ERROR_SUCCESS)
+@@ -664,16 +624,10 @@ CNetConnectionManager::EnumerateINetConnections()
+             }
+             RegCloseKey(hSubKey);
+         }
++        pNew->Props.pszwName = DuplicateString(szConnName);
+ 
+-        /* Get the adapter device description */
+-        dwSize = 0;
+-        SetupDiGetDeviceRegistryPropertyW(hInfo, &DevInfo, SPDRP_DEVICEDESC, NULL, NULL, 0, &dwSize);
+-        if (dwSize != 0)
+-        {
+-            pNew->Props.pszwDeviceName = static_cast<PWSTR>(CoTaskMemAlloc(dwSize));
+-            if (pNew->Props.pszwDeviceName)
+-                SetupDiGetDeviceRegistryPropertyW(hInfo, &DevInfo, SPDRP_DEVICEDESC, NULL, (PBYTE)pNew->Props.pszwDeviceName, dwSize, &dwSize);
+-        }
++        if (MultiByteToWideChar(CP_ACP, 0, pAdapter->Description, -1, szDescription, _countof(szDescription)))
++            pNew->Props.pszwDeviceName = DuplicateString(szDescription);
+ 
+         if (pCurrent)
+             pCurrent->Next = pNew;
+@@ -681,11 +635,9 @@ CNetConnectionManager::EnumerateINetConnections()
+             m_pHead = pNew;
+ 
+         pCurrent = pNew;
+-    } while (TRUE);
++    }
+ 
+-    CoTaskMemFree(pIfTable);
+     CoTaskMemFree(pAdapterInfo);
+-    SetupDiDestroyDeviceInfoList(hInfo);
+ 
+     m_pCurrent = m_pHead;
+     return (m_pHead != NULL ? S_OK : S_FALSE);
+diff --git a/dll/shellext/netshell/lang/en-US.rc b/dll/shellext/netshell/lang/en-US.rc
+index e1f86b6..88da849 100644
+--- a/dll/shellext/netshell/lang/en-US.rc
++++ b/dll/shellext/netshell/lang/en-US.rc
+@@ -155,6 +155,8 @@ BEGIN
+     IDS_STATUS_CONNECTING "Acquiring network address"
+     IDS_STATUS_CONNECTED "Connected"
+     IDS_STATUS_OPERATIONAL "Connected"
++    IDS_LAN_CONNECTION "Local Area Connection"
++    IDS_WIRELESS_CONNECTION "Wireless Network Connection"
+     IDS_NET_ACTIVATE "Enable"
+     IDS_NET_DEACTIVATE "Disable"
+     IDS_NET_STATUS "Status"
+diff --git a/dll/shellext/netshell/lang/ru-RU.rc b/dll/shellext/netshell/lang/ru-RU.rc
+index 7c9de55..a887e82 100644
+--- a/dll/shellext/netshell/lang/ru-RU.rc
++++ b/dll/shellext/netshell/lang/ru-RU.rc
+@@ -155,6 +155,8 @@ BEGIN
+     IDS_STATUS_CONNECTING "Получение сетевого адреса"
+     IDS_STATUS_CONNECTED "Подключено"
+     IDS_STATUS_OPERATIONAL "Подключено"
++    IDS_LAN_CONNECTION "Подключение по локальной сети"
++    IDS_WIRELESS_CONNECTION "Беспроводное сетевое соединение"
+     IDS_NET_ACTIVATE "Включить"
+     IDS_NET_DEACTIVATE "Отключить"
+     IDS_NET_STATUS "Состояние"
+diff --git a/dll/shellext/netshell/lang/uk-UA.rc b/dll/shellext/netshell/lang/uk-UA.rc
+index cd9cae1..bd8b95d 100644
+--- a/dll/shellext/netshell/lang/uk-UA.rc
++++ b/dll/shellext/netshell/lang/uk-UA.rc
+@@ -161,6 +161,8 @@ BEGIN
+     IDS_STATUS_CONNECTING "Отримання мережної адреси"
+     IDS_STATUS_CONNECTED "Підключено"
+     IDS_STATUS_OPERATIONAL "Підключено"
++    IDS_LAN_CONNECTION "Підключення по локальній мережі"
++    IDS_WIRELESS_CONNECTION "Бездротове мережне підключення"
+     IDS_NET_ACTIVATE "Увімкнути"
+     IDS_NET_DEACTIVATE "Вимкнути"
+     IDS_NET_STATUS "Стан"
+diff --git a/dll/shellext/netshell/lanstatusui.cpp b/dll/shellext/netshell/lanstatusui.cpp
+index ff0a43b..6d3b46c 100644
+--- a/dll/shellext/netshell/lanstatusui.cpp
++++ b/dll/shellext/netshell/lanstatusui.cpp
+@@ -1246,21 +1246,14 @@ CLanStatus::InitializeNetTaskbarNotifications()
+         pContext->hwndStatusDlg = hwndDlg;
+         pItem->hwndDlg = hwndDlg;
+ 
+-        if (Shell_NotifyIconW(NIM_ADD, &nid))
+-        {
+-            if (pLast)
+-                pLast->pNext = pItem;
+-            else
+-                m_pHead = pItem;
+-
+-            pLast = pItem;
+-            Index++;
+-        }
++        /* Arctic: no icon of its own in the notification area */
++        if (pLast)
++            pLast->pNext = pItem;
+         else
+-        {
+-            ERR("Shell_NotifyIconW failed\n");
+-            CoTaskMemFree(pItem);
+-        }
++            m_pHead = pItem;
++
++        pLast = pItem;
++        Index++;
+ 
+         if (nid.uFlags & NIF_ICON)
+             DestroyIcon(nid.hIcon);
+@@ -1320,6 +1313,8 @@ CLanStatus::Exec(
+         else
+         {
+             /* invoke status dialog */
++            if (!m_pHead)
++                InitializeNetTaskbarNotifications();
+             return ShowStatusDialogByCLSID(pguidCmdGroup);
+         }
+     }
+diff --git a/dll/shellext/netshell/netshell.cpp b/dll/shellext/netshell/netshell.cpp
+index abdf8af..f9df29a 100644
+--- a/dll/shellext/netshell/netshell.cpp
++++ b/dll/shellext/netshell/netshell.cpp
+@@ -20,7 +20,6 @@ BEGIN_OBJECT_MAP(ObjectMap)
+     OBJECT_ENTRY(CLSID_NetworkConnections, CNetworkConnections)
+     OBJECT_ENTRY(CLSID_ConnectionManager, CNetConnectionManager)
+     OBJECT_ENTRY(CLSID_LanConnectionUi, CNetConnectionPropertyUi)
+-    OBJECT_ENTRY(CLSID_ConnectionTray, CLanStatus)
+ END_OBJECT_MAP()
+ 
+ CNetshellModule gModule;
+diff --git a/dll/shellext/netshell/res/netshell.rgs b/dll/shellext/netshell/res/netshell.rgs
+index 103005a..cc13baa 100644
+--- a/dll/shellext/netshell/res/netshell.rgs
++++ b/dll/shellext/netshell/res/netshell.rgs
+@@ -22,13 +22,6 @@ HKCR
+                 val ThreadingModel = s 'Both'
+             }
+         }
+-        ForceRemove {7007ACCF-3202-11D1-AAD2-00805FC1270E} = s 'Network Connections Status Icon'
+-        {
+-            InprocServer32 = s '%MODULE%'
+-            {
+-                val ThreadingModel = s 'Both'
+-            }
+-        }
+         ForceRemove {7007acd1-3202-11d1-aad2-00805fc1270e} = s 'Network Common Connections Ui'
+         {
+             InprocServer32 = s '%MODULE%'
+diff --git a/dll/shellext/netshell/resource.h b/dll/shellext/netshell/resource.h
+index abc36be..34e0e77 100644
+--- a/dll/shellext/netshell/resource.h
++++ b/dll/shellext/netshell/resource.h
+@@ -99,6 +99,8 @@
+ #define IDS_STATUS_CONNECTING      10011
+ #define IDS_STATUS_CONNECTED       10012
+ #define IDS_STATUS_OPERATIONAL     10013
++#define IDS_LAN_CONNECTION         10014
++#define IDS_WIRELESS_CONNECTION    10015
+ 
+ #define IDS_NET_ACTIVATE   10100
+ #define IDS_NET_DEACTIVATE 10101
+diff --git a/dll/shellext/netshell/shfldr_netconnect.cpp b/dll/shellext/netshell/shfldr_netconnect.cpp
+index dfd1a0d..52a9728 100644
+--- a/dll/shellext/netshell/shfldr_netconnect.cpp
++++ b/dll/shellext/netshell/shfldr_netconnect.cpp
+@@ -42,7 +42,9 @@ CNetworkConnections::CNetworkConnections() :
+     m_pidlRoot(NULL)
+ {
+     HRESULT hr;
+-    hr = CoCreateInstance(CLSID_ConnectionTray, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARG(IOleCommandTarget, &m_lpOleCmd));
++    /* Arctic: the notification area icon is pnidui.dll's, as on Windows 7;
++     * the status dialogs of the connections stay here */
++    hr = ShellObjectCreator<CLanStatus>(IID_PPV_ARG(IOleCommandTarget, &m_lpOleCmd));
+     if (FAILED_UNEXPECTEDLY(hr))
+         m_lpOleCmd = NULL;
+ }
