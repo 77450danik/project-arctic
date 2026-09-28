@@ -1,0 +1,62 @@
+From a175a463603c7a63e2d07f0363bddba031c4a98e Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 29 Sep 2026 01:20:35 +0300
+Subject: [PATCH] kernelbase: AppContainerRegisterSid and
+ AppContainerUnregisterSid
+
+Chromium's sandbox looks both up in kernelbase before it starts a process
+in its app container and stops at once (a CHECK) when they are missing,
+so Chrome only ran with --no-sandbox. The registration is taken as done.
+---
+ dlls/kernelbase/kernelbase.spec |  4 ++--
+ dlls/kernelbase/security.c      | 22 ++++++++++++++++++++++
+ 2 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index 97e3897..e75305e 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -40,8 +40,8 @@
+ # @ stub AppContainerFreeMemory
+ # @ stub AppContainerLookupDisplayNameMrtReference
+ # @ stub AppContainerLookupMoniker
+-# @ stub AppContainerRegisterSid
+-# @ stub AppContainerUnregisterSid
++@ stdcall AppContainerRegisterSid(ptr wstr wstr)
++@ stdcall AppContainerUnregisterSid(ptr)
+ # @ stub AppPolicyGetClrCompat
+ # @ stub AppPolicyGetCreateFileAccess
+ # @ stub AppPolicyGetLifecycleManagement
+diff --git a/dlls/kernelbase/security.c b/dlls/kernelbase/security.c
+index 6231c48..1487158 100644
+--- a/dlls/kernelbase/security.c
++++ b/dlls/kernelbase/security.c
+@@ -1562,3 +1562,25 @@ done:
+     }
+     return set_ntstatus( status );
+ }
++
++/******************************************************************************
++ * AppContainerRegisterSid   (kernelbase.@)
++ *
++ * Chromium's sandbox registers the SID of its app container before it starts
++ * processes in it, and stops at once when the function is not there. There is
++ * no container to keep a record in: the registration is taken as done.
++ */
++HRESULT WINAPI AppContainerRegisterSid( PSID sid, const WCHAR *moniker, const WCHAR *display_name )
++{
++    FIXME( "(%p, %s, %s): stub\n", sid, debugstr_w(moniker), debugstr_w(display_name) );
++    return S_OK;
++}
++
++/******************************************************************************
++ * AppContainerUnregisterSid   (kernelbase.@)
++ */
++HRESULT WINAPI AppContainerUnregisterSid( PSID sid )
++{
++    FIXME( "(%p): stub\n", sid );
++    return S_OK;
++}
+-- 
+2.55.0
+
