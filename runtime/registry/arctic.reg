@@ -130,6 +130,19 @@ REGEDIT4
 "Source Sans Pro Semibold Italic (TrueType)"="SourceSansPro-SemiboldIt.ttf"
 "Source Sans Pro Bold (TrueType)"="SourceSansPro-Bold.ttf"
 "Source Sans Pro Bold Italic (TrueType)"="SourceSansPro-BoldIt.ttf"
+; Arial, Times New Roman and Courier New, made from Liberation (ci/windows-fonts.py)
+"Arial (TrueType)"="arial.ttf"
+"Arial Bold (TrueType)"="arialbd.ttf"
+"Arial Italic (TrueType)"="ariali.ttf"
+"Arial Bold Italic (TrueType)"="arialbi.ttf"
+"Times New Roman (TrueType)"="times.ttf"
+"Times New Roman Bold (TrueType)"="timesbd.ttf"
+"Times New Roman Italic (TrueType)"="timesi.ttf"
+"Times New Roman Bold Italic (TrueType)"="timesbi.ttf"
+"Courier New (TrueType)"="cour.ttf"
+"Courier New Bold (TrueType)"="courbd.ttf"
+"Courier New Italic (TrueType)"="couri.ttf"
+"Courier New Bold Italic (TrueType)"="courbi.ttf"
 
 ; the interface fonts of Mizu's [SysMetrics]
 [HKEY_CURRENT_USER\Control Panel\Desktop\WindowMetrics]
