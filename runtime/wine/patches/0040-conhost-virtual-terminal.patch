@@ -1,0 +1,441 @@
+From 9a2ebba926357bda3cbe6c168c8e996545e04d57 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 29 Sep 2026 15:35:56 +0300
+Subject: [PATCH] conhost: Virtual terminal sequences in the console window
+
+A program that sets ENABLE_VIRTUAL_TERMINAL_PROCESSING (Claude Code,
+node, git, PowerShell 7) writes escape sequences for colours and cursor
+moves, and the console window printed them as they were. They are now
+read as conhost of Windows 10 reads them: SGR colours (16, 256 and 24-bit,
+brought to the console's sixteen), bold and inverse, cursor moves and
+saves, erasing, inserting and deleting characters and lines, scrolling,
+cursor visibility, the alternate screen, the window title (OSC 0 and 2)
+and the cursor position report.
+---
+ programs/conhost/conhost.c | 378 +++++++++++++++++++++++++++++++++++++
+ programs/conhost/conhost.h |  13 ++
+ 2 files changed, 391 insertions(+)
+
+diff --git a/programs/conhost/conhost.c b/programs/conhost/conhost.c
+index 4c7dc75..d535e4f 100644
+--- a/programs/conhost/conhost.c
++++ b/programs/conhost/conhost.c
+@@ -2121,6 +2121,381 @@ static void play_console_beep( struct console *console )
+     }
+ }
+ 
++/* Virtual terminal sequences, which a program turns on with
++ * ENABLE_VIRTUAL_TERMINAL_PROCESSING, as conhost of Windows 10 reads them:
++ * colours, cursor moves, erasing, scrolling, the alternate screen and the
++ * window title. Colours are brought to the sixteen of the console. */
++
++static NTSTATUS set_console_title( struct console *console, const WCHAR *in_title, size_t size );
++
++enum vt_state { VT_NORMAL, VT_ESCAPE, VT_CSI, VT_OSC, VT_OSC_ESCAPE, VT_CHARSET };
++
++/* the ANSI order of colours (red first) against the console's (blue first) */
++static const unsigned char vt_ansi_to_console[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
++
++static unsigned int vt_param( struct screen_buffer *sb, unsigned int i, unsigned int def )
++{
++    return i < sb->vt_count && sb->vt_params[i] ? sb->vt_params[i] : def;
++}
++
++static char_info_t *vt_cell( struct screen_buffer *sb, unsigned int x, unsigned int y )
++{
++    return &sb->data[y * sb->width + x];
++}
++
++static void vt_fill( struct screen_buffer *sb, unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1,
++                     RECT *update_rect )
++{
++    char_info_t blank = { ' ', sb->attr };
++    unsigned int x, y;
++
++    if (y1 >= sb->height) y1 = sb->height - 1;
++    for (y = y0; y <= y1; y++)
++        for (x = (y == y0 ? x0 : 0); x <= (y == y1 ? x1 : sb->width - 1) && x < sb->width; x++)
++            *vt_cell( sb, x, y ) = blank;
++    update_rect->left = 0;
++    update_rect->right = sb->width - 1;
++    update_rect->top = min( update_rect->top, y0 );
++    update_rect->bottom = max( update_rect->bottom, y1 );
++}
++
++/* lines top..bottom move up by n (down when n < 0); the freed lines are blank */
++static void vt_scroll( struct screen_buffer *sb, unsigned int top, unsigned int bottom, int n, RECT *update_rect )
++{
++    unsigned int lines = bottom - top + 1, count = abs( n );
++
++    if (count > lines) count = lines;
++    if (n > 0)
++    {
++        memmove( vt_cell( sb, 0, top ), vt_cell( sb, 0, top + count ), (lines - count) * sb->width * sizeof(char_info_t) );
++        vt_fill( sb, 0, bottom - count + 1, sb->width - 1, bottom, update_rect );
++    }
++    else if (n < 0)
++    {
++        memmove( vt_cell( sb, 0, top + count ), vt_cell( sb, 0, top ), (lines - count) * sb->width * sizeof(char_info_t) );
++        vt_fill( sb, 0, top, sb->width - 1, top + count - 1, update_rect );
++    }
++    update_rect->top = min( update_rect->top, top );
++    update_rect->bottom = max( update_rect->bottom, bottom );
++}
++
++/* the nearest of the sixteen console colours */
++static unsigned int vt_nearest_color( struct screen_buffer *sb, unsigned int r, unsigned int g, unsigned int b )
++{
++    unsigned int i, best = 0, best_dist = ~0u;
++
++    for (i = 0; i < 16; i++)
++    {
++        unsigned int c = sb->color_map[i];
++        int dr = (int)(c & 0xff) - (int)r, dg = (int)((c >> 8) & 0xff) - (int)g, db = (int)((c >> 16) & 0xff) - (int)b;
++        unsigned int dist = dr * dr + dg * dg + db * db;
++        if (dist < best_dist)
++        {
++            best_dist = dist;
++            best = i;
++        }
++    }
++    return best;
++}
++
++static unsigned int vt_256_color( struct screen_buffer *sb, unsigned int n )
++{
++    static const unsigned char steps[6] = { 0, 95, 135, 175, 215, 255 };
++
++    if (n < 8) return vt_ansi_to_console[n];
++    if (n < 16) return vt_ansi_to_console[n - 8] | FOREGROUND_INTENSITY;
++    if (n < 232)
++    {
++        n -= 16;
++        return vt_nearest_color( sb, steps[n / 36], steps[(n / 6) % 6], steps[n % 6] );
++    }
++    n = 8 + (n - 232) * 10;
++    return vt_nearest_color( sb, n, n, n );
++}
++
++/* 38;5;n / 38;2;r;g;b and their background forms; returns the parameters used */
++static unsigned int vt_extended_color( struct screen_buffer *sb, unsigned int i, unsigned int *color )
++{
++    if (i + 1 < sb->vt_count && sb->vt_params[i + 1] == 5 && i + 2 < sb->vt_count)
++    {
++        *color = vt_256_color( sb, sb->vt_params[i + 2] );
++        return 2;
++    }
++    if (i + 1 < sb->vt_count && sb->vt_params[i + 1] == 2 && i + 4 < sb->vt_count)
++    {
++        *color = vt_nearest_color( sb, sb->vt_params[i + 2], sb->vt_params[i + 3], sb->vt_params[i + 4] );
++        return 4;
++    }
++    return sb->vt_count - i - 1;
++}
++
++static void vt_sgr( struct screen_buffer *sb )
++{
++    unsigned int i, fg = sb->attr & 0x0f, bg = (sb->attr >> 4) & 0x0f, extra = sb->attr & COMMON_LVB_UNDERSCORE;
++    unsigned int def_fg = sb->vt_default_attr & 0x0f, def_bg = (sb->vt_default_attr >> 4) & 0x0f;
++
++    if (sb->vt_inverse)
++    {
++        unsigned int t = fg;
++        fg = bg;
++        bg = t;
++    }
++    if (!sb->vt_count) sb->vt_params[sb->vt_count++] = 0;
++    for (i = 0; i < sb->vt_count; i++)
++    {
++        unsigned int p = sb->vt_params[i];
++
++        if (p == 0)
++        {
++            fg = def_fg;
++            bg = def_bg;
++            extra = 0;
++            sb->vt_inverse = FALSE;
++        }
++        else if (p == 1) fg |= FOREGROUND_INTENSITY;
++        else if (p == 22) fg &= ~FOREGROUND_INTENSITY;
++        else if (p == 4) extra |= COMMON_LVB_UNDERSCORE;
++        else if (p == 24) extra &= ~COMMON_LVB_UNDERSCORE;
++        else if (p == 7) sb->vt_inverse = TRUE;
++        else if (p == 27) sb->vt_inverse = FALSE;
++        else if (p >= 30 && p <= 37) fg = (fg & FOREGROUND_INTENSITY) | vt_ansi_to_console[p - 30];
++        else if (p >= 90 && p <= 97) fg = vt_ansi_to_console[p - 90] | FOREGROUND_INTENSITY;
++        else if (p == 39) fg = def_fg;
++        else if (p >= 40 && p <= 47) bg = (bg & FOREGROUND_INTENSITY) | vt_ansi_to_console[p - 40];
++        else if (p >= 100 && p <= 107) bg = vt_ansi_to_console[p - 100] | FOREGROUND_INTENSITY;
++        else if (p == 49) bg = def_bg;
++        else if (p == 38) i += vt_extended_color( sb, i, &fg );
++        else if (p == 48) i += vt_extended_color( sb, i, &bg );
++    }
++    if (sb->vt_inverse)
++    {
++        unsigned int t = fg;
++        fg = bg;
++        bg = t;
++    }
++    sb->attr = fg | (bg << 4) | extra;
++}
++
++static void vt_reply( struct screen_buffer *sb, const char *text )
++{
++    INPUT_RECORD records[64];
++    unsigned int i, n = 0;
++
++    for (i = 0; text[i] && n + 2 <= ARRAY_SIZE(records); i++)
++    {
++        memset( &records[n], 0, sizeof(records[n]) );
++        records[n].EventType = KEY_EVENT;
++        records[n].Event.KeyEvent.bKeyDown = TRUE;
++        records[n].Event.KeyEvent.wRepeatCount = 1;
++        records[n].Event.KeyEvent.uChar.UnicodeChar = text[i];
++        records[n + 1] = records[n];
++        records[n + 1].Event.KeyEvent.bKeyDown = FALSE;
++        n += 2;
++    }
++    write_console_input( sb->console, records, n, TRUE );
++}
++
++static void vt_alternate_screen( struct screen_buffer *sb, BOOL on, RECT *update_rect )
++{
++    size_t size = sb->width * sb->height * sizeof(char_info_t);
++
++    if (on && !sb->vt_main_data && (sb->vt_main_data = malloc( size )))
++    {
++        memcpy( sb->vt_main_data, sb->data, size );
++        sb->vt_main_size = size;
++        sb->vt_saved_x = sb->cursor_x;
++        sb->vt_saved_y = sb->cursor_y;
++        vt_fill( sb, 0, sb->win.top, sb->width - 1, sb->win.bottom, update_rect );
++    }
++    else if (!on && sb->vt_main_data)
++    {
++        /* a resize meanwhile leaves the alternate screen as it is */
++        if (sb->vt_main_size == size) memcpy( sb->data, sb->vt_main_data, size );
++        free( sb->vt_main_data );
++        sb->vt_main_data = NULL;
++        sb->cursor_x = sb->vt_saved_x;
++        sb->cursor_y = sb->vt_saved_y;
++        SetRect( update_rect, 0, 0, sb->width - 1, sb->height - 1 );
++    }
++}
++
++static void vt_csi( struct screen_buffer *sb, WCHAR final, RECT *update_rect )
++{
++    unsigned int top = sb->win.top, bottom = min( sb->win.bottom, sb->height - 1 );
++    unsigned int n = vt_param( sb, 0, 1 ), x = min( sb->cursor_x, sb->width - 1 ), y = sb->cursor_y, i;
++    char reply[32];
++
++    if (sb->vt_private == '?')
++    {
++        for (i = 0; i < max( sb->vt_count, 1 ); i++)
++        {
++            unsigned int mode = sb->vt_count ? sb->vt_params[i] : 0;
++            if (mode == 25) sb->cursor_visible = final == 'h';
++            else if (mode == 1049 || mode == 1047 || mode == 47) vt_alternate_screen( sb, final == 'h', update_rect );
++        }
++        return;
++    }
++    if (sb->vt_private) return;
++
++    switch (final)
++    {
++    case 'A': sb->cursor_y = y >= top + n ? y - n : top; break;
++    case 'B': case 'e': sb->cursor_y = min( y + n, bottom ); break;
++    case 'C': case 'a': sb->cursor_x = min( x + n, sb->width - 1 ); break;
++    case 'D': sb->cursor_x = x >= n ? x - n : 0; break;
++    case 'E': sb->cursor_y = min( y + n, bottom ); sb->cursor_x = 0; break;
++    case 'F': sb->cursor_y = y >= top + n ? y - n : top; sb->cursor_x = 0; break;
++    case 'G': case '`': sb->cursor_x = min( n - 1, sb->width - 1 ); break;
++    case 'd': sb->cursor_y = min( top + n - 1, bottom ); break;
++    case 'H': case 'f':
++        sb->cursor_y = min( top + vt_param( sb, 0, 1 ) - 1, bottom );
++        sb->cursor_x = min( vt_param( sb, 1, 1 ) - 1, sb->width - 1 );
++        break;
++    case 'J':
++        switch (sb->vt_count ? sb->vt_params[0] : 0)
++        {
++        case 0: vt_fill( sb, x, y, sb->width - 1, bottom, update_rect ); break;
++        case 1: vt_fill( sb, 0, top, x, y, update_rect ); break;
++        case 2: case 3: vt_fill( sb, 0, top, sb->width - 1, bottom, update_rect ); break;
++        }
++        break;
++    case 'K':
++        switch (sb->vt_count ? sb->vt_params[0] : 0)
++        {
++        case 0: vt_fill( sb, x, y, sb->width - 1, y, update_rect ); break;
++        case 1: vt_fill( sb, 0, y, x, y, update_rect ); break;
++        case 2: vt_fill( sb, 0, y, sb->width - 1, y, update_rect ); break;
++        }
++        break;
++    case 'X': vt_fill( sb, x, y, min( x + n, sb->width ) - 1, y, update_rect ); break;
++    case 'P':
++        n = min( n, sb->width - x );
++        memmove( vt_cell( sb, x, y ), vt_cell( sb, x + n, y ), (sb->width - x - n) * sizeof(char_info_t) );
++        vt_fill( sb, sb->width - n, y, sb->width - 1, y, update_rect );
++        break;
++    case '@':
++        n = min( n, sb->width - x );
++        memmove( vt_cell( sb, x + n, y ), vt_cell( sb, x, y ), (sb->width - x - n) * sizeof(char_info_t) );
++        vt_fill( sb, x, y, x + n - 1, y, update_rect );
++        break;
++    case 'L': if (y <= bottom) vt_scroll( sb, y, bottom, -(int)n, update_rect ); break;
++    case 'M': if (y <= bottom) vt_scroll( sb, y, bottom, n, update_rect ); break;
++    case 'S': vt_scroll( sb, top, bottom, n, update_rect ); break;
++    case 'T': vt_scroll( sb, top, bottom, -(int)n, update_rect ); break;
++    case 'm': vt_sgr( sb ); break;
++    case 's': sb->vt_saved_x = sb->cursor_x; sb->vt_saved_y = sb->cursor_y; break;
++    case 'u': sb->cursor_x = sb->vt_saved_x; sb->cursor_y = sb->vt_saved_y; break;
++    case 'n':
++        if (n == 6)
++        {
++            sprintf( reply, "\x1b[%u;%uR", y - top + 1, x + 1 );
++            vt_reply( sb, reply );
++        }
++        break;
++    case 'c':
++        vt_reply( sb, "\x1b[?1;0c" );
++        break;
++    }
++}
++
++/* one character of output; TRUE when it belonged to a sequence */
++static BOOL vt_process( struct screen_buffer *sb, WCHAR ch, RECT *update_rect )
++{
++    if (!sb->vt_default_set)
++    {
++        sb->vt_default_attr = sb->attr;
++        sb->vt_default_set = TRUE;
++    }
++
++    switch (sb->vt_state)
++    {
++    case VT_NORMAL:
++        if (ch != 0x1b) return FALSE;
++        sb->vt_state = VT_ESCAPE;
++        return TRUE;
++
++    case VT_ESCAPE:
++        sb->vt_state = VT_NORMAL;
++        switch (ch)
++        {
++        case '[':
++            sb->vt_state = VT_CSI;
++            sb->vt_count = 0;
++            sb->vt_private = 0;
++            memset( sb->vt_params, 0, sizeof(sb->vt_params) );
++            break;
++        case ']':
++            sb->vt_state = VT_OSC;
++            sb->vt_title_len = 0;
++            break;
++        case '(': case ')': case '*': case '+':
++            sb->vt_state = VT_CHARSET;
++            break;
++        case '7':
++            sb->vt_saved_x = sb->cursor_x;
++            sb->vt_saved_y = sb->cursor_y;
++            break;
++        case '8':
++            sb->cursor_x = sb->vt_saved_x;
++            sb->cursor_y = sb->vt_saved_y;
++            break;
++        case 'M':
++            if (sb->cursor_y > sb->win.top) sb->cursor_y--;
++            else vt_scroll( sb, sb->win.top, min( sb->win.bottom, sb->height - 1 ), -1, update_rect );
++            break;
++        case 'c':
++            sb->attr = sb->vt_default_attr;
++            sb->vt_inverse = FALSE;
++            vt_fill( sb, 0, sb->win.top, sb->width - 1, sb->win.bottom, update_rect );
++            sb->cursor_x = 0;
++            sb->cursor_y = sb->win.top;
++            break;
++        }
++        return TRUE;
++
++    case VT_CHARSET:
++        sb->vt_state = VT_NORMAL;
++        return TRUE;
++
++    case VT_CSI:
++        if (ch >= '0' && ch <= '9')
++        {
++            if (!sb->vt_count) sb->vt_count = 1;
++            if (sb->vt_count <= ARRAY_SIZE(sb->vt_params))
++                sb->vt_params[sb->vt_count - 1] = min( sb->vt_params[sb->vt_count - 1] * 10 + (ch - '0'), 65535 );
++        }
++        else if (ch == ';' || ch == ':')
++        {
++            if (!sb->vt_count) sb->vt_count = 1;
++            if (sb->vt_count < ARRAY_SIZE(sb->vt_params)) sb->vt_count++;
++        }
++        else if (ch == '?' || ch == '>' || ch == '<' || ch == '=') sb->vt_private = ch;
++        else if (ch >= 0x20 && ch < 0x40) ; /* intermediate bytes */
++        else
++        {
++            sb->vt_state = VT_NORMAL;
++            vt_csi( sb, ch, update_rect );
++        }
++        return TRUE;
++
++    case VT_OSC:
++        if (ch == 0x07 || ch == 0x1b)
++        {
++            /* 0 and 2 set the title */
++            if (sb->vt_title_len >= 2 && (sb->vt_title[0] == '0' || sb->vt_title[0] == '2') && sb->vt_title[1] == ';')
++                set_console_title( sb->console, sb->vt_title + 2, (sb->vt_title_len - 2) * sizeof(WCHAR) );
++            sb->vt_state = ch == 0x1b ? VT_OSC_ESCAPE : VT_NORMAL;
++        }
++        else if (sb->vt_title_len < ARRAY_SIZE(sb->vt_title)) sb->vt_title[sb->vt_title_len++] = ch;
++        return TRUE;
++
++    case VT_OSC_ESCAPE:
++        sb->vt_state = VT_NORMAL;
++        return TRUE;
++    }
++    return FALSE;
++}
++
+ static NTSTATUS write_console( struct screen_buffer *screen_buffer, const WCHAR *buffer, size_t len )
+ {
+     RECT update_rect;
+@@ -2132,6 +2507,9 @@ static NTSTATUS write_console( struct screen_buffer *screen_buffer, const WCHAR
+ 
+     for (i = 0; i < len; i++)
+     {
++        if ((screen_buffer->mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) &&
++            vt_process( screen_buffer, buffer[i], &update_rect ))
++            continue;
+         if (screen_buffer->mode & ENABLE_PROCESSED_OUTPUT)
+         {
+             switch (buffer[i])
+diff --git a/programs/conhost/conhost.h b/programs/conhost/conhost.h
+index a0b8b72..b11e30c 100644
+--- a/programs/conhost/conhost.h
++++ b/programs/conhost/conhost.h
+@@ -133,6 +133,19 @@ struct screen_buffer
+     RECT                   win;                 /* current visible window on the screen buffer */
+     struct font_info       font;                /* console font information */
+     struct wine_rb_entry   entry;               /* map entry */
++    /* virtual terminal sequences (ENABLE_VIRTUAL_TERMINAL_PROCESSING) */
++    unsigned int           vt_state;            /* where the parser is in a sequence */
++    unsigned int           vt_params[16];       /* numeric parameters of a CSI sequence */
++    unsigned int           vt_count;            /* parameters seen */
++    WCHAR                  vt_private;          /* '?' or '>' after the CSI */
++    WCHAR                  vt_title[256];       /* an OSC string being read */
++    unsigned int           vt_title_len;
++    unsigned short         vt_default_attr;     /* the colors SGR 0 goes back to */
++    BOOL                   vt_default_set;
++    BOOL                   vt_inverse;
++    unsigned int           vt_saved_x, vt_saved_y;
++    char_info_t           *vt_main_data;        /* the main screen while the alternate one shows */
++    size_t                 vt_main_size;
+ };
+ 
+ /* conhost.c */
+-- 
+2.55.0
+

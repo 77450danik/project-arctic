@@ -1,0 +1,14 @@
+# Virtual terminal sequences in the console window (tests/tools/vttest.c on
+# the test programs' disk, D:): colours, a box, erased and moved text, and
+# no escape characters on screen
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type D:\vttest.exe
+key ret
+sleep 8
+shot v1-console
