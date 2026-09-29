@@ -65,6 +65,7 @@ struct kms_output
     void            *queued_buffer;
     bool             no_flip;              /* the driver cannot flip: frames are drawn where they show */
     bool             fake_vblank;          /* flips complete at once: frames are paced by a timer */
+    uint32_t         short_flips;          /* flips in a row that came too soon for a vertical blank */
     uint64_t         submit_time;          /* µs, CLOCK_MONOTONIC */
     uint64_t         done_time;
     uint32_t         plane;                /* primary plane (atomic) */

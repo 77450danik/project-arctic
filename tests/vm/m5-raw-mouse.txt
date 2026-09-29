@@ -1,0 +1,19 @@
+# Raw mouse input, which games aim with (tests/tools/rawmousetest.c on the
+# test programs' disk, D:): relative moves must add up in the raw sums
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type D:\rawmousetest.exe
+key ret
+sleep 6
+rel 40 0
+sleep 0.2
+rel 40 0
+sleep 0.2
+rel 0 30
+sleep 2
+shot r1-raw

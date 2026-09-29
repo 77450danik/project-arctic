@@ -513,17 +513,24 @@ struct kms_mode *kms_find_mode( struct kms_output *out, uint32_t width, uint32_t
  *          Frames
  */
 
-static void flip_finished( struct kms_output *out )
+/* when: the kernel's time of the vertical blank the flip landed on, which
+ * does not move when dwm reads the event late */
+static void flip_finished( struct kms_output *out, uint64_t when )
 {
     void *off_screen = out->front_buffer;
-    uint64_t now = kms_now();
+    uint64_t now = when ? when : kms_now();
 
-    /* a real vertical blank never comes twice within one refresh */
+    /* A real vertical blank never comes twice within one refresh. A driver
+     * without them says so flip after flip; one short gap is a late event. */
     if (!out->fake_vblank && out->done_time && now - out->done_time < kms_frame_time( out ) * 3 / 4)
     {
-        MESSAGE( "dwm: %s flips without a vertical blank: frames are paced by a timer\n", out->name );
-        out->fake_vblank = true;
+        if (++out->short_flips == 8)
+        {
+            MESSAGE( "dwm: %s flips without a vertical blank: frames are paced by a timer\n", out->name );
+            out->fake_vblank = true;
+        }
     }
+    else out->short_flips = 0;
     out->done_time = now;
     out->front_fb = out->queued_fb;
     out->front_buffer = out->queued_buffer;
@@ -554,7 +561,7 @@ void kms_dispatch(void)
                 struct kms_output *out = &kms.outputs[i];
 
                 if (!out->connector_id || !out->queued_fb || out->crtc_id != crtc) continue;
-                flip_finished( out );
+                flip_finished( out, (uint64_t)vblank->tv_sec * 1000000 + vblank->tv_usec );
                 break;
             }
         }

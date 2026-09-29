@@ -28,6 +28,7 @@ struct rit_event
     UINT32 code;
     INT32  x, y;
     INT32  value;
+    INT32  raw_x, raw_y;  /* RIT_MOTION: the device's own counts, without acceleration */
 };
 
 struct rit_read_params

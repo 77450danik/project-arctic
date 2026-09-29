@@ -35,6 +35,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(winsrv);
 
 static struct libinput *li;
 static double motion_x, motion_y, scroll_x, scroll_y;  /* fractions not sent yet */
+static double raw_motion_x, raw_motion_y;
 
 static int open_restricted( const char *path, int flags, void *data )
 {
@@ -80,6 +81,7 @@ static void add_event( struct rit_read_params *params, UINT32 type, UINT32 code,
     event->x = x;
     event->y = y;
     event->value = value;
+    event->raw_x = event->raw_y = 0;
 }
 
 /* whole units now, the rest later */
@@ -128,11 +130,21 @@ static void translate( struct rit_read_params *params, struct libinput_event *ev
     }
 
     case LIBINPUT_EVENT_POINTER_MOTION:
+    {
+        INT32 raw_x, raw_y;
+
         pointer = libinput_event_get_pointer_event( event );
         x = take( &motion_x, libinput_event_pointer_get_dx( pointer ) );
         y = take( &motion_y, libinput_event_pointer_get_dy( pointer ) );
-        if (x || y) add_event( params, RIT_MOTION, 0, x, y, 0 );
+        /* games read raw input, which Windows gives unaccelerated */
+        raw_x = take( &raw_motion_x, libinput_event_pointer_get_dx_unaccelerated( pointer ) );
+        raw_y = take( &raw_motion_y, libinput_event_pointer_get_dy_unaccelerated( pointer ) );
+        if (!x && !y && !raw_x && !raw_y) break;
+        add_event( params, RIT_MOTION, 0, x, y, 0 );
+        params->events[params->count - 1].raw_x = raw_x;
+        params->events[params->count - 1].raw_y = raw_y;
         break;
+    }
 
     case LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE:
         pointer = libinput_event_get_pointer_event( event );

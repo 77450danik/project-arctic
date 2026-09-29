@@ -197,6 +197,20 @@ static void send_mouse( DWORD flags, LONG x, LONG y, DWORD data )
     NtUserSendHardwareInput( 0, SEND_HWMSG_RAWINPUT, &input, 0 );
 }
 
+/* A move of the pointer. Raw input (WM_INPUT), which games aim with, carries
+ * its own counts: wineserver takes them from raw.data and nowhere else, so
+ * without them every move reached a game as no move at all. */
+static void send_motion( LONG dx, LONG dy, LONG raw_x, LONG raw_y )
+{
+    INPUT input = { .type = INPUT_MOUSE };
+    struct raw_mouse raw = { .count = 1, .data = { { raw_x, raw_y } } };
+
+    input.mi.dx = dx;
+    input.mi.dy = dy;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE;
+    NtUserSendHardwareInput( 0, SEND_HWMSG_RAWINPUT, &input, (LPARAM)&raw );
+}
+
 static void send_button( UINT button, BOOL pressed )
 {
     switch (button)
@@ -374,7 +388,7 @@ static DWORD WINAPI raw_input_thread( void *arg )
                 send_button( event->code, event->value );
                 break;
             case RIT_MOTION:
-                send_mouse( MOUSEEVENTF_MOVE, event->x, event->y, 0 );
+                send_motion( event->x, event->y, event->raw_x, event->raw_y );
                 break;
             case RIT_MOTION_ABSOLUTE:
                 send_absolute( event->x, event->y );

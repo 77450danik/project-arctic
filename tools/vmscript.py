@@ -2,6 +2,7 @@
 
 Steps, one per line ('#' starts a comment):
     move X Y              pointer to screen pixel X, Y (needs the usb-tablet)
+    rel DX DY             a relative move, as a mouse makes it
     click [left|right|middle]
     dblclick              two left clicks in a row
     down [BUTTON] / up [BUTTON]
@@ -113,6 +114,11 @@ class Qmp:
         self.events({"type": "abs", "data": {"axis": "x", "value": int(x * 32767 / (self.width - 1))}},
                     {"type": "abs", "data": {"axis": "y", "value": int(y * 32767 / (self.height - 1))}})
 
+    def rel(self, dx, dy):
+        # a relative move goes to the PS/2 mouse, as a real mouse sends it
+        self.events({"type": "rel", "data": {"axis": "x", "value": dx}},
+                    {"type": "rel", "data": {"axis": "y", "value": dy}})
+
     def button(self, name, down):
         self.events({"type": "btn", "data": {"down": down, "button": name}})
 
@@ -161,6 +167,8 @@ def run(qmp, steps):
         print("  " + line, flush=True)
         if cmd == "move":
             qmp.move(int(words[0]), int(words[1]))
+        elif cmd == "rel":
+            qmp.rel(int(words[0]), int(words[1]))
         elif cmd == "click":
             button = words[0] if words else "left"
             qmp.button(button, True)

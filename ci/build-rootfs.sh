@@ -79,6 +79,9 @@ timeout 900 arch-chroot "$RFS" /usr/bin/busybox sh /var/tmp/mkprefix.sh
 PFX="$RFS/var/tmp/prefix"
 rm -f "$PFX/dosdevices/z:"
 mkdir -p "$PFX/drive_c/windows/Web/Wallpaper/Arctic"
+# Windows always has LocalLow; certificate revocation caches (cryptnet) and
+# low-integrity programs such as browsers look it up and give up without it
+for profile in "$PFX"/drive_c/users/*/AppData; do mkdir -p "$profile/LocalLow"; done
 cp "$ROOT/WALLPAPER.jpg" "$PFX/drive_c/windows/Web/Wallpaper/Arctic/img0.jpg"
 # Parts of ReactOS (ci/build-reactos.sh), when they are built
 REACTOS=${REACTOS_OUT:-$ROOT/out/reactos}
