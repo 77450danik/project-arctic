@@ -1,5 +1,5 @@
 diff --git a/dll/win32/shell32/shell32.spec b/dll/win32/shell32/shell32.spec
-index 28189a6..f4a51fb 100644
+index 28189a6..1cf152f 100644
 --- a/dll/win32/shell32/shell32.spec
 +++ b/dll/win32/shell32/shell32.spec
 @@ -496,7 +496,7 @@
@@ -32,11 +32,68 @@ index 28189a6..f4a51fb 100644
  @ stub -version=0x600+ SHGetTemporaryPropertyForItem # Vista:391
  @ stdcall SHGetUnreadMailCountW(ptr wstr ptr ptr ptr long) # 2k3:320, Vista:392
  @ stdcall -version=0x502 SHHelpShortcuts_RunDLL(long long long long) SHHelpShortcuts_RunDLLA # 2k3:321
+@@ -655,10 +656,10 @@
+ 
+ ; Win7+ - These ordinals are higher than any of the ones in win vista
+ @ stdcall -stub -version=0x601+ SHAssocEnumHandlersForProtocolByApplication(wstr ptr ptr)
+-@ stdcall -stub -version=0x601+ Shell_NotifyIconGetRect(ptr ptr)
++@ stdcall Shell_NotifyIconGetRect(ptr ptr)
+ @ stdcall -stub -version=0x601+ SHGetKnownFolderItem(ptr ptr ptr ptr ptr)
+ @ stdcall -version=0x601+ SHGetItemFromObject(ptr long ptr)
+ @ stdcall -version=0x600+ SHGetItemFromDataObject(ptr long ptr ptr)
+ 
+-@ stdcall -version=0x601+ GetCurrentProcessExplicitAppUserModelID(wstr)
+-@ stdcall -version=0x601+ SetCurrentProcessExplicitAppUserModelID(wstr)
++@ stdcall GetCurrentProcessExplicitAppUserModelID(ptr)
++@ stdcall SetCurrentProcessExplicitAppUserModelID(wstr)
 diff --git a/dll/win32/shell32/stubs.cpp b/dll/win32/shell32/stubs.cpp
-index 0a9d8cb..f294549 100644
+index 0a9d8cb..4d2e52c 100644
 --- a/dll/win32/shell32/stubs.cpp
 +++ b/dll/win32/shell32/stubs.cpp
-@@ -833,3 +833,36 @@ SHQueryUserNotificationState(QUERY_USER_NOTIFICATION_STATE *pquns)
+@@ -789,23 +789,34 @@ GetAppPathFromLink(IShellItem* pItem,
+     return S_OK;
+ }
+ 
+-/*
+- * Unimplemented
+- */
++/* Arctic: the application ID a process gives itself (Electron programs do at
++ * start), kept for the process as Windows keeps it */
++static PWSTR g_pszAppUserModelID;
++
+ EXTERN_C HRESULT
+ WINAPI
+ GetCurrentProcessExplicitAppUserModelID(PWSTR *AppID)
+ {
+-    return SHStrDupW(L"ROS FixMe", AppID);
++    if (!AppID)
++        return E_INVALIDARG;
++    *AppID = NULL;
++    if (!g_pszAppUserModelID)
++        return E_FAIL;
++    return SHStrDupW(g_pszAppUserModelID, AppID);
+ }
+ 
+-/*
+- * Unimplemented
+- */
+ HRESULT WINAPI
+ SetCurrentProcessExplicitAppUserModelID(PCWSTR AppID)
+ {
+-    FIXME("SetCurrentProcessExplicitAppUserModelID stub\n");
++    PWSTR pszCopy;
++    HRESULT hr;
++
++    if (!AppID || !*AppID || wcslen(AppID) > 128)
++        return E_INVALIDARG;
++    hr = SHStrDupW(AppID, &pszCopy);
++    if (FAILED(hr))
++        return hr;
++    CoTaskMemFree(InterlockedExchangePointer((PVOID *)&g_pszAppUserModelID, pszCopy));
+     return S_OK;
+ }
+ 
+@@ -833,3 +844,44 @@ SHQueryUserNotificationState(QUERY_USER_NOTIFICATION_STATE *pquns)
      *pquns = QUNS_ACCEPTS_NOTIFICATIONS;
      return S_OK;
  }
@@ -71,6 +128,14 @@ index 0a9d8cb..f294549 100644
 +SHGetStockIconInfo(UINT siid, UINT flags, void *info)
 +{
 +    FIXME("(%u, %#x, %p) stub\n", siid, flags, info);
++    return E_NOTIMPL;
++}
++
++EXTERN_C HRESULT
++WINAPI
++Shell_NotifyIconGetRect(const void *identifier, RECT *rect)
++{
++    FIXME("(%p, %p) stub\n", identifier, rect);
 +    return E_NOTIMPL;
 +}
 diff --git a/dll/win32/shell32/wine/shellpath.c b/dll/win32/shell32/wine/shellpath.c
