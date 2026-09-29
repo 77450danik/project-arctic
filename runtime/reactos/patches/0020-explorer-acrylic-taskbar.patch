@@ -1,8 +1,8 @@
 diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
-index 1945c4dd..b0cd0001 100644
+index 1945c4dd..11be611e 100644
 --- a/base/shell/explorer/precomp.h
 +++ b/base/shell/explorer/precomp.h
-@@ -113,6 +113,16 @@ BOOL SetRegDword(IN LPCWSTR pszSubKey, IN LPCWSTR pszValueName, IN DWORD dwValue
+@@ -113,6 +113,17 @@ BOOL SetRegDword(IN LPCWSTR pszSubKey, IN LPCWSTR pszValueName, IN DWORD dwValue
  BOOL GetAdvancedBool(IN LPCWSTR pszValueName, IN BOOL bDefaultValue);
  BOOL SetAdvancedDword(IN LPCWSTR pszValueName, IN DWORD dwValue);
  
@@ -10,6 +10,7 @@ index 1945c4dd..b0cd0001 100644
 +#define ARCTIC_TRANSITION_SLIDE_UP 3
 +#define DWMWA_ARCTIC_TRANSITION    0x1000
 +#define DWMWA_ARCTIC_MINIMIZE_RECT 0x1001
++VOID ArcticFillAlpha(IN HDC hdc, IN const RECT *prc, IN COLORREF color, IN BYTE alpha);
 +VOID ArcticSetTrayBand(IN HWND hWnd, IN BOOL bBand);
 +VOID ArcticSetAcrylic(IN HWND hWnd, IN DWORD dwTint);
 +HRESULT ArcticSetWindowAttribute(IN HWND hWnd, IN DWORD dwAttribute, IN LPCVOID pvValue, IN DWORD cbValue);
@@ -20,7 +21,7 @@ index 1945c4dd..b0cd0001 100644
   *  rshell.c
   */
 diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
-index 381ba1c3..b8991c97 100644
+index 381ba1c3..a897aeea 100644
 --- a/base/shell/explorer/taskswnd.cpp
 +++ b/base/shell/explorer/taskswnd.cpp
 @@ -1463,6 +1463,23 @@ public:
@@ -47,7 +48,18 @@ index 381ba1c3..b8991c97 100644
      }
  
      BOOL CALLBACK EnumWindowsProc(IN HWND hWnd)
-@@ -1752,6 +1769,9 @@ public:
+@@ -1639,7 +1656,9 @@ public:
+             break;
+ 
+         case HSHELL_WINDOWCREATED:
+-            AddTask((HWND) lParam);
++            /* Arctic: tool windows (Alt+Tab, flyouts) get no button, as in Windows */
++            if (m_Tray->IsTaskWnd((HWND) lParam))
++                AddTask((HWND) lParam);
+             break;
+ 
+         case HSHELL_WINDOWDESTROYED:
+@@ -1752,6 +1771,9 @@ public:
          PTASK_ITEM TaskItem;
          PTASK_GROUP TaskGroup;
  
@@ -57,7 +69,7 @@ index 381ba1c3..b8991c97 100644
          if (m_IsGroupingEnabled)
          {
              TaskGroup = FindTaskGroupByIndex((INT) wIndex);
-@@ -1895,6 +1915,27 @@ public:
+@@ -1895,6 +1917,27 @@ public:
              }
              break;
          }
@@ -85,7 +97,7 @@ index 381ba1c3..b8991c97 100644
          }
  
          return Ret;
-@@ -1967,11 +2008,21 @@ public:
+@@ -1967,11 +2010,21 @@ public:
          Data.pTray = m_Tray;
          ::EnumDisplayMonitors(NULL, NULL, FullScreenEnumProc, (LPARAM)&Data);
  
@@ -108,6 +120,36 @@ index 381ba1c3..b8991c97 100644
              ::SetWindowPos(hwndTray, HWND_BOTTOM, 0, 0, 0, 0, uFlags);
  
              // Switch to the rude app if necessary
+diff --git a/base/shell/explorer/traydeskbtn.cpp b/base/shell/explorer/traydeskbtn.cpp
+index 009f79c8..3295d47f 100644
+--- a/base/shell/explorer/traydeskbtn.cpp
++++ b/base/shell/explorer/traydeskbtn.cpp
+@@ -319,6 +319,25 @@ VOID CTrayShowDesktopButton::OnDraw(HDC hdc, LPRECT prc)
+     LPRECT lpRc = &rc;
+     HBRUSH hbrBackground = NULL;
+ 
++    if (m_hTheme && !m_highContrastMode)
++    {
++        /* Arctic: as in Windows 10 over the acrylic: a thin strip after a
++         * faint line, lighter under the pointer */
++        RECT rcLine = rc;
++
++        ::DrawThemeParentBackground(m_hWnd, hdc, NULL);
++        if (m_bPressed)
++            ArcticFillAlpha(hdc, &rc, RGB(255, 255, 255), 0x0f);
++        else if (m_bHovering)
++            ArcticFillAlpha(hdc, &rc, RGB(255, 255, 255), 0x1a);
++        if (m_bHorizontal)
++            rcLine.right = rcLine.left + 1;
++        else
++            rcLine.bottom = rcLine.top + 1;
++        ArcticFillAlpha(hdc, &rcLine, RGB(255, 255, 255), 0x40);
++        return;
++    }
++
+     if (m_hTheme)
+     {
+         HTHEME theme;
 diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
 index 09eb8ade..3b8cbfb0 100644
 --- a/base/shell/explorer/traywnd.cpp
@@ -141,10 +183,10 @@ index 09eb8ade..3b8cbfb0 100644
      }
  
 diff --git a/base/shell/explorer/util.cpp b/base/shell/explorer/util.cpp
-index f6824cc3..cc918ddf 100644
+index f6824cc3..c09f23ea 100644
 --- a/base/shell/explorer/util.cpp
 +++ b/base/shell/explorer/util.cpp
-@@ -7,6 +7,74 @@ typedef struct _LANGCODEPAGE
+@@ -7,6 +7,101 @@ typedef struct _LANGCODEPAGE
      WORD wCodePage;
  } LANGCODEPAGE, *PLANGCODEPAGE;
  
@@ -163,6 +205,33 @@ index f6824cc3..cc918ddf 100644
 +    if (!hModule)
 +        hModule = LoadLibraryW(pszModule);
 +    return hModule ? GetProcAddress(hModule, pszName) : NULL;
++}
++
++/* a colour at some opacity, which dwm.exe keeps over the acrylic */
++VOID ArcticFillAlpha(IN HDC hdc, IN const RECT *prc, IN COLORREF color, IN BYTE alpha)
++{
++    BITMAPINFO bi;
++    DWORD *pBits;
++    HBITMAP hbm;
++
++    ZeroMemory(&bi, sizeof(bi));
++    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
++    bi.bmiHeader.biWidth = 1;
++    bi.bmiHeader.biHeight = 1;
++    bi.bmiHeader.biPlanes = 1;
++    bi.bmiHeader.biBitCount = 32;
++    hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)&pBits, NULL, 0);
++    if (!hbm)
++        return;
++    *pBits = ((DWORD)alpha << 24) | ((GetRValue(color) * alpha / 255) << 16) |
++             ((GetGValue(color) * alpha / 255) << 8) | (GetBValue(color) * alpha / 255);
++    HDC hdcMem = CreateCompatibleDC(hdc);
++    HGDIOBJ hOld = SelectObject(hdcMem, hbm);
++    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
++    GdiAlphaBlend(hdc, prc->left, prc->top, prc->right - prc->left, prc->bottom - prc->top, hdcMem, 0, 0, 1, 1, bf);
++    SelectObject(hdcMem, hOld);
++    DeleteDC(hdcMem);
++    DeleteObject(hbm);
 +}
 +
 +VOID ArcticSetTrayBand(IN HWND hWnd, IN BOOL bBand)

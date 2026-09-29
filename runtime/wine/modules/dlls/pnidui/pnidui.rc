@@ -16,6 +16,17 @@
 #include "commctrl.h"
 #include "pnidui.h"
 
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+/* @makedep: network_ok.ico */
+IDI_NETWORK_OK ICON network_ok.ico
+
+/* @makedep: network_warning.ico */
+IDI_NETWORK_WARNING ICON network_warning.ico
+
+/* @makedep: network_absent.ico */
+IDI_NETWORK_ABSENT ICON network_absent.ico
+
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
 
 STRINGTABLE
@@ -35,6 +46,7 @@ STRINGTABLE
     IDS_KEY_MISMATCH          "The network security key is not correct."
     IDS_NETWORK               "Network"
     IDS_NO_NETWORKS           "No connections are available"
+    IDS_NO_INTERNET           "No Internet access"
 }
 
 IDD_NETWORK_KEY DIALOGEX 0, 0, 260, 84
@@ -69,6 +81,7 @@ STRINGTABLE
     IDS_KEY_MISMATCH          "Ключ безпеки мережі неправильний."
     IDS_NETWORK               "Мережа"
     IDS_NO_NETWORKS           "Немає доступних підключень"
+    IDS_NO_INTERNET           "Без доступу до Інтернету"
 }
 
 IDD_NETWORK_KEY DIALOGEX 0, 0, 260, 84

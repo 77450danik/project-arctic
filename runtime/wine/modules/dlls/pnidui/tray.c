@@ -100,6 +100,7 @@ static void ssid_to_text( const DOT11_SSID *ssid, WCHAR *text, int size )
 struct state
 {
     BOOL wired_present, wired_connected;
+    BOOL wired_limited;       /* the cable is in, but there is no way out (no address or gateway) */
     BOOL wifi_connected, wifi_connecting;
     WCHAR wifi_ssid[64];
     UINT wifi_quality;
@@ -127,6 +128,8 @@ static void read_wired( struct state *state )
         state->wired_present = TRUE;
         if (a->OperStatus == IfOperStatusUp && a->FirstUnicastAddress && a->FirstGatewayAddress)
             state->wired_connected = TRUE;
+        else if (a->OperStatus == IfOperStatusUp)
+            state->wired_limited = TRUE;
     }
     free( addresses );
 }
@@ -172,79 +175,214 @@ static void read_wifi( struct state *state )
  *          The icon, drawn at the size of the notification area
  */
 
-static void fill( UINT32 *bits, int size, int x0, int y0, int x1, int y1, UINT32 color )
+/* The icon is painted as Vista and Windows 7 paint theirs: glossy, with
+ * gradients and dark outlines. Shapes are laid out on a 16 unit grid and
+ * sampled 4 x 4 per pixel, so they stay smooth at every size. */
+
+#define SUPERSAMPLE 4
+
+struct canvas
 {
-    for (int y = max( y0, 0 ); y <= min( y1, size - 1 ); y++)
-        for (int x = max( x0, 0 ); x <= min( x1, size - 1 ); x++)
-            bits[y * size + x] = color;
+    int    size;      /* pixels */
+    float  scale;     /* samples per unit */
+    float *px;        /* premultiplied RGBA, (size * SUPERSAMPLE)^2 samples */
+};
+
+struct rgba { float r, g, b, a; };
+
+static struct rgba color( UINT32 rgb, float a )
+{
+    struct rgba c = { ((rgb >> 16) & 0xff) / 255.0f, ((rgb >> 8) & 0xff) / 255.0f, (rgb & 0xff) / 255.0f, a };
+    return c;
 }
 
-/* premultiplied ARGB */
-static UINT32 argb( BYTE a, BYTE r, BYTE g, BYTE b )
+static void blend_sample( struct canvas *c, int i, struct rgba s )
 {
-    return (a << 24) | ((r * a / 255) << 16) | ((g * a / 255) << 8) | (b * a / 255);
+    float *d = c->px + i * 4;
+
+    d[0] = s.r * s.a + d[0] * (1 - s.a);
+    d[1] = s.g * s.a + d[1] * (1 - s.a);
+    d[2] = s.b * s.a + d[2] * (1 - s.a);
+    d[3] = s.a + d[3] * (1 - s.a);
+}
+
+/* a rounded rectangle, from one colour at its top to another at its bottom */
+static void paint_rect( struct canvas *c, float x0, float y0, float x1, float y1, float radius,
+                        struct rgba top, struct rgba bottom )
+{
+    int n = c->size * SUPERSAMPLE;
+
+    for (int j = 0; j < n; j++)
+    {
+        float y = (j + 0.5f) / c->scale, t = (y - y0) / (y1 - y0);
+        struct rgba s;
+
+        if (y < y0 || y > y1) continue;
+        s.r = top.r + (bottom.r - top.r) * t;
+        s.g = top.g + (bottom.g - top.g) * t;
+        s.b = top.b + (bottom.b - top.b) * t;
+        s.a = top.a + (bottom.a - top.a) * t;
+        for (int i = 0; i < n; i++)
+        {
+            float x = (i + 0.5f) / c->scale, dx, dy;
+
+            if (x < x0 || x > x1) continue;
+            dx = max( max( x0 + radius - x, x - (x1 - radius) ), 0.0f );
+            dy = max( max( y0 + radius - y, y - (y1 - radius) ), 0.0f );
+            if (dx * dx + dy * dy > radius * radius) continue;
+            blend_sample( c, j * n + i, s );
+        }
+    }
+}
+
+static void paint_circle( struct canvas *c, float cx, float cy, float radius, struct rgba top, struct rgba bottom )
+{
+    int n = c->size * SUPERSAMPLE;
+
+    for (int j = 0; j < n; j++)
+    {
+        float y = (j + 0.5f) / c->scale, t = (y - (cy - radius)) / (2 * radius);
+        struct rgba s = { top.r + (bottom.r - top.r) * t, top.g + (bottom.g - top.g) * t,
+                          top.b + (bottom.b - top.b) * t, top.a + (bottom.a - top.a) * t };
+
+        for (int i = 0; i < n; i++)
+        {
+            float x = (i + 0.5f) / c->scale;
+            if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= radius * radius) blend_sample( c, j * n + i, s );
+        }
+    }
+}
+
+static void paint_stroke( struct canvas *c, float x0, float y0, float x1, float y1, float width, struct rgba s )
+{
+    int n = c->size * SUPERSAMPLE;
+    float dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
+
+    for (int j = 0; j < n; j++)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            float x = (i + 0.5f) / c->scale, y = (j + 0.5f) / c->scale;
+            float t = len2 ? ((x - x0) * dx + (y - y0) * dy) / len2 : 0, ex, ey;
+
+            t = max( 0.0f, min( 1.0f, t ) );
+            ex = x0 + t * dx - x;
+            ey = y0 + t * dy - y;
+            if (ex * ex + ey * ey <= width * width / 4) blend_sample( c, j * n + i, s );
+        }
+    }
+}
+
+/* a computer's screen on its stand, the wired connection of Windows 7 */
+static void paint_monitor( struct canvas *c )
+{
+    paint_rect( c, 4.2f, 12.6f, 11.8f, 15.0f, 0.9f, color( 0x2b3036, 1 ), color( 0x2b3036, 1 ) );
+    paint_rect( c, 4.8f, 13.1f, 11.2f, 14.4f, 0.5f, color( 0xd4d9df, 1 ), color( 0x7b838d, 1 ) );
+    paint_rect( c, 6.8f, 11.2f, 9.2f, 13.2f, 0, color( 0x5b626b, 1 ), color( 0x3a4047, 1 ) );
+    paint_rect( c, 0.8f, 1.2f, 15.2f, 11.8f, 1.2f, color( 0x1f2328, 1 ), color( 0x1f2328, 1 ) );
+    paint_rect( c, 1.4f, 1.8f, 14.6f, 11.2f, 0.8f, color( 0xb8c0ca, 1 ), color( 0x4d545d, 1 ) );
+    paint_rect( c, 2.6f, 3.0f, 13.4f, 10.0f, 0, color( 0x6cc0ff, 1 ), color( 0x0a3f9c, 1 ) );
+    /* the glass: a gloss over its upper half */
+    paint_rect( c, 2.6f, 3.0f, 13.4f, 6.2f, 0, color( 0xffffff, 0.45f ), color( 0xffffff, 0.08f ) );
+}
+
+/* five bars rising to the right; those the signal reaches are lit */
+static void paint_bars( struct canvas *c, UINT bars )
+{
+    for (UINT i = 0; i < 5; i++)
+    {
+        float x = 0.8f + i * 3.0f, top = 11.8f - i * 2.5f;
+        BOOL lit = i < bars;
+
+        paint_rect( c, x, top, x + 2.6f, 15.0f, 0.5f, color( 0x1f2328, lit ? 1 : 0.45f ),
+                    color( 0x1f2328, lit ? 1 : 0.45f ) );
+        if (lit) paint_rect( c, x + 0.5f, top + 0.5f, x + 2.1f, 14.5f, 0.3f, color( 0xffffff, 1 ), color( 0x9fb3c8, 1 ) );
+        else paint_rect( c, x + 0.5f, top + 0.5f, x + 2.1f, 14.5f, 0.3f, color( 0xffffff, 0.35f ), color( 0xffffff, 0.2f ) );
+    }
+}
+
+/* the badge in the corner: a red disc with a white cross (no connection)
+ * or an amber one with a spark (connections are available) */
+static void paint_badge( struct canvas *c, BOOL cross )
+{
+    const float cx = 11.8f, cy = 11.8f;
+
+    paint_circle( c, cx, cy, 4.2f, color( 0x3a0d05, 0.9f ), color( 0x3a0d05, 0.9f ) );
+    if (cross)
+    {
+        paint_circle( c, cx, cy, 3.5f, color( 0xff7a66, 1 ), color( 0xb3120a, 1 ) );
+        paint_stroke( c, cx - 1.6f, cy - 1.6f, cx + 1.6f, cy + 1.6f, 1.2f, color( 0xffffff, 1 ) );
+        paint_stroke( c, cx + 1.6f, cy - 1.6f, cx - 1.6f, cy + 1.6f, 1.2f, color( 0xffffff, 1 ) );
+    }
+    else
+    {
+        paint_circle( c, cx, cy, 3.5f, color( 0xffe98a, 1 ), color( 0xe29b00, 1 ) );
+        paint_stroke( c, cx, cy - 2.2f, cx, cy + 2.2f, 0.9f, color( 0xffffff, 0.95f ) );
+        paint_stroke( c, cx - 2.2f, cy, cx + 2.2f, cy, 0.9f, color( 0xffffff, 0.95f ) );
+    }
+    /* the gloss on its upper half */
+    paint_rect( c, cx - 2.6f, cy - 3.2f, cx + 2.6f, cy - 0.4f, 1.3f, color( 0xffffff, 0.5f ), color( 0xffffff, 0.05f ) );
 }
 
 enum icon_kind { ICON_WIRELESS, ICON_WIRED, ICON_NONE };
 
 static HICON make_icon( enum icon_kind kind, UINT bars, BOOL cross, BOOL star )
 {
-    int size = GetSystemMetrics( SM_CXSMICON ), unit = max( size / 16, 1 );
+    int size = GetSystemMetrics( SM_CXSMICON ), n = size * SUPERSAMPLE;
     BITMAPINFO info = { .bmiHeader = { .biSize = sizeof(info.bmiHeader), .biWidth = size, .biHeight = -size,
                                        .biPlanes = 1, .biBitCount = 32, .biCompression = BI_RGB } };
-    UINT32 *bits, white = argb( 255, 255, 255, 255 ), dim = argb( 90, 255, 255, 255 );
+    struct canvas canvas = { size, n / 16.0f, NULL };
     ICONINFO icon = { .fIcon = TRUE };
+    UINT32 *bits;
     HICON ret;
 
-    if (!(icon.hbmColor = CreateDIBSection( NULL, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0 ))) return NULL;
-    memset( bits, 0, size * size * 4 );
-
-    if (kind == ICON_WIRELESS)
+    if (!(canvas.px = calloc( n * n * 4, sizeof(float) ))) return NULL;
+    if (!(icon.hbmColor = CreateDIBSection( NULL, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0 )))
     {
-        /* five bars rising to the right */
-        for (UINT i = 0; i < 5; i++)
+        free( canvas.px );
+        return NULL;
+    }
+
+    if (kind == ICON_WIRELESS) paint_bars( &canvas, bars );
+    else paint_monitor( &canvas );
+    if (cross || star) paint_badge( &canvas, cross );
+
+    /* each pixel is the mean of its samples; icons carry straight alpha */
+    for (int y = 0; y < size; y++)
+    {
+        for (int x = 0; x < size; x++)
         {
-            int x = (1 + i * 3) * unit, h = (3 + i * 2) * unit;
-            fill( bits, size, x, 14 * unit - h + 1, x + 2 * unit - 1, 14 * unit, i < bars ? white : dim );
+            float sum[4] = { 0 };
+
+            for (int j = 0; j < SUPERSAMPLE; j++)
+                for (int i = 0; i < SUPERSAMPLE; i++)
+                    for (int k = 0; k < 4; k++)
+                        sum[k] += canvas.px[((y * SUPERSAMPLE + j) * n + x * SUPERSAMPLE + i) * 4 + k];
+            for (int k = 0; k < 4; k++) sum[k] /= SUPERSAMPLE * SUPERSAMPLE;
+            if (sum[3] < 1.0f / 255)
+            {
+                bits[y * size + x] = 0;
+                continue;
+            }
+            bits[y * size + x] = ((UINT32)(sum[3] * 255 + 0.5f) << 24) |
+                                 ((UINT32)(min( sum[0] / sum[3], 1.0f ) * 255 + 0.5f) << 16) |
+                                 ((UINT32)(min( sum[1] / sum[3], 1.0f ) * 255 + 0.5f) << 8) |
+                                 (UINT32)(min( sum[2] / sum[3], 1.0f ) * 255 + 0.5f);
         }
     }
-    else
-    {
-        /* a monitor on its stand */
-        fill( bits, size, 2 * unit, 2 * unit, 13 * unit, 2 * unit, white );
-        fill( bits, size, 2 * unit, 10 * unit, 13 * unit, 10 * unit, white );
-        fill( bits, size, 2 * unit, 2 * unit, 2 * unit, 10 * unit, white );
-        fill( bits, size, 13 * unit, 2 * unit, 13 * unit, 10 * unit, white );
-        fill( bits, size, 3 * unit, 3 * unit, 12 * unit, 9 * unit, dim );
-        fill( bits, size, 7 * unit, 11 * unit, 8 * unit, 12 * unit, white );
-        fill( bits, size, 5 * unit, 13 * unit, 10 * unit, 13 * unit, white );
-    }
-
-    if (cross || star)
-    {
-        int x0 = size - 7 * unit, y0 = size - 7 * unit;
-        UINT32 color = cross ? argb( 255, 214, 48, 49 ) : argb( 255, 242, 190, 30 );
-
-        /* a round badge in the corner */
-        for (int y = 0; y < 7 * unit; y++)
-            for (int x = 0; x < 7 * unit; x++)
-            {
-                int dx = 2 * x - (7 * unit - 1), dy = 2 * y - (7 * unit - 1);
-                if (dx * dx + dy * dy <= 49 * unit * unit) bits[(y0 + y) * size + x0 + x] = color;
-            }
-        if (cross)
-            for (int i = 2 * unit; i < 5 * unit; i++)
-            {
-                bits[(y0 + i) * size + x0 + i] = white;
-                bits[(y0 + i) * size + x0 + 7 * unit - 1 - i] = white;
-            }
-    }
+    free( canvas.px );
 
     icon.hbmMask = CreateBitmap( size, size, 1, 1, NULL );
     ret = CreateIconIndirect( &icon );
     DeleteObject( icon.hbmColor );
     DeleteObject( icon.hbmMask );
     return ret;
+}
+
+static HICON load_icon( UINT id )
+{
+    return LoadImageW( pnidui_instance, MAKEINTRESOURCEW(id), IMAGE_ICON, GetSystemMetrics( SM_CXSMICON ),
+                       GetSystemMetrics( SM_CYSMICON ), 0 );
 }
 
 static UINT quality_bars( UINT quality )
@@ -279,18 +417,27 @@ static void update_icon(void)
         key = 300;
         lstrcpynW( data.szTip, load_string( IDS_CONNECTIONS_AVAILABLE ), ARRAY_SIZE(data.szTip) );
     }
+    else if (state.wired_limited)
+    {
+        key = 250;
+        swprintf( data.szTip, ARRAY_SIZE(data.szTip), L"%s\n%s", load_string( IDS_NETWORK ),
+                  load_string( IDS_NO_INTERNET ) );
+    }
     else
     {
-        key = 400 + have_wifi;
+        key = 400;
         lstrcpynW( data.szTip, load_string( IDS_NOT_CONNECTED ), ARRAY_SIZE(data.szTip) );
     }
 
     if (key != last_key || !current_icon)
     {
+        /* a wired network has the pictures of Windows 7 (the two screens);
+         * Wi-Fi has its bars */
         HICON icon = key >= 100 && key < 200 ? make_icon( ICON_WIRELESS, key - 100, FALSE, FALSE ) :
-                     key == 200 ? make_icon( ICON_WIRED, 0, FALSE, FALSE ) :
+                     key == 200 ? load_icon( IDI_NETWORK_OK ) :
+                     key == 250 ? load_icon( IDI_NETWORK_WARNING ) :
                      key == 300 ? make_icon( ICON_WIRELESS, 0, FALSE, TRUE ) :
-                     make_icon( have_wifi ? ICON_WIRELESS : ICON_WIRED, 0, TRUE, FALSE );
+                     load_icon( IDI_NETWORK_ABSENT );
         if (current_icon) DestroyIcon( current_icon );
         current_icon = icon;
         last_key = key;

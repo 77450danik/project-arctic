@@ -1,32 +1,54 @@
 # dwm on the GPU: rounded windows, how windows come and go, Alt+Tab
+# (boot with --append "arctic.winedebug=fixme-all,+dwm" to see each animation)
 sleep 6
 shot d1-desktop
 key win-r
 sleep 2
 type notepad
 key ret
-sleep 0.12
-shot d2-notepad-opening
-sleep 3
-shot d3-notepad
+burst open 10 40              # zooms in and fades in
+sleep 2
+shot d2-notepad               # Notepad stands at 0,0, 760 wide: its buttons end at 760
+move 691 14
+sleep 1
+shot d3-hot-maximize          # the maximize button under the pointer
+click                         # maximize: from its rectangle to the screen's
+burst maximize 8 40
+sleep 2
+move 1234 12
+click                         # restore
+burst restore 8 40
+sleep 2
+move 645 14
+click                         # minimize: into its taskbar button
+burst minimize 10 40
+sleep 2
+shot d4-minimized
+move 120 787
+click                         # back from the taskbar button
+burst unminimize 8 40
+sleep 2
 key win-r
 sleep 2
 type explorer C:\
 key ret
 sleep 5
-shot d4-two-windows
+shot d5-two-windows
+move 120 787
+sleep 1.5
+shot d6-taskbar-thumbnail     # the thumbnail over the button the pointer rests on
+move 640 400
 keydown alt
 key tab
 sleep 1
-shot d5-alt-tab
+shot d7-alt-tab
 key tab
 sleep 0.5
-shot d6-alt-tab-next
+shot d8-alt-tab-next
 keyup alt
 sleep 1.5
-shot d7-switched
+shot d9-switched
 key alt-f4
-sleep 0.08
-shot d8-closing
+burst close 8 40              # zooms out and fades out
 sleep 2
-shot d9-closed
+shot d10-closed

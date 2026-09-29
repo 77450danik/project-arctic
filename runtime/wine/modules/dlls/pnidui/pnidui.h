@@ -25,6 +25,12 @@
 #define IDS_KEY_MISMATCH         112
 #define IDS_NETWORK              113
 #define IDS_NO_NETWORKS          114
+#define IDS_NO_INTERNET          115
+
+/* the notification area's pictures of a wired network */
+#define IDI_NETWORK_OK           300
+#define IDI_NETWORK_WARNING      301
+#define IDI_NETWORK_ABSENT       302
 
 #define IDD_NETWORK_KEY          200
 #define IDC_KEY                  201
