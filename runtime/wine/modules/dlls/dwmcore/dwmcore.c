@@ -531,6 +531,8 @@ static void update_windows(void)
         windows[i].top      = list[i].visible_rect.top;
         windows[i].right    = list[i].visible_rect.right;
         windows[i].bottom   = list[i].visible_rect.bottom;
+        windows[i].client_left = list[i].client_rect.left;
+        windows[i].client_top  = list[i].client_rect.top;
     }
     params.count = got;
     params.windows = windows;

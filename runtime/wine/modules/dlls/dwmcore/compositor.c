@@ -389,7 +389,11 @@ static void draw_window( const struct dwm_window *w )
     wl_list_for_each( s, &all_surfaces, all_link )
         if (s->hwnd == w->hwnd && s->xdg_toplevel) draw_tree( s, w->left, w->top );
     wl_list_for_each( s, &all_surfaces, all_link )
-        if (s->hwnd == w->hwnd && !s->xdg_toplevel) draw_tree( s, w->left, w->top );
+        if (s->hwnd == w->hwnd && s->subsurface) draw_tree( s, w->left, w->top );
+    /* what another process draws (Vulkan, Direct3D) has no role, and covers
+     * the client area */
+    wl_list_for_each( s, &all_surfaces, all_link )
+        if (s->hwnd == w->hwnd && !s->xdg_toplevel && !s->subsurface) draw_tree( s, w->client_left, w->client_top );
 }
 
 /* the virtual screen, in RAM */

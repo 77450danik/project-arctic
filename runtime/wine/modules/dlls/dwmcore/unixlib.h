@@ -38,6 +38,7 @@ struct dwm_window
     UINT32 style;
     UINT32 ex_style;
     INT32  left, top, right, bottom;  /* visible rectangle, screen coordinates */
+    INT32  client_left, client_top;   /* where the client area starts, screen coordinates */
 };
 
 struct dwm_set_windows_params
