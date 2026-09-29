@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 30 Sep 2026 01:03:28 +0300
+Subject: [PATCH] win32u: The work area of the monitor for every process; SC_MAXIMIZE of a hidden window.
+
+SPI_SETWORKAREA set a static of the calling process only, so every other
+program maximized over the taskbar and saw the whole screen as its work
+area. The work area now belongs to the monitor: it goes into the
+registry and the monitor serial moves on, as a display change does.
+
+SC_MAXIMIZE of a window that is not shown yet only maximizes it, as
+CreateWindow does with WS_MAXIMIZE. Chrome maximizes its hidden window
+that way while setting it up, and crashed on the activation that came
+with showing it, so it never started again once it had been closed
+maximized.
+---
+ dlls/win32u/defwnd.c         |  3 ++-
+ dlls/win32u/sysparams.c      | 54 ++++++++++++++++++++++++++++++--------------
+ dlls/win32u/win32u_private.h |  1 +
+ dlls/win32u/window.c         | 14 ++++++++++++
+ 4 files changed, 54 insertions(+), 18 deletions(-)
+
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+index 50c9314..0a3d6be 100644
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -1158,7 +1158,8 @@ static LRESULT handle_sys_command( HWND hwnd, WPARAM wparam, LPARAM lparam )
+ 
+     case SC_MAXIMIZE:
+         if (is_iconic(hwnd)) NtUserShowOwnedPopups( hwnd, TRUE );
+-        NtUserShowWindow( hwnd, SW_MAXIMIZE );
++        if (!(get_window_long( hwnd, GWL_STYLE ) & WS_VISIBLE)) maximize_hidden_window( hwnd );
++        else NtUserShowWindow( hwnd, SW_MAXIMIZE );
+         break;
+ 
+     case SC_CLOSE:
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index fc1d5a5..8f5fbcc 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -6459,10 +6459,35 @@ BOOL WINAPI NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT w
+     }
+     case SPI_SETWORKAREA:
+     {
++        /* Arctic: the work area is the monitor's, for every process, as in
++         * Windows: the taskbar sets it and maximized windows stay out of it.
++         * It goes into the registry and the monitor serial moves on, so the
++         * others read it again. */
++        struct ratio dpi = get_thread_dpi();
++        struct monitor *monitor;
++        HKEY hkey, subkey;
++
+         if (!ptr) return FALSE;
+         spi_idx = SPI_SETWORKAREA_IDX;
+-        work_area = *(RECT*)ptr;
+-        spi_loaded[spi_idx] = TRUE;
++        if (!lock_display_devices( FALSE )) return FALSE;
++        if ((monitor = get_monitor_from_rect( *(RECT *)ptr, MONITOR_DEFAULTTOPRIMARY, dpi, MDT_DEFAULT )))
++        {
++            monitor->rc_work = map_monitor_rect( monitor, *(RECT *)ptr, dpi, MDT_DEFAULT, no_dpi, MDT_RAW_DPI );
++            if ((hkey = reg_open_ascii_key( enum_key, monitor->path )))
++            {
++                if ((subkey = reg_create_ascii_key( hkey, wine_devpropkey_monitor_rcworkA, 0, NULL )))
++                {
++                    set_reg_value( subkey, NULL, 0xffff0000 | DEVPROP_TYPE_BINARY, &monitor->rc_work,
++                                   sizeof(monitor->rc_work) );
++                    NtClose( subkey );
++                }
++                NtClose( hkey );
++            }
++            if (video_key) set_reg_ascii_value( video_key, "ArcticWorkArea", "" );
++            set_winstation_monitors( TRUE );
++        }
++        unlock_display_devices();
++        spi_loaded[spi_idx] = FALSE;
+         ret = TRUE;
+         break;
+     }
+@@ -6470,27 +6495,22 @@ BOOL WINAPI NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT w
+     {
+         MONITORINFO info = {.cbSize = sizeof(info)};
+         struct ratio dpi = get_thread_dpi();
++        struct monitor *monitor;
+ 
+         if (!ptr) return FALSE;
+ 
+         spi_idx = SPI_SETWORKAREA_IDX;
+-        if (!spi_loaded[spi_idx])
++        /* Arctic: always the primary monitor's, which another process may have set */
++        if (!lock_display_devices( FALSE )) return FALSE;
++        LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
+         {
+-            struct monitor *monitor;
+-
+-            if (!lock_display_devices( FALSE )) return FALSE;
+-
+-            LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
+-            {
+-                if (!is_monitor_primary( monitor )) continue;
+-                monitor_get_info( monitor, &info, dpi );
+-                work_area = info.rcWork;
+-                break;
+-            }
+-
+-            unlock_display_devices();
+-            spi_loaded[spi_idx] = TRUE;
++            if (!is_monitor_primary( monitor )) continue;
++            monitor_get_info( monitor, &info, dpi );
++            work_area = info.rcWork;
++            break;
+         }
++        unlock_display_devices();
++        spi_loaded[spi_idx] = TRUE;
+         *(RECT *)ptr = work_area;
+         ret = TRUE;
+         TRACE("work area %s\n", wine_dbgstr_rect( &work_area ));
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 9142d13..429abd0 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -50,6 +50,7 @@ extern LRESULT get_icon_bits( HICON handle, void *buffer, size_t size );
+ 
+ /* window.c */
+ extern BOOL get_user_handle_owner( HANDLE handle, unsigned short type, DWORD *pid, DWORD *tid );
++extern void maximize_hidden_window( HWND hwnd );
+ 
+ /* dce.c */
+ extern struct window_surface dummy_surface;
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index e7198d6..b87af0d 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -4992,6 +4992,20 @@ void update_window_state( HWND hwnd )
+  *
+  * Implementation of ShowWindow and ShowWindowAsync.
+  */
++/* Arctic: SC_MAXIMIZE of a window that is not shown yet only maximizes it,
++ * as CreateWindow does with WS_MAXIMIZE; it is shown and activated when the
++ * program shows it. Chrome maximizes its window this way in the middle of
++ * setting it up, and died on the activation that came too early. */
++void maximize_hidden_window( HWND hwnd )
++{
++    RECT new_pos;
++    UINT swp;
++
++    swp = window_min_maximize( hwnd, SW_MAXIMIZE, &new_pos );
++    NtUserSetWindowPos( hwnd, 0, new_pos.left, new_pos.top, new_pos.right - new_pos.left,
++                        new_pos.bottom - new_pos.top, swp | SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER );
++}
++
+ static BOOL show_window( HWND hwnd, INT cmd )
+ {
+     WND *win;
+-- 
+2.53.0
+

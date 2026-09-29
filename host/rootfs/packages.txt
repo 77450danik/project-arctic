@@ -29,6 +29,10 @@ freetype2
 gnutls
 alsa-lib
 libusb
+
+# Sound: alsactl init brings every card's mixer to sensible levels (the
+# kernel leaves them muted); alsa-lib brings the UCM profiles along
+alsa-utils
 vulkan-icd-loader
 vulkan-swrast
 wayland

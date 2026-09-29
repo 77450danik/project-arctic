@@ -639,6 +639,90 @@ static void copy_file(const char *from, const char *to)
     close(in);
 }
 
+/* How good a card is as the default output, and which of its devices: an
+ * analog or USB output first, then HDMI/DisplayPort with a monitor on it,
+ * then any other that plays. 0: none plays (a webcam's microphone, say). */
+static int sound_card_rank(int card, int *device)
+{
+    char path[PATH_MAX], line[256];
+    int rank = 0, monitor = 0, hdmi_device = -1;
+    DIR *dir;
+    struct dirent *e;
+
+    snprintf(path, sizeof(path), "/proc/asound/card%d", card);
+    if (!(dir = opendir(path)))
+        return 0;
+    while ((e = readdir(dir))) {
+        size_t len = strlen(e->d_name);
+        int digital = 0;
+        FILE *f;
+
+        if (!strncmp(e->d_name, "eld#", 4)) {
+            /* HDMI: a monitor that takes sound is there */
+            snprintf(path, sizeof(path), "/proc/asound/card%d/%s", card, e->d_name);
+            if ((f = fopen(path, "re"))) {
+                while (fgets(line, sizeof(line), f))
+                    if (!strncmp(line, "monitor_present", 15) && strchr(line, '1'))
+                        monitor = 1;
+                fclose(f);
+            }
+            continue;
+        }
+        if (strncmp(e->d_name, "pcm", 3) || e->d_name[len - 1] != 'p')
+            continue;
+        snprintf(path, sizeof(path), "/proc/asound/card%d/%s/info", card, e->d_name);
+        if ((f = fopen(path, "re"))) {
+            while (fgets(line, sizeof(line), f))
+                if (!strncmp(line, "name:", 5) && (strstr(line, "HDMI") || strstr(line, "DP")))
+                    digital = 1;
+            fclose(f);
+        }
+        int dev = atoi(e->d_name + 3);
+        if (!digital) {
+            if (rank < 3 || dev < *device)
+                *device = dev;
+            rank = 3;
+        }
+        else if (hdmi_device < 0 || dev < hdmi_device)
+            hdmi_device = dev;
+    }
+    closedir(dir);
+    if (rank == 3 || hdmi_device < 0)
+        return rank;
+    *device = hdmi_device;
+    return monitor ? 2 : 1;
+}
+
+/* Sound: every card's mixer to sensible levels (the kernel leaves them
+ * muted), and the best one as ALSA's default, which is what Windows
+ * programs play to. The config lies on /run; /etc/asound.conf points to it. */
+static void setup_sound(void)
+{
+    char *init[] = {"/usr/bin/alsactl", "init", NULL};
+    char conf[160], name[64], path[PATH_MAX];
+    int best = -1, best_rank = 0, best_device = 0;
+
+    run(init, 0, hostlog, 20);
+    for (int card = 0; card < 32; card++) {
+        int device = 0, rank = sound_card_rank(card, &device);
+        if (rank > best_rank) {
+            best = card;
+            best_rank = rank;
+            best_device = device;
+        }
+    }
+    if (best < 0) {
+        say("sound: no card plays");
+        return;
+    }
+    snprintf(path, sizeof(path), "/proc/asound/card%d/id", best);
+    read_line(path, name, sizeof(name));
+    say("sound: card %d (%s), device %d", best, name, best_device);
+    int n = snprintf(conf, sizeof(conf), "defaults.pcm.card %d\ndefaults.pcm.device %d\ndefaults.ctl.card %d\n",
+                     best, best_device, best);
+    write_whole("/run/arctic/asound.conf", conf, (size_t)n);
+}
+
 static void make_dir(const char *path, mode_t mode, int nt_owned)
 {
     mkdir(path, mode);
@@ -966,6 +1050,7 @@ int main(void)
     run(settle, 0, hostlog, 90);
     splash = redraw_logo(splash);
     start_network();
+    setup_sound();
 
     /* The NT world */
     prepare_nt();

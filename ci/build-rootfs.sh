@@ -49,6 +49,8 @@ gcc -O2 -Wall -o "$RFS/usr/bin/resolvconf" "$ROOT/host/init/arctic-resolv.c"
 chmod 755 "$RFS/usr/lib/arctic/udhcpc.script"
 ln -sf /run/arctic/resolv.conf "$RFS/etc/resolv.conf"
 sed -i 's/^hosts:.*/hosts: files dns/' "$RFS/etc/nsswitch.conf"
+# Sound: arctic-init picks the default card at boot and writes it on /run
+ln -sf /run/arctic/asound.conf "$RFS/etc/asound.conf"
 mkdir -p "$RFS/var/lib/iwd"
 tr -d '-' < /proc/sys/kernel/random/uuid > "$RFS/etc/machine-id"
 mkdir -p "$OUT/initrd/dev" "$OUT/initrd/proc" "$OUT/initrd/sys"

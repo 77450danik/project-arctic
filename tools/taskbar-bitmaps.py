@@ -68,9 +68,9 @@ def arctic_logo(path, size):
 
 
 def start_button(logo_path):
-    """Three states, 43x26 as the old picture: the Arctic snowflake over
-    nothing, over white at 10% and at 6%."""
-    w, h = 43, 26
+    """Three states, 48x40 as the Start button of the large taskbar of
+    Windows 10: the Arctic snowflake over nothing, over white at 10% and at 6%."""
+    w, h = 48, 40
     logo = arctic_logo(logo_path, 20).load()
     img = Image.new("RGBA", (w, h * 3), (0, 0, 0, 0))
     px = img.load()
