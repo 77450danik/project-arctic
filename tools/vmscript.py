@@ -155,6 +155,24 @@ class Qmp:
         self.sync_size()
         return png
 
+    def burst(self, name, count, interval):
+        """count screenshots, interval seconds apart: an animation frame by frame"""
+        ppms = []
+        for i in range(count):
+            ppm = os.path.join(RES, "%s-%02d.ppm" % (name, i))
+            self.call("screendump", {"filename": ppm})
+            ppms.append(ppm)
+            time.sleep(interval)
+        time.sleep(0.5)
+        pngs = []
+        for ppm in ppms:
+            png = ppm[:-4] + ".png"
+            subprocess.run([sys.executable, os.path.join(ROOT, "ci", "qmp-shot.py"), "--convert", ppm, png], check=True)
+            os.remove(ppm)
+            pngs.append(png)
+        self.sync_size()
+        return pngs
+
 
 def run(qmp, steps):
     for raw in steps:
@@ -182,6 +200,9 @@ def run(qmp, steps):
                 time.sleep(0.05)
         elif cmd in ("down", "up"):
             qmp.button(words[0] if words else "left", cmd == "down")
+        elif cmd in ("keydown", "keyup"):
+            # a key held across other steps: Alt while Tab is pressed
+            qmp.key(ALIASES.get(words[0], words[0]), cmd == "keydown")
         elif cmd == "drag":
             x1, y1, x2, y2 = map(int, words)
             qmp.move(x1, y1)
@@ -200,6 +221,11 @@ def run(qmp, steps):
             time.sleep(float(words[0]))
         elif cmd == "shot":
             print("    " + qmp.shot(words[0]), flush=True)
+        elif cmd == "burst":
+            # burst <name> <count> [<ms apart>]
+            interval = float(words[2]) / 1000 if len(words) > 2 else 0.04
+            for png in qmp.burst(words[0], int(words[1]), interval):
+                print("    " + png, flush=True)
         elif cmd == "hold":
             qmp.key(ALIASES.get(words[0], words[0]), True)
             time.sleep(float(words[1]))

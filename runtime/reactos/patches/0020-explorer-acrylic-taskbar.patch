@@ -1,0 +1,387 @@
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+index 1945c4dd..b0cd0001 100644
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -113,6 +113,16 @@ BOOL SetRegDword(IN LPCWSTR pszSubKey, IN LPCWSTR pszValueName, IN DWORD dwValue
+ BOOL GetAdvancedBool(IN LPCWSTR pszValueName, IN BOOL bDefaultValue);
+ BOOL SetAdvancedDword(IN LPCWSTR pszValueName, IN DWORD dwValue);
+ 
++/* Arctic: what dwm.exe and twinui.dll do for the taskbar, as in Windows 10 */
++#define ARCTIC_TRANSITION_SLIDE_UP 3
++#define DWMWA_ARCTIC_TRANSITION    0x1000
++#define DWMWA_ARCTIC_MINIMIZE_RECT 0x1001
++VOID ArcticSetTrayBand(IN HWND hWnd, IN BOOL bBand);
++VOID ArcticSetAcrylic(IN HWND hWnd, IN DWORD dwTint);
++HRESULT ArcticSetWindowAttribute(IN HWND hWnd, IN DWORD dwAttribute, IN LPCVOID pvValue, IN DWORD cbValue);
++VOID ArcticStartTaskSwitcher(VOID);
++VOID ArcticTaskbarHover(IN HWND hwndTask, IN const RECT *prcButton, IN DWORD dwFlags);
++
+ /*
+  *  rshell.c
+  */
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+index 381ba1c3..b8991c97 100644
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -1463,6 +1463,23 @@ public:
+ 
+         // FIXME: This seems to be enabling redraws prematurely, but moving it to its right place doesn't work!
+         m_TaskBar.EndUpdate();
++        PublishMinimizeRects();
++    }
++
++    /* Arctic: where each window goes when it is minimized; dwm.exe animates
++     * it into its button, as Windows does */
++    VOID PublishMinimizeRects()
++    {
++        for (PTASK_ITEM TaskItem = m_TaskItems; TaskItem != m_TaskItems + m_TaskItemCount; TaskItem++)
++        {
++            RECT rc;
++
++            if (TaskItem->Index < 0 || !::IsWindow(TaskItem->hWnd) ||
++                !m_TaskBar.SendMessageW(TB_GETITEMRECT, TaskItem->Index, (LPARAM)&rc))
++                continue;
++            m_TaskBar.MapWindowPoints(NULL, (LPPOINT)&rc, 2);
++            ArcticSetWindowAttribute(TaskItem->hWnd, DWMWA_ARCTIC_MINIMIZE_RECT, &rc, sizeof(rc));
++        }
+     }
+ 
+     BOOL CALLBACK EnumWindowsProc(IN HWND hWnd)
+@@ -1752,6 +1769,9 @@ public:
+         PTASK_ITEM TaskItem;
+         PTASK_GROUP TaskGroup;
+ 
++        /* the thumbnail over the button goes at once */
++        ArcticTaskbarHover(NULL, NULL, 1);
++
+         if (m_IsGroupingEnabled)
+         {
+             TaskGroup = FindTaskGroupByIndex((INT) wIndex);
+@@ -1895,6 +1915,27 @@ public:
+             }
+             break;
+         }
++
++        /* Arctic: the thumbnail of the window over its button, drawn by twinui.dll */
++        case TBN_HOTITEMCHANGE:
++        {
++            const NMTBHOTITEM *nmhi = (const NMTBHOTITEM *) nmh;
++            PTASK_ITEM TaskItem = (nmhi->dwFlags & HICF_LEAVING) ? NULL : FindTaskItemByIndex((INT) nmhi->idNew);
++            RECT rc;
++
++            if (TaskItem != NULL && ::IsWindow(TaskItem->hWnd) &&
++                m_TaskBar.SendMessageW(TB_GETITEMRECT, TaskItem->Index, (LPARAM)&rc))
++            {
++                m_TaskBar.MapWindowPoints(NULL, (LPPOINT)&rc, 2);
++                ArcticTaskbarHover(TaskItem->hWnd, &rc, 0);
++            }
++            else
++            {
++                ArcticTaskbarHover(NULL, NULL, 0);
++            }
++            Ret = 0;
++            break;
++        }
+         }
+ 
+         return Ret;
+@@ -1967,11 +2008,21 @@ public:
+         Data.pTray = m_Tray;
+         ::EnumDisplayMonitors(NULL, NULL, FullScreenEnumProc, (LPARAM)&Data);
+ 
++        /* Arctic: the taskbar leaves its band over program windows only while
++         * a full screen program is in front, and comes back when it is not:
++         * it used to stay at the bottom, under every window, for good */
++        HWND hwndTray = m_Tray->GetHWND();
++        if (!hwndRude)
++        {
++            ArcticSetTrayBand(hwndTray, TRUE);
++            return;
++        }
++
+         if (hwndRude)
+         {
+             // Make the taskbar bottom
+             UINT uFlags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+-            HWND hwndTray = m_Tray->GetHWND();
++            ArcticSetTrayBand(hwndTray, FALSE);
+             ::SetWindowPos(hwndTray, HWND_BOTTOM, 0, 0, 0, 0, uFlags);
+ 
+             // Switch to the rude app if necessary
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+index 09eb8ade..3b8cbfb0 100644
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -1950,6 +1950,14 @@ ChangePos:
+                     break;
+                 }
+ 
++                /* Arctic: it rises from the taskbar, as the Start menu of Windows 11 */
++                HWND hwndStartMenu;
++                if (SUCCEEDED(IUnknown_GetWindow(m_StartMenuPopup, &hwndStartMenu)) && hwndStartMenu)
++                {
++                    DWORD dwTransition = ARCTIC_TRANSITION_SLIDE_UP;
++                    ArcticSetWindowAttribute(hwndStartMenu, DWMWA_ARCTIC_TRANSITION, &dwTransition, sizeof(dwTransition));
++                }
++
+                 m_StartMenuPopup->Popup(&pt, &rcExclude, dwFlags);
+ 
+                 m_StartButton.SendMessageW(BM_SETSTATE, TRUE, 0);
+@@ -2449,6 +2457,12 @@ ChangePos:
+ 
+         m_WinMMDevChgMsg = RegisterWindowMessageW(L"winmm_devicechange");
+ 
++        /* Arctic: the acrylic of Windows 10 behind the taskbar, which lies in
++         * its band over program windows, and Alt+Tab */
++        ArcticSetAcrylic(m_hWnd, 0xBF101010);
++        ArcticSetTrayBand(m_hWnd, TRUE);
++        ArcticStartTaskSwitcher();
++
+         return TRUE;
+     }
+ 
+diff --git a/base/shell/explorer/util.cpp b/base/shell/explorer/util.cpp
+index f6824cc3..cc918ddf 100644
+--- a/base/shell/explorer/util.cpp
++++ b/base/shell/explorer/util.cpp
+@@ -7,6 +7,74 @@ typedef struct _LANGCODEPAGE
+     WORD wCodePage;
+ } LANGCODEPAGE, *PLANGCODEPAGE;
+ 
++/*
++ * Arctic: the taskbar of Windows 10. dwm.exe draws acrylic behind it and keeps
++ * it in its band over program windows (user32's SetWindowBand and
++ * SetWindowCompositionAttribute); twinui.dll does Alt+Tab and the thumbnails
++ * over its buttons, as in Windows. They are looked up at run time: this
++ * explorer also runs where they are missing.
++ */
++
++static FARPROC ArcticProc(IN LPCWSTR pszModule, IN LPCSTR pszName)
++{
++    HMODULE hModule = GetModuleHandleW(pszModule);
++
++    if (!hModule)
++        hModule = LoadLibraryW(pszModule);
++    return hModule ? GetProcAddress(hModule, pszName) : NULL;
++}
++
++VOID ArcticSetTrayBand(IN HWND hWnd, IN BOOL bBand)
++{
++    typedef BOOL (WINAPI *PFN_SETWINDOWBAND)(HWND, HWND, DWORD);
++    PFN_SETWINDOWBAND pSetWindowBand = (PFN_SETWINDOWBAND)ArcticProc(L"user32.dll", "SetWindowBand");
++
++    /* ZBID_SYSTEM_TOOLS is over program windows, ZBID_DESKTOP among them */
++    if (pSetWindowBand)
++        pSetWindowBand(hWnd, NULL, bBand ? 4 : 1);
++}
++
++VOID ArcticSetAcrylic(IN HWND hWnd, IN DWORD dwTint)
++{
++    typedef BOOL (WINAPI *PFN_SETWCA)(HWND, PVOID);
++    PFN_SETWCA pSetWindowCompositionAttribute =
++        (PFN_SETWCA)ArcticProc(L"user32.dll", "SetWindowCompositionAttribute");
++    struct { DWORD AccentState, AccentFlags, GradientColor, AnimationId; } policy =
++        { 4 /* ACCENT_ENABLE_ACRYLICBLURBEHIND */, 0, dwTint, 0 };
++    struct { DWORD Attrib; PVOID pvData; SIZE_T cbData; } data =
++        { 19 /* WCA_ACCENT_POLICY */, &policy, sizeof(policy) };
++
++    if (pSetWindowCompositionAttribute)
++        pSetWindowCompositionAttribute(hWnd, &data);
++}
++
++HRESULT ArcticSetWindowAttribute(IN HWND hWnd, IN DWORD dwAttribute, IN LPCVOID pvValue, IN DWORD cbValue)
++{
++    typedef HRESULT (WINAPI *PFN_DWMSETWINDOWATTRIBUTE)(HWND, DWORD, LPCVOID, DWORD);
++    PFN_DWMSETWINDOWATTRIBUTE pDwmSetWindowAttribute =
++        (PFN_DWMSETWINDOWATTRIBUTE)ArcticProc(L"dwmapi.dll", "DwmSetWindowAttribute");
++
++    return pDwmSetWindowAttribute ? pDwmSetWindowAttribute(hWnd, dwAttribute, pvValue, cbValue) : E_NOTIMPL;
++}
++
++VOID ArcticStartTaskSwitcher(VOID)
++{
++    typedef BOOL (WINAPI *PFN_START)(void);
++    PFN_START pStart = (PFN_START)ArcticProc(L"twinui.dll", "ArcticStartTaskSwitcher");
++
++    if (pStart)
++        pStart();
++}
++
++VOID ArcticTaskbarHover(IN HWND hwndTask, IN const RECT *prcButton, IN DWORD dwFlags)
++{
++    typedef void (WINAPI *PFN_HOVER)(HWND, const RECT *, DWORD);
++    PFN_HOVER pHover = (PFN_HOVER)ArcticProc(L"twinui.dll", "ArcticTaskbarHover");
++
++    if (pHover)
++        pHover(hwndTask, prcButton, dwFlags);
++}
++
+ HRESULT
+ IsSameObject(IN IUnknown *punk1, IN IUnknown *punk2)
+ {
+diff --git a/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI b/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI
+index 0c93d854..d68e360f 100644
+--- a/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI
++++ b/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI
+@@ -1022,39 +1022,30 @@ TransparentColor = 255 0 255
+ Font = Tahoma, 8, Bold
+ TextColor = 255 255 255
+ 
++; black lets the acrylic dwm.exe draws behind the taskbar through
+ [TaskBar.BackgroundBottom]
+-BgType = ImageFile
+-FillColorHint = 36 94 220
+-ImageCount = 1
+-ImageFile = Normal\TaskbarBackground.bmp
+-SizingMargins = 1, 0, 23, 0
+-SizingType = Stretch
+-TRANSPARENT = true
+-TRANSPARENTCOLOR = 255 0 255
++BgType = BorderFill
++BorderSize = 0
++FillColor = 0 0 0
++FillColorHint = 0 0 0
+ 
+ [TaskBar.BackgroundLeft]
+-BgType = ImageFile
+-FillColorHint = 36 94 220
+-ImageCount = 1
+-ImageFile = Normal\TaskbarBackgroundVertical.bmp
+-SizingMargins = 14, 3, 0, 0
+-SizingType = Stretch
++BgType = BorderFill
++BorderSize = 0
++FillColor = 0 0 0
++FillColorHint = 0 0 0
+ 
+ [TaskBar.BackgroundRight]
+-BgType = ImageFile
+-FillColorHint = 36 94 220
+-ImageCount = 1
+-ImageFile = Normal\TaskbarBackgroundVertical.bmp
+-SizingMargins = 14, 2, 0, 0
+-SizingType = Stretch
++BgType = BorderFill
++BorderSize = 0
++FillColor = 0 0 0
++FillColorHint = 0 0 0
+ 
+ [TaskBar.BackgroundTop]
+-BgType = ImageFile
+-FillColorHint = 36 94 220
+-ImageCount = 1
+-ImageFile = Normal\TaskbarBackground.bmp
+-SizingMargins = 1, 1, 15, 4
+-SizingType = Stretch
++BgType = BorderFill
++BorderSize = 0
++FillColor = 0 0 0
++FillColorHint = 0 0 0
+ ContentMargins = 1, 1, 1, 1
+ 
+ [TaskBar.SizingBarBottom]
+@@ -1979,60 +1970,44 @@ ImageFile = Normal\TaskBandScrollShaftVertical.bmp
+ ImageLayout = Vertical
+ SizingMargins = 1, 1, 0, 0
+ 
++; task buttons of Windows 10 on the acrylic: white text without a shadow,
++; white overlays and the line of a running program (TaskBandButton.bmp)
+ [TaskBand::Toolbar]
+ BgType = None
+ Font = Source Sans Pro, 9
+ TextColor = 255 255 255
+-TEXTSHADOWCOLOR = 0 0 0
+-TEXTSHADOWOFFSET = 1,1
+-TEXTSHADOWTYPE = Single
+ 
+ [TaskBand::Toolbar(Checked)]
+ TextColor = 255 255 255
+-TEXTSHADOWCOLOR = 0 0 0
+-TEXTSHADOWOFFSET = 1,1
+-TEXTSHADOWTYPE = Single
+ 
+ [TaskBand::Toolbar(Hot)]
+ TextColor = 255 255 255
+-TEXTSHADOWCOLOR = 0 0 0
+-TEXTSHADOWOFFSET = 1,1
+-TEXTSHADOWTYPE = Single
+ 
+ [TaskBand::Toolbar(HotChecked)]
+ TextColor = 255 255 255
+-TEXTSHADOWCOLOR = 0 0 0
+-TEXTSHADOWOFFSET = 1,1
+-TEXTSHADOWTYPE = Single
+ 
+ [TaskBand::Toolbar(Pressed)]
+ TextColor = 255 255 255
+-TEXTSHADOWCOLOR = 0 0 0
+-TEXTSHADOWOFFSET = 1,1
+-TEXTSHADOWTYPE = Single
+ 
+ [TaskBand::Toolbar.Button]
+ BgType = ImageFile
+ ContentMargins = 0, 4, 2, 2
+-FillColorHint = 54 127 239
++FillColorHint = 0 0 0
+ ImageCount = 6
+ ImageFile = Normal\TaskBandButton.bmp
+ ImageLayout = vertical
+-SizingMargins = 10, 7, 15, 8
++SizingMargins = 1, 1, 1, 3
+ SizingType = Stretch
+ Transparent = True
+-TEXTSHADOWCOLOR = 0 0 0
+-TEXTSHADOWOFFSET = 1,1
+-TEXTSHADOWTYPE = Single
+ 
+ [TaskBand::Toolbar.DropdownButton]
+ BgType = ImageFile
+ ContentMargins = 0, 4, 2, 2
+-FillColorHint = 54 127 239
++FillColorHint = 0 0 0
+ ImageCount = 6
+ ImageFile = Normal\TaskBandButton.bmp
+ ImageLayout = vertical
+-SizingMargins = 17, 5, 15, 8
++SizingMargins = 1, 1, 1, 3
+ SizingType = Stretch
+ Transparent = True
+ 
+@@ -2230,15 +2205,9 @@ Transparent = false
+ TransparentColor = 255 0 255
+ 
+ [TrayNotifyHoriz::TrayNotify.Background]
+-BgType = ImageFile
+-ContentMargins = 29, 7, 0, 0
+-FillColorHint = 13 141 234
+-ImageCount = 1
+-ImageFile = Normal\TaskbarTray.bmp
+-SizingMargins = 18, 0, 23, 0
+-SizingType = Stretch
+-Transparent = True
+-TransparentColor = 255 0 0
++BgType = None
++ContentMargins = 6, 0, 0, 0
++FillColorHint = 0 0 0
+ 
+ [TrayNotifyHorizOpen::Button]
+ BgType = ImageFile
+@@ -2260,15 +2229,9 @@ SizingType = TrueSize
+ Transparent = True
+ 
+ [TrayNotifyVert::TrayNotify.Background]
+-BgType = ImageFile
+-ContentMargins = 0, 0, 19, 7
+-FillColorHint = 13 141 234
+-ImageCount = 1
+-ImageFile = Normal\TaskbarTrayVertical.bmp
+-SizingMargins = 14, 1, 5, 5
+-SizingType = Stretch
+-Transparent = True
+-TransparentColor = 255 0 0
++BgType = None
++ContentMargins = 0, 0, 6, 0
++FillColorHint = 0 0 0
+ 
+ [TrayNotifyVertOpen::Button]
+ BgType = ImageFile

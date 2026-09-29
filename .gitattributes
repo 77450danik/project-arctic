@@ -5,3 +5,4 @@
 runtime/reactos/patches/*.patch -text
 runtime/wine/patches/*.patch -text
 runtime/reactos/files/**/*.ico binary
+runtime/reactos/files/**/*.bmp binary
