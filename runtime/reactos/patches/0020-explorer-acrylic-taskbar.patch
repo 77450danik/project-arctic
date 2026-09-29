@@ -160,10 +160,32 @@ index 29e1c2b8..19e37d49 100644
      dwRet = SHGetValueW(hkExplorer, L"Advanced", L"CompactTrayIcons", NULL, &dwValue, &cbSize);
      if (dwRet == ERROR_SUCCESS && dwValue <= TIM_Max)
 diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
-index 381ba1c3..2a878688 100644
+index 381ba1c3..277a1c8e 100644
 --- a/base/shell/explorer/taskswnd.cpp
 +++ b/base/shell/explorer/taskswnd.cpp
-@@ -83,6 +83,11 @@ SHELL_IsRudeWindow(_In_opt_ HMONITOR hMonitor, _In_ HWND hWnd, _In_ BOOL bDontCh
+@@ -18,12 +18,21 @@
+ #define DEBUG_SHELL_HOOK 0
+ 
+ #define MAX_TASKS_COUNT (0x7FFF)
++
++/* Arctic: the task buttons are to be made anew, once the current message is done */
++#define TSWM_ARCTIC_REBUILD (WM_APP + 0x3A)
++/* the narrowest a labelled button gets before the windows of a program combine */
++#define MIN_LABELLED_BUTTON 100
+ #define TASK_ITEM_ARRAY_ALLOC   64
+ 
+ //************************************************************************
+ // Fullscreen windows (a.k.a. rude apps) checker
+ 
+ #define TIMER_ID_VALIDATE_RUDE_APP 5
++/* Arctic: an icon asked for again when its window's process was too busy to give it */
++#define TIMER_ID_ICON_RETRY 6
++#define ICON_RETRY_INTERVAL 1000
++#define ICON_RETRY_MAX_COUNT 20
+ #define VALIDATE_RUDE_INTERVAL 1000
+ #define VALIDATE_RUDE_MAX_COUNT 5
+ 
+@@ -83,6 +92,11 @@ SHELL_IsRudeWindow(_In_opt_ HMONITOR hMonitor, _In_ HWND hWnd, _In_ BOOL bDontCh
  
      DWORD style = ::GetWindowLongPtrW(hWnd, GWL_STYLE);
  
@@ -175,7 +197,7 @@ index 381ba1c3..2a878688 100644
      RECT rcWnd;
      enum { CHECK_STYLE = WS_THICKFRAME | WS_DLGFRAME | WS_BORDER };
      if ((style & CHECK_STYLE) == CHECK_STYLE)
-@@ -101,6 +106,35 @@ SHELL_IsRudeWindow(_In_opt_ HMONITOR hMonitor, _In_ HWND hWnd, _In_ BOOL bDontCh
+@@ -101,6 +115,35 @@ SHELL_IsRudeWindow(_In_opt_ HMONITOR hMonitor, _In_ HWND hWnd, _In_ BOOL bDontCh
      return ::EqualRect(&rcUnion, &rcWnd) && (bDontCheckActive || SHELL_IsRudeWindowActive(hWnd));
  }
  
@@ -211,7 +233,7 @@ index 381ba1c3..2a878688 100644
  ////////////////////////////////////////////////////////////////
  
  const WCHAR szTaskSwitchWndClass[] = L"MSTaskSwWClass";
-@@ -138,6 +172,8 @@ typedef struct _TASK_GROUP
+@@ -138,6 +181,8 @@ typedef struct _TASK_GROUP
  
      DWORD dwTaskCount;
      DWORD dwProcessId;
@@ -220,10 +242,16 @@ index 381ba1c3..2a878688 100644
      INT Index;
      union
      {
-@@ -402,6 +438,11 @@ class CTaskSwitchWnd :
+@@ -402,6 +447,17 @@ class CTaskSwitchWnd :
      CHardErrorThread m_HardErrorThread;
      CMultimediaBackend m_Mixer;
  
++    /* Arctic: "Combine when taskbar is full": the labelled buttons of all
++       windows no longer fit */
++    BOOL m_bFull;
++    BOOL m_bRebuilding;
++    UINT m_nIconRetries;
++
 +    /* Arctic: ITaskbarList3 of Windows 7 */
 +    UINT m_uButtonCreatedMsg;
 +    UINT m_uTaskbarChangedMsg;
@@ -232,7 +260,15 @@ index 381ba1c3..2a878688 100644
  public:
      CTaskSwitchWnd() :
          m_ShellHookMsg(NULL),
-@@ -421,6 +462,9 @@ public:
+@@ -417,10 +473,16 @@ public:
+         m_ImageList(NULL),
+         m_IsGroupingEnabled(FALSE),
+         m_IsDestroying(FALSE),
+-        m_nRudeAppValidationCounter(0)
++        m_nRudeAppValidationCounter(0),
++        m_bFull(FALSE),
++        m_bRebuilding(FALSE),
++        m_nIconRetries(0)
      {
          ZeroMemory(&m_ButtonSize, sizeof(m_ButtonSize));
          m_uHardErrorMsg = RegisterWindowMessageW(L"HardError");
@@ -242,7 +278,7 @@ index 381ba1c3..2a878688 100644
      }
      virtual ~CTaskSwitchWnd() { }
  
-@@ -547,6 +591,80 @@ public:
+@@ -547,6 +609,122 @@ public:
      }
  
  
@@ -250,7 +286,8 @@ index 381ba1c3..2a878688 100644
 +       program; the others of its group have none (Index -1) */
 +    BOOL IsCombining()
 +    {
-+        return m_IsGroupingEnabled && g_TaskbarSettings.dwGlomLevel == 0;
++        return m_IsGroupingEnabled &&
++               (g_TaskbarSettings.dwGlomLevel == 0 || (g_TaskbarSettings.dwGlomLevel == 1 && m_bFull));
 +    }
 +
 +    PTASK_ITEM FindGroupButton(IN PTASK_GROUP TaskGroup, IN PTASK_ITEM Except OPTIONAL)
@@ -314,6 +351,47 @@ index 381ba1c3..2a878688 100644
 +        return FALSE;
 +    }
 +
++    /* "Combine when taskbar is full": the windows of a program combine once
++       their labelled buttons no longer fit, and part again when they do */
++    VOID CheckFull()
++    {
++        RECT rcClient;
++
++        if (m_bRebuilding || !m_IsGroupingEnabled || g_TaskbarSettings.dwGlomLevel != 1 ||
++            !GetClientRect(&rcClient) || IsRectEmpty(&rcClient))
++            return;
++        BOOL bFull = m_Tray->IsHorizontal() && (LONG)m_TaskItemCount * MIN_LABELLED_BUTTON > rcClient.right;
++        if (bFull != m_bFull)
++        {
++            m_bFull = bFull;
++            PostMessageW(TSWM_ARCTIC_REBUILD, 0, 0);
++        }
++    }
++
++    /* the icon of another process fails to come when that process is busy
++       (Chrome starting): the button shows the default one meanwhile */
++    VOID SetTaskIcon(IN OUT PTASK_ITEM TaskItem, IN HICON icon)
++    {
++        INT index = ImageList_ReplaceIcon(m_ImageList, TaskItem->IconIndex, icon);
++
++        if (index >= 0)
++        {
++            TaskItem->IconIndex = index;
++            return;
++        }
++        if (TaskItem->IconIndex < 0)
++        {
++            HICON hDefault = static_cast<HICON>(LoadImageW(NULL, MAKEINTRESOURCEW(OIC_SAMPLE), IMAGE_ICON, 0, 0,
++                                                           LR_SHARED | LR_DEFAULTSIZE));
++            TaskItem->IconIndex = ImageList_ReplaceIcon(m_ImageList, -1, hDefault);
++        }
++        if (m_nIconRetries < ICON_RETRY_MAX_COUNT)
++        {
++            m_nIconRetries++;
++            SetTimer(TIMER_ID_ICON_RETRY, ICON_RETRY_INTERVAL, NULL);
++        }
++    }
++
 +    INT GetIconSize()
 +    {
 +        /* the large taskbar of Windows 10 has icons of 24 pixels */
@@ -323,7 +401,7 @@ index 381ba1c3..2a878688 100644
      INT UpdateTaskGroupButton(IN PTASK_GROUP TaskGroup)
      {
          ASSERT(TaskGroup->Index >= 0);
-@@ -609,14 +727,19 @@ public:
+@@ -609,14 +787,19 @@ public:
          ASSERT(TaskItem->Index >= 0);
  
          tbbi.cbSize = sizeof(tbbi);
@@ -346,16 +424,18 @@ index 381ba1c3..2a878688 100644
          /* Check if we're updating a button that is the last one in the
             line. If so, we need to set the TBSTATE_WRAP flag! */
          if (!m_Tray->IsHorizontal() || (m_ButtonsPerLine != 0 &&
-@@ -634,7 +757,7 @@ public:
+@@ -633,8 +816,8 @@ public:
+         icon = GetWndIcon(TaskItem->hWnd);
          if (!icon)
              icon = static_cast<HICON>(LoadImageW(NULL, MAKEINTRESOURCEW(OIC_SAMPLE), IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE));
-         TaskItem->IconIndex = ImageList_ReplaceIcon(m_ImageList, TaskItem->IconIndex, icon);
+-        TaskItem->IconIndex = ImageList_ReplaceIcon(m_ImageList, TaskItem->IconIndex, icon);
 -        tbbi.iImage = TaskItem->IconIndex;
++        SetTaskIcon(TaskItem, icon);
 +        tbbi.iImage = I_IMAGENONE;
  
          if (!m_TaskBar.SetButtonInfo(TaskItem->Index, &tbbi))
          {
-@@ -648,26 +771,19 @@ public:
+@@ -648,26 +831,19 @@ public:
  
      VOID RemoveIcon(IN PTASK_ITEM TaskItem)
      {
@@ -384,7 +464,7 @@ index 381ba1c3..2a878688 100644
              currentTaskItem++;
          }
  
-@@ -729,12 +845,11 @@ public:
+@@ -729,12 +905,11 @@ public:
  
                  if (TaskGroup->dwTaskCount > 1)
                  {
@@ -401,7 +481,7 @@ index 381ba1c3..2a878688 100644
                          return LastTaskItem->Index + 1;
                      }
                  }
-@@ -775,17 +890,31 @@ public:
+@@ -775,17 +950,32 @@ public:
              return UpdateTaskGroupButton(TaskItem->Group);
          }
  
@@ -420,7 +500,9 @@ index 381ba1c3..2a878688 100644
          icon = GetWndIcon(TaskItem->hWnd);
          if (!icon)
              icon = static_cast<HICON>(LoadImageW(NULL, MAKEINTRESOURCEW(OIC_SAMPLE), IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE));
-         TaskItem->IconIndex = ImageList_ReplaceIcon(m_ImageList, -1, icon);
+-        TaskItem->IconIndex = ImageList_ReplaceIcon(m_ImageList, -1, icon);
++        TaskItem->IconIndex = -1;
++        SetTaskIcon(TaskItem, icon);
  
 -        tbBtn.iBitmap = TaskItem->IconIndex;
 +        /* Arctic: HandleItemPostPaint draws the icon, where Windows 10 has it */
@@ -435,7 +517,7 @@ index 381ba1c3..2a878688 100644
          {
              tbBtn.iString = (DWORD_PTR) windowText;
          }
-@@ -825,6 +954,26 @@ public:
+@@ -825,6 +1015,26 @@ public:
  
          if (TaskItem->Index >= 0)
          {
@@ -462,7 +544,7 @@ index 381ba1c3..2a878688 100644
              if ((TaskGroup != NULL && !TaskGroup->IsCollapsed) ||
                  TaskGroup == NULL)
              {
-@@ -855,6 +1004,7 @@ public:
+@@ -855,6 +1065,7 @@ public:
      {
          DWORD dwProcessId;
          PTASK_GROUP TaskGroup, *PrevLink;
@@ -470,7 +552,7 @@ index 381ba1c3..2a878688 100644
  
          if (!GetWindowThreadProcessId(hWnd,
              &dwProcessId))
-@@ -862,13 +1012,15 @@ public:
+@@ -862,13 +1073,15 @@ public:
              TRACE("Cannot get process id of hwnd 0x%p\n", hWnd);
              return NULL;
          }
@@ -487,7 +569,7 @@ index 381ba1c3..2a878688 100644
              {
                  TaskGroup->dwTaskCount++;
                  return TaskGroup;
-@@ -886,6 +1038,7 @@ public:
+@@ -886,6 +1099,7 @@ public:
          {
              TaskGroup->dwTaskCount = 1;
              TaskGroup->dwProcessId = dwProcessId;
@@ -495,7 +577,7 @@ index 381ba1c3..2a878688 100644
              TaskGroup->Index = -1;
  
              /* Add the task group to the list */
-@@ -1057,6 +1210,8 @@ public:
+@@ -1057,6 +1271,8 @@ public:
  
          if (TaskItem == m_ActiveTaskItem)
              m_ActiveTaskItem = NULL;
@@ -504,7 +586,7 @@ index 381ba1c3..2a878688 100644
  
          wIndex = (WORD) (TaskItem - m_TaskItems);
          if (wIndex + 1 < m_TaskItemCount)
-@@ -1123,18 +1278,21 @@ public:
+@@ -1123,18 +1339,21 @@ public:
              else
              {
                  m_ActiveTaskItem = NULL;
@@ -530,16 +612,33 @@ index 381ba1c3..2a878688 100644
          }
          else if (TaskItem == NULL)
          {
-@@ -1197,6 +1355,8 @@ public:
+@@ -1186,6 +1405,7 @@ public:
+         if (TaskItem == NULL)
+         {
+             TRACE("Add window 0x%p\n", hWnd);
++            m_nIconRetries = 0;
+             TaskItem = AllocTaskItem();
+             if (TaskItem != NULL)
+             {
+@@ -1197,6 +1417,9 @@ public:
                  if (!m_IsDestroying)
                  {
                      AddTaskItemButton(TaskItem);
 +                    /* Arctic: now it may use ITaskbarList3, as in Windows */
 +                    ::PostMessageW(hWnd, m_uButtonCreatedMsg, 0, 0);
++                    CheckFull();
                  }
              }
          }
-@@ -1273,7 +1433,9 @@ public:
+@@ -1248,6 +1471,7 @@ public:
+         {
+             TRACE("Delete window 0x%p on button %d\n", hWnd, TaskItem->Index);
+             DeleteTaskItem(TaskItem);
++            CheckFull();
+             return TRUE;
+         }
+         //else
+@@ -1273,7 +1497,9 @@ public:
      VOID FlashTaskItem(IN OUT PTASK_ITEM TaskItem)
      {
          TaskItem->RenderFlashed = 1;
@@ -550,7 +649,7 @@ index 381ba1c3..2a878688 100644
      }
  
      BOOL FlashTask(IN HWND hWnd)
-@@ -1306,6 +1468,12 @@ public:
+@@ -1306,6 +1532,12 @@ public:
              {
                  goto UpdateTaskItem;
              }
@@ -563,7 +662,7 @@ index 381ba1c3..2a878688 100644
          }
          else if (TaskItem->Index >= 0)
          {
-@@ -1339,13 +1507,11 @@ public:
+@@ -1339,13 +1571,11 @@ public:
  
          /* Update the size of the image list if needed */
          int cx, cy;
@@ -580,7 +679,7 @@ index 381ba1c3..2a878688 100644
  
              /* SetIconSize removes all icons so we have to reinsert them */
              PTASK_ITEM TaskItem = m_TaskItems;
-@@ -1353,7 +1519,8 @@ public:
+@@ -1353,7 +1583,8 @@ public:
              while (TaskItem != LastTaskItem)
              {
                  TaskItem->IconIndex = -1;
@@ -590,7 +689,7 @@ index 381ba1c3..2a878688 100644
  
                  TaskItem++;
              }
-@@ -1366,6 +1533,11 @@ public:
+@@ -1366,6 +1597,11 @@ public:
              {
                  Horizontal = m_Tray->IsHorizontal();
  
@@ -602,7 +701,7 @@ index 381ba1c3..2a878688 100644
                  if (Horizontal)
                  {
                      TBMETRICS tbm = { 0 };
-@@ -1411,6 +1583,10 @@ public:
+@@ -1411,6 +1647,10 @@ public:
                      if (NewBtnSize >(LONG)uiMax)
                          NewBtnSize = uiMax;
  
@@ -613,7 +712,7 @@ index 381ba1c3..2a878688 100644
                      /* Recalculate how many buttons actually fit into one line */
                      uiBtnsPerLine = rcClient.right / (NewBtnSize + cxButtonSpacing);
                      if (uiBtnsPerLine == 0)
-@@ -1445,14 +1621,18 @@ public:
+@@ -1445,14 +1685,18 @@ public:
                          tbbi.fsState |= TBSTATE_WRAP;
                      }
  
@@ -636,11 +735,12 @@ index 381ba1c3..2a878688 100644
              }
              else
              {
-@@ -1463,6 +1643,24 @@ public:
+@@ -1463,6 +1707,25 @@ public:
  
          // FIXME: This seems to be enabling redraws prematurely, but moving it to its right place doesn't work!
          m_TaskBar.EndUpdate();
 +        PublishMinimizeRects();
++        CheckFull();
 +    }
 +
 +    /* Arctic: where each window goes when it is minimized; dwm.exe animates
@@ -661,7 +761,7 @@ index 381ba1c3..2a878688 100644
      }
  
      BOOL CALLBACK EnumWindowsProc(IN HWND hWnd)
-@@ -1511,9 +1709,7 @@ public:
+@@ -1511,9 +1774,7 @@ public:
  
          SetWindowTheme(m_TaskBar.m_hWnd, L"TaskBand", NULL);
  
@@ -672,7 +772,7 @@ index 381ba1c3..2a878688 100644
          m_TaskBar.SetImageList(m_ImageList);
  
          /* Set proper spacing between buttons */
-@@ -1639,7 +1835,9 @@ public:
+@@ -1639,7 +1900,9 @@ public:
              break;
  
          case HSHELL_WINDOWCREATED:
@@ -683,7 +783,7 @@ index 381ba1c3..2a878688 100644
              break;
  
          case HSHELL_WINDOWDESTROYED:
-@@ -1703,6 +1901,34 @@ public:
+@@ -1703,6 +1966,34 @@ public:
          return Ret;
      }
  
@@ -718,7 +818,7 @@ index 381ba1c3..2a878688 100644
      LRESULT OnWinMMDeviceChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
      {
          TRACE("Audio device was added or removed, invalidating mixer\n");
-@@ -1765,6 +1991,21 @@ public:
+@@ -1765,6 +2056,21 @@ public:
          TaskItem = FindTaskItemByIndex((INT) wIndex);
          if (TaskItem != NULL)
          {
@@ -740,7 +840,7 @@ index 381ba1c3..2a878688 100644
              HandleTaskItemClick(TaskItem);
              return TRUE;
          }
-@@ -1825,6 +2066,97 @@ public:
+@@ -1825,6 +2131,97 @@ public:
      }
  
  
@@ -838,7 +938,7 @@ index 381ba1c3..2a878688 100644
      LRESULT HandleItemPaint(IN OUT NMTBCUSTOMDRAW *nmtbcd)
      {
          LRESULT Ret = CDRF_DODEFAULT;
-@@ -1837,12 +2169,15 @@ public:
+@@ -1837,12 +2234,15 @@ public:
          {
              ASSERT(TaskItem != NULL);
  
@@ -855,7 +955,7 @@ index 381ba1c3..2a878688 100644
                      if (!m_Theme)
                      {
                          SelectObject(nmtbcd->nmcd.hdc, GetSysColorBrush(COLOR_HIGHLIGHT));
-@@ -1885,6 +2220,15 @@ public:
+@@ -1885,6 +2285,15 @@ public:
                  Ret = HandleItemPaint(nmtbcd);
                  break;
  
@@ -871,7 +971,7 @@ index 381ba1c3..2a878688 100644
              case CDDS_PREPAINT:
                  Ret = CDRF_NOTIFYITEMDRAW;
                  break;
-@@ -1895,6 +2239,30 @@ public:
+@@ -1895,6 +2304,30 @@ public:
              }
              break;
          }
@@ -902,7 +1002,7 @@ index 381ba1c3..2a878688 100644
          }
  
          return Ret;
-@@ -1967,11 +2335,21 @@ public:
+@@ -1967,11 +2400,21 @@ public:
          Data.pTray = m_Tray;
          ::EnumDisplayMonitors(NULL, NULL, FullScreenEnumProc, (LPARAM)&Data);
  
@@ -925,7 +1025,7 @@ index 381ba1c3..2a878688 100644
              ::SetWindowPos(hwndTray, HWND_BOTTOM, 0, 0, 0, 0, uFlags);
  
              // Switch to the rude app if necessary
-@@ -2114,11 +2492,24 @@ public:
+@@ -2114,16 +2557,43 @@ public:
              g_TaskbarSettings.bSmallIcons = newSettings->bSmallIcons;
          }
  
@@ -940,18 +1040,39 @@ index 381ba1c3..2a878688 100644
          if (bSettingsChanged)
          {
 -            /* Refresh each task item view */
-+            /* Arctic: the buttons are made anew: groups are combined or
-+               split, and a label once given cannot be taken back */
-+            HWND hwndActive = m_ActiveTaskItem ? m_ActiveTaskItem->hWnd : NULL;
-+            DeleteAllTasks();
-             RefreshWindowList();
-             UpdateButtonsSize(FALSE);
-+            if (hwndActive)
-+                ActivateTask(hwndActive);
+-            RefreshWindowList();
+-            UpdateButtonsSize(FALSE);
++            m_bFull = FALSE;
++            RebuildButtons();
          }
  
          return 0;
-@@ -2154,7 +2545,7 @@ public:
+     }
+ 
++    /* Arctic: the buttons made anew: groups are combined or split, and a
++       label once given cannot be taken back */
++    VOID RebuildButtons()
++    {
++        HWND hwndActive = m_ActiveTaskItem ? m_ActiveTaskItem->hWnd : NULL;
++        m_bRebuilding = TRUE;
++        DeleteAllTasks();
++        RefreshWindowList();
++        m_bRebuilding = FALSE;
++        UpdateButtonsSize(FALSE);
++        if (hwndActive)
++            ActivateTask(hwndActive);
++    }
++
++    LRESULT OnRebuildButtons(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        RebuildButtons();
++        return 0;
++    }
++
+     LRESULT OnContextMenu(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
+         LRESULT Ret = 0;
+@@ -2154,7 +2624,7 @@ public:
  
      LRESULT OnKludgeItemRect(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
      {
@@ -960,12 +1081,30 @@ index 381ba1c3..2a878688 100644
          if (TaskItem)
          {
              RECT* prcMinRect = (RECT*) lParam;
-@@ -2284,6 +2675,8 @@ public:
+@@ -2197,6 +2667,16 @@ public:
+                     SetTimer(wParam, VALIDATE_RUDE_INTERVAL, NULL);
+                 break;
+             }
++            case TIMER_ID_ICON_RETRY:
++            {
++                KillTimer(wParam);
++                for (PTASK_ITEM TaskItem = m_TaskItems; TaskItem != m_TaskItems + m_TaskItemCount; TaskItem++)
++                {
++                    if (TaskItem->Index >= 0)
++                        UpdateTaskItemButton(TaskItem);
++                }
++                break;
++            }
+             default:
+             {
+                 WARN("Unknown timer ID: %p\n", wParam);
+@@ -2284,6 +2764,9 @@ public:
          MESSAGE_HANDLER(WM_SETTINGCHANGE, OnSettingChanged)
          MESSAGE_HANDLER(m_ShellHookMsg, OnShellHook)
          MESSAGE_HANDLER(m_WinMMDevChgMsg, OnWinMMDeviceChange)
 +        MESSAGE_HANDLER(m_uTaskbarChangedMsg, OnArcticTaskbarChanged)
 +        MESSAGE_HANDLER(m_uTaskbarTabMsg, OnArcticTaskbarTab)
++        MESSAGE_HANDLER(TSWM_ARCTIC_REBUILD, OnRebuildButtons)
          MESSAGE_HANDLER(WM_MOUSEACTIVATE, OnMouseActivate)
          MESSAGE_HANDLER(WM_KLUDGEMINRECT, OnKludgeItemRect)
          MESSAGE_HANDLER(WM_COPYDATA, OnCopyData)

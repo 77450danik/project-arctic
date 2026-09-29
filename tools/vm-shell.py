@@ -29,6 +29,7 @@ parser.add_argument("--put", action="append", default=[], help="LOCAL:REMOTE")
 parser.add_argument("--disk", action="append", default=[], help="a raw disk image attached as an internal disk")
 parser.add_argument("--stick", action="append", default=[], help="a raw disk image attached as a USB stick")
 parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
+parser.add_argument("--sound", action="store_true", help="an HD Audio card that plays through this PC's speakers")
 parser.add_argument("commands", nargs="*")
 args = parser.parse_args()
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -47,6 +48,8 @@ if args.monitors > 1:
 else:
     cmd += ["-vga", "std"]
 
+if args.sound:
+    cmd += ["-audiodev", "dsound,id=snd0", "-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0"]
 for disk in args.disk:
     cmd += ["-drive", "if=virtio,format=raw,file=" + os.path.abspath(disk)]
 for i, stick in enumerate(args.stick):
