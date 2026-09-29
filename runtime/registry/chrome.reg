@@ -1,0 +1,108 @@
+REGEDIT4
+
+; Google Chrome, which the image carries in C:\Program Files\Google\Chrome
+; (ci/install-chrome.sh), is the browser: web links and web pages open in it,
+; as Windows has it after "Make default" in Chrome. Every start of the live
+; system is Chrome's first, so it opens without its first-run pages.
+
+[HKEY_CLASSES_ROOT\ChromeHTML]
+@="Chrome HTML Document"
+"URL Protocol"=""
+
+[HKEY_CLASSES_ROOT\ChromeHTML\Application]
+"ApplicationName"="Google Chrome"
+"ApplicationIcon"="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe,0"
+"ApplicationCompany"="Google LLC"
+
+[HKEY_CLASSES_ROOT\ChromeHTML\DefaultIcon]
+@="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe,1"
+
+[HKEY_CLASSES_ROOT\ChromeHTML\shell\open\command]
+@="\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --no-first-run --single-argument %1"
+
+[HKEY_CLASSES_ROOT\http]
+@="URL:HyperText Transfer Protocol"
+"URL Protocol"=""
+
+[HKEY_CLASSES_ROOT\http\DefaultIcon]
+@="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe,0"
+
+[HKEY_CLASSES_ROOT\http\shell\open\command]
+@="\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --no-first-run --single-argument %1"
+
+[HKEY_CLASSES_ROOT\https]
+@="URL:HyperText Transfer Protocol with Privacy"
+"URL Protocol"=""
+
+[HKEY_CLASSES_ROOT\https\DefaultIcon]
+@="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe,0"
+
+[HKEY_CLASSES_ROOT\https\shell\open\command]
+@="\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --no-first-run --single-argument %1"
+
+[HKEY_CLASSES_ROOT\.htm]
+@="ChromeHTML"
+"Content Type"="text/html"
+
+[HKEY_CLASSES_ROOT\.html]
+@="ChromeHTML"
+"Content Type"="text/html"
+
+[HKEY_CLASSES_ROOT\.shtml]
+@="ChromeHTML"
+
+[HKEY_CLASSES_ROOT\.xht]
+@="ChromeHTML"
+
+[HKEY_CLASSES_ROOT\.xhtml]
+@="ChromeHTML"
+
+[HKEY_CLASSES_ROOT\.pdf]
+@="ChromeHTML"
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice]
+"ProgId"="ChromeHTML"
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice]
+"ProgId"="ChromeHTML"
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice]
+"ProgId"="ChromeHTML"
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice]
+"ProgId"="ChromeHTML"
+
+[HKEY_LOCAL_MACHINE\Software\Clients\StartMenuInternet]
+@="Google Chrome"
+
+[HKEY_LOCAL_MACHINE\Software\Clients\StartMenuInternet\Google Chrome]
+@="Google Chrome"
+
+[HKEY_LOCAL_MACHINE\Software\Clients\StartMenuInternet\Google Chrome\DefaultIcon]
+@="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe,0"
+
+[HKEY_LOCAL_MACHINE\Software\Clients\StartMenuInternet\Google Chrome\shell\open\command]
+@="\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --no-first-run"
+
+[HKEY_LOCAL_MACHINE\Software\Clients\StartMenuInternet\Google Chrome\Capabilities]
+"ApplicationName"="Google Chrome"
+"ApplicationIcon"="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe,0"
+
+[HKEY_LOCAL_MACHINE\Software\Clients\StartMenuInternet\Google Chrome\Capabilities\FileAssociations]
+".htm"="ChromeHTML"
+".html"="ChromeHTML"
+".shtml"="ChromeHTML"
+".xht"="ChromeHTML"
+".xhtml"="ChromeHTML"
+".pdf"="ChromeHTML"
+
+[HKEY_LOCAL_MACHINE\Software\Clients\StartMenuInternet\Google Chrome\Capabilities\URLAssociations]
+"http"="ChromeHTML"
+"https"="ChromeHTML"
+
+[HKEY_LOCAL_MACHINE\Software\RegisteredApplications]
+"Google Chrome"="Software\\Clients\\StartMenuInternet\\Google Chrome\\Capabilities"
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe]
+@="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+"Path"="C:\\Program Files\\Google\\Chrome\\Application"

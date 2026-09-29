@@ -1,22 +1,28 @@
-From fc33e81680349a6c50561d396d8ee83975bbac10 Mon Sep 17 00:00:00 2001
+From 33af0394b1b80dac9f0702ae9143b3c3668d0948 Mon Sep 17 00:00:00 2001
 From: 77450danik <dnsystems@email.ua>
-Date: Mon, 28 Sep 2026 16:31:21 +0300
-Subject: [PATCH] kernelbase: CEF browsers draw their own windows
- (--in-process-gpu)
+Date: Tue, 29 Sep 2026 14:04:59 +0300
+Subject: [PATCH] kernelbase: CEF browsers draw their own windows; Chromium's
+ crash handler finds its folder
 
 Chromium's GPU process draws into the browser's windows from another
 process, which the Wayland driver cannot show: Steam's window stayed
 black. steamwebhelper.exe and EpicWebHelper.exe get --in-process-gpu,
 as Proton gives CEF launchers.
+
+A Chromium browser starts its crash handler before it makes its profile
+folder; the handler makes <profile>\Crashpad at once and gives up when
+the profile folder is not there, and the browser then ends itself. On a
+fresh profile, which the live C: always is, Chrome never started. The
+folders of --database= are made before the handler starts.
 ---
- dlls/kernelbase/process.c | 33 +++++++++++++++++++++++++++++++++
- 1 file changed, 33 insertions(+)
+ dlls/kernelbase/process.c | 71 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 71 insertions(+)
 
 diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
-index 25b3f4f..18f97ab 100644
+index 25b3f4f..d0f729e 100644
 --- a/dlls/kernelbase/process.c
 +++ b/dlls/kernelbase/process.c
-@@ -505,6 +505,33 @@ done:
+@@ -505,6 +505,70 @@ done:
  /**********************************************************************
   *           CreateProcessInternalW   (kernelbase.@)
   */
@@ -47,10 +53,47 @@ index 25b3f4f..18f97ab 100644
 +    return ret;
 +}
 +
++/* Arctic: a Chromium browser starts its crash handler and only then makes its
++ * profile folder, while the handler makes <profile>\Crashpad at once and
++ * gives up when the profile folder is not there yet; the browser then ends
++ * itself ("crash server failed to launch"). Windows starts the handler
++ * slowly enough that the browser wins; here the folders are made first. */
++static void make_crashpad_database( const WCHAR *cmd_line )
++{
++    const WCHAR *arg = wcsstr( cmd_line, L"--database=" ), *start, *end;
++    WCHAR path[MAX_PATH], *p;
++    BOOL quoted;
++
++    if (!arg || !wcsstr( cmd_line, L"--type=crashpad-handler" )) return;
++    /* "--database=C:\x y" or --database="C:\x y" or --database=C:\x */
++    quoted = arg > cmd_line && arg[-1] == '"';
++    start = arg + wcslen( L"--database=" );
++    if (*start == '"')
++    {
++        quoted = TRUE;
++        start++;
++    }
++    end = wcschr( start, quoted ? '"' : ' ' );
++    if (!end) end = start + wcslen( start );
++    if (end - start >= MAX_PATH || end - start < 3) return;
++    memcpy( path, start, (end - start) * sizeof(WCHAR) );
++    path[end - start] = 0;
++
++    for (p = path + 3; *p; p++)
++    {
++        if (*p != '\\') continue;
++        *p = 0;
++        CreateDirectoryW( path, NULL );
++        *p = '\\';
++    }
++    CreateDirectoryW( path, NULL );
++    TRACE( "%s\n", debugstr_w(path) );
++}
++
  BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR *app_name, WCHAR *cmd_line,
                                                        SECURITY_ATTRIBUTES *process_attr,
                                                        SECURITY_ATTRIBUTES *thread_attr,
-@@ -543,6 +570,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+@@ -543,6 +607,13 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
          app_name = name;
      }
  
@@ -59,6 +102,7 @@ index 25b3f4f..18f97ab 100644
 +        if (tidy_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, tidy_cmdline );
 +        tidy_cmdline = p;
 +    }
++    make_crashpad_database( tidy_cmdline );
 +
      /* Warn if unsupported features are used */
  

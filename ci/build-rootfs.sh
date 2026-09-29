@@ -10,7 +10,7 @@ RFS="$OUT/rootfs"
 
 if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
-    pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts ttf-liberation python-fonttools
+    pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts ttf-liberation python-fonttools 7zip
 fi
 
 # The container's NoExtract rules drop the locale sources we need
@@ -144,6 +144,9 @@ done < "$ROOT/runtime/manifest.txt"
 rm -rf "$GFX"
 ls -l "$PFX"/drive_c/windows/system32/{d3d9,d3d11,dxgi,d3d12,d3d12core,nvapi64}.dll
 cp "$RFS"/usr/lib/nvidia/wine/*.dll "$PFX/drive_c/windows/system32/" 2>/dev/null || true
+
+# Google Chrome, the browser of the system (ci/install-chrome.sh)
+bash "$ROOT/ci/install-chrome.sh" "$PFX"
 
 mkdir -p "$PFX/drive_c/windows/system32/config"
 cp "$PFX/system.reg" "$PFX/user.reg" "$PFX/userdef.reg" "$PFX/.update-timestamp" "$PFX/drive_c/windows/system32/config/"

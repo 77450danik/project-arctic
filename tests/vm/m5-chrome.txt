@@ -1,0 +1,14 @@
+# Google Chrome is the system's browser: its icon on the desktop, a web
+# address typed in Run opens in it
+sleep 8
+shot g1-desktop
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type https://example.com
+key ret
+sleep 70
+shot g2-link
