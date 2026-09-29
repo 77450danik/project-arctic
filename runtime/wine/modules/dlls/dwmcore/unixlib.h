@@ -50,6 +50,8 @@ struct dwm_set_windows_params
 {
     UINT32                   count;
     const struct dwm_window *windows;  /* topmost first */
+    UINT32                   snap_window;  /* dragged to a screen edge (Aero Snap), 0 if none */
+    INT32                    snap_left, snap_top, snap_right, snap_bottom;  /* where it would go */
 };
 
 struct dwm_set_cursor_params

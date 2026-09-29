@@ -198,6 +198,9 @@ struct window_draw
     bool                     from_snapshot;  /* the window is gone: its snapshot stands in */
     bool                     as_image;       /* drawn once into an image, then faded or zoomed */
     bool                     decorated;      /* a shadow under it and a thin outline, as Windows 11 draws */
+    bool                     preview;        /* not a window: where a dragged window would snap */
+    float                    live_opacity;   /* drawn from its snapshot, the live window fades in over it */
+    struct xform             live_xform;
     bool                     backdrop;       /* blurred or tinted behind it */
     bool                     blur;
     uint32_t                 tint;           /* 0xAARRGGBB, straight alpha */

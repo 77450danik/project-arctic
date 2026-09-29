@@ -1108,18 +1108,42 @@ static void draw_outline( const struct window_draw *draw )
     draw_quad( r->left - 1, r->top - 1, r->right + 1, r->bottom + 1, 0, 0, 1, 1 );
 }
 
+/* where a dragged window would snap: the light acrylic with a lighter edge */
+static void draw_preview( const struct window_draw *draw, int ox, int oy )
+{
+    const struct frect *r = &draw->shown;
+    struct clip clip = draw->clip;
+
+    draw_backdrop( draw, ox, oy );
+    use_program( &prog_outline );
+    glUniform4f( prog_outline.color, 0.5f, 0.5f, 0.5f, 0.5f );  /* white at a half, premultiplied */
+    set_clip( &prog_outline, &clip, draw->opacity );
+    draw_quad( r->left - 1, r->top - 1, r->right + 1, r->bottom + 1, 0, 0, 1, 1 );
+}
+
 static void draw_window( const struct window_draw *draw, int ox, int oy )
 {
     struct window_state *ws = draw->ws;
     struct thumbnail_draw thumbs[32];
     uint32_t count;
 
+    if (draw->preview)
+    {
+        draw_preview( draw, ox, oy );
+        return;
+    }
     if (draw->decorated) draw_shadow( draw );
     if (draw->backdrop) draw_backdrop( draw, ox, oy );
 
     if (draw->from_snapshot)
     {
         if (ws && ws->snapshot_valid) draw_image( &ws->snapshot, &draw->shown, NULL, &draw->clip, draw->opacity );
+        if (draw->live_opacity > 0)
+        {
+            /* the window as it is now fades in over what it showed before */
+            struct layer_ctx ctx = { draw, &draw->live_xform, &draw->clip, draw->opacity * draw->live_opacity };
+            scene_surfaces( draw, draw_tree_callback, &ctx );
+        }
     }
     else if (draw->as_image && ws && needs_image( draw ) && render_window_image( draw, &ws->scratch, false ))
     {

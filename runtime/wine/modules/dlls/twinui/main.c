@@ -49,7 +49,74 @@ BOOL WINAPI ArcticStartTaskSwitcher(void)
  */
 void WINAPI ArcticTaskbarHover( HWND task, const RECT *button, DWORD flags )
 {
-    flyout_hover( task, button, flags );
+    flyout_hover( &task, task ? 1 : 0, button, flags );
+}
+
+/***********************************************************************
+ *              ArcticTaskbarHoverGroup (TWINUI.@)
+ *
+ * The same for a button that stands for several windows (a group): the
+ * flyout shows all of them side by side.
+ */
+void WINAPI ArcticTaskbarHoverGroup( const HWND *tasks, UINT count, const RECT *button, DWORD flags )
+{
+    flyout_hover( tasks, count, button, flags );
+}
+
+/***********************************************************************
+ *              ArcticGetTaskbarState (TWINUI.@)
+ *
+ * What the program put on the taskbar button of a window (ITaskbarList3):
+ * its progress (TBPF_*, and 0-10000) and its overlay icon, 16x16
+ * premultiplied ARGB. FALSE if it put nothing.
+ */
+BOOL WINAPI ArcticGetTaskbarState( HWND hwnd, DWORD *progress_state, DWORD *progress, BOOL *has_overlay,
+                                   UINT32 *overlay )
+{
+    struct arctic_taskbar_shared *shared = get_taskbar_shared();
+    const struct arctic_taskbar_window *row;
+
+    *progress_state = TBPF_NOPROGRESS;
+    *progress = 0;
+    *has_overlay = FALSE;
+    if (!shared || !(row = find_taskbar_row( shared, hwnd ))) return FALSE;
+    *progress_state = row->progress_state;
+    *progress = row->progress;
+    *has_overlay = row->has_overlay;
+    if (row->has_overlay && overlay) memcpy( overlay, row->overlay, sizeof(row->overlay) );
+    return TRUE;
+}
+
+/* the table programs write their taskbar buttons' state into (explorerframe.dll) */
+struct arctic_taskbar_shared *get_taskbar_shared(void)
+{
+    static struct arctic_taskbar_shared *shared;
+    struct arctic_taskbar_shared *view;
+    HANDLE mapping;
+
+    if (shared) return shared;
+    if (!(mapping = CreateFileMappingW( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(*view),
+                                        ARCTIC_TASKBAR_SECTION )))
+        return NULL;
+    view = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*view) );
+    CloseHandle( mapping );
+    if (!view) return NULL;
+    InterlockedCompareExchange( (LONG *)&view->version, ARCTIC_TASKBAR_VERSION, 0 );
+    if (view->version != ARCTIC_TASKBAR_VERSION)
+    {
+        UnmapViewOfFile( view );
+        return NULL;
+    }
+    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL )) UnmapViewOfFile( view );
+    return shared;
+}
+
+/* rows are read without the lock: a torn read shows for one repaint at most */
+const struct arctic_taskbar_window *find_taskbar_row( const struct arctic_taskbar_shared *shared, HWND hwnd )
+{
+    for (UINT i = 0; i < ARCTIC_TASKBAR_WINDOWS; i++)
+        if (shared->windows[i].hwnd && shared->windows[i].hwnd == HandleToULong( hwnd )) return &shared->windows[i];
+    return NULL;
 }
 
 /* the shell's dark acrylic behind the window, as the taskbar has */

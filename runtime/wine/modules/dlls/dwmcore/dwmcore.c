@@ -490,7 +490,7 @@ static BOOL grow( int count )
 /* the toplevel windows of our desktop, topmost first, and the cursor, as wineserver has them */
 static void update_windows(void)
 {
-    struct dwm_set_windows_params params;
+    struct dwm_set_windows_params params = { 0 };
     struct dwm_set_cursor_params pos;
     UINT64 new_serial;
     int count, got;
@@ -507,6 +507,11 @@ static void update_windows(void)
             pos.x = reply->cursor_x;
             pos.y = reply->cursor_y;
             pos.hidden = reply->cursor_hidden;
+            params.snap_window = reply->snap_window;
+            params.snap_left   = reply->snap_rect.left;
+            params.snap_top    = reply->snap_rect.top;
+            params.snap_right  = reply->snap_rect.right;
+            params.snap_bottom = reply->snap_rect.bottom;
             got = wine_server_reply_size( reply ) / sizeof(*list);
         }
         SERVER_END_REQ;

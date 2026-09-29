@@ -1,8 +1,83 @@
+diff --git a/base/shell/explorer/lang/en-US.rc b/base/shell/explorer/lang/en-US.rc
+index 4b11a224..bd2305c4 100644
+--- a/base/shell/explorer/lang/en-US.rc
++++ b/base/shell/explorer/lang/en-US.rc
+@@ -76,7 +76,8 @@ BEGIN
+     AUTOCHECKBOX "&Lock the taskbar", IDC_TASKBARPROP_LOCK, 13, 45, 200, 10
+     AUTOCHECKBOX "A&uto-hide the taskbar", IDC_TASKBARPROP_HIDE, 13, 58, 200, 10
+     AUTOCHECKBOX "Keep the &taskbar on top of other windows", IDC_TASKBARPROP_ONTOP, 13, 71, 200, 10
+-    AUTOCHECKBOX "&Group similar taskbar buttons", IDC_TASKBARPROP_GROUP, 13, 84, 200, 10
++    LTEXT "Taskbar &buttons:", IDC_STATIC, 13, 85, 92, 10
++    COMBOBOX IDC_TASKBARPROP_GROUP, 106, 83, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+     AUTOCHECKBOX "Show &Quick Launch", IDC_TASKBARPROP_SHOWQL, 13, 97, 200, 10
+     AUTOCHECKBOX "U&se small icons", IDC_TASKBARPROP_SMALLICONS, 13, 110, 200, 10
+ END
+@@ -216,6 +217,9 @@ BEGIN
+     IDS_TRAYWND_UNDO_CASCADE "&Undo Cascade"
+     IDS_TRAYWND_UNDO_TILE "&Undo Tile"
+     IDS_TRAYDESKBTN_TOOLTIP "Show Desktop/Windows"
++    IDS_TASKBARPROP_GLOM_ALWAYS "Always combine, hide labels"
++    IDS_TASKBARPROP_GLOM_WHENFULL "Combine when taskbar is full"
++    IDS_TASKBARPROP_GLOM_NEVER "Never combine"
+ END
+ 
+ STRINGTABLE
+diff --git a/base/shell/explorer/lang/ru-RU.rc b/base/shell/explorer/lang/ru-RU.rc
+index b367ea83..76111284 100644
+--- a/base/shell/explorer/lang/ru-RU.rc
++++ b/base/shell/explorer/lang/ru-RU.rc
+@@ -80,7 +80,8 @@ BEGIN
+     AUTOCHECKBOX "&Закрепить панель задач", IDC_TASKBARPROP_LOCK, 13, 45, 200, 10
+     AUTOCHECKBOX "&Автоматически скрывать панель задач", IDC_TASKBARPROP_HIDE, 13, 58, 200, 10
+     AUTOCHECKBOX "Отображать панель задач &поверх других окон", IDC_TASKBARPROP_ONTOP, 13, 71, 200, 10
+-    AUTOCHECKBOX "&Группировать схожие кнопки панели задач", IDC_TASKBARPROP_GROUP, 13, 84, 200, 10
++    LTEXT "&Кнопки панели задач:", IDC_STATIC, 13, 85, 92, 10
++    COMBOBOX IDC_TASKBARPROP_GROUP, 106, 83, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+     AUTOCHECKBOX "Отображать панель &быстрого запуска", IDC_TASKBARPROP_SHOWQL, 13, 97, 200, 10
+     AUTOCHECKBOX "&Использовать маленькие значки", IDC_TASKBARPROP_SMALLICONS, 13, 110, 200, 10
+ END
+@@ -220,6 +221,9 @@ BEGIN
+     IDS_TRAYWND_UNDO_CASCADE "&Отменить Каскадом"
+     IDS_TRAYWND_UNDO_TILE "&Отменить Окна рядом"
+     IDS_TRAYDESKBTN_TOOLTIP "Show Desktop/Windows"
++    IDS_TASKBARPROP_GLOM_ALWAYS "Всегда группировать, скрывать метки"
++    IDS_TASKBARPROP_GLOM_WHENFULL "Группировать при заполнении панели задач"
++    IDS_TASKBARPROP_GLOM_NEVER "Никогда не группировать"
+ END
+ 
+ STRINGTABLE
+diff --git a/base/shell/explorer/lang/uk-UA.rc b/base/shell/explorer/lang/uk-UA.rc
+index e9bb2395..3c232619 100644
+--- a/base/shell/explorer/lang/uk-UA.rc
++++ b/base/shell/explorer/lang/uk-UA.rc
+@@ -80,9 +80,10 @@ BEGIN
+     AUTOCHECKBOX "&Заборонити панель задач", IDC_TASKBARPROP_LOCK, 13, 45, 200, 10
+     AUTOCHECKBOX "&Автоматично приховувати панель задач", IDC_TASKBARPROP_HIDE, 13, 58, 200, 10
+     AUTOCHECKBOX "&Поверх інших вікон", IDC_TASKBARPROP_ONTOP, 13, 71, 200, 10
+-    AUTOCHECKBOX "&Групувати схожі кнопки", IDC_TASKBARPROP_GROUP, 13, 84, 200, 10
++    LTEXT "&Кнопки на панелі задач:", IDC_STATIC, 13, 85, 92, 10
++    COMBOBOX IDC_TASKBARPROP_GROUP, 106, 83, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+     AUTOCHECKBOX "Відображати панель &швидкого запуску", IDC_TASKBARPROP_SHOWQL, 13, 97, 200, 10
+-    AUTOCHECKBOX "U&se small icons", IDC_TASKBARPROP_SMALLICONS, 13, 110, 200, 10
++    AUTOCHECKBOX "Використовувати &маленькі значки", IDC_TASKBARPROP_SMALLICONS, 13, 110, 200, 10
+ END
+ 
+ IDD_TASKBARPROP_STARTMENU DIALOGEX 0, 0, 252, 218
+@@ -220,6 +221,9 @@ BEGIN
+     IDS_TRAYWND_UNDO_CASCADE "&Undo Cascade"
+     IDS_TRAYWND_UNDO_TILE "&Undo Tile"
+     IDS_TRAYDESKBTN_TOOLTIP "Show Desktop/Windows"
++    IDS_TASKBARPROP_GLOM_ALWAYS "Завжди групувати, приховувати мітки"
++    IDS_TASKBARPROP_GLOM_WHENFULL "Групувати, коли панель задач заповнена"
++    IDS_TASKBARPROP_GLOM_NEVER "Ніколи не групувати"
+ END
+ 
+ STRINGTABLE
 diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
-index 1945c4dd..11be611e 100644
+index 1945c4dd..5f07f38a 100644
 --- a/base/shell/explorer/precomp.h
 +++ b/base/shell/explorer/precomp.h
-@@ -113,6 +113,17 @@ BOOL SetRegDword(IN LPCWSTR pszSubKey, IN LPCWSTR pszValueName, IN DWORD dwValue
+@@ -113,6 +113,21 @@ BOOL SetRegDword(IN LPCWSTR pszSubKey, IN LPCWSTR pszValueName, IN DWORD dwValue
  BOOL GetAdvancedBool(IN LPCWSTR pszValueName, IN BOOL bDefaultValue);
  BOOL SetAdvancedDword(IN LPCWSTR pszValueName, IN DWORD dwValue);
  
@@ -16,15 +91,552 @@ index 1945c4dd..11be611e 100644
 +HRESULT ArcticSetWindowAttribute(IN HWND hWnd, IN DWORD dwAttribute, IN LPCVOID pvValue, IN DWORD cbValue);
 +VOID ArcticStartTaskSwitcher(VOID);
 +VOID ArcticTaskbarHover(IN HWND hwndTask, IN const RECT *prcButton, IN DWORD dwFlags);
++VOID ArcticTaskbarHoverGroup(IN const HWND *phwnd, IN UINT cCount, IN const RECT *prcButton, IN DWORD dwFlags);
++BOOL ArcticGetTaskbarState(IN HWND hWnd, OUT DWORD *pdwProgressState, OUT DWORD *pdwProgress,
++                           OUT BOOL *pbHasOverlay, OUT UINT32 *pOverlay);
++#define ARCTIC_TASKBAR_ICON 16
 +
  /*
   *  rshell.c
   */
+@@ -220,6 +235,10 @@ struct TaskbarSettings
+ {
+     BOOL bLock;
+     BOOL bGroupButtons;
++    /* Arctic: TaskbarGlomLevel of Windows 10: 0 always combine and hide
++     * labels, 1 combine when the taskbar is full, 2 never combine */
++    DWORD dwGlomLevel;
++    BOOL bHideLabels;
+     BOOL bShowSeconds;
+     BOOL bPreferDate;
+     BOOL bHideInactiveIcons;
+diff --git a/base/shell/explorer/resource.h b/base/shell/explorer/resource.h
+index 12edbded..72586fbd 100644
+--- a/base/shell/explorer/resource.h
++++ b/base/shell/explorer/resource.h
+@@ -116,6 +116,10 @@
+ #define IDS_TRAYWND_UNDO_CASCADE           812
+ #define IDS_TRAYWND_UNDO_TILE              813
+ #define IDS_TRAYDESKBTN_TOOLTIP            814
++/* Arctic: how the taskbar combines buttons, as Windows 10 offers it */
++#define IDS_TASKBARPROP_GLOM_ALWAYS        870
++#define IDS_TASKBARPROP_GLOM_WHENFULL      871
++#define IDS_TASKBARPROP_GLOM_NEVER         872
+ 
+ /* These values must be synchronized with shell32 */
+ #define IDS_ADVANCED_DISPLAY_FAVORITES              30466
+diff --git a/base/shell/explorer/settings.cpp b/base/shell/explorer/settings.cpp
+index 29e1c2b8..19e37d49 100644
+--- a/base/shell/explorer/settings.cpp
++++ b/base/shell/explorer/settings.cpp
+@@ -28,6 +28,7 @@ BOOL TaskbarSettings::Save()
+     SHSetValueW(hkExplorer, L"Advanced", L"PreferDateOverWeekday", REG_DWORD, &bPreferDate, sizeof(bPreferDate));
+     SHSetValueW(hkExplorer, L"Advanced", L"ShowSeconds", REG_DWORD, &bShowSeconds, sizeof(bShowSeconds));
+     SHSetValueW(hkExplorer, L"Advanced", L"TaskbarGlomming", REG_DWORD, &bGroupButtons, sizeof(bGroupButtons));
++    SHSetValueW(hkExplorer, L"Advanced", L"TaskbarGlomLevel", REG_DWORD, &dwGlomLevel, sizeof(dwGlomLevel));
+     BOOL bAllowSizeMove = !bLock;
+     SHSetValueW(hkExplorer, L"Advanced", L"TaskbarSizeMove", REG_DWORD, &bAllowSizeMove, sizeof(bAllowSizeMove));
+     sr.cbSize = sizeof(sr);
+@@ -53,14 +54,18 @@ BOOL TaskbarSettings::Load()
+     dwRet = SHGetValueW(hkExplorer, L"Advanced", L"ShowSeconds", NULL, &dwValue, &cbSize);
+     bShowSeconds = (dwRet == ERROR_SUCCESS) ? (dwValue != 0) : FALSE;
+ 
+-    dwRet = SHGetValueW(hkExplorer, L"Advanced", L"TaskbarGlomming", NULL, &dwValue, &cbSize);
+-    bGroupButtons = (dwRet == ERROR_SUCCESS) ? (dwValue != 0) : FALSE;
++    /* Arctic: combined buttons without labels by default, as in Windows 10 */
++    dwRet = SHGetValueW(hkExplorer, L"Advanced", L"TaskbarGlomLevel", NULL, &dwValue, &cbSize);
++    dwGlomLevel = (dwRet == ERROR_SUCCESS && dwValue <= 2) ? dwValue : 0;
++    bGroupButtons = dwGlomLevel != 2;
++    bHideLabels = dwGlomLevel == 0;
+ 
+     dwRet = SHGetValueW(hkExplorer, NULL, L"EnableAutotray", NULL, &dwValue, &cbSize);
+     bHideInactiveIcons = (dwRet == ERROR_SUCCESS) ? (dwValue != 0) : FALSE;
+ 
++    /* Arctic: the large taskbar of Windows 10 by default */
+     dwRet = SHGetValueW(hkExplorer, L"Advanced", L"TaskbarSmallIcons", NULL, &dwValue, &cbSize);
+-    bSmallIcons = (dwRet == ERROR_SUCCESS) ? (dwValue != 0) : TRUE;
++    bSmallIcons = (dwRet == ERROR_SUCCESS) ? (dwValue != 0) : FALSE;
+ 
+     dwRet = SHGetValueW(hkExplorer, L"Advanced", L"CompactTrayIcons", NULL, &dwValue, &cbSize);
+     if (dwRet == ERROR_SUCCESS && dwValue <= TIM_Max)
 diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
-index 381ba1c3..a897aeea 100644
+index 381ba1c3..5d0101e5 100644
 --- a/base/shell/explorer/taskswnd.cpp
 +++ b/base/shell/explorer/taskswnd.cpp
-@@ -1463,6 +1463,23 @@ public:
+@@ -83,6 +83,11 @@ SHELL_IsRudeWindow(_In_opt_ HMONITOR hMonitor, _In_ HWND hWnd, _In_ BOOL bDontCh
+ 
+     DWORD style = ::GetWindowLongPtrW(hWnd, GWL_STYLE);
+ 
++    /* Arctic: a maximized window stays under the taskbar even when its
++       frame reaches past the screen, as Chrome's does */
++    if (style & WS_MAXIMIZE)
++        return FALSE;
++
+     RECT rcWnd;
+     enum { CHECK_STYLE = WS_THICKFRAME | WS_DLGFRAME | WS_BORDER };
+     if ((style & CHECK_STYLE) == CHECK_STYLE)
+@@ -101,6 +106,35 @@ SHELL_IsRudeWindow(_In_opt_ HMONITOR hMonitor, _In_ HWND hWnd, _In_ BOOL bDontCh
+     return ::EqualRect(&rcUnion, &rcWnd) && (bDontCheckActive || SHELL_IsRudeWindowActive(hWnd));
+ }
+ 
++/* Arctic: the program file of a window's process */
++static BOOL
++SHELL_GetWindowExePath(_In_ HWND hWnd, _Out_writes_(cch) LPWSTR pszPath, _In_ DWORD cch)
++{
++    typedef BOOL (WINAPI *PFN_QUERYIMAGENAME)(HANDLE, DWORD, LPWSTR, PDWORD);
++    static PFN_QUERYIMAGENAME pQueryImageName;
++    DWORD dwProcessId;
++
++    *pszPath = UNICODE_NULL;
++    if (!pQueryImageName)
++    {
++        pQueryImageName = (PFN_QUERYIMAGENAME)::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"),
++                                                               "QueryFullProcessImageNameW");
++        if (!pQueryImageName)
++            return FALSE;
++    }
++    if (!::GetWindowThreadProcessId(hWnd, &dwProcessId))
++        return FALSE;
++
++    HANDLE hProcess = ::OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, FALSE, dwProcessId);
++    if (!hProcess)
++        return FALSE;
++    BOOL bRet = pQueryImageName(hProcess, 0, pszPath, &cch);
++    ::CloseHandle(hProcess);
++    if (!bRet)
++        *pszPath = UNICODE_NULL;
++    return bRet;
++}
++
+ ////////////////////////////////////////////////////////////////
+ 
+ const WCHAR szTaskSwitchWndClass[] = L"MSTaskSwWClass";
+@@ -138,6 +172,8 @@ typedef struct _TASK_GROUP
+ 
+     DWORD dwTaskCount;
+     DWORD dwProcessId;
++    /* Arctic: windows of one program share a group, as in Windows */
++    WCHAR szExePath[MAX_PATH];
+     INT Index;
+     union
+     {
+@@ -402,6 +438,11 @@ class CTaskSwitchWnd :
+     CHardErrorThread m_HardErrorThread;
+     CMultimediaBackend m_Mixer;
+ 
++    /* Arctic: ITaskbarList3 of Windows 7 */
++    UINT m_uButtonCreatedMsg;
++    UINT m_uTaskbarChangedMsg;
++    UINT m_uTaskbarTabMsg;
++
+ public:
+     CTaskSwitchWnd() :
+         m_ShellHookMsg(NULL),
+@@ -421,6 +462,9 @@ public:
+     {
+         ZeroMemory(&m_ButtonSize, sizeof(m_ButtonSize));
+         m_uHardErrorMsg = RegisterWindowMessageW(L"HardError");
++        m_uButtonCreatedMsg = RegisterWindowMessageW(L"TaskbarButtonCreated");
++        m_uTaskbarChangedMsg = RegisterWindowMessageW(L"ArcticTaskbarChanged");
++        m_uTaskbarTabMsg = RegisterWindowMessageW(L"ArcticTaskbarTab");
+     }
+     virtual ~CTaskSwitchWnd() { }
+ 
+@@ -547,6 +591,80 @@ public:
+     }
+ 
+ 
++    /* Arctic: "Always combine": one button stands for all windows of a
++       program; the others of its group have none (Index -1) */
++    BOOL IsCombining()
++    {
++        return m_IsGroupingEnabled && g_TaskbarSettings.dwGlomLevel == 0;
++    }
++
++    PTASK_ITEM FindGroupButton(IN PTASK_GROUP TaskGroup, IN PTASK_ITEM Except OPTIONAL)
++    {
++        if (TaskGroup == NULL)
++            return NULL;
++        for (PTASK_ITEM TaskItem = m_TaskItems; TaskItem != m_TaskItems + m_TaskItemCount; TaskItem++)
++        {
++            if (TaskItem->Group == TaskGroup && TaskItem != Except && TaskItem->Index >= 0)
++                return TaskItem;
++        }
++        return NULL;
++    }
++
++    /* the task item whose button shows this window */
++    PTASK_ITEM ButtonOfTask(IN PTASK_ITEM TaskItem)
++    {
++        if (TaskItem == NULL || TaskItem->Index >= 0)
++            return TaskItem;
++        return IsCombining() ? FindGroupButton(TaskItem->Group, NULL) : NULL;
++    }
++
++    /* the windows a button stands for */
++    UINT GetButtonWindows(IN PTASK_ITEM TaskItem, OUT HWND *phwnd, IN UINT cMax)
++    {
++        UINT cCount = 0;
++
++        if (!IsCombining() || TaskItem->Group == NULL)
++        {
++            phwnd[0] = TaskItem->hWnd;
++            return 1;
++        }
++        for (PTASK_ITEM Item = m_TaskItems; Item != m_TaskItems + m_TaskItemCount && cCount < cMax; Item++)
++        {
++            if (Item->Group == TaskItem->Group && ::IsWindow(Item->hWnd))
++                phwnd[cCount++] = Item->hWnd;
++        }
++        return cCount;
++    }
++
++    BOOL IsButtonActive(IN PTASK_ITEM TaskItem)
++    {
++        if (m_ActiveTaskItem == NULL)
++            return FALSE;
++        if (m_ActiveTaskItem == TaskItem)
++            return TRUE;
++        return IsCombining() && TaskItem->Group != NULL && m_ActiveTaskItem->Group == TaskItem->Group;
++    }
++
++    BOOL IsButtonFlashing(IN PTASK_ITEM TaskItem)
++    {
++        if (TaskItem->RenderFlashed)
++            return TRUE;
++        if (!IsCombining() || TaskItem->Group == NULL)
++            return FALSE;
++        for (PTASK_ITEM Item = m_TaskItems; Item != m_TaskItems + m_TaskItemCount; Item++)
++        {
++            if (Item->Group == TaskItem->Group && Item->RenderFlashed)
++                return TRUE;
++        }
++        return FALSE;
++    }
++
++    INT GetIconSize()
++    {
++        /* the large taskbar of Windows 10 has icons of 24 pixels */
++        return g_TaskbarSettings.bSmallIcons ? GetSystemMetrics(SM_CXSMICON) : 24;
++    }
++
+     INT UpdateTaskGroupButton(IN PTASK_GROUP TaskGroup)
+     {
+         ASSERT(TaskGroup->Index >= 0);
+@@ -609,14 +727,19 @@ public:
+         ASSERT(TaskItem->Index >= 0);
+ 
+         tbbi.cbSize = sizeof(tbbi);
+-        tbbi.dwMask = TBIF_BYINDEX | TBIF_STATE | TBIF_TEXT | TBIF_IMAGE;
++        tbbi.dwMask = TBIF_BYINDEX | TBIF_STATE | TBIF_IMAGE;
+         tbbi.fsState = TBSTATE_ENABLED;
+-        if (m_ActiveTaskItem == TaskItem)
++        if (IsButtonActive(TaskItem))
+             tbbi.fsState |= TBSTATE_CHECKED;
+ 
+-        if (TaskItem->RenderFlashed)
++        if (IsButtonFlashing(TaskItem))
+             tbbi.fsState |= TBSTATE_MARKED;
+ 
++        /* Arctic: a button without a label never gets text: the toolbar
++           cannot take it away again */
++        if (!g_TaskbarSettings.bHideLabels)
++            tbbi.dwMask |= TBIF_TEXT;
++
+         /* Check if we're updating a button that is the last one in the
+            line. If so, we need to set the TBSTATE_WRAP flag! */
+         if (!m_Tray->IsHorizontal() || (m_ButtonsPerLine != 0 &&
+@@ -634,7 +757,7 @@ public:
+         if (!icon)
+             icon = static_cast<HICON>(LoadImageW(NULL, MAKEINTRESOURCEW(OIC_SAMPLE), IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE));
+         TaskItem->IconIndex = ImageList_ReplaceIcon(m_ImageList, TaskItem->IconIndex, icon);
+-        tbbi.iImage = TaskItem->IconIndex;
++        tbbi.iImage = I_IMAGENONE;
+ 
+         if (!m_TaskBar.SetButtonInfo(TaskItem->Index, &tbbi))
+         {
+@@ -648,26 +771,19 @@ public:
+ 
+     VOID RemoveIcon(IN PTASK_ITEM TaskItem)
+     {
+-        TBBUTTONINFO tbbi;
+         PTASK_ITEM currentTaskItem, LastItem;
+ 
+         if (TaskItem->IconIndex == -1)
+             return;
+ 
+-        tbbi.cbSize = sizeof(tbbi);
+-        tbbi.dwMask = TBIF_IMAGE;
+-
++        /* Arctic: the buttons have no toolbar image; the icons are drawn
++           from their IconIndex */
+         currentTaskItem = m_TaskItems;
+         LastItem = currentTaskItem + m_TaskItemCount;
+         while (currentTaskItem != LastItem)
+         {
+             if (currentTaskItem->IconIndex > TaskItem->IconIndex)
+-            {
+                 currentTaskItem->IconIndex--;
+-                tbbi.iImage = currentTaskItem->IconIndex;
+-
+-                m_TaskBar.SetButtonInfo(currentTaskItem->Index, &tbbi);
+-            }
+             currentTaskItem++;
+         }
+ 
+@@ -729,12 +845,11 @@ public:
+ 
+                 if (TaskGroup->dwTaskCount > 1)
+                 {
+-                    LastTaskItem = FindLastTaskItemOfGroup(TaskGroup, TaskItem);
+-                    if (LastTaskItem != NULL)
++                    /* Arctic: combined windows have no button of their own */
++                    LastTaskItem = IsCombining() ? FindGroupButton(TaskGroup, TaskItem)
++                                                 : FindLastTaskItemOfGroup(TaskGroup, TaskItem);
++                    if (LastTaskItem != NULL && LastTaskItem->Index >= 0)
+                     {
+-                        /* Since the group is expanded the task items must have an index */
+-                        ASSERT(LastTaskItem->Index >= 0);
+-
+                         return LastTaskItem->Index + 1;
+                     }
+                 }
+@@ -775,17 +890,31 @@ public:
+             return UpdateTaskGroupButton(TaskItem->Group);
+         }
+ 
++        if (IsCombining())
++        {
++            PTASK_ITEM Owner = FindGroupButton(TaskItem->Group, TaskItem);
++            if (Owner != NULL)
++            {
++                TaskItem->IconIndex = -1;
++                iIndex = UpdateTaskItemButton(Owner);
++                PublishMinimizeRects();
++                return iIndex;
++            }
++        }
++
+         icon = GetWndIcon(TaskItem->hWnd);
+         if (!icon)
+             icon = static_cast<HICON>(LoadImageW(NULL, MAKEINTRESOURCEW(OIC_SAMPLE), IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE));
+         TaskItem->IconIndex = ImageList_ReplaceIcon(m_ImageList, -1, icon);
+ 
+-        tbBtn.iBitmap = TaskItem->IconIndex;
++        /* Arctic: HandleItemPostPaint draws the icon, where Windows 10 has it */
++        tbBtn.iBitmap = I_IMAGENONE;
+         tbBtn.fsState = TBSTATE_ENABLED | TBSTATE_ELLIPSES;
+         tbBtn.fsStyle = BTNS_CHECK | BTNS_NOPREFIX | BTNS_SHOWTEXT;
+         tbBtn.dwData = TaskItem->Index;
+ 
+-        if (GetWndTextFromTaskItem(TaskItem, windowText, _countof(windowText)) > 0)
++        if (!g_TaskbarSettings.bHideLabels &&
++            GetWndTextFromTaskItem(TaskItem, windowText, _countof(windowText)) > 0)
+         {
+             tbBtn.iString = (DWORD_PTR) windowText;
+         }
+@@ -825,6 +954,26 @@ public:
+ 
+         if (TaskItem->Index >= 0)
+         {
++            /* Arctic: the button of a combined group passes to another of
++               its windows */
++            if (IsCombining() && TaskGroup != NULL && !m_IsDestroying)
++            {
++                for (PTASK_ITEM Heir = m_TaskItems; Heir != m_TaskItems + m_TaskItemCount; Heir++)
++                {
++                    if (Heir == TaskItem || Heir->Group != TaskGroup || Heir->Index >= 0)
++                        continue;
++                    Heir->Index = TaskItem->Index;
++                    Heir->IconIndex = TaskItem->IconIndex;
++                    TaskItem->Index = -1;
++                    TaskItem->IconIndex = -1;
++                    if (m_ActiveTaskItem == TaskItem)
++                        m_ActiveTaskItem = NULL;
++                    UpdateTaskItemButton(Heir);
++                    PublishMinimizeRects();
++                    return TRUE;
++                }
++            }
++
+             if ((TaskGroup != NULL && !TaskGroup->IsCollapsed) ||
+                 TaskGroup == NULL)
+             {
+@@ -855,6 +1004,7 @@ public:
+     {
+         DWORD dwProcessId;
+         PTASK_GROUP TaskGroup, *PrevLink;
++        WCHAR szExePath[MAX_PATH];
+ 
+         if (!GetWindowThreadProcessId(hWnd,
+             &dwProcessId))
+@@ -862,13 +1012,15 @@ public:
+             TRACE("Cannot get process id of hwnd 0x%p\n", hWnd);
+             return NULL;
+         }
++        SHELL_GetWindowExePath(hWnd, szExePath, _countof(szExePath));
+ 
+         /* Try to find an existing task group */
+         TaskGroup = m_TaskGroups;
+         PrevLink = &m_TaskGroups;
+         while (TaskGroup != NULL)
+         {
+-            if (TaskGroup->dwProcessId == dwProcessId)
++            if (TaskGroup->dwProcessId == dwProcessId ||
++                (*szExePath && !_wcsicmp(TaskGroup->szExePath, szExePath)))
+             {
+                 TaskGroup->dwTaskCount++;
+                 return TaskGroup;
+@@ -886,6 +1038,7 @@ public:
+         {
+             TaskGroup->dwTaskCount = 1;
+             TaskGroup->dwProcessId = dwProcessId;
++            StringCchCopyW(TaskGroup->szExePath, _countof(TaskGroup->szExePath), szExePath);
+             TaskGroup->Index = -1;
+ 
+             /* Add the task group to the list */
+@@ -1057,6 +1210,8 @@ public:
+ 
+         if (TaskItem == m_ActiveTaskItem)
+             m_ActiveTaskItem = NULL;
++        else if (m_ActiveTaskItem > TaskItem)
++            m_ActiveTaskItem--; /* Arctic: it moves down with the items after it */
+ 
+         wIndex = (WORD) (TaskItem - m_TaskItems);
+         if (wIndex + 1 < m_TaskItemCount)
+@@ -1123,18 +1278,21 @@ public:
+             else
+             {
+                 m_ActiveTaskItem = NULL;
+-                if (CurrentTaskItem->Index >= 0)
++                /* Arctic: or the button of its combined group */
++                PTASK_ITEM Button = ButtonOfTask(CurrentTaskItem);
++                if (Button != NULL)
+                 {
+-                    UpdateTaskItemButton(CurrentTaskItem);
++                    UpdateTaskItemButton(Button);
+                 }
+             }
+         }
+ 
+         m_ActiveTaskItem = TaskItem;
+ 
+-        if (TaskItem != NULL && TaskItem->Index >= 0)
++        PTASK_ITEM Button = ButtonOfTask(TaskItem);
++        if (Button != NULL)
+         {
+-            UpdateTaskItemButton(TaskItem);
++            UpdateTaskItemButton(Button);
+         }
+         else if (TaskItem == NULL)
+         {
+@@ -1197,6 +1355,8 @@ public:
+                 if (!m_IsDestroying)
+                 {
+                     AddTaskItemButton(TaskItem);
++                    /* Arctic: now it may use ITaskbarList3, as in Windows */
++                    ::PostMessageW(hWnd, m_uButtonCreatedMsg, 0, 0);
+                 }
+             }
+         }
+@@ -1273,7 +1433,9 @@ public:
+     VOID FlashTaskItem(IN OUT PTASK_ITEM TaskItem)
+     {
+         TaskItem->RenderFlashed = 1;
+-        UpdateTaskItemButton(TaskItem);
++        PTASK_ITEM Button = ButtonOfTask(TaskItem);
++        if (Button != NULL)
++            UpdateTaskItemButton(Button);
+     }
+ 
+     BOOL FlashTask(IN HWND hWnd)
+@@ -1306,6 +1468,12 @@ public:
+             {
+                 goto UpdateTaskItem;
+             }
++            else if (ButtonOfTask(TaskItem) != NULL)
++            {
++                /* Arctic: a window of a combined button */
++                TaskItem->RenderFlashed = 0;
++                UpdateTaskItemButton(ButtonOfTask(TaskItem));
++            }
+         }
+         else if (TaskItem->Index >= 0)
+         {
+@@ -1339,13 +1507,11 @@ public:
+ 
+         /* Update the size of the image list if needed */
+         int cx, cy;
++        const int cxIcon = GetIconSize();
+         ImageList_GetIconSize(m_ImageList, &cx, &cy);
+-        if (cx != GetSystemMetrics(g_TaskbarSettings.bSmallIcons ? SM_CXSMICON : SM_CXICON) ||
+-            cy != GetSystemMetrics(g_TaskbarSettings.bSmallIcons ? SM_CYSMICON : SM_CYICON))
++        if (cx != cxIcon || cy != cxIcon)
+         {
+-            ImageList_SetIconSize(m_ImageList,
+-                                  GetSystemMetrics(g_TaskbarSettings.bSmallIcons ? SM_CXSMICON : SM_CXICON),
+-                                  GetSystemMetrics(g_TaskbarSettings.bSmallIcons ? SM_CYSMICON : SM_CYICON));
++            ImageList_SetIconSize(m_ImageList, cxIcon, cxIcon);
+ 
+             /* SetIconSize removes all icons so we have to reinsert them */
+             PTASK_ITEM TaskItem = m_TaskItems;
+@@ -1353,7 +1519,8 @@ public:
+             while (TaskItem != LastTaskItem)
+             {
+                 TaskItem->IconIndex = -1;
+-                UpdateTaskItemButton(TaskItem);
++                if (TaskItem->Index >= 0)
++                    UpdateTaskItemButton(TaskItem);
+ 
+                 TaskItem++;
+             }
+@@ -1366,6 +1533,11 @@ public:
+             {
+                 Horizontal = m_Tray->IsHorizontal();
+ 
++                /* Arctic: buttons as high as in Windows 10, or the whole row */
++                m_ButtonSize.cy = g_TaskbarSettings.bSmallIcons ? 30 : 40;
++                if (Horizontal && m_ButtonSize.cy > rcClient.bottom)
++                    m_ButtonSize.cy = rcClient.bottom;
++
+                 if (Horizontal)
+                 {
+                     TBMETRICS tbm = { 0 };
+@@ -1411,6 +1583,10 @@ public:
+                     if (NewBtnSize >(LONG)uiMax)
+                         NewBtnSize = uiMax;
+ 
++                    /* Arctic: a button without a label is as wide as in Windows 10 */
++                    if (g_TaskbarSettings.bHideLabels)
++                        NewBtnSize = min(NewBtnSize, g_TaskbarSettings.bSmallIcons ? 40 : 48);
++
+                     /* Recalculate how many buttons actually fit into one line */
+                     uiBtnsPerLine = rcClient.right / (NewBtnSize + cxButtonSpacing);
+                     if (uiBtnsPerLine == 0)
+@@ -1445,14 +1621,18 @@ public:
+                         tbbi.fsState |= TBSTATE_WRAP;
+                     }
+ 
+-                    if (m_ActiveTaskItem != NULL &&
+-                        m_ActiveTaskItem->Index == (INT)ui)
+-                    {
++                    /* Arctic: a combined button is checked for any of its
++                       windows, and it keeps flashing */
++                    PTASK_ITEM ButtonItem = FindTaskItemByIndex((INT)ui);
++                    if (ButtonItem != NULL && IsButtonActive(ButtonItem))
+                         tbbi.fsState |= TBSTATE_CHECKED;
+-                    }
++                    if (ButtonItem != NULL && IsButtonFlashing(ButtonItem))
++                        tbbi.fsState |= TBSTATE_MARKED;
+ 
+                     m_TaskBar.SetButtonInfo(ui, &tbbi);
+                 }
++
++                m_TaskBar.SendMessageW(TB_SETBUTTONSIZE, 0, MAKELPARAM(NewBtnSize, m_ButtonSize.cy));
+             }
+             else
+             {
+@@ -1463,6 +1643,24 @@ public:
  
          // FIXME: This seems to be enabling redraws prematurely, but moving it to its right place doesn't work!
          m_TaskBar.EndUpdate();
@@ -37,10 +649,11 @@ index 381ba1c3..a897aeea 100644
 +    {
 +        for (PTASK_ITEM TaskItem = m_TaskItems; TaskItem != m_TaskItems + m_TaskItemCount; TaskItem++)
 +        {
++            PTASK_ITEM Button = ButtonOfTask(TaskItem);
 +            RECT rc;
 +
-+            if (TaskItem->Index < 0 || !::IsWindow(TaskItem->hWnd) ||
-+                !m_TaskBar.SendMessageW(TB_GETITEMRECT, TaskItem->Index, (LPARAM)&rc))
++            if (Button == NULL || !::IsWindow(TaskItem->hWnd) ||
++                !m_TaskBar.SendMessageW(TB_GETITEMRECT, Button->Index, (LPARAM)&rc))
 +                continue;
 +            m_TaskBar.MapWindowPoints(NULL, (LPPOINT)&rc, 2);
 +            ArcticSetWindowAttribute(TaskItem->hWnd, DWMWA_ARCTIC_MINIMIZE_RECT, &rc, sizeof(rc));
@@ -48,7 +661,18 @@ index 381ba1c3..a897aeea 100644
      }
  
      BOOL CALLBACK EnumWindowsProc(IN HWND hWnd)
-@@ -1639,7 +1656,9 @@ public:
+@@ -1511,9 +1709,7 @@ public:
+ 
+         SetWindowTheme(m_TaskBar.m_hWnd, L"TaskBand", NULL);
+ 
+-        m_ImageList = ImageList_Create(GetSystemMetrics(g_TaskbarSettings.bSmallIcons ? SM_CXSMICON : SM_CXICON),
+-                                       GetSystemMetrics(g_TaskbarSettings.bSmallIcons ? SM_CYSMICON : SM_CYICON),
+-                                       ILC_COLOR32 | ILC_MASK, 0, 1000);
++        m_ImageList = ImageList_Create(GetIconSize(), GetIconSize(), ILC_COLOR32 | ILC_MASK, 0, 1000);
+         m_TaskBar.SetImageList(m_ImageList);
+ 
+         /* Set proper spacing between buttons */
+@@ -1639,7 +1835,9 @@ public:
              break;
  
          case HSHELL_WINDOWCREATED:
@@ -59,17 +683,187 @@ index 381ba1c3..a897aeea 100644
              break;
  
          case HSHELL_WINDOWDESTROYED:
-@@ -1752,6 +1771,9 @@ public:
-         PTASK_ITEM TaskItem;
-         PTASK_GROUP TaskGroup;
+@@ -1703,6 +1901,34 @@ public:
+         return Ret;
+     }
  
-+        /* the thumbnail over the button goes at once */
-+        ArcticTaskbarHover(NULL, NULL, 1);
++    /* Arctic: ITaskbarList3 changed the progress, overlay or buttons of a window */
++    LRESULT OnArcticTaskbarChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        RECT rc;
++        PTASK_ITEM Button = ButtonOfTask(FindTaskItem((HWND)wParam));
 +
-         if (m_IsGroupingEnabled)
++        if (Button != NULL && m_TaskBar.SendMessageW(TB_GETITEMRECT, Button->Index, (LPARAM)&rc))
++            m_TaskBar.InvalidateRect(&rc, TRUE);
++        return 0;
++    }
++
++    /* ITaskbarList::AddTab and DeleteTab */
++    LRESULT OnArcticTaskbarTab(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        HWND hWnd = (HWND)wParam;
++
++        if (lParam)
++        {
++            if (::IsWindow(hWnd) && !FindTaskItem(hWnd))
++                AddTask(hWnd);
++        }
++        else
++        {
++            DeleteTask(hWnd);
++        }
++        return 0;
++    }
++
+     LRESULT OnWinMMDeviceChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
+         TRACE("Audio device was added or removed, invalidating mixer\n");
+@@ -1765,6 +1991,21 @@ public:
+         TaskItem = FindTaskItemByIndex((INT) wIndex);
+         if (TaskItem != NULL)
          {
-             TaskGroup = FindTaskGroupByIndex((INT) wIndex);
-@@ -1895,6 +1917,27 @@ public:
++            /* Arctic: a combined button of several windows shows them all;
++               a click on one of the thumbnails brings it up */
++            HWND ahwnd[10];
++            RECT rc;
++            UINT cWindows = GetButtonWindows(TaskItem, ahwnd, _countof(ahwnd));
++            if (cWindows > 1 && m_TaskBar.SendMessageW(TB_GETITEMRECT, TaskItem->Index, (LPARAM)&rc))
++            {
++                m_TaskBar.MapWindowPoints(NULL, (LPPOINT)&rc, 2);
++                ArcticTaskbarHoverGroup(ahwnd, cWindows, &rc, 1);
++                UpdateTaskItemButton(TaskItem);
++                return TRUE;
++            }
++
++            /* the thumbnail over the button goes at once */
++            ArcticTaskbarHover(NULL, NULL, 1);
+             HandleTaskItemClick(TaskItem);
+             return TRUE;
+         }
+@@ -1825,6 +2066,89 @@ public:
+     }
+ 
+ 
++    /* Arctic: 16x16 premultiplied pixels, as ITaskbarList3 overlay icons are kept */
++    static VOID DrawPixels(IN HDC hdc, IN INT x, IN INT y, IN const UINT32 *pPixels)
++    {
++        BITMAPINFO bi = { 0 };
++        UINT32 *pBits;
++
++        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
++        bi.bmiHeader.biWidth = ARCTIC_TASKBAR_ICON;
++        bi.bmiHeader.biHeight = -ARCTIC_TASKBAR_ICON;
++        bi.bmiHeader.biPlanes = 1;
++        bi.bmiHeader.biBitCount = 32;
++        HBITMAP hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)&pBits, NULL, 0);
++        if (!hbm)
++            return;
++        CopyMemory(pBits, pPixels, ARCTIC_TASKBAR_ICON * ARCTIC_TASKBAR_ICON * sizeof(UINT32));
++        HDC hdcMem = CreateCompatibleDC(hdc);
++        HGDIOBJ hOld = SelectObject(hdcMem, hbm);
++        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
++        GdiAlphaBlend(hdc, x, y, ARCTIC_TASKBAR_ICON, ARCTIC_TASKBAR_ICON,
++                      hdcMem, 0, 0, ARCTIC_TASKBAR_ICON, ARCTIC_TASKBAR_ICON, bf);
++        SelectObject(hdcMem, hOld);
++        DeleteDC(hdcMem);
++        DeleteObject(hbm);
++    }
++
++    /* Arctic: over the button background: the progress, the icon, and the
++       overlay icon of ITaskbarList3, as the taskbar of Windows 10 draws them */
++    VOID HandleItemPostPaint(IN NMTBCUSTOMDRAW *nmtbcd, IN PTASK_ITEM TaskItem)
++    {
++        HDC hdc = nmtbcd->nmcd.hdc;
++        const RECT *prc = &nmtbcd->nmcd.rc;
++        const INT cxIcon = GetIconSize();
++        HWND ahwnd[10];
++        UINT32 overlay[ARCTIC_TASKBAR_ICON * ARCTIC_TASKBAR_ICON];
++        DWORD dwProgressState = 0, dwProgress = 0;
++        BOOL bHasOverlay = FALSE;
++
++        UINT cWindows = GetButtonWindows(TaskItem, ahwnd, _countof(ahwnd));
++        for (UINT i = 0; i < cWindows; i++)
++        {
++            DWORD dwState, dwValue;
++            BOOL bOverlay;
++            UINT32 pixels[ARCTIC_TASKBAR_ICON * ARCTIC_TASKBAR_ICON];
++
++            if (!ArcticGetTaskbarState(ahwnd[i], &dwState, &dwValue, &bOverlay, pixels))
++                continue;
++            if (dwState && !dwProgressState)
++            {
++                dwProgressState = dwState;
++                dwProgress = dwValue;
++            }
++            if (bOverlay && !bHasOverlay)
++            {
++                bHasOverlay = TRUE;
++                CopyMemory(overlay, pixels, sizeof(overlay));
++            }
++        }
++
++        if (dwProgressState & (TBPF_INDETERMINATE | TBPF_NORMAL | TBPF_ERROR | TBPF_PAUSED))
++        {
++            RECT rcProgress = *prc;
++            COLORREF color = RGB(6, 176, 37);
++
++            if (dwProgressState & TBPF_ERROR)
++                color = RGB(218, 38, 38);
++            else if (dwProgressState & TBPF_PAUSED)
++                color = RGB(222, 180, 0);
++            if (!(dwProgressState & TBPF_INDETERMINATE))
++                rcProgress.right = rcProgress.left + MulDiv(prc->right - prc->left, (INT)min(dwProgress, (DWORD)10000), 10000);
++            if (rcProgress.right > rcProgress.left)
++                ArcticFillAlpha(hdc, &rcProgress, color, (dwProgressState & TBPF_INDETERMINATE) ? 0x40 : 0x80);
++        }
++
++        INT x = g_TaskbarSettings.bHideLabels ? (prc->left + prc->right - cxIcon) / 2
++                                              : prc->left + GetSystemMetrics(SM_CXEDGE) + 2;
++        INT y = (prc->top + prc->bottom - cxIcon) / 2;
++        if (TaskItem->IconIndex >= 0)
++            ImageList_Draw(m_ImageList, TaskItem->IconIndex, hdc, x, y, ILD_TRANSPARENT);
++
++        if (bHasOverlay)
++            DrawPixels(hdc, x + cxIcon - ARCTIC_TASKBAR_ICON + 2, y + cxIcon - ARCTIC_TASKBAR_ICON + 2, overlay);
++    }
++
+     LRESULT HandleItemPaint(IN OUT NMTBCUSTOMDRAW *nmtbcd)
+     {
+         LRESULT Ret = CDRF_DODEFAULT;
+@@ -1837,12 +2161,15 @@ public:
+         {
+             ASSERT(TaskItem != NULL);
+ 
++            /* Arctic: the icon is drawn after the button */
++            Ret |= CDRF_NOTIFYPOSTPAINT;
++
+             if (TaskItem != NULL && ::IsWindow(TaskItem->hWnd))
+             {
+                 /* Make the entire button flashing if necessary */
+                 if (nmtbcd->nmcd.uItemState & CDIS_MARKED)
+                 {
+-                    Ret = TBCDRF_NOBACKGROUND;
++                    Ret = TBCDRF_NOBACKGROUND | CDRF_NOTIFYPOSTPAINT;
+                     if (!m_Theme)
+                     {
+                         SelectObject(nmtbcd->nmcd.hdc, GetSysColorBrush(COLOR_HIGHLIGHT));
+@@ -1885,6 +2212,15 @@ public:
+                 Ret = HandleItemPaint(nmtbcd);
+                 break;
+ 
++            case CDDS_ITEMPOSTPAINT:
++            {
++                PTASK_ITEM TaskItem = FindTaskItemByIndex((INT) nmtbcd->nmcd.dwItemSpec);
++                if (TaskItem != NULL)
++                    HandleItemPostPaint(nmtbcd, TaskItem);
++                Ret = CDRF_DODEFAULT;
++                break;
++            }
++
+             case CDDS_PREPAINT:
+                 Ret = CDRF_NOTIFYITEMDRAW;
+                 break;
+@@ -1895,6 +2231,30 @@ public:
              }
              break;
          }
@@ -84,8 +878,11 @@ index 381ba1c3..a897aeea 100644
 +            if (TaskItem != NULL && ::IsWindow(TaskItem->hWnd) &&
 +                m_TaskBar.SendMessageW(TB_GETITEMRECT, TaskItem->Index, (LPARAM)&rc))
 +            {
++                HWND ahwnd[10];
++                UINT cWindows = GetButtonWindows(TaskItem, ahwnd, _countof(ahwnd));
++
 +                m_TaskBar.MapWindowPoints(NULL, (LPPOINT)&rc, 2);
-+                ArcticTaskbarHover(TaskItem->hWnd, &rc, 0);
++                ArcticTaskbarHoverGroup(ahwnd, cWindows, &rc, 0);
 +            }
 +            else
 +            {
@@ -97,7 +894,7 @@ index 381ba1c3..a897aeea 100644
          }
  
          return Ret;
-@@ -1967,11 +2010,21 @@ public:
+@@ -1967,11 +2327,21 @@ public:
          Data.pTray = m_Tray;
          ::EnumDisplayMonitors(NULL, NULL, FullScreenEnumProc, (LPARAM)&Data);
  
@@ -120,6 +917,50 @@ index 381ba1c3..a897aeea 100644
              ::SetWindowPos(hwndTray, HWND_BOTTOM, 0, 0, 0, 0, uFlags);
  
              // Switch to the rude app if necessary
+@@ -2114,11 +2484,24 @@ public:
+             g_TaskbarSettings.bSmallIcons = newSettings->bSmallIcons;
+         }
+ 
++        if (newSettings->dwGlomLevel != g_TaskbarSettings.dwGlomLevel ||
++            newSettings->bHideLabels != g_TaskbarSettings.bHideLabels)
++        {
++            bSettingsChanged = TRUE;
++            g_TaskbarSettings.dwGlomLevel = newSettings->dwGlomLevel;
++            g_TaskbarSettings.bHideLabels = newSettings->bHideLabels;
++        }
++
+         if (bSettingsChanged)
+         {
+-            /* Refresh each task item view */
++            /* Arctic: the buttons are made anew: groups are combined or
++               split, and a label once given cannot be taken back */
++            HWND hwndActive = m_ActiveTaskItem ? m_ActiveTaskItem->hWnd : NULL;
++            DeleteAllTasks();
+             RefreshWindowList();
+             UpdateButtonsSize(FALSE);
++            if (hwndActive)
++                ActivateTask(hwndActive);
+         }
+ 
+         return 0;
+@@ -2154,7 +2537,7 @@ public:
+ 
+     LRESULT OnKludgeItemRect(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
+-        PTASK_ITEM TaskItem = FindTaskItem((HWND) wParam);
++        PTASK_ITEM TaskItem = ButtonOfTask(FindTaskItem((HWND) wParam));
+         if (TaskItem)
+         {
+             RECT* prcMinRect = (RECT*) lParam;
+@@ -2284,6 +2667,8 @@ public:
+         MESSAGE_HANDLER(WM_SETTINGCHANGE, OnSettingChanged)
+         MESSAGE_HANDLER(m_ShellHookMsg, OnShellHook)
+         MESSAGE_HANDLER(m_WinMMDevChgMsg, OnWinMMDeviceChange)
++        MESSAGE_HANDLER(m_uTaskbarChangedMsg, OnArcticTaskbarChanged)
++        MESSAGE_HANDLER(m_uTaskbarTabMsg, OnArcticTaskbarTab)
+         MESSAGE_HANDLER(WM_MOUSEACTIVATE, OnMouseActivate)
+         MESSAGE_HANDLER(WM_KLUDGEMINRECT, OnKludgeItemRect)
+         MESSAGE_HANDLER(WM_COPYDATA, OnCopyData)
 diff --git a/base/shell/explorer/traydeskbtn.cpp b/base/shell/explorer/traydeskbtn.cpp
 index 009f79c8..3295d47f 100644
 --- a/base/shell/explorer/traydeskbtn.cpp
@@ -150,6 +991,57 @@ index 009f79c8..3295d47f 100644
      if (m_hTheme)
      {
          HTHEME theme;
+diff --git a/base/shell/explorer/trayprop.cpp b/base/shell/explorer/trayprop.cpp
+index 0be04743..59e10d33 100644
+--- a/base/shell/explorer/trayprop.cpp
++++ b/base/shell/explorer/trayprop.cpp
+@@ -54,7 +54,7 @@ private:
+     {
+         BOOL bLock = IsDlgButtonChecked(IDC_TASKBARPROP_LOCK);
+         BOOL bHide = IsDlgButtonChecked(IDC_TASKBARPROP_HIDE);
+-        BOOL bGroup = IsDlgButtonChecked(IDC_TASKBARPROP_GROUP);
++        BOOL bGroup = SendDlgItemMessageW(IDC_TASKBARPROP_GROUP, CB_GETCURSEL, 0, 0) != 2;
+         BOOL bShowQL = IsDlgButtonChecked(IDC_TASKBARPROP_SHOWQL);
+         UINT uImageId;
+ 
+@@ -108,7 +108,14 @@ public:
+         CheckDlgButton(IDC_TASKBARPROP_LOCK, g_TaskbarSettings.bLock ? BST_CHECKED : BST_UNCHECKED);
+         CheckDlgButton(IDC_TASKBARPROP_HIDE, g_TaskbarSettings.sr.AutoHide ? BST_CHECKED : BST_UNCHECKED);
+         CheckDlgButton(IDC_TASKBARPROP_ONTOP, g_TaskbarSettings.sr.AlwaysOnTop ? BST_CHECKED : BST_UNCHECKED);
+-        CheckDlgButton(IDC_TASKBARPROP_GROUP, g_TaskbarSettings.bGroupButtons ? BST_CHECKED : BST_UNCHECKED);
++        /* Arctic: how buttons combine, the three choices of Windows 10 */
++        for (UINT id = IDS_TASKBARPROP_GLOM_ALWAYS; id <= IDS_TASKBARPROP_GLOM_NEVER; id++)
++        {
++            WCHAR szText[128];
++            if (LoadStringW(hExplorerInstance, id, szText, _countof(szText)))
++                SendDlgItemMessageW(IDC_TASKBARPROP_GROUP, CB_ADDSTRING, 0, (LPARAM)szText);
++        }
++        SendDlgItemMessageW(IDC_TASKBARPROP_GROUP, CB_SETCURSEL, g_TaskbarSettings.dwGlomLevel, 0);
+         //CheckDlgButton(IDC_TASKBARPROP_SHOWQL, g_TaskbarSettings.bShowQuickLaunch ? BST_CHECKED : BST_UNCHECKED);
+         CheckDlgButton(IDC_TASKBARPROP_SMALLICONS, g_TaskbarSettings.bSmallIcons ? BST_CHECKED : BST_UNCHECKED);
+ 
+@@ -118,6 +125,9 @@ public:
+ 
+     LRESULT OnCtrlCommand(WORD wNotifyCode, WORD wID, HWND hWndCtl, BOOL &bHandled)
+     {
++        /* the combo box speaks of more than a new choice */
++        if (wID == IDC_TASKBARPROP_GROUP && wNotifyCode != CBN_SELCHANGE)
++            return 0;
+         _UpdateDialog();
+         SetModified(TRUE);
+         return 0;
+@@ -130,7 +140,10 @@ public:
+         newSettings.bLock = IsDlgButtonChecked(IDC_TASKBARPROP_LOCK);
+         newSettings.sr.AutoHide = IsDlgButtonChecked(IDC_TASKBARPROP_HIDE);
+         newSettings.sr.AlwaysOnTop = IsDlgButtonChecked(IDC_TASKBARPROP_ONTOP);
+-        newSettings.bGroupButtons = IsDlgButtonChecked(IDC_TASKBARPROP_GROUP);
++        LRESULT glom = SendDlgItemMessageW(IDC_TASKBARPROP_GROUP, CB_GETCURSEL, 0, 0);
++        newSettings.dwGlomLevel = (glom >= 0 && glom <= 2) ? (DWORD)glom : 0;
++        newSettings.bGroupButtons = newSettings.dwGlomLevel != 2;
++        newSettings.bHideLabels = newSettings.dwGlomLevel == 0;
+         //newSettings.bShowQuickLaunch = IsDlgButtonChecked(IDC_TASKBARPROP_SHOWQL);
+         newSettings.bSmallIcons = IsDlgButtonChecked(IDC_TASKBARPROP_SMALLICONS);
+ 
 diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
 index 09eb8ade..3b8cbfb0 100644
 --- a/base/shell/explorer/traywnd.cpp
@@ -183,10 +1075,10 @@ index 09eb8ade..3b8cbfb0 100644
      }
  
 diff --git a/base/shell/explorer/util.cpp b/base/shell/explorer/util.cpp
-index f6824cc3..c09f23ea 100644
+index f6824cc3..7a021e11 100644
 --- a/base/shell/explorer/util.cpp
 +++ b/base/shell/explorer/util.cpp
-@@ -7,6 +7,101 @@ typedef struct _LANGCODEPAGE
+@@ -7,6 +7,129 @@ typedef struct _LANGCODEPAGE
      WORD wCodePage;
  } LANGCODEPAGE, *PLANGCODEPAGE;
  
@@ -283,6 +1175,34 @@ index f6824cc3..c09f23ea 100644
 +
 +    if (pHover)
 +        pHover(hwndTask, prcButton, dwFlags);
++}
++
++/* the thumbnails of all windows of a combined button */
++VOID ArcticTaskbarHoverGroup(IN const HWND *phwnd, IN UINT cCount, IN const RECT *prcButton, IN DWORD dwFlags)
++{
++    typedef void (WINAPI *PFN_HOVERGROUP)(const HWND *, UINT, const RECT *, DWORD);
++    PFN_HOVERGROUP pHover = (PFN_HOVERGROUP)ArcticProc(L"twinui.dll", "ArcticTaskbarHoverGroup");
++
++    if (pHover)
++        pHover(phwnd, cCount, prcButton, dwFlags);
++    else if (cCount)
++        ArcticTaskbarHover(phwnd[0], prcButton, dwFlags);
++}
++
++/* what ITaskbarList3 has said of a window: its progress and overlay icon */
++BOOL ArcticGetTaskbarState(IN HWND hWnd, OUT DWORD *pdwProgressState, OUT DWORD *pdwProgress,
++                           OUT BOOL *pbHasOverlay, OUT UINT32 *pOverlay)
++{
++    typedef BOOL (WINAPI *PFN_GETSTATE)(HWND, DWORD *, DWORD *, BOOL *, UINT32 *);
++    static PFN_GETSTATE pGetState;
++    static BOOL bLooked;
++
++    if (!bLooked)
++    {
++        pGetState = (PFN_GETSTATE)ArcticProc(L"twinui.dll", "ArcticGetTaskbarState");
++        bLooked = TRUE;
++    }
++    return pGetState && pGetState(hWnd, pdwProgressState, pdwProgress, pbHasOverlay, pOverlay);
 +}
 +
  HRESULT

@@ -1,0 +1,1032 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 29 Sep 2026 22:14:55 +0300
+Subject: [PATCH] win32u, server, explorerframe: Icons of other processes, Aero Snap, ITaskbarList3.
+
+Icons of other processes: a shell draws the icons of other programs'
+windows (WM_GETICON, class icons), which in Windows are shared. win32u
+now asks the thread that owns such an icon for its pixels
+(WM_WINE_GETICONBITS, packed across processes) and draws a copy of its
+own, kept in a small cache.
+
+Aero Snap: a window dragged by its caption to the top of a monitor
+maximizes when it is let go, to the left or right edge of the screen it
+takes that half of the monitor; wineserver keeps where it would go
+(set_snap_preview) for dwm.exe to show. A maximized window dragged by
+its caption comes out of the maximized state under the pointer.
+
+ITaskbarList3 in explorerframe: progress, overlay icons and the buttons
+under the thumbnail (ThumbBar*) go into the table the taskbar reads
+(wine/arctic_taskbar.h), icons as pixels; AddTab and DeleteTab reach the
+taskbar too.
+---
+ dlls/explorerframe/Makefile.in   |   2 +-
+ dlls/explorerframe/taskbarlist.c | 250 ++++++++++++++++++++++++++++++++++++---
+ dlls/win32u/cursoricon.c         | 205 +++++++++++++++++++++++++++++++-
+ dlls/win32u/defwnd.c             | 167 +++++++++++++++++++++++++-
+ dlls/win32u/message.c            |  13 ++
+ dlls/win32u/win32u_private.h     |   8 ++
+ dlls/win32u/window.c             |  15 +++
+ include/ntuser.h                 |   1 +
+ server/protocol.def              |   9 ++
+ server/user.h                    |   2 +
+ server/window.c                  |  18 +++
+ server/winstation.c              |   2 +
+ 12 files changed, 667 insertions(+), 25 deletions(-)
+
+diff --git a/dlls/explorerframe/Makefile.in b/dlls/explorerframe/Makefile.in
+index 139fda5..112d4ab 100644
+--- a/dlls/explorerframe/Makefile.in
++++ b/dlls/explorerframe/Makefile.in
+@@ -1,5 +1,5 @@
+ MODULE    = explorerframe.dll
+-IMPORTS   = uuid ole32 comctl32 shell32 user32
++IMPORTS   = uuid ole32 comctl32 shell32 user32 gdi32
+ 
+ VER_PRODUCTVERSION  = 6,1,7601,16666
+ VER_OLESELFREGISTER = 1
+diff --git a/dlls/explorerframe/taskbarlist.c b/dlls/explorerframe/taskbarlist.c
+index c5715e6..94597be 100644
+--- a/dlls/explorerframe/taskbarlist.c
++++ b/dlls/explorerframe/taskbarlist.c
+@@ -20,19 +20,163 @@
+ 
+ #include "explorerframe_main.h"
+ 
++#include "wine/arctic_taskbar.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(explorerframe);
+ 
+-#define WM_WINE_DELETE_TAB      (WM_USER + 1)
+-#define WM_WINE_ADD_TAB         (WM_USER + 2)
+-
+ struct taskbar_list
+ {
+     ITaskbarList4 ITaskbarList4_iface;
+     LONG refcount;
++    HIMAGELIST image_list;   /* ThumbBarSetImageList */
+ };
+ 
++/* The taskbar lives in explorer.exe: what a program puts on its button goes
++ * into the table it reads (wine/arctic_taskbar.h), and the taskbar is told. */
++
++static struct arctic_taskbar_shared *get_shared(void)
++{
++    static struct arctic_taskbar_shared *shared;
++    struct arctic_taskbar_shared *view;
++    HANDLE mapping;
++
++    if (shared) return shared;
++    if (!(mapping = CreateFileMappingW( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(*view),
++                                        ARCTIC_TASKBAR_SECTION )))
++        return NULL;
++    view = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*view) );
++    CloseHandle( mapping );
++    if (!view) return NULL;
++    /* the first one to map it sets it up */
++    InterlockedCompareExchange( (LONG *)&view->version, ARCTIC_TASKBAR_VERSION, 0 );
++    if (view->version != ARCTIC_TASKBAR_VERSION)
++    {
++        UnmapViewOfFile( view );
++        return NULL;
++    }
++    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL )) UnmapViewOfFile( view );
++    return shared;
++}
++
++static void lock_shared( struct arctic_taskbar_shared *shared )
++{
++    DWORD start = GetTickCount();
++
++    while (InterlockedCompareExchange( &shared->lock, 1, 0 ))
++    {
++        if (GetTickCount() - start > 200) InterlockedExchange( &shared->lock, 0 );  /* a process died holding it */
++        YieldProcessor();
++    }
++}
++
++static void unlock_shared( struct arctic_taskbar_shared *shared )
++{
++    InterlockedIncrement( &shared->serial );
++    InterlockedExchange( &shared->lock, 0 );
++}
++
++/* the row of a window, a new one if it has none */
++static struct arctic_taskbar_window *window_row( struct arctic_taskbar_shared *shared, HWND hwnd )
++{
++    struct arctic_taskbar_window *row, *spare = NULL;
++
++    for (UINT i = 0; i < ARCTIC_TASKBAR_WINDOWS; i++)
++    {
++        row = &shared->windows[i];
++        if (row->hwnd == HandleToULong( hwnd )) return row;
++        if (!spare && (!row->hwnd || !IsWindow( ULongToHandle( row->hwnd ) ))) spare = row;
++    }
++    if (!spare) return NULL;
++    memset( spare, 0, sizeof(*spare) );
++    spare->hwnd = HandleToULong( hwnd );
++    spare->process = GetCurrentProcessId();
++    return spare;
++}
++
++/* the taskbar's task list repaints the window's button */
++static void notify_taskbar( HWND hwnd, const WCHAR *message, LPARAM lparam )
++{
++    HWND tray = FindWindowW( L"Shell_TrayWnd", NULL ), rebar, tasks;
++
++    if (!tray || !(rebar = FindWindowExW( tray, NULL, L"ReBarWindow32", NULL ))) return;
++    if (!(tasks = FindWindowExW( rebar, NULL, L"MSTaskSwWClass", NULL ))) return;
++    PostMessageW( tasks, RegisterWindowMessageW( message ), (WPARAM)hwnd, lparam );
++}
++
++/* an icon as premultiplied ARGB pixels: drawn over black and over white,
++ * which tells alpha apart from black for icons that carry none */
++static BOOL icon_pixels( HICON icon, UINT32 *pixels )
++{
++    BITMAPINFO info = {{ sizeof(info.bmiHeader), ARCTIC_TASKBAR_ICON, -ARCTIC_TASKBAR_ICON, 1, 32, BI_RGB }};
++    const UINT count = ARCTIC_TASKBAR_ICON * ARCTIC_TASKBAR_ICON;
++    UINT32 *black, *white;
++    HBITMAP black_bitmap, white_bitmap;
++    BOOL has_alpha = FALSE;
++    HDC hdc;
++
++    if (!icon) return FALSE;
++    hdc = CreateCompatibleDC( 0 );
++    black_bitmap = CreateDIBSection( hdc, &info, DIB_RGB_COLORS, (void **)&black, NULL, 0 );
++    white_bitmap = CreateDIBSection( hdc, &info, DIB_RGB_COLORS, (void **)&white, NULL, 0 );
++    if (!black_bitmap || !white_bitmap)
++    {
++        if (black_bitmap) DeleteObject( black_bitmap );
++        if (white_bitmap) DeleteObject( white_bitmap );
++        DeleteDC( hdc );
++        return FALSE;
++    }
++    memset( black, 0, count * 4 );
++    for (UINT i = 0; i < count; i++) white[i] = 0x00ffffff;
++    SelectObject( hdc, black_bitmap );
++    DrawIconEx( hdc, 0, 0, icon, ARCTIC_TASKBAR_ICON, ARCTIC_TASKBAR_ICON, 0, NULL, DI_NORMAL );
++    SelectObject( hdc, white_bitmap );
++    DrawIconEx( hdc, 0, 0, icon, ARCTIC_TASKBAR_ICON, ARCTIC_TASKBAR_ICON, 0, NULL, DI_NORMAL );
++    GdiFlush();
++
++    for (UINT i = 0; i < count && !has_alpha; i++) has_alpha = (black[i] >> 24) != 0;
++    for (UINT i = 0; i < count; i++)
++    {
++        UINT32 a;
++
++        if (has_alpha) a = black[i] >> 24;
++        else a = 255 - min( 255, ((white[i] >> 8) & 0xff) - ((black[i] >> 8) & 0xff) );
++        pixels[i] = (a << 24) | (black[i] & 0xffffff);
++    }
++    DeleteObject( black_bitmap );
++    DeleteObject( white_bitmap );
++    DeleteDC( hdc );
++    return TRUE;
++}
++
++/* a button's new state, made before the table is locked: drawing an icon may take a while */
++static void prepare_button( struct taskbar_list *list, struct arctic_thumb_button *button, const THUMBBUTTON *from )
++{
++    memset( button, 0, sizeof(*button) );
++    button->id = from->iId;
++    if (from->dwMask & THB_FLAGS) button->flags = from->dwFlags;
++    if (from->dwMask & THB_TOOLTIP) lstrcpynW( button->tip, from->szTip, ARRAY_SIZE(button->tip) );
++    if (from->dwMask & THB_ICON) button->has_icon = icon_pixels( from->hIcon, button->icon );
++    else if ((from->dwMask & THB_BITMAP) && list->image_list)
++    {
++        HICON icon = ImageList_GetIcon( list->image_list, from->iBitmap, ILD_NORMAL );
++        button->has_icon = icon_pixels( icon, button->icon );
++        if (icon) DestroyIcon( icon );
++    }
++}
++
++/* what the mask names goes into the table's button */
++static void merge_button( struct arctic_thumb_button *button, const struct arctic_thumb_button *from, DWORD mask )
++{
++    if (mask & THB_FLAGS) button->flags = from->flags;
++    if (mask & THB_TOOLTIP) memcpy( button->tip, from->tip, sizeof(button->tip) );
++    if (mask & (THB_ICON | THB_BITMAP))
++    {
++        button->has_icon = from->has_icon;
++        memcpy( button->icon, from->icon, sizeof(button->icon) );
++    }
++}
++
+ static inline struct taskbar_list *impl_from_ITaskbarList4(ITaskbarList4 *iface)
+ {
+     return CONTAINING_RECORD(iface, struct taskbar_list, ITaskbarList4_iface);
+@@ -100,7 +244,7 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_AddTab(ITaskbarList4 *iface, HWND
+ {
+     TRACE("iface %p, hwnd %p\n", iface, hwnd);
+ 
+-    SendMessageW(GetDesktopWindow(), WM_WINE_ADD_TAB, (WPARAM)hwnd, 0);
++    notify_taskbar( hwnd, ARCTIC_TASKBAR_TAB, 1 );
+     return S_OK;
+ }
+ 
+@@ -108,7 +252,7 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_DeleteTab(ITaskbarList4 *iface, HW
+ {
+     TRACE("iface %p, hwnd %p\n", iface, hwnd);
+ 
+-    SendMessageW(GetDesktopWindow(), WM_WINE_DELETE_TAB, (WPARAM)hwnd, 0);
++    notify_taskbar( hwnd, ARCTIC_TASKBAR_TAB, 0 );
+     return S_OK;
+ }
+ 
+@@ -144,10 +288,24 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_SetProgressValue(ITaskbarList4 *if
+                                                                ULONGLONG ullCompleted,
+                                                                ULONGLONG ullTotal)
+ {
+-    static BOOL fixme_once;
+-    if(!fixme_once++) FIXME("iface %p, hwnd %p, ullCompleted %s, ullTotal %s stub!\n", iface, hwnd,
+-                            wine_dbgstr_longlong(ullCompleted), wine_dbgstr_longlong(ullTotal));
++    struct arctic_taskbar_shared *shared = get_shared();
++    struct arctic_taskbar_window *row;
++
++    TRACE("iface %p, hwnd %p, ullCompleted %s, ullTotal %s\n", iface, hwnd,
++          wine_dbgstr_longlong(ullCompleted), wine_dbgstr_longlong(ullTotal));
+ 
++    if (!IsWindow( hwnd )) return E_INVALIDARG;
++    if (!shared) return S_OK;
++    lock_shared( shared );
++    if ((row = window_row( shared, hwnd )))
++    {
++        /* a value turns the progress on, as in Windows */
++        if (row->progress_state == TBPF_NOPROGRESS || row->progress_state == TBPF_INDETERMINATE)
++            row->progress_state = TBPF_NORMAL;
++        row->progress = ullTotal ? (UINT32)(min( ullCompleted, ullTotal ) * 10000 / ullTotal) : 0;
++    }
++    unlock_shared( shared );
++    notify_taskbar( hwnd, ARCTIC_TASKBAR_CHANGED, 0 );
+     return S_OK;
+ }
+ 
+@@ -155,9 +313,17 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_SetProgressState(ITaskbarList4 *if
+                                                                HWND hwnd,
+                                                                TBPFLAG tbpFlags)
+ {
+-    static BOOL fixme_once;
+-    if(!fixme_once++) FIXME("iface %p, hwnd %p, flags %x stub!\n", iface, hwnd, tbpFlags);
++    struct arctic_taskbar_shared *shared = get_shared();
++    struct arctic_taskbar_window *row;
++
++    TRACE("iface %p, hwnd %p, flags %x\n", iface, hwnd, tbpFlags);
+ 
++    if (!IsWindow( hwnd )) return E_INVALIDARG;
++    if (!shared) return S_OK;
++    lock_shared( shared );
++    if ((row = window_row( shared, hwnd ))) row->progress_state = tbpFlags;
++    unlock_shared( shared );
++    notify_taskbar( hwnd, ARCTIC_TASKBAR_CHANGED, 0 );
+     return S_OK;
+ }
+ 
+@@ -199,8 +365,24 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_ThumbBarAddButtons(ITaskbarList4 *
+                                                                  UINT cButtons,
+                                                                  LPTHUMBBUTTON pButton)
+ {
+-    FIXME("iface %p, hwnd %p, cButtons %u, pButton %p stub, faking success!\n", iface, hwnd, cButtons, pButton);
++    struct taskbar_list *This = impl_from_ITaskbarList4(iface);
++    struct arctic_taskbar_shared *shared = get_shared();
++    struct arctic_thumb_button buttons[ARCTIC_THUMB_BUTTONS];
++    struct arctic_taskbar_window *row;
++
++    TRACE("iface %p, hwnd %p, cButtons %u, pButton %p\n", iface, hwnd, cButtons, pButton);
+ 
++    if (!IsWindow( hwnd ) || !pButton || !cButtons || cButtons > ARCTIC_THUMB_BUTTONS) return E_INVALIDARG;
++    if (!shared) return S_OK;
++    for (UINT i = 0; i < cButtons; i++) prepare_button( This, &buttons[i], &pButton[i] );
++    lock_shared( shared );
++    if ((row = window_row( shared, hwnd )))
++    {
++        row->button_count = cButtons;
++        memcpy( row->buttons, buttons, cButtons * sizeof(buttons[0]) );
++    }
++    unlock_shared( shared );
++    notify_taskbar( hwnd, ARCTIC_TASKBAR_CHANGED, 0 );
+     return S_OK;
+ }
+ 
+@@ -209,8 +391,25 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_ThumbBarUpdateButtons(ITaskbarList
+                                                                    UINT cButtons,
+                                                                    LPTHUMBBUTTON pButton)
+ {
+-    FIXME("iface %p, hwnd %p, cButtons %u, pButton %p stub, faking success!\n", iface, hwnd, cButtons, pButton);
++    struct taskbar_list *This = impl_from_ITaskbarList4(iface);
++    struct arctic_taskbar_shared *shared = get_shared();
++    struct arctic_thumb_button buttons[ARCTIC_THUMB_BUTTONS];
++    struct arctic_taskbar_window *row;
++
++    TRACE("iface %p, hwnd %p, cButtons %u, pButton %p\n", iface, hwnd, cButtons, pButton);
+ 
++    if (!IsWindow( hwnd ) || !pButton || cButtons > ARCTIC_THUMB_BUTTONS) return E_INVALIDARG;
++    if (!shared) return S_OK;
++    for (UINT i = 0; i < cButtons; i++) prepare_button( This, &buttons[i], &pButton[i] );
++    lock_shared( shared );
++    if ((row = window_row( shared, hwnd )))
++    {
++        for (UINT i = 0; i < cButtons; i++)
++            for (UINT k = 0; k < row->button_count; k++)
++                if (row->buttons[k].id == pButton[i].iId) merge_button( &row->buttons[k], &buttons[i], pButton[i].dwMask );
++    }
++    unlock_shared( shared );
++    notify_taskbar( hwnd, ARCTIC_TASKBAR_CHANGED, 0 );
+     return S_OK;
+ }
+ 
+@@ -218,8 +417,11 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_ThumbBarSetImageList(ITaskbarList4
+                                                                    HWND hwnd,
+                                                                    HIMAGELIST himl)
+ {
+-    FIXME("iface %p, hwnd %p, himl %p stub!\n", iface, hwnd, himl);
++    struct taskbar_list *This = impl_from_ITaskbarList4(iface);
++
++    TRACE("iface %p, hwnd %p, himl %p\n", iface, hwnd, himl);
+ 
++    This->image_list = himl;
+     return S_OK;
+ }
+ 
+@@ -228,9 +430,24 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_SetOverlayIcon(ITaskbarList4 *ifac
+                                                              HICON hIcon,
+                                                              LPCWSTR pszDescription)
+ {
+-    FIXME("iface %p, hwnd %p, hIcon %p, pszDescription %s stub!\n", iface, hwnd, hIcon,
+-          debugstr_w(pszDescription));
+-
++    struct arctic_taskbar_shared *shared = get_shared();
++    struct arctic_taskbar_window *row;
++    UINT32 pixels[ARCTIC_TASKBAR_ICON * ARCTIC_TASKBAR_ICON];
++    BOOL has_overlay;
++
++    TRACE("iface %p, hwnd %p, hIcon %p, pszDescription %s\n", iface, hwnd, hIcon, debugstr_w(pszDescription));
++
++    if (!IsWindow( hwnd )) return E_INVALIDARG;
++    if (!shared) return S_OK;
++    has_overlay = icon_pixels( hIcon, pixels );
++    lock_shared( shared );
++    if ((row = window_row( shared, hwnd )))
++    {
++        row->has_overlay = has_overlay;
++        memcpy( row->overlay, pixels, sizeof(pixels) );
++    }
++    unlock_shared( shared );
++    notify_taskbar( hwnd, ARCTIC_TASKBAR_CHANGED, 0 );
+     return S_OK;
+ }
+ 
+@@ -318,6 +535,7 @@ HRESULT TaskbarList_Constructor(IUnknown *outer, REFIID riid, void **taskbar_lis
+ 
+     object->ITaskbarList4_iface.lpVtbl = &taskbar_list_vtbl;
+     object->refcount = 1;
++    object->image_list = NULL;
+     EFRAME_LockModule();
+ 
+     TRACE("Created ITaskbarList4 %p\n", object);
+diff --git a/dlls/win32u/cursoricon.c b/dlls/win32u/cursoricon.c
+index b7bb811..4ce7793 100644
+--- a/dlls/win32u/cursoricon.c
++++ b/dlls/win32u/cursoricon.c
+@@ -29,6 +29,7 @@
+ #endif
+ 
+ #include <assert.h>
++#include <pthread.h>
+ #include "ntgdi_private.h"
+ #include "ntuser_private.h"
+ #include "wine/server.h"
+@@ -63,15 +64,209 @@ struct cursoricon_object
+ 
+ static struct list icon_cache = LIST_INIT( icon_cache );
+ 
++/* An icon of another process. As in Windows, where icons are shared, a
++ * shell draws the icons of other programs' windows (WM_GETICON, the class
++ * icon): the pixels of the icon's first frame come from the thread that owns
++ * it (WM_WINE_GETICONBITS), into an icon of our own that stands in for it. */
++
++struct icon_bits
++{
++    UINT   width, height;
++    UINT   is_icon;
++    INT    hotspot_x, hotspot_y;
++    UINT   reserved;
++    UINT32 pixels[];                  /* straight ARGB, top row first */
++};
++
++C_ASSERT( sizeof(struct icon_bits) == 6 * sizeof(UINT) );
++
++#define FOREIGN_ICON_CACHE 128
++
++static pthread_mutex_t foreign_icon_lock = PTHREAD_MUTEX_INITIALIZER;
++static struct { HICON foreign, local; } foreign_icons[FOREIGN_ICON_CACHE];
++static unsigned int foreign_icon_next;
++
++static HBITMAP bitmap_from_rows( UINT width, UINT height, UINT bpp, const void *rows )
++{
++    return NtGdiCreateBitmap( width, height, 1, bpp, rows );
++}
++
++static HICON icon_from_bits( const struct icon_bits *bits )
++{
++    UINT width = bits->width, height = bits->height, mask_stride = (width + 15) / 16 * 2;
++    struct cursoricon_frame frame = { width, height };
++    struct cursoricon_desc desc = { .num_frames = 1, .frames = &frame };
++    UINT32 *premultiplied;
++    BYTE *mask;
++    HICON icon;
++
++    if (!(premultiplied = malloc( width * height * 4 ))) return 0;
++    if (!(mask = calloc( height, mask_stride )))
++    {
++        free( premultiplied );
++        return 0;
++    }
++    for (UINT i = 0; i < width * height; i++)
++    {
++        UINT32 p = bits->pixels[i], a = p >> 24;
++
++        premultiplied[i] = (a << 24) | ((((p >> 16) & 0xff) * a / 255) << 16) |
++                           ((((p >> 8) & 0xff) * a / 255) << 8) | ((p & 0xff) * a / 255);
++        if (a < 128) mask[(i / width) * mask_stride + (i % width) / 8] |= 0x80 >> (i % 8);
++    }
++    frame.hotspot.x = bits->hotspot_x;
++    frame.hotspot.y = bits->hotspot_y;
++    frame.color = bitmap_from_rows( width, height, 32, bits->pixels );
++    frame.alpha = bitmap_from_rows( width, height, 32, premultiplied );
++    frame.mask = bitmap_from_rows( width, height, 1, mask );
++    free( premultiplied );
++    free( mask );
++
++    if (!frame.color || !frame.alpha || !frame.mask || !(icon = alloc_cursoricon_handle( bits->is_icon )) ||
++        !NtUserSetCursorIconData( icon, NULL, NULL, &desc ))
++    {
++        if (frame.color) NtGdiDeleteObjectApp( frame.color );
++        if (frame.alpha) NtGdiDeleteObjectApp( frame.alpha );
++        if (frame.mask) NtGdiDeleteObjectApp( frame.mask );
++        return 0;
++    }
++    return icon;
++}
++
++/* a copy of an icon of another process, 0 if its owner does not give it */
++static HICON copy_foreign_icon( HICON handle )
++{
++    struct icon_bits *bits;
++    DWORD pid, tid;
++    DWORD_PTR size = 0;
++    HICON local = 0;
++    unsigned int i;
++
++    pthread_mutex_lock( &foreign_icon_lock );
++    for (i = 0; i < FOREIGN_ICON_CACHE; i++)
++    {
++        if (foreign_icons[i].foreign != handle) continue;
++        local = foreign_icons[i].local;
++        pthread_mutex_unlock( &foreign_icon_lock );
++        return local;
++    }
++    pthread_mutex_unlock( &foreign_icon_lock );
++
++    if (!get_user_handle_owner( handle, NTUSER_OBJ_ICON, &pid, &tid )) return 0;
++    if (!(bits = malloc( WINE_ICON_BITS_SIZE ))) return 0;
++    if (send_internal_message_timeout( pid, tid, WM_WINE_GETICONBITS, (WPARAM)handle, (LPARAM)bits,
++                                       SMTO_ABORTIFHUNG, 500, &size ) &&
++        size >= sizeof(*bits) && bits->width && bits->height && bits->width <= WINE_ICON_BITS_MAX &&
++        bits->height <= WINE_ICON_BITS_MAX && size >= sizeof(*bits) + bits->width * bits->height * 4)
++        local = icon_from_bits( bits );
++    else WARN( "icon %p of process %04x: its pixels did not come\n", handle, pid );
++    free( bits );
++
++    /* a failure is kept too: the owner is not asked again and again */
++    pthread_mutex_lock( &foreign_icon_lock );
++    i = foreign_icon_next++ % FOREIGN_ICON_CACHE;
++    if (foreign_icons[i].local) NtUserDestroyCursor( foreign_icons[i].local, 0 );
++    foreign_icons[i].foreign = handle;
++    foreign_icons[i].local = local;
++    pthread_mutex_unlock( &foreign_icon_lock );
++    return local;
++}
++
+ static struct cursoricon_object *get_icon_ptr( HICON handle )
+ {
+     struct cursoricon_object *obj = get_user_handle_ptr( handle, NTUSER_OBJ_ICON );
+-    if (obj == OBJ_OTHER_PROCESS)
++    HICON local;
++
++    if (obj != OBJ_OTHER_PROCESS) return obj;
++    if (!(local = copy_foreign_icon( handle ))) return NULL;
++    obj = get_user_handle_ptr( local, NTUSER_OBJ_ICON );
++    return obj == OBJ_OTHER_PROCESS ? NULL : obj;
++}
++
++/* the answer to WM_WINE_GETICONBITS: the first frame of one of our icons */
++LRESULT get_icon_bits( HICON handle, void *buffer, size_t size )
++{
++    struct icon_bits *bits = buffer;
++    struct cursoricon_object *obj;
++    struct cursoricon_frame frame;
++    BITMAPINFO info = {{ sizeof(info.bmiHeader) }};
++    char mask_buffer[FIELD_OFFSET( BITMAPINFO, bmiColors[2] )];
++    BITMAPINFO *mask_info = (BITMAPINFO *)mask_buffer;
++    UINT width, height, mask_stride;
++    BOOL is_icon, ok;
++    BYTE *mask;
++    HDC hdc;
++
++    if (!(obj = get_user_handle_ptr( handle, NTUSER_OBJ_ICON )) || obj == OBJ_OTHER_PROCESS) return 0;
++    if (obj->is_ani)
++    {
++        HICON first = obj->ani.num_frames ? obj->ani.frames[0] : 0;
++        release_user_handle_ptr( obj );
++        return first ? get_icon_bits( first, buffer, size ) : 0;
++    }
++    frame = obj->frame;
++    is_icon = obj->is_icon;
++    release_user_handle_ptr( obj );
++
++    width = frame.width;
++    height = frame.height;
++    if (!width || !height || width > WINE_ICON_BITS_MAX || height > WINE_ICON_BITS_MAX) return 0;
++    if (size < sizeof(*bits) + width * height * 4 || (!frame.alpha && !frame.color)) return 0;
++
++    info.bmiHeader.biWidth = width;
++    info.bmiHeader.biHeight = -(int)height;
++    info.bmiHeader.biPlanes = 1;
++    info.bmiHeader.biBitCount = 32;
++    info.bmiHeader.biCompression = BI_RGB;
++    hdc = NtGdiCreateCompatibleDC( 0 );
++
++    if (frame.alpha)
+     {
+-        WARN( "icon handle %p from other process\n", handle );
+-        obj = NULL;
++        ok = NtGdiGetDIBitsInternal( hdc, frame.alpha, 0, height, bits->pixels, &info, DIB_RGB_COLORS, 0, 0 );
++        /* stored premultiplied */
++        for (UINT i = 0; ok && i < width * height; i++)
++        {
++            UINT32 p = bits->pixels[i], a = p >> 24;
++            if (!a) continue;
++            bits->pixels[i] = (a << 24) | (min( 255, ((p >> 16) & 0xff) * 255 / a ) << 16) |
++                              (min( 255, ((p >> 8) & 0xff) * 255 / a ) << 8) | min( 255, (p & 0xff) * 255 / a );
++        }
++    }
++    else
++    {
++        /* colour and mask: what the mask leaves is opaque */
++        ok = NtGdiGetDIBitsInternal( hdc, frame.color, 0, height, bits->pixels, &info, DIB_RGB_COLORS, 0, 0 );
++        mask_stride = (width + 31) / 32 * 4;
++        memset( mask_buffer, 0, sizeof(mask_buffer) );
++        mask_info->bmiHeader = info.bmiHeader;
++        mask_info->bmiHeader.biBitCount = 1;
++        mask_info->bmiHeader.biClrUsed = 2;
++        if (ok && (mask = calloc( height, mask_stride )))
++        {
++            if (frame.mask && NtGdiGetDIBitsInternal( hdc, frame.mask, 0, height, mask, mask_info,
++                                                      DIB_RGB_COLORS, 0, 0 ))
++            {
++                for (UINT y = 0; y < height; y++)
++                    for (UINT x = 0; x < width; x++)
++                    {
++                        BOOL transparent = mask[y * mask_stride + x / 8] & (0x80 >> (x % 8));
++                        bits->pixels[y * width + x] = transparent ? 0 : bits->pixels[y * width + x] | 0xff000000;
++                    }
++            }
++            else for (UINT i = 0; i < width * height; i++) bits->pixels[i] |= 0xff000000;
++            free( mask );
++        }
+     }
+-    return obj;
++    NtGdiDeleteObjectApp( hdc );
++    if (!ok) return 0;
++
++    bits->width = width;
++    bits->height = height;
++    bits->is_icon = is_icon;
++    bits->hotspot_x = frame.hotspot.x;
++    bits->hotspot_y = frame.hotspot.y;
++    bits->reserved = 0;
++    return sizeof(*bits) + width * height * 4;
+ }
+ 
+ BOOL process_wine_setcursor( HWND hwnd, HWND window, HCURSOR handle )
+@@ -727,7 +922,7 @@ HICON create_small_icon( HICON handle )
+     frame.hotspot.x = frame.width / 2;
+     frame.hotspot.y = frame.height / 2;
+ 
+-    if (!(obj = get_user_handle_ptr( handle, NTUSER_OBJ_ICON )) || obj == OBJ_OTHER_PROCESS) return 0;
++    if (!(obj = get_icon_ptr( handle ))) return 0;
+     frame.color = copy_bitmap( obj->frame.color, &size );
+     frame.alpha = copy_bitmap( obj->frame.alpha, &size );
+     frame.mask = copy_bitmap( obj->frame.mask, &size );
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+index a88304f..50c9314 100644
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -668,6 +668,117 @@ static BOOL on_bottom_border( int hit )
+     return hit == HTBOTTOM || hit == HTBOTTOMLEFT || hit == HTBOTTOMRIGHT;
+ }
+ 
++/* Aero Snap: the compositor shows where a dragged window would go */
++static void set_snap_preview( HWND hwnd, const RECT *rect )
++{
++    SERVER_START_REQ( set_snap_preview )
++    {
++        req->handle = rect ? wine_server_user_handle( hwnd ) : 0;
++        if (rect)
++        {
++            req->rect.left   = rect->left;
++            req->rect.top    = rect->top;
++            req->rect.right  = rect->right;
++            req->rect.bottom = rect->bottom;
++        }
++        wine_server_call( req );
++    }
++    SERVER_END_REQ;
++}
++
++enum snap
++{
++    SNAP_NONE,
++    SNAP_MAXIMIZE,     /* the pointer at the top of a monitor */
++    SNAP_LEFT,         /* at the left edge of the screen: the left half of the monitor */
++    SNAP_RIGHT,
++};
++
++/* where a window dragged by its caption goes if it is let go with the
++ * pointer at pt, as Windows does it */
++static enum snap snap_target( POINT pt, UINT style, RECT *target )
++{
++    RECT virtual = get_virtual_screen_rect( get_thread_dpi(), MDT_DEFAULT ), rect;
++    MONITORINFO info;
++
++    SetRect( &rect, pt.x, pt.y, pt.x + 1, pt.y + 1 );
++    info = monitor_info_from_rect( rect, get_thread_dpi() );
++    if (pt.y <= info.rcMonitor.top && (style & WS_MAXIMIZEBOX))
++    {
++        *target = info.rcWork;
++        return SNAP_MAXIMIZE;
++    }
++    if (!(style & WS_THICKFRAME)) return SNAP_NONE;
++    if (pt.x <= virtual.left)
++    {
++        *target = info.rcWork;
++        target->right = (info.rcWork.left + info.rcWork.right) / 2;
++        return SNAP_LEFT;
++    }
++    if (pt.x >= virtual.right - 1)
++    {
++        *target = info.rcWork;
++        target->left = (info.rcWork.left + info.rcWork.right) / 2;
++        return SNAP_RIGHT;
++    }
++    return SNAP_NONE;
++}
++
++/* a rectangle in screen coordinates as WINDOWPLACEMENT has it: relative to the work area */
++static RECT to_workspace( RECT rect )
++{
++    MONITORINFO info = monitor_info_from_rect( rect, get_thread_dpi() );
++
++    OffsetRect( &rect, info.rcMonitor.left - info.rcWork.left, info.rcMonitor.top - info.rcWork.top );
++    return rect;
++}
++
++/* A maximized window dragged by its caption comes out of the maximized
++ * state once the pointer has moved, at its restored size, under the pointer
++ * at the same place along its caption. FALSE if the button was let go first. */
++static BOOL restore_to_drag( HWND hwnd, POINT *pt )
++{
++    WINDOWPLACEMENT placement = { sizeof(placement) };
++    int drag_x = get_system_metrics( SM_CXDRAG ), drag_y = get_system_metrics( SM_CYDRAG );
++    int width, height, left, top;
++    POINT start = *pt;
++    RECT max_rect;
++    MSG msg;
++
++    set_capture_window( hwnd, GUI_INMOVESIZE, NULL );
++    for (;;)
++    {
++        if (!NtUserGetMessage( &msg, 0, 0, 0 )) break;
++        if (NtUserCallMsgFilter( &msg, MSGF_SIZE )) continue;
++        if (msg.message == WM_LBUTTONUP || (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE)) break;
++        if (msg.message != WM_MOUSEMOVE)
++        {
++            NtUserTranslateMessage( &msg, 0 );
++            NtUserDispatchMessage( &msg );
++            if (!(NtUserGetKeyState( VK_LBUTTON ) & 0x8000)) break;
++            continue;
++        }
++        if (abs( msg.pt.x - start.x ) <= drag_x && abs( msg.pt.y - start.y ) <= drag_y) continue;
++
++        set_capture_window( 0, GUI_INMOVESIZE, NULL );
++        *pt = msg.pt;
++        get_window_rect( hwnd, &max_rect, get_thread_dpi() );
++        if (!NtUserGetWindowPlacement( hwnd, &placement )) return FALSE;
++        width = placement.rcNormalPosition.right - placement.rcNormalPosition.left;
++        height = placement.rcNormalPosition.bottom - placement.rcNormalPosition.top;
++        left = pt->x - muldiv( start.x - max_rect.left, width, max( max_rect.right - max_rect.left, 1 ) );
++        top = pt->y - min( start.y - max_rect.top, get_system_metrics( SM_CYCAPTION ) );
++        SetRect( &placement.rcNormalPosition, left, top, left + width, top + height );
++        placement.rcNormalPosition = to_workspace( placement.rcNormalPosition );
++        placement.showCmd = SW_SHOWNORMAL;
++        placement.flags = 0;
++        NtUserSetWindowPlacement( hwnd, &placement );
++        return TRUE;
++    }
++    set_capture_window( 0, GUI_INMOVESIZE, NULL );
++    return FALSE;
++}
++
+ /***********************************************************************
+  *           sys_command_size_move
+  *
+@@ -684,16 +795,29 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
+     POINT capture_point, pt;
+     MINMAXINFO minmax;
+     struct ratio dpi;
++    enum snap snapping = SNAP_NONE;
++    RECT snap_rect;
++    BOOL can_snap;
+     HWND parent;
+     HDC hdc;
+     MSG msg;
+ 
+-    if (is_zoomed( hwnd ) || !is_window_visible( hwnd )) return;
+-
+-    thickframe = (style & WS_THICKFRAME) && !((style & (WS_DLGFRAME | WS_BORDER)) == WS_DLGFRAME);
++    if (!is_window_visible( hwnd )) return;
+ 
+     pt.x = (short)LOWORD(msg_pos);
+     pt.y = (short)HIWORD(msg_pos);
++    if (is_zoomed( hwnd ))
++    {
++        /* dragged by its caption, it comes out of the maximized state */
++        if (syscommand != SC_MOVE || (style & WS_CHILD) || hittest != HTCAPTION) return;
++        if (!restore_to_drag( hwnd, &pt )) return;
++        style = get_window_long( hwnd, GWL_STYLE );
++    }
++
++    thickframe = (style & WS_THICKFRAME) && !((style & (WS_DLGFRAME | WS_BORDER)) == WS_DLGFRAME);
++    can_snap = syscommand == SC_MOVE && !(style & WS_CHILD) && (style & (WS_THICKFRAME | WS_MAXIMIZEBOX)) &&
++               (style & WS_CAPTION) == WS_CAPTION;
++
+     capture_point = pt;
+     NtUserClipCursor( NULL );
+ 
+@@ -812,6 +936,20 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
+ 
+         pt = msg.pt;
+ 
++        /* dragged to an edge of the screen: where it would snap shows */
++        if (can_snap && hittest == HTCAPTION && msg.message == WM_MOUSEMOVE)
++        {
++            RECT target;
++            enum snap snap = snap_target( msg.pt, style, &target );
++
++            if (snap != snapping || (snap && !EqualRect( &target, &snap_rect )))
++            {
++                snapping = snap;
++                snap_rect = target;
++                set_snap_preview( hwnd, snap ? &snap_rect : NULL );
++            }
++        }
++
+         if (msg.message == WM_KEYDOWN)
+         {
+             switch (msg.wParam)
+@@ -892,6 +1030,7 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
+ 
+     if (moved && !drag_full_windows)
+         draw_moving_frame( parent, hdc, &sizing_rect, thickframe );
++    if (snapping) set_snap_preview( hwnd, NULL );
+ 
+     set_capture_window( 0, GUI_INMOVESIZE, NULL );
+     NtUserReleaseDC( parent, hdc );
+@@ -903,6 +1042,28 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
+     send_message( hwnd, WM_EXITSIZEMOVE, 0, 0 );
+     send_message( hwnd, WM_SETVISIBLE, !is_iconic(hwnd), 0 );
+ 
++    /* let go at an edge: maximized, or on half the monitor, as with Aero Snap */
++    if (moved && snapping && !(msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE))
++    {
++        if (snapping == SNAP_MAXIMIZE)
++        {
++            WINDOWPLACEMENT placement = { sizeof(placement) };
++
++            /* restored, it comes back where it was before the drag */
++            if (NtUserGetWindowPlacement( hwnd, &placement ))
++            {
++                placement.rcNormalPosition = to_workspace( orig_rect );
++                placement.showCmd = SW_SHOWMAXIMIZED;
++                placement.flags = 0;
++                NtUserSetWindowPlacement( hwnd, &placement );
++            }
++        }
++        else
++            NtUserSetWindowPos( hwnd, 0, snap_rect.left, snap_rect.top, snap_rect.right - snap_rect.left,
++                                snap_rect.bottom - snap_rect.top, SWP_NOZORDER | SWP_NOACTIVATE );
++        moved = FALSE;
++    }
++
+     /* window moved or resized */
+     if (moved)
+     {
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 8c9a2aa..b5b103b 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -635,6 +635,9 @@ static BOOL unpack_message( HWND hwnd, UINT message, WPARAM *wparam, LPARAM *lpa
+     case WM_ASKCBFORMATNAME:
+         if (!get_buffer_space( buffer, (*wparam * sizeof(WCHAR)), buffer_size )) return FALSE;
+         break;
++    case WM_WINE_GETICONBITS:
++        if (!get_buffer_space( buffer, WINE_ICON_BITS_SIZE, buffer_size )) return FALSE;
++        break;
+     case WM_WININICHANGE:
+         if (!*lparam) return TRUE;
+         /* fall through */
+@@ -1022,6 +1025,8 @@ static size_t pack_message( HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
+     case WM_GETTEXT:
+     case WM_ASKCBFORMATNAME:
+         return wparam * sizeof(WCHAR);
++    case WM_WINE_GETICONBITS:
++        return WINE_ICON_BITS_SIZE;
+     case WM_WININICHANGE:
+         if (lparam) push_string(data, (LPWSTR)lparam );
+         return 0;
+@@ -1367,6 +1372,9 @@ static void pack_reply( HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam,
+     case LB_GETTEXT:
+         push_data( data, (WCHAR *)lparam, (res + 1) * sizeof(WCHAR) );
+         break;
++    case WM_WINE_GETICONBITS:
++        if (res > 0) push_data( data, (void *)lparam, min( res, WINE_ICON_BITS_SIZE ) );
++        break;
+     case CB_GETCOMBOBOXINFO:
+     {
+         COMBOBOXINFO *cbi = (COMBOBOXINFO *)lparam;
+@@ -1519,6 +1527,9 @@ static void unpack_reply( HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam,
+     case WM_ASKCBFORMATNAME:
+         memcpy( (WCHAR *)lparam, buffer, min( wparam*sizeof(WCHAR), size ));
+         break;
++    case WM_WINE_GETICONBITS:
++        memcpy( (void *)lparam, buffer, min( WINE_ICON_BITS_SIZE, size ));
++        break;
+     case WM_GETMINMAXINFO:
+         memcpy( (MINMAXINFO *)lparam, buffer, min( sizeof(MINMAXINFO), size ));
+         break;
+@@ -2223,6 +2234,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
+     case WM_WINE_SETCURSOR:
+         FIXME( "Unexpected non-hardware WM_WINE_SETCURSOR message\n" );
+         return FALSE;
++    case WM_WINE_GETICONBITS:
++        return get_icon_bits( (HICON)wparam, (void *)lparam, WINE_ICON_BITS_SIZE );
+     case WM_WINE_IME_NOTIFY:
+     {
+         HWND ime_hwnd = get_default_ime_window( hwnd );
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 5e3f755..9142d13 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -43,6 +43,14 @@ extern ULONG_PTR get_icon_param( HICON handle );
+ extern ULONG_PTR set_icon_param( HICON handle, const struct free_icon_params *params );
+ extern HICON create_small_icon( HICON handle );
+ 
++/* WM_WINE_GETICONBITS: an icon of this process as pixels, for another one */
++#define WINE_ICON_BITS_MAX  128  /* pixels on a side */
++#define WINE_ICON_BITS_SIZE (6 * sizeof(UINT) + WINE_ICON_BITS_MAX * WINE_ICON_BITS_MAX * sizeof(UINT))
++extern LRESULT get_icon_bits( HICON handle, void *buffer, size_t size );
++
++/* window.c */
++extern BOOL get_user_handle_owner( HANDLE handle, unsigned short type, DWORD *pid, DWORD *tid );
++
+ /* dce.c */
+ extern struct window_surface dummy_surface;
+ extern void create_window_surface( HWND hwnd, BOOL create_layered, const RECT *surface_rect, struct ratio monitor_dpi,
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 805c673..e7198d6 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -227,6 +227,21 @@ void *get_user_handle_ptr( HANDLE handle, unsigned short type )
+     return ptr;
+ }
+ 
++/* the process and thread that own a user object, for objects of another process */
++BOOL get_user_handle_owner( HANDLE handle, unsigned short type, DWORD *pid, DWORD *tid )
++{
++    struct user_entry entry;
++    BOOL ret;
++
++    user_lock();
++    ret = get_user_entry( handle, type, &entry, &handle );
++    user_unlock();
++    if (!ret) return FALSE;
++    *pid = entry.pid;
++    *tid = entry.tid;
++    return TRUE;
++}
++
+ /***********************************************************************
+  *           next_thread_user_object
+  *
+diff --git a/include/ntuser.h b/include/ntuser.h
+index bfa0001..ba00e08 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -640,6 +640,7 @@ enum wine_internal_message
+     WM_WINE_UPDATEWINDOWSTATE,
+     WM_WINE_TRACKMOUSEEVENT,
+     WM_WINE_SETPIXELFORMAT,
++    WM_WINE_GETICONBITS,  /* the pixels of an icon, for another process to draw it */
+     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
+     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
+     WM_WINE_SETCURSOR,
+diff --git a/server/protocol.def b/server/protocol.def
+index 24ac25b..654fd63 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2831,10 +2831,19 @@ enum message_type
+     int            cursor_x;      /* cursor position, in screen coordinates */
+     int            cursor_y;
+     int            cursor_hidden; /* the window under the cursor hides it (ShowCursor, SetCursor(NULL)) */
++    user_handle_t  snap_window;   /* window dragged to a screen edge, 0 if none */
++    struct rectangle snap_rect;   /* where it would go if it were let go */
+     VARARG(windows,composition_windows); /* windows, topmost first */
+ @END
+ 
+ 
++/* A window being dragged would snap there if it were let go (Aero Snap) */
++@REQ(set_snap_preview)
++    user_handle_t    handle;      /* the window, 0: none */
++    struct rectangle rect;        /* where it would go */
++@END
++
++
+ /* Put a window in the band over program windows, or take it out (SetWindowBand) */
+ @REQ(set_window_band)
+     user_handle_t  handle;        /* handle to the window */
+diff --git a/server/user.h b/server/user.h
+index 50c8984..09a1140 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -86,6 +86,8 @@ struct desktop
+     struct key_repeat    key_repeat;       /* key auto-repeat */
+     unsigned int         clip_flags;       /* last cursor clip flags */
+     user_handle_t        cursor_win;       /* window that contains the cursor */
++    user_handle_t        snap_window;      /* window dragged to a screen edge, for the compositor */
++    struct rectangle     snap_rect;        /* where it goes if it is let go there */
+     desktop_shm_t       *shared;           /* desktop session shared memory */
+ };
+ 
+diff --git a/server/window.c b/server/window.c
+index e5a760d..cc8587b 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -2862,6 +2862,8 @@ DECL_HANDLER(get_composition_list)
+     reply->cursor_x = desktop->shared->cursor.x;
+     reply->cursor_y = desktop->shared->cursor.y;
+     reply->cursor_hidden = is_desktop_cursor_hidden( desktop );
++    reply->snap_window = desktop->snap_window;
++    reply->snap_rect = desktop->snap_rect;
+     if (desktop->top_window)
+     {
+         LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry )
+@@ -2891,6 +2893,22 @@ DECL_HANDLER(get_composition_list)
+ }
+ 
+ 
++/* a window being dragged would snap there if it were let go */
++DECL_HANDLER(set_snap_preview)
++{
++    struct desktop *desktop = get_thread_desktop( current, 0 );
++
++    if (!desktop) return;
++    if (desktop->snap_window != req->handle ||
++        memcmp( &desktop->snap_rect, &req->rect, sizeof(req->rect) ))
++    {
++        desktop->snap_window = req->handle;
++        desktop->snap_rect = req->rect;
++        bump_composition_serial( desktop );
++    }
++    release_object( desktop );
++}
++
+ /* put a window in the band over program windows, or take it out */
+ DECL_HANDLER(set_window_band)
+ {
+diff --git a/server/winstation.c b/server/winstation.c
+index 21103a7..b172530 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -282,6 +282,8 @@ static bool desktop_init( struct object *obj, const void *init_data )
+     desktop->users = 0;
+     desktop->clip_flags = 0;
+     desktop->cursor_win = 0;
++    desktop->snap_window = 0;
++    memset( &desktop->snap_rect, 0, sizeof(desktop->snap_rect) );
+     desktop->alt_pressed = 0;
+     memset( &desktop->key_repeat, 0, sizeof(desktop->key_repeat) );
+     list_init( &desktop->threads );
+-- 
+2.53.0
+

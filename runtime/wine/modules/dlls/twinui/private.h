@@ -17,7 +17,9 @@
 #include "wingdi.h"
 #include "winuser.h"
 #include "dwmapi.h"
+#include "shobjidl.h"
 #include "wine/arctic_dwm.h"
+#include "wine/arctic_taskbar.h"
 
 /* the dark acrylic of the shell in Windows 10: its tint, 0xAABBGGRR */
 #define SHELL_ACRYLIC_TINT 0xcc1f1f1f
@@ -33,11 +35,13 @@ HICON window_icon( HWND hwnd, BOOL big );
 BOOL is_task_window( HWND hwnd );
 void fill_alpha( HDC hdc, const RECT *rect, COLORREF color, BYTE alpha );
 void draw_glyph_close( HDC hdc, const RECT *rect, COLORREF color );
+struct arctic_taskbar_shared *get_taskbar_shared(void);
+const struct arctic_taskbar_window *find_taskbar_row( const struct arctic_taskbar_shared *shared, HWND hwnd );
 
 /* switcher.c */
 BOOL switcher_start(void);
 
 /* flyout.c */
-void flyout_hover( HWND task, const RECT *button, DWORD flags );
+void flyout_hover( const HWND *hwnds, UINT count, const RECT *button, DWORD flags );
 
 #endif

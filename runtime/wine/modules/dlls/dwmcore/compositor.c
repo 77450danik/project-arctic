@@ -89,6 +89,14 @@ static bool                    windows_known;  /* the first list came: windows t
 static struct arctic_dwm_entry *attributes;  /* from dwmapi */
 static uint32_t                attribute_count;
 static bool                    animating;    /* frames keep coming until every animation ends */
+
+/* Aero Snap: where a window dragged to a screen edge would go */
+#define SNAP_GROW_MS 200
+#define SNAP_FADE_MS 150
+static uint32_t                snap_hwnd;    /* the window it is shown for, 0 once it goes */
+static struct frect            snap_from, snap_to;  /* it grows from the pointer to where the window would go */
+static uint64_t                snap_start;   /* µs, 0: not shown */
+static bool                    snap_leaving; /* it fades away */
 static bool                    vrr_allowed = true;  /* the Windows setting */
 static uint32_t                vrr_off[DWM_MAX_OUTPUTS];  /* connectors it is turned off for */
 static uint32_t                vrr_off_count;
@@ -757,6 +765,10 @@ static void update_window_states(void)
             {
                 ws->maximize_time = now;
                 ws->maximize_from = window_frect( &ws->last );
+                /* what it shows before it redraws at the new size is stretched meanwhile */
+                if (!ws->snapshot_valid || !rect_equal( &ws->snapshot_rect, &(RECT){ ws->last.left, ws->last.top,
+                                                                                   ws->last.right, ws->last.bottom } ))
+                    gl_snapshot( ws, &ws->last );
             }
             if (moved && ws->maximize_time && now - ws->maximize_time < 300000)
             {
@@ -808,6 +820,14 @@ static bool update_animations( uint64_t now )
         ws->ghost = false;
         if (!ws->listed) free_window_state( ws );
     }
+
+    if (snap_start)
+    {
+        uint64_t length = (snap_leaving ? SNAP_FADE_MS : SNAP_GROW_MS) * 1000;
+
+        if (now - snap_start < length) running = true;
+        else if (snap_leaving) snap_start = snap_hwnd = 0;
+    }
     return running;
 }
 
@@ -832,16 +852,101 @@ static float lerp( float a, float b, float t )
     return a + (b - a) * t;
 }
 
-static void set_draw_geometry( struct window_draw *draw, struct frect base, struct frect shown )
+/* what maps one rectangle onto another */
+static struct xform xform_between( struct frect base, struct frect shown )
 {
     float bw = max( base.right - base.left, 1.0f ), bh = max( base.bottom - base.top, 1.0f );
+    struct xform x;
 
+    x.sx = (shown.right - shown.left) / bw;
+    x.sy = (shown.bottom - shown.top) / bh;
+    x.tx = shown.left - base.left * x.sx;
+    x.ty = shown.top - base.top * x.sy;
+    return x;
+}
+
+static void set_draw_geometry( struct window_draw *draw, struct frect base, struct frect shown )
+{
     draw->shown = shown;
-    draw->xform.sx = (shown.right - shown.left) / bw;
-    draw->xform.sy = (shown.bottom - shown.top) / bh;
-    draw->xform.tx = shown.left - base.left * draw->xform.sx;
-    draw->xform.ty = shown.top - base.top * draw->xform.sy;
+    draw->xform = xform_between( base, shown );
     draw->clip.rect = shown;
+}
+
+/* the window stands on a monitor, not where Wine parks minimized ones */
+static bool on_screen( const struct dwm_window *w )
+{
+    RECT rect;
+    return monitor_rect( (w->left + w->right) / 2, (w->top + w->bottom) / 2, &rect );
+}
+
+/* the snap preview now: it grows from the pointer, and fades once the drag
+ * leaves the edge or ends */
+static bool snap_frame( uint64_t now, struct frect *rect, float *alpha )
+{
+    float t, e;
+
+    if (!snap_start) return false;
+    t = min( 1.0f, (float)(now - snap_start) / ((snap_leaving ? SNAP_FADE_MS : SNAP_GROW_MS) * 1000) );
+    if (snap_leaving)
+    {
+        *rect = snap_to;
+        *alpha = 1 - accelerate( t );
+        return t < 1;
+    }
+    e = decelerate( t );
+    rect->left = lerp( snap_from.left, snap_to.left, e );
+    rect->top = lerp( snap_from.top, snap_to.top, e );
+    rect->right = lerp( snap_from.right, snap_to.right, e );
+    rect->bottom = lerp( snap_from.bottom, snap_to.bottom, e );
+    *alpha = min( 1.0f, t * 3 );
+    return true;
+}
+
+static void update_snap( const struct dwm_set_windows_params *params )
+{
+    uint64_t now = kms_now();
+    struct frect current;
+    float alpha;
+
+    if (!gl_active()) return;
+    if (params->snap_window)
+    {
+        struct frect to = frect_from( params->snap_left, params->snap_top, params->snap_right, params->snap_bottom );
+
+        if (snap_start && !snap_leaving && snap_hwnd == params->snap_window && !memcmp( &to, &snap_to, sizeof(to) ))
+            return;
+        /* from where it stands, or from the pointer */
+        if (snap_start && !snap_leaving && snap_frame( now, &current, &alpha )) snap_from = current;
+        else snap_from = frect_from( cursor_x - 8, cursor_y - 8, cursor_x + 8, cursor_y + 8 );
+        snap_to = to;
+        snap_hwnd = params->snap_window;
+        snap_leaving = false;
+        snap_start = now;
+        animating = true;
+    }
+    else if (snap_start && !snap_leaving)
+    {
+        snap_leaving = true;
+        snap_start = now;
+        animating = true;
+    }
+}
+
+/* the snap preview, drawn just under the window being dragged */
+static bool preview_draw( struct window_draw *draw, uint64_t now )
+{
+    struct frect rect;
+    float alpha;
+
+    if (!snap_frame( now, &rect, &alpha )) return false;
+    memset( draw, 0, sizeof(*draw) );
+    draw->preview = true;
+    draw->opacity = alpha;
+    draw->backdrop = draw->blur = true;
+    draw->tint = 0x40ffffff;  /* the light acrylic of Windows */
+    draw->clip.radius = CORNER_RADIUS;
+    set_draw_geometry( draw, rect, rect );
+    return true;
 }
 
 /* how far an animation got: the window rectangle and opacity it has now */
@@ -892,22 +997,37 @@ static bool fill_draw( struct window_draw *draw, const struct dwm_window *w, str
 
     if (ws && ws->anim && !ws->ghost)
     {
+        bool resized = ws->anim == ANIM_RESTORE || ws->anim == ANIM_MORPH;
+
+        /* it grows into the window's rectangle as the window has it now */
+        if (resized) ws->anim_to = base;
         if (!ws->anim_start)
         {
-            /* it shows once it has drawn itself */
-            if (!window_has_content( w, false )) return false;
+            /* it shows once it has drawn itself, where it stands */
+            if (!window_has_content( w, false ) || !on_screen( w )) return false;
             ws->anim_start = now;
         }
         if (animation_frame( ws, now, &shown, &alpha ))
         {
             draw->as_image = true;
             draw->opacity = alpha;
-            /* restored before it drew itself at its size: what it showed before stands in */
-            if (ws->anim == ANIM_RESTORE && !window_has_content( w, true ) && ws->snapshot_valid)
+            /* As Windows does: what the window showed before is stretched from
+             * one rectangle to the other, and the window as it is now fades
+             * in over it at the end, once it has drawn itself at its size.
+             * A window that redraws slowly (Explorer) does not stutter. */
+            if (resized && ws->snapshot_valid)
             {
+                float t = min( 1.0f, (float)(now - ws->anim_start) / ws->anim_duration );
+                struct frect live = base;
+
                 draw->from_snapshot = true;
                 base = frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top, ws->snapshot_rect.right,
                                    ws->snapshot_rect.bottom );
+                if (window_has_content( w, true ))
+                {
+                    draw->live_opacity = t > 0.5f ? (t - 0.5f) * 2 : 0;
+                    draw->live_xform = xform_between( live, shown );
+                }
             }
         }
     }
@@ -920,17 +1040,25 @@ uint32_t scene_windows( struct window_draw *draws, uint32_t max )
     uint64_t now = kms_now();
     struct window_state *ws;
     uint32_t count = 0;
+    bool previewed = false;
 
     /* Win32 windows, bottom to top, where wineserver has them */
     for (uint32_t i = window_count; i-- && count < max;)
     {
         const struct dwm_window *w = &windows[i];
 
+        if (!previewed && snap_start && w->hwnd == snap_hwnd && count < max - 1)
+        {
+            previewed = true;
+            if (preview_draw( &draws[count], now )) count++;
+        }
         ws = window_state( w->hwnd );
         if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE) || is_cloaked( ws )) continue;
         if (shown_directly( w->hwnd ) || (ws && ws->ghost)) continue;
         if (fill_draw( &draws[count], w, ws, now )) count++;
     }
+
+    if (!previewed && snap_start && count < max && preview_draw( &draws[count], now )) count++;
 
     /* windows that went, over the rest while they go */
     wl_list_for_each( ws, &window_states, link )
@@ -2704,6 +2832,7 @@ static NTSTATUS dwm_set_windows( void *args )
     windows = copy;
     window_count = params->count;
     update_window_states();
+    update_snap( params );
     damage();
     return STATUS_SUCCESS;
 }
