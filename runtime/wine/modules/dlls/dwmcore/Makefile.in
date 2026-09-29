@@ -2,7 +2,7 @@ MODULE    = dwmcore.dll
 UNIXLIB   = dwmcore.so
 IMPORTS   = advapi32 ntdll
 UNIX_CFLAGS = $(WAYLAND_SERVER_CFLAGS)
-UNIX_LIBS   = $(WAYLAND_SERVER_LIBS) -lEGL -lGLESv2 -lgbm
+UNIX_LIBS   = $(WAYLAND_SERVER_LIBS) -lEGL -lGLESv2 -lgbm -lm
 
 VER_FILEDESCRIPTION_STR = "Arctic desktop composition engine"
 

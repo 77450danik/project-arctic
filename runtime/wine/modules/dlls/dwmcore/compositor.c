@@ -59,91 +59,36 @@
 #include "winuser.h"
 #include "wine/debug.h"
 
-#include "dwmcore_private.h"
-#include "unixlib.h"
+#include "compositor.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(dwm);
 
 #define SOCKET_NAME "arctic-0"
 
-struct surface
-{
-    struct wl_resource *resource;
-    struct wl_list      all_link;            /* all_surfaces */
-
-    /* pending state, applied on commit */
-    struct wl_resource *pending_buffer;
-    struct wl_listener  pending_buffer_destroy;
-    bool                pending_attach;
-    struct wl_list      pending_frames;      /* wl_callback resources */
-    struct wl_list      frames;
-
-    /* committed content */
-    uint32_t           *pixels;
-    int                 width, height;
-    struct dmabuf      *dmabuf;              /* a GPU buffer, kept while it is the content */
-    bool                stale;               /* pixels are older than the dmabuf */
-    bool                alpha;               /* premultiplied ARGB */
-    int                 src_x, src_y, src_width, src_height; /* wp_viewport source, width 0 if unset */
-    int                 dst_width, dst_height; /* wp_viewport destination, 0 if unset */
-    struct wl_resource *viewport;
-
-    /* subsurface role */
-    struct wl_resource *subsurface;
-    struct surface     *parent;
-    struct wl_list      child_link;
-    int                 sub_x, sub_y;
-    struct wl_list      children;            /* bottom to top */
-
-    /* the Win32 window it shows, 0 if none (arctic_shell_v1) */
-    uint32_t            hwnd;
-    struct wl_resource *arctic_window;
-
-    /* toplevel role */
-    struct wl_resource *xdg_surface, *xdg_toplevel;
-    bool                configured, mapped;
-    bool                maximized, fullscreen;
-    int                 x, y;
-    struct wl_list      stack_link;          /* toplevels, bottom to top */
-};
-
-/* one monitor, as the clients see it */
-struct output
-{
-    struct kms_output *kms;                  /* NULL once it is unplugged */
-    struct wl_global  *global;
-    struct wl_list     link;                 /* outputs, then parked_outputs or dying_outputs */
-    struct wl_list     resources;            /* wl_output */
-    struct wl_list     xdg_resources;        /* zxdg_output_v1 */
-    uint32_t           expire;               /* when an unplugged monitor is let go */
-    bool               needs_frame;          /* something it shows changed */
-    uint64_t           not_before;           /* µs: flips that finish at once are paced */
-    uint32_t           direct_hwnd;          /* the window it shows directly, not composed */
-    /* frames of a window that fills it, for the log: how a game really runs */
-    uint32_t           stat_direct, stat_composed;
-    bool               stat_vrr;
-    uint64_t           stat_since;           /* µs */
-};
-
 static struct wl_display      *display;
 static struct wl_event_source *frame_timer;
-static struct wl_list          all_surfaces;
+struct wl_list                 all_surfaces;
 static struct wl_list          toplevels;
 static struct wl_list          outputs;      /* struct output */
 static struct wl_list          dying_outputs;  /* unplugged, until their clients let go */
 static struct wl_list          parked_outputs; /* of a card that went away, until the next one shows */
 static bool                    parking;      /* the card is being replaced */
 static uint32_t                parked_expire;  /* when the parked outputs go, 0 if not yet known */
-static uint32_t                background;   /* XRGB */
+uint32_t                       background;   /* XRGB */
 static uint32_t               *shadow;       /* frame composed in RAM, then copied out */
 static RECT                    screen;       /* the virtual screen every monitor is placed in */
 static bool                    dirty = true;
 static int                     cascade;
-static struct dwm_window      *windows;      /* from wineserver, topmost first */
-static uint32_t                window_count;
-static int                     cursor_x, cursor_y;
-static bool                    cursor_hidden;  /* the window under it hides it */
+struct dwm_window             *windows;      /* from wineserver, topmost first */
+uint32_t                       window_count;
+int                            cursor_x, cursor_y;
+bool                           cursor_hidden;  /* the window under it hides it */
 static uint32_t                pending_events;  /* DWM_EVENT_*, for the PE side */
+static struct wl_list          window_states;  /* struct window_state */
+static bool                    windows_known;  /* the first list came: windows that show later animate */
+static struct arctic_dwm_entry *attributes;  /* from dwmapi */
+static uint32_t                attribute_count;
+static bool                    animating;    /* frames keep coming until every animation ends */
 static bool                    vrr_allowed = true;  /* the Windows setting */
 static uint32_t                vrr_off[DWM_MAX_OUTPUTS];  /* connectors it is turned off for */
 static uint32_t                vrr_off_count;
@@ -187,8 +132,18 @@ static uint32_t over( uint32_t src, uint32_t dst )
     return out;
 }
 
+/* a GDI pixel over a backdrop: without alpha of its own, it counts by its
+ * brightness, so that black shows the backdrop and white text stays white */
+static uint32_t keyed( uint32_t p )
+{
+    uint32_t a = p >> 24, r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+
+    if (!a) a = max( r, max( g, b ) );
+    return (a << 24) | (min( r, a ) << 16) | (min( g, a ) << 8) | min( b, a );
+}
+
 /* the part of the buffer shown (viewport source) scaled to the viewport destination */
-static void blit( const struct surface *s, int x0, int y0 )
+static void blit( const struct surface *s, int x0, int y0, enum layer_mode mode )
 {
     int sx0 = 0, sy0 = 0, sw = s->width, sh = s->height, dw, dh;
 
@@ -219,7 +174,8 @@ static void blit( const struct surface *s, int x0, int y0 )
 
             if (px < screen.left || px >= screen.right) continue;
             p = src[dw == sw ? x : sw * x / dw];
-            if (!s->alpha || (p >> 24) == 0xff) dst[px] = p | 0xff000000;
+            if (mode == LAYER_KEYED && !s->alpha) p = keyed( p );
+            if (mode == LAYER_OPAQUE || (p >> 24) == 0xff) dst[px] = p | 0xff000000;
             else if (p >> 24) dst[px] = over( p, dst[px] );
         }
     }
@@ -233,21 +189,21 @@ static void read_dmabuf( struct surface *s )
     if (!dmabuf_read( s->dmabuf, s->pixels )) memset( s->pixels, 0, (size_t)s->width * s->height * 4 );
 }
 
-static void draw_tree( struct surface *s, int x, int y )
+static void draw_tree( struct surface *s, int x, int y, bool backdrop )
 {
     struct surface *child;
 
     if (s->dmabuf && s->stale) read_dmabuf( s );
-    if (s->pixels) blit( s, x, y );
+    if (s->pixels) blit( s, x, y, backdrop ? LAYER_KEYED : s->alpha ? LAYER_PREMULTIPLIED : LAYER_OPAQUE );
     wl_list_for_each( child, &s->children, child_link )
     {
         if (child->hwnd) continue; /* a window of its own: placed by wineserver, not by its parent */
-        draw_tree( child, x + child->sub_x, y + child->sub_y );
+        draw_tree( child, x + child->sub_x, y + child->sub_y, backdrop );
     }
 }
 
 /* the standard arrow, until cursor shapes come from win32u */
-static const char arrow[][13] =
+const char arrow[20][13] =
 {
     "B           ",
     "BB          ",
@@ -356,6 +312,11 @@ static struct surface *surface_for_hwnd( uint32_t hwnd )
     return NULL;
 }
 
+struct surface *surface_for_window( uint32_t hwnd )
+{
+    return surface_for_hwnd( hwnd );
+}
+
 static void damage(void)
 {
     struct output *output;
@@ -378,22 +339,724 @@ static bool shown_directly( uint32_t hwnd )
     return false;
 }
 
+bool window_is_shown_directly( uint32_t hwnd )
+{
+    return shown_directly( hwnd );
+}
+
 /* A window: its own surface, then what other surfaces show in it. Those
  * come from another process than the window's (a browser's GPU process
  * draws into the browser's window), so they cannot be subsurfaces of it;
  * dwm places them where wineserver has the window, as DWM does on Windows. */
-static void draw_window( const struct dwm_window *w )
+static void for_each_window_surface( const struct dwm_window *w,
+                                     void (*callback)( struct surface *s, int x, int y, void *ctx ), void *ctx )
 {
     struct surface *s;
 
     wl_list_for_each( s, &all_surfaces, all_link )
-        if (s->hwnd == w->hwnd && s->xdg_toplevel) draw_tree( s, w->left, w->top );
+        if (s->hwnd == w->hwnd && s->xdg_toplevel) callback( s, w->left, w->top, ctx );
     wl_list_for_each( s, &all_surfaces, all_link )
-        if (s->hwnd == w->hwnd && s->subsurface) draw_tree( s, w->left, w->top );
+        if (s->hwnd == w->hwnd && s->subsurface) callback( s, w->left, w->top, ctx );
     /* what another process draws (Vulkan, Direct3D) has no role, and covers
      * the client area */
     wl_list_for_each( s, &all_surfaces, all_link )
-        if (s->hwnd == w->hwnd && !s->xdg_toplevel && !s->subsurface) draw_tree( s, w->client_left, w->client_top );
+        if (s->hwnd == w->hwnd && !s->xdg_toplevel && !s->subsurface) callback( s, w->client_left, w->client_top, ctx );
+}
+
+void scene_surfaces( const struct window_draw *draw,
+                     void (*callback)( struct surface *s, int x, int y, void *ctx ), void *ctx )
+{
+    for_each_window_surface( draw->w, callback, ctx );
+}
+
+/**********************************************************************
+ *          Window effects
+ *
+ * What DWM of Windows 11 does to windows: rounded corners (here half the
+ * Windows 11 radius), a blurred backdrop for windows that ask for one (the
+ * taskbar's acrylic), live thumbnails, and animations when a window opens,
+ * closes, is minimized, restored or maximized, and when a menu or a flyout
+ * shows, on the Windows 11 motion curves. They are drawn on the GPU; the
+ * composition on the CPU keeps the backdrop's tint and the thumbnails.
+ */
+
+#define CORNER_RADIUS 4
+
+/* the unix side has no user32 */
+static void set_rect( RECT *rect, int left, int top, int right, int bottom )
+{
+    rect->left = left;
+    rect->top = top;
+    rect->right = right;
+    rect->bottom = bottom;
+}
+
+static bool rect_equal( const RECT *a, const RECT *b )
+{
+    return a->left == b->left && a->top == b->top && a->right == b->right && a->bottom == b->bottom;
+}
+
+/* y of the cubic Bezier through (0,0), (x1,y1), (x2,y2), (1,1) at x */
+static float bezier( float x1, float y1, float x2, float y2, float x )
+{
+    float lo = 0, hi = 1, t = x, u;
+
+    for (int i = 0; i < 24; i++)
+    {
+        float bx;
+
+        u = 1 - t;
+        bx = 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t;
+        if (bx < x) lo = t;
+        else hi = t;
+        t = (lo + hi) / 2;
+    }
+    u = 1 - t;
+    return 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t;
+}
+
+/* things coming in slow down, things going out speed up */
+static float decelerate( float x ) { return bezier( 0.1f, 0.9f, 0.2f, 1.0f, x ); }
+static float accelerate( float x ) { return bezier( 0.7f, 0.0f, 1.0f, 0.5f, x ); }
+
+struct window_state *window_state( uint32_t hwnd )
+{
+    struct window_state *ws;
+
+    wl_list_for_each( ws, &window_states, link ) if (ws->hwnd == hwnd) return ws;
+    return NULL;
+}
+
+/* what dwmapi was told about the window */
+static void apply_attributes( struct window_state *ws )
+{
+    ws->has_attr = false;
+    for (uint32_t i = 0; i < attribute_count; i++)
+    {
+        if (attributes[i].type != ARCTIC_DWM_WINDOW || attributes[i].hwnd != ws->hwnd) continue;
+        ws->attr = attributes[i].u.window;
+        ws->has_attr = true;
+        return;
+    }
+}
+
+static struct window_state *get_window_state( uint32_t hwnd )
+{
+    struct window_state *ws = window_state( hwnd );
+
+    if (ws || !(ws = calloc( 1, sizeof(*ws) ))) return ws;
+    ws->hwnd = hwnd;
+    wl_list_insert( &window_states, &ws->link );
+    apply_attributes( ws );
+    return ws;
+}
+
+static void free_window_state( struct window_state *ws )
+{
+    gl_image_free( &ws->snapshot );
+    gl_image_free( &ws->scratch );
+    wl_list_remove( &ws->link );
+    free( ws );
+}
+
+static bool has_caption( const struct dwm_window *w )
+{
+    return (w->style & WS_CAPTION) == WS_CAPTION;
+}
+
+static bool monitor_rect( int x, int y, RECT *rect )
+{
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        const struct kms_output *o = &kms.outputs[i];
+        const struct kms_mode *mode;
+
+        if (!o->connector_id || !o->enabled) continue;
+        mode = &o->modes[o->mode];
+        if (x < o->x || y < o->y || x >= o->x + mode->info.hdisplay || y >= o->y + mode->info.vdisplay) continue;
+        set_rect(rect, o->x, o->y, o->x + mode->info.hdisplay, o->y + mode->info.vdisplay );
+        return true;
+    }
+    return false;
+}
+
+/* a game or a video full screen, or the desktop itself */
+static bool covers_monitor( const struct dwm_window *w )
+{
+    RECT rect;
+
+    return monitor_rect( w->left, w->top, &rect ) && w->left <= rect.left && w->top <= rect.top &&
+           w->right >= rect.right && w->bottom >= rect.bottom;
+}
+
+static bool is_cloaked( const struct window_state *ws )
+{
+    return ws && ws->has_attr && ws->attr.cloaked;
+}
+
+static bool window_shown( const struct dwm_window *w, const struct window_state *ws )
+{
+    return (w->style & WS_VISIBLE) && !(w->style & WS_MINIMIZE) && !(w->style & WS_CHILD) && !is_cloaked( ws );
+}
+
+/* Windows 11 rounds a window with a frame unless it is maximized or full
+ * screen, or the program said not to (DWMWA_WINDOW_CORNER_PREFERENCE) */
+static float corner_radius( const struct dwm_window *w, const struct window_state *ws )
+{
+    UINT32 corner = ws && ws->has_attr ? ws->attr.corner : 0;
+
+    if (w->style & (WS_CHILD | WS_MAXIMIZE | WS_MINIMIZE)) return 0;
+    if (corner == 1 /* DWMWCP_DONOTROUND */ || covers_monitor( w )) return 0;
+    if (corner == 3 /* DWMWCP_ROUNDSMALL */) return CORNER_RADIUS / 2;
+    if (corner == 2 /* DWMWCP_ROUND */) return CORNER_RADIUS;
+    return has_caption( w ) || (w->style & WS_THICKFRAME) ? CORNER_RADIUS : 0;
+}
+
+/* The backdrop a window asked for: SetWindowCompositionAttribute's accent
+ * (the taskbar's acrylic) or DwmEnableBlurBehindWindow. tint is ARGB. */
+static bool window_backdrop( const struct window_state *ws, bool *blur, uint32_t *tint )
+{
+    uint32_t c;
+
+    if (!ws || !ws->has_attr) return false;
+    c = ws->attr.accent_color;  /* 0xAABBGGRR */
+    c = (c & 0xff00ff00) | ((c >> 16) & 0xff) | ((c & 0xff) << 16);
+    switch (ws->attr.accent)
+    {
+    case ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND:
+    case ARCTIC_ACCENT_ENABLE_BLURBEHIND:
+        *blur = true;
+        *tint = c;
+        return true;
+    case ARCTIC_ACCENT_ENABLE_TRANSPARENTGRADIENT:
+        *blur = false;
+        *tint = c;
+        return true;
+    case ARCTIC_ACCENT_ENABLE_GRADIENT:
+        *blur = false;
+        *tint = c | 0xff000000;
+        return true;
+    }
+    if (!ws->attr.blur_behind) return false;
+    *blur = true;
+    *tint = 0;
+    return true;
+}
+
+static enum layer_mode layer_mode( const struct surface *s, const struct window_draw *draw )
+{
+    if (s->alpha) return LAYER_PREMULTIPLIED;
+    return draw && draw->backdrop ? LAYER_KEYED : LAYER_OPAQUE;
+}
+
+enum transition
+{
+    TRANSITION_NONE,
+    TRANSITION_WINDOW,                       /* zoom and fade */
+    TRANSITION_POPUP,                        /* fade, a little slide down */
+    TRANSITION_SLIDE,                        /* up from below */
+    TRANSITION_FADE,
+};
+
+static enum transition window_transition( const struct dwm_window *w, const struct window_state *ws )
+{
+    if ((w->style & WS_CHILD) || w->band) return TRANSITION_NONE;
+    if (ws->has_attr)
+    {
+        if (ws->attr.transitions_off) return TRANSITION_NONE;
+        switch (ws->attr.transition)
+        {
+        case ARCTIC_TRANSITION_NONE: return TRANSITION_NONE;
+        case ARCTIC_TRANSITION_FADE: return TRANSITION_FADE;
+        case ARCTIC_TRANSITION_SLIDE_UP: return TRANSITION_SLIDE;
+        }
+    }
+    /* layered windows (the toasts) animate themselves */
+    if ((w->ex_style & WS_EX_LAYERED) || covers_monitor( w )) return TRANSITION_NONE;
+    if (has_caption( w )) return TRANSITION_WINDOW;
+    if (w->style & WS_POPUP) return TRANSITION_POPUP;
+    return TRANSITION_NONE;
+}
+
+static struct frect frect_from( int left, int top, int right, int bottom )
+{
+    struct frect r = { left, top, right, bottom };
+    return r;
+}
+
+static struct frect window_frect( const struct dwm_window *w )
+{
+    return frect_from( w->left, w->top, w->right, w->bottom );
+}
+
+static struct frect zoomed( struct frect r, float scale )
+{
+    float cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    struct frect z = { cx + (r.left - cx) * scale, cy + (r.top - cy) * scale,
+                       cx + (r.right - cx) * scale, cy + (r.bottom - cy) * scale };
+    return z;
+}
+
+static struct frect moved( struct frect r, float dx, float dy )
+{
+    struct frect m = { r.left + dx, r.top + dy, r.right + dx, r.bottom + dy };
+    return m;
+}
+
+/* where a minimized window goes: its taskbar button, which the taskbar
+ * names (DWMWA_ARCTIC_MINIMIZE_RECT), else the middle of the bottom edge */
+static struct frect minimize_target( const struct window_state *ws, const struct dwm_window *w )
+{
+    RECT rect;
+
+    if (ws->has_attr && ws->attr.minimize_right > ws->attr.minimize_left &&
+        ws->attr.minimize_bottom > ws->attr.minimize_top)
+        return frect_from( ws->attr.minimize_left, ws->attr.minimize_top, ws->attr.minimize_right,
+                           ws->attr.minimize_bottom );
+    if (!monitor_rect( (w->left + w->right) / 2, (w->top + w->bottom) / 2, &rect ) &&
+        !monitor_rect( 0, 0, &rect ))
+        set_rect(&rect, 0, 0, 1024, 768 );
+    return frect_from( (rect.left + rect.right) / 2 - 24, rect.bottom - 40, (rect.left + rect.right) / 2 + 24,
+                       rect.bottom );
+}
+
+static void animate( struct window_state *ws, enum animation anim, struct frect from, struct frect to,
+                     float alpha_from, float alpha_to, uint32_t ms, bool ghost )
+{
+    if (!gl_active()) return;  /* the CPU would not keep up */
+    TRACE( "%08x: animation %d for %u ms%s\n", ws->hwnd, anim, ms, ghost ? ", from its last frame" : "" );
+    ws->anim = anim;
+    ws->anim_from = from;
+    ws->anim_to = to;
+    ws->alpha_from = alpha_from;
+    ws->alpha_to = alpha_to;
+    ws->anim_duration = ms * 1000;
+    ws->ghost = ghost;
+    ws->anim_created = kms_now();
+    /* a window coming in waits for its first frame; one going out starts now */
+    ws->anim_start = ghost ? ws->anim_created : 0;
+    animating = true;
+}
+
+static void animate_in( struct window_state *ws, const struct dwm_window *w )
+{
+    struct frect r = window_frect( w );
+
+    switch (window_transition( w, ws ))
+    {
+    case TRANSITION_NONE: break;
+    case TRANSITION_WINDOW: animate( ws, ANIM_OPEN, zoomed( r, 0.94f ), r, 0, 1, 250, false ); break;
+    case TRANSITION_POPUP: animate( ws, ANIM_POPUP_IN, moved( r, 0, -8 ), r, 0, 1, 167, false ); break;
+    case TRANSITION_SLIDE: animate( ws, ANIM_SLIDE_IN, moved( r, 0, 48 ), r, 0, 1, 250, false ); break;
+    case TRANSITION_FADE: animate( ws, ANIM_FADE_IN, r, r, 0, 1, 150, false ); break;
+    }
+}
+
+/* a window that went is drawn from what it showed last, if that was kept */
+static void animate_out( struct window_state *ws, const struct dwm_window *w )
+{
+    struct frect r = window_frect( w );
+    enum transition transition = window_transition( w, ws );
+
+    if (transition == TRANSITION_NONE) return;
+    if (!ws->snapshot_valid || !rect_equal(&ws->snapshot_rect, &(RECT){ w->left, w->top, w->right, w->bottom } ))
+        gl_snapshot( ws, w );
+    if (!ws->snapshot_valid)
+    {
+        TRACE( "%08x went without a last frame\n", ws->hwnd );
+        return;
+    }
+    r = frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top, ws->snapshot_rect.right, ws->snapshot_rect.bottom );
+    switch (transition)
+    {
+    case TRANSITION_NONE: break;
+    case TRANSITION_WINDOW: animate( ws, ANIM_CLOSE, r, zoomed( r, 0.94f ), 1, 0, 167, true ); break;
+    case TRANSITION_POPUP: animate( ws, ANIM_POPUP_OUT, r, r, 1, 0, 100, true ); break;
+    case TRANSITION_SLIDE: animate( ws, ANIM_SLIDE_OUT, r, moved( r, 0, 48 ), 1, 0, 167, true ); break;
+    case TRANSITION_FADE: animate( ws, ANIM_FADE_OUT, r, r, 1, 0, 100, true ); break;
+    }
+}
+
+/* What changed between two lists of windows: a window that shows, hides,
+ * is minimized, restored, maximized or goes away starts its animation. */
+static void update_window_states(void)
+{
+    static uint32_t serial;
+    struct window_state *ws, *next;
+
+    serial++;
+    for (uint32_t i = 0; i < window_count; i++)
+    {
+        const struct dwm_window *w = &windows[i];
+        bool shown;
+
+        if (w->style & WS_CHILD) continue;
+        if (!(ws = get_window_state( w->hwnd ))) continue;
+        ws->list_serial = serial;
+        shown = window_shown( w, ws );
+
+        if (!ws->listed)
+        {
+            if (windows_known && shown) animate_in( ws, w );
+        }
+        else if (!ws->shown && shown)
+        {
+            if ((ws->last.style & (WS_MINIMIZE | WS_VISIBLE)) == (WS_MINIMIZE | WS_VISIBLE) &&
+                window_transition( w, ws ) == TRANSITION_WINDOW)
+            {
+                struct frect r = window_frect( w );
+                animate( ws, ANIM_RESTORE, minimize_target( ws, w ), r, 0, 1, 250, false );
+            }
+            else animate_in( ws, w );
+        }
+        else if (ws->shown && !shown)
+        {
+            if ((w->style & (WS_MINIMIZE | WS_VISIBLE)) == (WS_MINIMIZE | WS_VISIBLE) &&
+                window_transition( &ws->last, ws ) == TRANSITION_WINDOW)
+            {
+                if (!ws->snapshot_valid || !rect_equal(&ws->snapshot_rect, &(RECT){ ws->last.left, ws->last.top,
+                                                                                  ws->last.right, ws->last.bottom } ))
+                    gl_snapshot( ws, &ws->last );
+                if (ws->snapshot_valid)
+                {
+                    struct frect r = frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top,
+                                                 ws->snapshot_rect.right, ws->snapshot_rect.bottom );
+                    animate( ws, ANIM_MINIMIZE, r, minimize_target( ws, &ws->last ), 1, 0, 250, true );
+                }
+            }
+            else animate_out( ws, &ws->last );
+        }
+        else if (ws->shown && shown && ((ws->last.style ^ w->style) & WS_MAXIMIZE) &&
+                 window_transition( w, ws ) == TRANSITION_WINDOW &&
+                 (ws->last.left != w->left || ws->last.top != w->top ||
+                  ws->last.right != w->right || ws->last.bottom != w->bottom))
+        {
+            animate( ws, ANIM_MORPH, window_frect( &ws->last ), window_frect( w ), 1, 1, 200, false );
+            ws->anim_start = kms_now();
+        }
+        ws->last = *w;
+        ws->shown = shown;
+        ws->listed = true;
+    }
+
+    /* windows that are gone */
+    wl_list_for_each_safe( ws, next, &window_states, link )
+    {
+        if (ws->list_serial == serial || !ws->listed) continue;
+        if (ws->shown) animate_out( ws, &ws->last );
+        ws->listed = ws->shown = false;
+        if (!ws->anim) free_window_state( ws );
+    }
+    windows_known = true;
+}
+
+/* animations that ended; true while some still run */
+static bool update_animations( uint64_t now )
+{
+    struct window_state *ws, *next;
+    bool running = false;
+
+    wl_list_for_each_safe( ws, next, &window_states, link )
+    {
+        if (!ws->anim) continue;
+        if (!ws->anim_start)
+        {
+            /* a window that never drew its first frame is not waited for */
+            if (now - ws->anim_created < 400000)
+            {
+                running = true;
+                continue;
+            }
+            TRACE( "%08x never drew a frame to animate\n", ws->hwnd );
+            ws->anim = ANIM_NONE;
+        }
+        else if (now - ws->anim_start >= ws->anim_duration) ws->anim = ANIM_NONE;
+        else running = true;
+
+        if (ws->anim) continue;
+        ws->ghost = false;
+        if (!ws->listed) free_window_state( ws );
+    }
+    return running;
+}
+
+static bool has_content( const struct surface *s );
+
+/* the window's own surface holds a frame of its current size */
+static bool window_has_content( const struct dwm_window *w, bool full_size )
+{
+    struct surface *s;
+
+    wl_list_for_each( s, &all_surfaces, all_link )
+    {
+        if (s->hwnd != w->hwnd || !has_content( s ) || s->subsurface) continue;
+        if (!full_size || !s->xdg_toplevel) return true;
+        return s->width == w->right - w->left && s->height == w->bottom - w->top;
+    }
+    return false;
+}
+
+static float lerp( float a, float b, float t )
+{
+    return a + (b - a) * t;
+}
+
+static void set_draw_geometry( struct window_draw *draw, struct frect base, struct frect shown )
+{
+    float bw = max( base.right - base.left, 1.0f ), bh = max( base.bottom - base.top, 1.0f );
+
+    draw->shown = shown;
+    draw->xform.sx = (shown.right - shown.left) / bw;
+    draw->xform.sy = (shown.bottom - shown.top) / bh;
+    draw->xform.tx = shown.left - base.left * draw->xform.sx;
+    draw->xform.ty = shown.top - base.top * draw->xform.sy;
+    draw->clip.rect = shown;
+}
+
+/* how far an animation got: the window rectangle and opacity it has now */
+static bool animation_frame( struct window_state *ws, uint64_t now, struct frect *rect, float *alpha )
+{
+    float t, e;
+
+    if (!ws->anim || !ws->anim_start) return false;
+    t = min( 1.0f, (float)(now - ws->anim_start) / ws->anim_duration );
+    switch (ws->anim)
+    {
+    case ANIM_CLOSE:
+    case ANIM_POPUP_OUT:
+    case ANIM_SLIDE_OUT:
+    case ANIM_FADE_OUT:
+        e = accelerate( t );
+        break;
+    default:
+        e = decelerate( t );
+        break;
+    }
+    rect->left = lerp( ws->anim_from.left, ws->anim_to.left, e );
+    rect->top = lerp( ws->anim_from.top, ws->anim_to.top, e );
+    rect->right = lerp( ws->anim_from.right, ws->anim_to.right, e );
+    rect->bottom = lerp( ws->anim_from.bottom, ws->anim_to.bottom, e );
+    /* a minimized window fades out as it reaches its button */
+    if (ws->anim == ANIM_MINIMIZE) *alpha = 1 - t * t;
+    else if (ws->anim == ANIM_RESTORE) *alpha = min( 1.0f, t * 3 );
+    else *alpha = lerp( ws->alpha_from, ws->alpha_to, e );
+    return true;
+}
+
+static bool fill_draw( struct window_draw *draw, const struct dwm_window *w, struct window_state *ws, uint64_t now )
+{
+    struct frect base = window_frect( w ), shown = base;
+    float alpha = 1;
+
+    memset( draw, 0, sizeof(*draw) );
+    draw->w = w;
+    draw->ws = ws;
+    draw->opacity = 1;
+    draw->mode = layer_mode;
+    draw->clip.radius = corner_radius( w, ws );
+    draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
+
+    if (ws && ws->anim && !ws->ghost)
+    {
+        if (!ws->anim_start)
+        {
+            /* it shows once it has drawn itself */
+            if (!window_has_content( w, false )) return false;
+            ws->anim_start = now;
+        }
+        if (animation_frame( ws, now, &shown, &alpha ))
+        {
+            draw->as_image = true;
+            draw->opacity = alpha;
+            /* restored before it drew itself at its size: what it showed before stands in */
+            if (ws->anim == ANIM_RESTORE && !window_has_content( w, true ) && ws->snapshot_valid)
+            {
+                draw->from_snapshot = true;
+                base = frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top, ws->snapshot_rect.right,
+                                   ws->snapshot_rect.bottom );
+            }
+        }
+    }
+    set_draw_geometry( draw, base, shown );
+    return true;
+}
+
+uint32_t scene_windows( struct window_draw *draws, uint32_t max )
+{
+    uint64_t now = kms_now();
+    struct window_state *ws;
+    uint32_t count = 0;
+
+    /* Win32 windows, bottom to top, where wineserver has them */
+    for (uint32_t i = window_count; i-- && count < max;)
+    {
+        const struct dwm_window *w = &windows[i];
+
+        ws = window_state( w->hwnd );
+        if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE) || is_cloaked( ws )) continue;
+        if (shown_directly( w->hwnd ) || (ws && ws->ghost)) continue;
+        if (fill_draw( &draws[count], w, ws, now )) count++;
+    }
+
+    /* windows that went, over the rest while they go */
+    wl_list_for_each( ws, &window_states, link )
+    {
+        struct window_draw *draw;
+        struct frect shown;
+        float alpha;
+
+        if (count >= max) break;
+        if (!ws->ghost || !ws->snapshot_valid || !animation_frame( ws, now, &shown, &alpha )) continue;
+        draw = &draws[count++];
+        memset( draw, 0, sizeof(*draw) );
+        draw->w = &ws->last;
+        draw->ws = ws;
+        draw->mode = layer_mode;
+        draw->opacity = alpha;
+        draw->from_snapshot = true;
+        draw->as_image = true;
+        draw->clip.radius = corner_radius( &ws->last, ws );
+        draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
+        set_draw_geometry( draw, frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top,
+                                             ws->snapshot_rect.right, ws->snapshot_rect.bottom ), shown );
+    }
+    return count;
+}
+
+/* a window as it is, still: for its snapshot */
+void scene_static_draw( struct window_draw *draw, const struct dwm_window *w, struct window_state *ws )
+{
+    struct frect r = window_frect( w );
+
+    memset( draw, 0, sizeof(*draw) );
+    draw->w = w;
+    draw->ws = ws;
+    draw->opacity = 1;
+    draw->mode = layer_mode;
+    draw->clip.radius = corner_radius( w, ws );
+    draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
+    set_draw_geometry( draw, r, r );
+}
+
+/* surfaces no Win32 window claims, in their cascade */
+void scene_unowned_surfaces( void (*callback)( struct surface *s, int x, int y, void *ctx ), void *ctx )
+{
+    struct surface *s;
+
+    wl_list_for_each( s, &toplevels, stack_link ) if (!s->hwnd) callback( s, s->x, s->y, ctx );
+}
+
+static const struct dwm_window *listed_window( uint32_t hwnd )
+{
+    for (uint32_t i = 0; i < window_count; i++) if (windows[i].hwnd == hwnd) return &windows[i];
+    return NULL;
+}
+
+/* DwmRegisterThumbnail: live pictures of other windows drawn in this one */
+uint32_t scene_thumbnails( const struct window_draw *draw, struct thumbnail_draw *thumbs, uint32_t max )
+{
+    uint32_t count = 0;
+
+    if (draw->from_snapshot) return 0;
+    for (uint32_t i = 0; i < attribute_count && count < max; i++)
+    {
+        const struct arctic_dwm_entry *entry = &attributes[i];
+        const struct arctic_dwm_thumbnail *thumb = &entry->u.thumbnail;
+        const struct dwm_window *source;
+        struct thumbnail_draw *t = &thumbs[count];
+        struct frect dest;
+        int width, height;
+
+        if (entry->type != ARCTIC_DWM_THUMBNAIL || entry->hwnd != draw->w->hwnd) continue;
+        if (!thumb->visible || !thumb->opacity) continue;
+        if (thumb->dest_right <= thumb->dest_left || thumb->dest_bottom <= thumb->dest_top) continue;
+        if (!(source = listed_window( thumb->source ))) continue;
+
+        memset( t, 0, sizeof(*t) );
+        t->source = source;
+        t->source_state = window_state( source->hwnd );
+        width = source->right - source->left;
+        height = source->bottom - source->top;
+        if (!window_shown( source, t->source_state ))
+        {
+            /* minimized or hidden: what it showed last */
+            if (!t->source_state || !t->source_state->snapshot_valid) continue;
+            t->from_snapshot = true;
+            width = t->source_state->snapshot_rect.right - t->source_state->snapshot_rect.left;
+            height = t->source_state->snapshot_rect.bottom - t->source_state->snapshot_rect.top;
+        }
+        if (thumb->source_right > thumb->source_left && thumb->source_bottom > thumb->source_top)
+            set_rect(&t->source_rect, thumb->source_left, thumb->source_top, thumb->source_right, thumb->source_bottom );
+        else if (thumb->client_only && !t->from_snapshot)
+            set_rect(&t->source_rect, source->client_left - source->left, source->client_top - source->top,
+                     source->client_right - source->left, source->client_bottom - source->top );
+        else
+            set_rect(&t->source_rect, 0, 0, width, height );
+
+        dest.left = draw->w->client_left + thumb->dest_left;
+        dest.top = draw->w->client_top + thumb->dest_top;
+        dest.right = draw->w->client_left + thumb->dest_right;
+        dest.bottom = draw->w->client_top + thumb->dest_bottom;
+        t->dest.left = dest.left * draw->xform.sx + draw->xform.tx;
+        t->dest.top = dest.top * draw->xform.sy + draw->xform.ty;
+        t->dest.right = dest.right * draw->xform.sx + draw->xform.tx;
+        t->dest.bottom = dest.bottom * draw->xform.sy + draw->xform.ty;
+        t->opacity = thumb->opacity / 255.0f * draw->opacity;
+        count++;
+    }
+    return count;
+}
+
+/* on the CPU: the backdrop is its tint, without the blur */
+static void tint_rect( const RECT *rect, uint32_t tint )
+{
+    uint32_t a = tint >> 24;
+    uint32_t premul;
+
+    if (!a) return;
+    premul = (a << 24) | ((((tint >> 16) & 0xff) * a / 255) << 16) | ((((tint >> 8) & 0xff) * a / 255) << 8) |
+             ((tint & 0xff) * a / 255);
+    for (int y = max( rect->top, screen.top ); y < min( rect->bottom, screen.bottom ); y++)
+    {
+        uint32_t *row = shadow + (size_t)(y - screen.top) * (screen.right - screen.left) - screen.left;
+        for (int x = max( rect->left, screen.left ); x < min( rect->right, screen.right ); x++)
+            row[x] = a == 0xff ? premul : over( premul, row[x] );
+    }
+}
+
+/* on the CPU: a thumbnail is the source's own surface, scaled by the nearest pixel */
+static void cpu_thumbnail( const struct thumbnail_draw *t )
+{
+    const struct surface *s = surface_for_hwnd( t->source->hwnd );
+    int dw = t->dest.right - t->dest.left, dh = t->dest.bottom - t->dest.top;
+    int sw = t->source_rect.right - t->source_rect.left, sh = t->source_rect.bottom - t->source_rect.top;
+
+    if (t->from_snapshot || !s || !s->pixels || !s->xdg_toplevel || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+    for (int y = 0; y < dh; y++)
+    {
+        int py = (int)t->dest.top + y, sy = t->source_rect.top + sh * y / dh;
+        uint32_t *row;
+
+        if (py < screen.top || py >= screen.bottom || sy < 0 || sy >= s->height) continue;
+        row = shadow + (size_t)(py - screen.top) * (screen.right - screen.left) - screen.left;
+        for (int x = 0; x < dw; x++)
+        {
+            int px = (int)t->dest.left + x, sx = t->source_rect.left + sw * x / dw;
+            if (px < screen.left || px >= screen.right || sx < 0 || sx >= s->width) continue;
+            row[px] = s->pixels[(size_t)sy * s->width + sx] | 0xff000000;
+        }
+    }
+}
+
+struct cpu_draw_ctx
+{
+    bool backdrop;
+};
+
+static void cpu_draw_surface( struct surface *s, int x, int y, void *ctx )
+{
+    const struct cpu_draw_ctx *c = ctx;
+    draw_tree( s, x, y, c->backdrop );
 }
 
 /* the virtual screen, in RAM */
@@ -409,13 +1072,24 @@ static void compose(void)
     for (uint32_t i = window_count; i--;)
     {
         const struct dwm_window *w = &windows[i];
+        struct window_state *ws = window_state( w->hwnd );
+        struct thumbnail_draw thumbs[16];
+        struct window_draw draw;
+        struct cpu_draw_ctx ctx;
+        uint32_t n;
 
-        if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE)) continue;
+        if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE) || is_cloaked( ws )) continue;
         if (shown_directly( w->hwnd )) continue;
-        draw_window( w );
+        fill_draw( &draw, w, NULL, 0 );
+        draw.ws = ws;
+        ctx.backdrop = window_backdrop( ws, &draw.blur, &draw.tint );
+        if (ctx.backdrop) tint_rect( &(RECT){ w->left, w->top, w->right, w->bottom }, draw.tint );
+        for_each_window_surface( w, cpu_draw_surface, &ctx );
+        n = scene_thumbnails( &draw, thumbs, ARRAY_SIZE(thumbs) );
+        for (uint32_t k = 0; k < n; k++) cpu_thumbnail( &thumbs[k] );
     }
     wl_list_for_each( s, &toplevels, stack_link )
-        if (!s->hwnd) draw_tree( s, s->x, s->y );
+        if (!s->hwnd) draw_tree( s, s->x, s->y, false );
     draw_cursor();
     dirty = false;
 }
@@ -544,7 +1218,7 @@ static void present_directly( struct output *output, struct surface *content, bo
     if (o->front_buffer == buffer &&
         o->vrr_on == (vrr && o->vrr_capable && o->vrr_prop && !o->vrr_refused)) return;
     dmabuf_ref( buffer );
-    if (kms_present( o, buffer->fb, source_width( content ), source_height( content ), vrr, buffer )) return;
+    if (kms_present( o, buffer->fb, source_width( content ), source_height( content ), vrr, buffer, false )) return;
     if (errno == EBUSY)
     {
         dmabuf_unref( buffer );
@@ -567,7 +1241,7 @@ static void present_composed( struct output *output, bool vrr )
     if (!o->no_flip && (fb = kms_back_buffer( o )))
     {
         copy_shadow( o, fb );
-        if (kms_present( o, fb->fb_id, fb->width, fb->height, vrr, NULL )) return;
+        if (kms_present( o, fb->fb_id, fb->width, fb->height, vrr, NULL, true )) return;
     }
     if (!o->no_flip)
     {
@@ -612,8 +1286,9 @@ static void repaint(void)
     uint64_t now = kms_now();
     struct output *output;
     int count = 0;
-    bool composed = false;
+    bool composed = false, gpu = gl_active();
 
+    animating = update_animations( now );
     wl_list_for_each( output, &outputs, link )
     {
         struct kms_output *o = output->kms;
@@ -637,12 +1312,18 @@ static void repaint(void)
         output->needs_frame = false;
         count++;
     }
-    if (composed && dirty) compose();
+    if (composed && dirty && !gpu) compose();
 
     for (int i = 0; i < count; i++)
     {
         if (ready[i].content) present_directly( ready[i].output, ready[i].content, ready[i].vrr );
-        else present_composed( ready[i].output, ready[i].vrr );
+        else if (!gpu) present_composed( ready[i].output, ready[i].vrr );
+        else if (!gl_render( ready[i].output, ready[i].vrr ))
+        {
+            /* busy, or the GPU gave up: then the CPU composes from now on */
+            if (!gl_active()) dirty = true;
+            ready[i].output->needs_frame = true;
+        }
         count_frame( ready[i].output, !!ready[i].content, ready[i].vrr, now );
     }
 }
@@ -651,14 +1332,14 @@ void compositor_flip_done( struct kms_output *o, void *buffer )
 {
     struct output *output = o->user;
 
-    if (buffer) dmabuf_unref( buffer );
+    if (buffer && !gl_frame_released( buffer )) dmabuf_unref( buffer );
     if (output && o->fake_vblank) output->not_before = o->done_time + kms_frame_time( o );
     send_frame_callbacks();
 }
 
 void compositor_buffer_unused( void *buffer )
 {
-    dmabuf_unref( buffer );
+    if (!gl_frame_released( buffer )) dmabuf_unref( buffer );
 }
 
 static bool flips_pending(void)
@@ -673,6 +1354,7 @@ static int frame_tick( void *data )
 {
     uint32_t hz = screen_refresh_hz();
 
+    if (animating) damage();
     repaint();
     if (kms_now() - last_callbacks >= 1000000 / hz && !flips_pending()) send_frame_callbacks();
     wl_event_source_timer_update( frame_timer, max( 1, 1000 / hz ) );
@@ -822,6 +1504,31 @@ static bool wake_direct_output( struct surface *s )
     return false;
 }
 
+/* Before a window's surface takes a frame of another size, or none: what it
+ * showed is kept, for when it turns out that the window was closed or
+ * minimized (wineserver's list may say so only a moment later). */
+static void keep_last_frame( struct surface *s, struct dmabuf *buffer )
+{
+    struct wl_shm_buffer *shm = s->pending_buffer ? wl_shm_buffer_get( s->pending_buffer ) : NULL;
+    struct window_state *ws;
+    int width = 0, height = 0;
+
+    if (!s->hwnd || !s->xdg_toplevel || !has_content( s )) return;
+    if (!(ws = window_state( s->hwnd )) || !ws->shown) return;
+    if (buffer)
+    {
+        width = buffer->width;
+        height = buffer->height;
+    }
+    else if (shm)
+    {
+        width = wl_shm_buffer_get_width( shm );
+        height = wl_shm_buffer_get_height( shm );
+    }
+    if (width == s->width && height == s->height) return;
+    gl_snapshot( ws, &ws->last );
+}
+
 static void surface_commit( struct wl_client *client, struct wl_resource *resource )
 {
     struct surface *s = get_surface( resource );
@@ -829,6 +1536,8 @@ static void surface_commit( struct wl_client *client, struct wl_resource *resour
     if (s->pending_attach)
     {
         struct dmabuf *buffer = dmabuf_from_resource( s->pending_buffer );
+
+        keep_last_frame( s, buffer );
 
         if (buffer != s->dmabuf)
         {
@@ -852,6 +1561,7 @@ static void surface_commit( struct wl_client *client, struct wl_resource *resour
         }
         else if (s->pending_buffer)
         {
+            s->texture_stale = true;
             copy_buffer( s, s->pending_buffer );
             wl_buffer_send_release( s->pending_buffer );
             wl_list_remove( &s->pending_buffer_destroy.link );
@@ -909,7 +1619,12 @@ static void surface_destroyed( struct wl_resource *resource )
 {
     struct surface *s = get_surface( resource ), *child, *next;
     struct wl_resource *cb, *tmp;
+    struct window_state *ws;
 
+    /* a window closing: what it showed stays for its animation */
+    if (s->hwnd && s->xdg_toplevel && has_content( s ) && (ws = window_state( s->hwnd )) && ws->shown)
+        gl_snapshot( ws, &ws->last );
+    gl_surface_gone( s );
     unmap_toplevel( s );
     wl_list_remove( &s->all_link );
     wl_list_remove( &s->pending_buffer_destroy.link );
@@ -1558,6 +2273,7 @@ void compositor_output_removed( struct kms_output *o )
     struct output *output = o->user;
 
     if (!output) return;
+    gl_output_gone( output );
     o->user = NULL;
     output->kms = NULL;
     /* while the card is replaced the clients keep seeing the monitors they
@@ -1835,6 +2551,7 @@ static int switch_card( void *data )
     kms_source = wl_event_loop_add_fd( wl_display_get_event_loop( display ), kms.fd, WL_EVENT_READABLE,
                                        kms_event, NULL );
     set_cursor_image();
+    gl_start();
     /* the Windows side gives the monitors of the new card their modes */
     update_globals();
     update_screen();
@@ -1895,6 +2612,7 @@ static NTSTATUS dwm_start( void *args )
     wl_list_init( &outputs );
     wl_list_init( &dying_outputs );
     wl_list_init( &parked_outputs );
+    wl_list_init( &window_states );
     if (!(display = wl_display_create())) return STATUS_UNSUCCESSFUL;
     wl_display_init_shm( display );
     wl_global_create( display, &wl_compositor_interface, 4, NULL, bind_compositor );
@@ -1917,6 +2635,7 @@ static NTSTATUS dwm_start( void *args )
     kms_source = wl_event_loop_add_fd( loop, kms.fd, WL_EVENT_READABLE, kms_event, NULL );
     switch_timer = wl_event_loop_add_timer( loop, switch_card, NULL );
     set_cursor_image();
+    gl_start();
     if ((hotplug = kms_hotplug_socket()) >= 0)
         wl_event_loop_add_fd( loop, hotplug, WL_EVENT_READABLE, hotplug_event, NULL );
     MESSAGE( "dwm: serving %s/%s\n", getenv( "XDG_RUNTIME_DIR" ), SOCKET_NAME );
@@ -1948,6 +2667,25 @@ static NTSTATUS dwm_set_windows( void *args )
     free( windows );
     windows = copy;
     window_count = params->count;
+    update_window_states();
+    damage();
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS dwm_set_attributes( void *args )
+{
+    const struct dwm_set_attributes_params *params = args;
+    struct arctic_dwm_entry *copy = NULL;
+    struct window_state *ws;
+
+    if (params->count && !(copy = malloc( params->count * sizeof(*copy) ))) return STATUS_NO_MEMORY;
+    if (copy) memcpy( copy, params->entries, params->count * sizeof(*copy) );
+    free( attributes );
+    attributes = copy;
+    attribute_count = params->count;
+    wl_list_for_each( ws, &window_states, link ) apply_attributes( ws );
+    /* a window cloaked or uncloaked comes or goes as if hidden or shown */
+    if (windows_known) update_window_states();
     damage();
     return STATUS_SUCCESS;
 }
@@ -2043,6 +2781,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     dwm_get_outputs,
     dwm_set_config,
     dwm_set_options,
+    dwm_set_attributes,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );

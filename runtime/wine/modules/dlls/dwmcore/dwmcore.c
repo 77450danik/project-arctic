@@ -19,6 +19,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -533,10 +534,132 @@ static void update_windows(void)
         windows[i].bottom   = list[i].visible_rect.bottom;
         windows[i].client_left = list[i].client_rect.left;
         windows[i].client_top  = list[i].client_rect.top;
+        windows[i].client_right  = list[i].client_rect.right;
+        windows[i].client_bottom = list[i].client_rect.bottom;
+        windows[i].owner      = list[i].owner;
+        windows[i].class_atom = list[i].class_atom;
+        windows[i].band       = list[i].band;
     }
     params.count = got;
     params.windows = windows;
     WINE_UNIX_CALL( unix_dwm_set_windows, &params );
+}
+
+/**********************************************************************
+ *          What programs ask of their windows
+ *
+ * dwmapi.dll and user32.dll write window attributes and thumbnails into a
+ * table in a shared section (wine/arctic_dwm.h); dwm.exe owns the section
+ * and hands the rows to the compositor whenever they change.
+ */
+
+static struct arctic_dwm_shared *shared;
+static LONG                      shared_serial = -1;
+static struct arctic_dwm_entry  *shared_copy;
+static DWORD                     last_purge;
+
+static void create_shared(void)
+{
+    HANDLE mapping;
+
+    /* no security descriptor: every process of the session writes to it */
+    if (!(mapping = CreateFileMappingW( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(*shared),
+                                        ARCTIC_DWM_SECTION )))
+    {
+        ERR( "cannot create the dwm section: %lu\n", GetLastError() );
+        return;
+    }
+    if (!(shared = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*shared) ))) return;
+    /* the handle stays open as long as dwm.exe lives: so does the section */
+    memset( shared, 0, sizeof(*shared) );
+    shared->next_id = 1;
+    shared->version = ARCTIC_DWM_VERSION;
+    shared_copy = calloc( ARCTIC_DWM_MAX_ENTRIES, sizeof(*shared_copy) );
+}
+
+static void lock_shared(void)
+{
+    DWORD start = GetTickCount();
+
+    while (InterlockedCompareExchange( &shared->lock, 1, 0 ))
+    {
+        /* a process that died holding it */
+        if (GetTickCount() - start > 200)
+        {
+            WARN( "breaking a stale lock of the dwm section\n" );
+            InterlockedExchange( &shared->lock, 0 );
+        }
+        YieldProcessor();
+    }
+}
+
+static BOOL window_exists( UINT32 hwnd )
+{
+    BOOL ret;
+
+    SERVER_START_REQ( set_window_band )
+    {
+        req->handle = hwnd;
+        req->band = -1;
+        ret = !wine_server_call( req );
+    }
+    SERVER_END_REQ;
+    return ret;
+}
+
+/* rows of windows that are gone; wineserver is asked outside the lock */
+static void purge_shared(void)
+{
+    UINT32 dead[64];
+    UINT count = 0;
+    BOOL changed = FALSE;
+
+    for (UINT i = 0; i < ARCTIC_DWM_MAX_ENTRIES && count < ARRAY_SIZE(dead); i++)
+    {
+        UINT32 hwnd = shared->entries[i].hwnd;
+
+        if (shared->entries[i].type == ARCTIC_DWM_FREE || window_exists( hwnd )) continue;
+        dead[count++] = hwnd;
+    }
+    if (!count) return;
+
+    lock_shared();
+    for (UINT i = 0; i < ARCTIC_DWM_MAX_ENTRIES; i++)
+    {
+        struct arctic_dwm_entry *entry = &shared->entries[i];
+
+        if (entry->type == ARCTIC_DWM_FREE) continue;
+        for (UINT k = 0; k < count; k++)
+        {
+            if (entry->hwnd != dead[k] && (entry->type != ARCTIC_DWM_THUMBNAIL ||
+                                          entry->u.thumbnail.source != dead[k])) continue;
+            entry->type = ARCTIC_DWM_FREE;
+            changed = TRUE;
+            break;
+        }
+    }
+    if (changed) InterlockedIncrement( &shared->serial );
+    InterlockedExchange( &shared->lock, 0 );
+}
+
+static void update_attributes(void)
+{
+    struct dwm_set_attributes_params params = { .entries = shared_copy };
+
+    if (!shared || !shared_copy) return;
+    if (GetTickCount() - last_purge > 1000)
+    {
+        last_purge = GetTickCount();
+        purge_shared();
+    }
+    if (shared->serial == shared_serial) return;
+
+    lock_shared();
+    shared_serial = shared->serial;
+    for (UINT i = 0; i < ARCTIC_DWM_MAX_ENTRIES; i++)
+        if (shared->entries[i].type != ARCTIC_DWM_FREE) shared_copy[params.count++] = shared->entries[i];
+    InterlockedExchange( &shared->lock, 0 );
+    WINE_UNIX_CALL( unix_dwm_set_attributes, &params );
 }
 
 /* Takes the display and composes the desktop; returns only on failure. */
@@ -562,6 +685,7 @@ DWORD WINAPI DwmCoreRun(void)
     options_changed = CreateEventW( NULL, FALSE, FALSE, NULL );
     publish_vrr_capability();
     update_options();
+    create_shared();
 
     /* wininit.exe starts csrss.exe on this: the display driver connects as it loads */
     SetEvent( CreateEventW( NULL, TRUE, FALSE, L"__arctic_dwm_ready" ) );
@@ -577,6 +701,8 @@ DWORD WINAPI DwmCoreRun(void)
         }
         if (dispatch.events & DWM_EVENT_SAVE) save_monitors();
         if (!WaitForSingleObject( options_changed, 0 )) update_options();
+        /* attributes first: a window shown cloaked is never drawn */
+        update_attributes();
         update_windows();
     }
 }

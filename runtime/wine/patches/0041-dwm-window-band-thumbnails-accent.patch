@@ -1,0 +1,669 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 29 Sep 2026 17:25:21 +0300
+Subject: [PATCH] server, win32u, user32, dwmapi: The taskbar's band, and what dwm.exe is told of windows.
+
+Windows keeps the taskbar in a z-order band over program windows
+(SetWindowBand). A window in the band lies over every other toplevel
+window except its own popups; a window with a caption never goes over
+it, topmost or not. Menus, tooltips and full screen popups still can.
+The composition list also tells dwm.exe each window's owner, class
+atom and band, and the whole client rectangle.
+
+dwmapi writes window attributes (DwmSetWindowAttribute: corner
+preference, cloaking, transitions; DwmEnableBlurBehindWindow) and
+thumbnails (DwmRegisterThumbnail, DwmUpdateThumbnailProperties,
+DwmUnregisterThumbnail, DwmQueryThumbnailSourceSize) into the table
+dwm.exe shares (wine/arctic_dwm.h). SetWindowCompositionAttribute hands
+the accent policy (the taskbar's acrylic) over the same way.
+---
+ dlls/dwmapi/dwmapi.spec   |   2 +-
+ dlls/dwmapi/dwmapi_main.c | 283 ++++++++++++++++++++++++++++++++++++++++++++--
+ dlls/user32/user32.spec   |   4 +-
+ dlls/user32/win.c         |  57 +++++++++-
+ dlls/win32u/window.c      |  21 ++++
+ include/ntuser.h          |   3 +
+ server/protocol.def       |  12 ++
+ server/window.c           |  68 +++++++++++
+ 8 files changed, 432 insertions(+), 18 deletions(-)
+
+diff --git a/dlls/dwmapi/dwmapi.spec b/dlls/dwmapi/dwmapi.spec
+index e69c3e3..c393f38 100644
+--- a/dlls/dwmapi/dwmapi.spec
++++ b/dlls/dwmapi/dwmapi.spec
+@@ -76,7 +76,7 @@
+ @ stdcall DwmInvalidateIconicBitmaps(ptr)
+ @ stdcall DwmIsCompositionEnabled(ptr)
+ @ stub DwmModifyPreviousDxFrameDuration
+-@ stub DwmQueryThumbnailSourceSize
++@ stdcall DwmQueryThumbnailSourceSize(ptr ptr)
+ @ stdcall DwmRegisterThumbnail(long long ptr)
+ # @ stub DwmRenderGesture
+ @ stub DwmSetDxFrameDuration
+diff --git a/dlls/dwmapi/dwmapi_main.c b/dlls/dwmapi/dwmapi_main.c
+index 49e05cd..272ccbe 100644
+--- a/dlls/dwmapi/dwmapi_main.c
++++ b/dlls/dwmapi/dwmapi_main.c
+@@ -28,10 +28,82 @@
+ #include "wingdi.h"
+ #include "winuser.h"
+ #include "dwmapi.h"
++#include "wine/arctic_dwm.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dwmapi);
+ 
++/* the table dwm.exe reads, see wine/arctic_dwm.h; NULL while dwm.exe is not running */
++static struct arctic_dwm_shared *get_shared(void)
++{
++    static struct arctic_dwm_shared *shared;
++    struct arctic_dwm_shared *view;
++    HANDLE mapping;
++
++    if (shared) return shared;
++    if (!(mapping = OpenFileMappingW( FILE_MAP_READ | FILE_MAP_WRITE, FALSE, ARCTIC_DWM_SECTION ))) return NULL;
++    view = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*view) );
++    CloseHandle( mapping );
++    if (!view) return NULL;
++    if (view->version != ARCTIC_DWM_VERSION)
++    {
++        UnmapViewOfFile( view );
++        return NULL;
++    }
++    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL )) UnmapViewOfFile( view );
++    return shared;
++}
++
++static void lock_shared( struct arctic_dwm_shared *shared )
++{
++    while (InterlockedCompareExchange( &shared->lock, 1, 0 )) YieldProcessor();
++}
++
++static void unlock_shared( struct arctic_dwm_shared *shared )
++{
++    InterlockedIncrement( &shared->serial );
++    InterlockedExchange( &shared->lock, 0 );
++}
++
++static struct arctic_dwm_entry *new_entry( struct arctic_dwm_shared *shared, UINT32 type, HWND hwnd )
++{
++    for (UINT i = 0; i < ARCTIC_DWM_MAX_ENTRIES; i++)
++    {
++        struct arctic_dwm_entry *entry = &shared->entries[i];
++
++        if (entry->type != ARCTIC_DWM_FREE) continue;
++        memset( entry, 0, sizeof(*entry) );
++        entry->type = type;
++        entry->hwnd = HandleToULong( hwnd );
++        entry->process = GetCurrentProcessId();
++        return entry;
++    }
++    return NULL;
++}
++
++static struct arctic_dwm_entry *window_entry( struct arctic_dwm_shared *shared, HWND hwnd )
++{
++    for (UINT i = 0; i < ARCTIC_DWM_MAX_ENTRIES; i++)
++    {
++        struct arctic_dwm_entry *entry = &shared->entries[i];
++        if (entry->type == ARCTIC_DWM_WINDOW && entry->hwnd == HandleToULong( hwnd )) return entry;
++    }
++    return new_entry( shared, ARCTIC_DWM_WINDOW, hwnd );
++}
++
++static struct arctic_dwm_entry *thumbnail_entry( struct arctic_dwm_shared *shared, HTHUMBNAIL thumbnail )
++{
++    UINT32 id = (UINT32)(ULONG_PTR)thumbnail;
++
++    if (!id) return NULL;
++    for (UINT i = 0; i < ARCTIC_DWM_MAX_ENTRIES; i++)
++    {
++        struct arctic_dwm_entry *entry = &shared->entries[i];
++        if (entry->type == ARCTIC_DWM_THUMBNAIL && entry->id == id) return entry;
++    }
++    return NULL;
++}
++
+ 
+ /**********************************************************************
+  *           DwmIsCompositionEnabled         (DWMAPI.@)
+@@ -100,11 +172,70 @@ HRESULT WINAPI DwmInvalidateIconicBitmaps(HWND hwnd)
+  */
+ HRESULT WINAPI DwmSetWindowAttribute(HWND hwnd, DWORD attributenum, LPCVOID attribute, DWORD size)
+ {
+-    static BOOL once;
++    struct arctic_dwm_shared *shared;
++    struct arctic_dwm_entry *entry;
++    struct arctic_dwm_window *window;
++    HRESULT hr = S_OK;
+ 
+-    if (!once++) FIXME("(%p, %lx, %p, %lx) stub\n", hwnd, attributenum, attribute, size);
++    TRACE("(%p, %#lx, %p, %lu)\n", hwnd, attributenum, attribute, size);
+ 
+-    return S_OK;
++    if (!IsWindow(hwnd)) return E_HANDLE;
++    if (!attribute) return E_INVALIDARG;
++
++    switch (attributenum)
++    {
++    case 3:  /* DWMWA_TRANSITIONS_FORCEDISABLED */
++    case 13: /* DWMWA_CLOAK */
++    case 33: /* DWMWA_WINDOW_CORNER_PREFERENCE */
++    case 38: /* DWMWA_SYSTEMBACKDROP_TYPE */
++    case DWMWA_ARCTIC_TRANSITION:
++        if (size < sizeof(DWORD)) return E_INVALIDARG;
++        break;
++    case DWMWA_ARCTIC_MINIMIZE_RECT:
++        if (size < sizeof(RECT)) return E_INVALIDARG;
++        break;
++    case DWMWA_ARCTIC_ACCENT:
++        if (size < sizeof(struct arctic_accent_policy)) return E_INVALIDARG;
++        break;
++    default:
++        /* colours of the frame and the like: DWM draws no frame here */
++        TRACE("attribute %lu ignored\n", attributenum);
++        return S_OK;
++    }
++
++    if (!(shared = get_shared())) return DWM_E_COMPOSITIONDISABLED;
++    lock_shared( shared );
++    if ((entry = window_entry( shared, hwnd )))
++    {
++        window = &entry->u.window;
++        switch (attributenum)
++        {
++        case 3:  window->transitions_off = !!*(const DWORD *)attribute; break;
++        case 13: window->cloaked = !!*(const DWORD *)attribute; break;
++        case 33: window->corner = *(const DWORD *)attribute; break;
++        case 38: window->backdrop = *(const DWORD *)attribute; break;
++        case DWMWA_ARCTIC_TRANSITION: window->transition = *(const DWORD *)attribute; break;
++        case DWMWA_ARCTIC_MINIMIZE_RECT:
++        {
++            const RECT *rect = attribute;
++            window->minimize_left = rect->left;
++            window->minimize_top = rect->top;
++            window->minimize_right = rect->right;
++            window->minimize_bottom = rect->bottom;
++            break;
++        }
++        case DWMWA_ARCTIC_ACCENT:
++        {
++            const struct arctic_accent_policy *policy = attribute;
++            window->accent = policy->state;
++            window->accent_color = policy->gradient_color;
++            break;
++        }
++        }
++    }
++    else hr = E_OUTOFMEMORY;
++    unlock_shared( shared );
++    return hr;
+ }
+ 
+ /**********************************************************************
+@@ -132,9 +263,21 @@ HRESULT WINAPI DwmGetTransportAttributes(BOOL *pfIsRemoting, BOOL *pfIsConnected
+  */
+ HRESULT WINAPI DwmUnregisterThumbnail(HTHUMBNAIL thumbnail)
+ {
+-    FIXME("(%p) stub\n", thumbnail);
++    struct arctic_dwm_shared *shared;
++    struct arctic_dwm_entry *entry;
++    HRESULT hr = E_INVALIDARG;
+ 
+-    return E_NOTIMPL;
++    TRACE("(%p)\n", thumbnail);
++
++    if (!(shared = get_shared())) return E_INVALIDARG;
++    lock_shared( shared );
++    if ((entry = thumbnail_entry( shared, thumbnail )))
++    {
++        entry->type = ARCTIC_DWM_FREE;
++        hr = S_OK;
++    }
++    unlock_shared( shared );
++    return hr;
+ }
+ 
+ /**********************************************************************
+@@ -162,9 +305,19 @@ HRESULT WINAPI DwmGetGraphicsStreamTransformHint(UINT uIndex, MilMatrix3x2D *pTr
+  */
+ HRESULT WINAPI DwmEnableBlurBehindWindow(HWND hWnd, const DWM_BLURBEHIND *pBlurBuf)
+ {
+-    FIXME("%p %p\n", hWnd, pBlurBuf);
+-
+-    return E_NOTIMPL;
++    struct arctic_dwm_shared *shared;
++    struct arctic_dwm_entry *entry;
++
++    TRACE("%p %p\n", hWnd, pBlurBuf);
++
++    if (!pBlurBuf) return E_INVALIDARG;
++    if (!IsWindow(hWnd)) return E_HANDLE;
++    if (!(pBlurBuf->dwFlags & DWM_BB_ENABLE)) return S_OK;
++    if (!(shared = get_shared())) return DWM_E_COMPOSITIONDISABLED;
++    lock_shared( shared );
++    if ((entry = window_entry( shared, hWnd ))) entry->u.window.blur_behind = !!pBlurBuf->fEnable;
++    unlock_shared( shared );
++    return entry ? S_OK : E_OUTOFMEMORY;
+ }
+ 
+ /**********************************************************************
+@@ -217,6 +370,29 @@ HRESULT WINAPI DwmGetWindowAttribute(HWND hwnd, DWORD attribute, PVOID pv_attrib
+         SetThreadDpiAwarenessContext(context);
+         break;
+     }
++    case 14: /* DWMWA_CLOAKED */
++    {
++        struct arctic_dwm_shared *shared;
++        DWORD cloaked = 0;
++
++        if (!pv_attribute) return E_INVALIDARG;
++        if (size < sizeof(DWORD)) return E_NOT_SUFFICIENT_BUFFER;
++        if ((shared = get_shared()))
++        {
++            lock_shared( shared );
++            for (UINT i = 0; i < ARCTIC_DWM_MAX_ENTRIES; i++)
++            {
++                struct arctic_dwm_entry *entry = &shared->entries[i];
++                if (entry->type == ARCTIC_DWM_WINDOW && entry->hwnd == HandleToULong( hwnd ) &&
++                    entry->u.window.cloaked)
++                    cloaked = 1; /* DWM_CLOAKED_APP */
++            }
++            InterlockedExchange( &shared->lock, 0 );
++        }
++        *(DWORD *)pv_attribute = cloaked;
++        hr = S_OK;
++        break;
++    }
+     default:
+         FIXME("attribute %ld not implemented.\n", attribute);
+         hr = E_NOTIMPL;
+@@ -231,9 +407,62 @@ HRESULT WINAPI DwmGetWindowAttribute(HWND hwnd, DWORD attribute, PVOID pv_attrib
+  */
+ HRESULT WINAPI DwmRegisterThumbnail(HWND dest, HWND src, PHTHUMBNAIL thumbnail_id)
+ {
+-    FIXME("(%p %p %p) stub\n", dest, src, thumbnail_id);
++    struct arctic_dwm_shared *shared;
++    struct arctic_dwm_entry *entry;
++    DWORD process;
++
++    TRACE("(%p %p %p)\n", dest, src, thumbnail_id);
++
++    if (!thumbnail_id) return E_INVALIDARG;
++    *thumbnail_id = NULL;
++    if (!IsWindow(dest) || !IsWindow(src) || dest == src) return E_INVALIDARG;
++    /* the window it is drawn in belongs to the caller, as Windows requires */
++    GetWindowThreadProcessId( dest, &process );
++    if (process != GetCurrentProcessId()) return E_INVALIDARG;
++    if (!(shared = get_shared())) return DWM_E_COMPOSITIONDISABLED;
++
++    lock_shared( shared );
++    if ((entry = new_entry( shared, ARCTIC_DWM_THUMBNAIL, dest )))
++    {
++        if (!++shared->next_id) shared->next_id = 1;
++        entry->id = shared->next_id;
++        entry->u.thumbnail.source = HandleToULong( src );
++        entry->u.thumbnail.opacity = 255;
++        entry->u.thumbnail.visible = TRUE;
++        *thumbnail_id = (HTHUMBNAIL)(ULONG_PTR)entry->id;
++    }
++    unlock_shared( shared );
++    return entry ? S_OK : E_OUTOFMEMORY;
++}
+ 
+-    return E_NOTIMPL;
++/**********************************************************************
++ *           DwmQueryThumbnailSourceSize         (DWMAPI.@)
++ */
++HRESULT WINAPI DwmQueryThumbnailSourceSize(HTHUMBNAIL thumbnail, SIZE *size)
++{
++    struct arctic_dwm_shared *shared;
++    struct arctic_dwm_entry *entry;
++    HWND source = NULL;
++    BOOL client_only = FALSE;
++    RECT rect;
++
++    TRACE("(%p %p)\n", thumbnail, size);
++
++    if (!size) return E_INVALIDARG;
++    if (!(shared = get_shared())) return E_INVALIDARG;
++    lock_shared( shared );
++    if ((entry = thumbnail_entry( shared, thumbnail )))
++    {
++        source = ULongToHandle( entry->u.thumbnail.source );
++        client_only = entry->u.thumbnail.client_only;
++    }
++    InterlockedExchange( &shared->lock, 0 );
++    if (!source) return E_INVALIDARG;
++
++    if (client_only ? !GetClientRect( source, &rect ) : !GetWindowRect( source, &rect )) return E_INVALIDARG;
++    size->cx = rect.right - rect.left;
++    size->cy = rect.bottom - rect.top;
++    return S_OK;
+ }
+ 
+ static int get_display_frequency(void)
+@@ -337,8 +566,38 @@ HRESULT WINAPI DwmDetachMilContent(HWND hwnd)
+  */
+ HRESULT WINAPI DwmUpdateThumbnailProperties(HTHUMBNAIL thumbnail, const DWM_THUMBNAIL_PROPERTIES *props)
+ {
+-    FIXME("(%p, %p) stub\n", thumbnail, props);
+-    return E_NOTIMPL;
++    struct arctic_dwm_shared *shared;
++    struct arctic_dwm_thumbnail *thumb;
++    struct arctic_dwm_entry *entry;
++
++    TRACE("(%p, %p)\n", thumbnail, props);
++
++    if (!props) return E_INVALIDARG;
++    if (!(shared = get_shared())) return E_INVALIDARG;
++    lock_shared( shared );
++    if ((entry = thumbnail_entry( shared, thumbnail )))
++    {
++        thumb = &entry->u.thumbnail;
++        if (props->dwFlags & DWM_TNP_RECTDESTINATION)
++        {
++            thumb->dest_left = props->rcDestination.left;
++            thumb->dest_top = props->rcDestination.top;
++            thumb->dest_right = props->rcDestination.right;
++            thumb->dest_bottom = props->rcDestination.bottom;
++        }
++        if (props->dwFlags & DWM_TNP_RECTSOURCE)
++        {
++            thumb->source_left = props->rcSource.left;
++            thumb->source_top = props->rcSource.top;
++            thumb->source_right = props->rcSource.right;
++            thumb->source_bottom = props->rcSource.bottom;
++        }
++        if (props->dwFlags & DWM_TNP_OPACITY) thumb->opacity = props->opacity;
++        if (props->dwFlags & DWM_TNP_VISIBLE) thumb->visible = !!props->fVisible;
++        if (props->dwFlags & DWM_TNP_SOURCECLIENTAREAONLY) thumb->client_only = !!props->fSourceClientAreaOnly;
++    }
++    unlock_shared( shared );
++    return entry ? S_OK : E_INVALIDARG;
+ }
+ 
+ /**********************************************************************
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index d2d779c..0f25812 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -696,7 +696,7 @@
+ @ stdcall GetUserObjectSecurity(long ptr ptr long ptr)
+ # @ stub GetWinStationInfo
+ @ stdcall GetWindow(long long)
+-# @ stub GetWindowBand
++@ stdcall GetWindowBand(long ptr)
+ # @ stub GetWindowCompositionAttribute
+ # @ stub GetWindowCompositionInfo
+ @ stdcall GetWindowContextHelpId(long) NtUserGetWindowContextHelpId
+@@ -1103,7 +1103,7 @@
+ @ stdcall SetUserObjectInformationW(long long ptr long) NtUserSetObjectInformation
+ @ stdcall SetUserObjectSecurity(long ptr ptr)
+ @ stdcall SetWinEventHook(long long long ptr long long long)
+-# @ stub SetWindowBand
++@ stdcall SetWindowBand(long long long)
+ @ stdcall SetWindowCompositionAttribute(ptr ptr)
+ # @ stub SetWindowCompositionTransition
+ @ stdcall SetWindowContextHelpId(long long) NtUserSetWindowContextHelpId
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index a2329ac..8ca4247 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -1606,9 +1606,60 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
+  */
+ BOOL WINAPI SetWindowCompositionAttribute(HWND hwnd, void *data)
+ {
+-    FIXME("(%p, %p): stub\n", hwnd, data);
+-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+-    return FALSE;
++    /* WINDOWCOMPOSITIONATTRIBDATA */
++    struct { DWORD attrib; void *data; SIZE_T size; } *attr = data;
++    HRESULT (WINAPI *set_attribute)(HWND, DWORD, const void *, DWORD);
++    HMODULE dwmapi;
++
++    TRACE("(%p, %p)\n", hwnd, data);
++
++    if (!attr)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    if (attr->attrib != 19 /* WCA_ACCENT_POLICY */)
++    {
++        FIXME("attribute %lu not supported\n", attr->attrib);
++        SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
++        return FALSE;
++    }
++    /* dwm.exe learns of the accent through dwmapi, as of every other window attribute */
++    if (!(dwmapi = LoadLibraryW( L"dwmapi.dll" )) ||
++        !(set_attribute = (void *)GetProcAddress( dwmapi, "DwmSetWindowAttribute" )))
++    {
++        SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
++        return FALSE;
++    }
++    if (FAILED(set_attribute( hwnd, 0x1002 /* DWMWA_ARCTIC_ACCENT */, attr->data, attr->size )))
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    return TRUE;
++}
++
++/**********************************************************************
++ *              SetWindowBand (USER32.@)
++ *
++ * Windows keeps windows in z-order bands: the taskbar sits in a band over
++ * every program window. Here any band above ZBID_DESKTOP (1) is that band.
++ */
++BOOL WINAPI SetWindowBand(HWND hwnd, HWND after, DWORD band)
++{
++    TRACE("(%p, %p, %lu)\n", hwnd, after, band);
++    return NtUserCallHwndParam( hwnd, band > 1, NtUserCallHwndParam_SetWindowBand );
++}
++
++/**********************************************************************
++ *              GetWindowBand (USER32.@)
++ */
++BOOL WINAPI GetWindowBand(HWND hwnd, DWORD *band)
++{
++    TRACE("(%p, %p)\n", hwnd, band);
++    if (!band) return FALSE;
++    *band = NtUserCallHwndParam( hwnd, 0, NtUserCallHwndParam_GetWindowBand ) ? 4 /* ZBID_SYSTEM_TOOLS */ : 1;
++    return TRUE;
+ }
+ 
+ /**********************************************************************
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 6b36c93..805c673 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -6481,6 +6481,27 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
+         return set_window_long_internal( hwnd, params->offset, params->size, params->value, FALSE, TRUE );
+     }
+ 
++    case NtUserCallHwndParam_SetWindowBand:
++    case NtUserCallHwndParam_GetWindowBand:
++    {
++        BOOL ret;
++        int band = -1;
++
++        SERVER_START_REQ( set_window_band )
++        {
++            req->handle = wine_server_user_handle( hwnd );
++            req->band = code == NtUserCallHwndParam_SetWindowBand ? !!param : -1;
++            ret = !wine_server_call_err( req );
++            if (ret) band = reply->band;
++        }
++        SERVER_END_REQ;
++        if (!ret) return FALSE;
++        if (code == NtUserCallHwndParam_GetWindowBand) return band > 0;
++        /* the window takes its place at the top of its band */
++        NtUserSetWindowPos( hwnd, param ? HWND_TOPMOST : HWND_TOP, 0, 0, 0, 0,
++                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER );
++        return TRUE;
++    }
+ 
+     default:
+         FIXME( "invalid code %u\n", code );
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 598949c..bfa0001 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -1421,6 +1421,9 @@ enum
+     NtUserCallHwndParam_SetRawWindowPos,
+     NtUserCallHwndParam_GetPrivateData,
+     NtUserCallHwndParam_SetPrivateData,
++    /* temporary exports */
++    NtUserCallHwndParam_SetWindowBand,
++    NtUserCallHwndParam_GetWindowBand,
+ };
+ 
+ struct get_window_rects_params
+diff --git a/server/protocol.def b/server/protocol.def
+index dde2f65..24ac25b 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -295,6 +295,9 @@ struct composition_window
+     unsigned int     ex_style;     /* window extended style */
+     struct rectangle visible_rect; /* visible rectangle, in screen coordinates */
+     struct rectangle client_rect;  /* client rectangle, in screen coordinates */
++    user_handle_t    owner;        /* owner window */
++    unsigned int     class_atom;   /* class atom, 0x8000 for menus */
++    unsigned int     band;         /* in the band over program windows (the taskbar) */
+ };
+ 
+ /* structure for parameters of async I/O calls */
+@@ -2832,6 +2835,15 @@ enum message_type
+ @END
+ 
+ 
++/* Put a window in the band over program windows, or take it out (SetWindowBand) */
++@REQ(set_window_band)
++    user_handle_t  handle;        /* handle to the window */
++    int            band;          /* 1: in the band, 0: not, -1: only read it */
++@REPLY
++    int            band;          /* what it was */
++@END
++
++
+ /* Get window tree information from a window handle */
+ @REQ(get_window_tree)
+     user_handle_t  handle;        /* handle to the window */
+diff --git a/server/window.c b/server/window.c
+index 17829ae..e5a760d 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -81,6 +81,7 @@ struct window
+     unsigned int     is_orphan : 1;   /* is window orphaned */
+     unsigned int     set_foreground : 1;/* has window been foreground once */
+     unsigned int     composited : 1;  /* listed for the compositor although it is a child */
++    unsigned int     band : 1;        /* in the band over program windows (SetWindowBand) */
+     unsigned int     color_key;       /* color key for a layered window */
+     unsigned int     alpha;           /* alpha value for a layered window */
+     unsigned int     layered_flags;   /* flags for a layered window */
+@@ -324,6 +325,49 @@ static struct ratio get_window_dpi( struct window *win )
+     return dpi;
+ }
+ 
++/* Windows keeps the taskbar in a z-order band over program windows. A window
++ * in the band lies over every other toplevel window except its own popups; a
++ * window with a caption never goes over it, whatever z-order it asks for,
++ * topmost or not. Other popups (menus, tooltips, full screen games) still do,
++ * as in Windows. */
++static void keep_band_order( struct window *win )
++{
++    struct list *children = &win->parent->children;
++    struct window *other, *next, *last_band = NULL;
++    int seen = 0;
++
++    if (win->band)
++    {
++        struct list owned = LIST_INIT( owned );
++
++        list_remove( &win->entry );
++        list_add_head( children, &win->entry );
++        win->ex_style |= WS_EX_TOPMOST;
++        /* its own popups stay over it, in their order */
++        LIST_FOR_EACH_ENTRY_SAFE( other, next, children, struct window, entry )
++        {
++            if (other == win || other->owner != win->handle) continue;
++            list_remove( &other->entry );
++            list_add_tail( &owned, &other->entry );
++        }
++        LIST_FOR_EACH_ENTRY_SAFE( other, next, &owned, struct window, entry )
++        {
++            list_remove( &other->entry );
++            list_add_before( &win->entry, &other->entry );
++        }
++        return;
++    }
++    if ((win->style & WS_CAPTION) != WS_CAPTION) return;
++    LIST_FOR_EACH_ENTRY( other, children, struct window, entry )
++    {
++        if (other == win) seen = 1;
++        else if (seen && other->band) last_band = other;
++    }
++    if (!last_band) return;
++    list_remove( &win->entry );
++    list_add_after( &last_band->entry, &win->entry );
++}
++
+ /* link a window at the right place in the siblings list */
+ static int link_window( struct window *win, struct window *previous )
+ {
+@@ -378,6 +422,7 @@ static int link_window( struct window *win, struct window *previous )
+             if (next && (next->ex_style & WS_EX_TOPMOST)) win->ex_style |= WS_EX_TOPMOST;
+         }
+     }
++    if (is_desktop_window( win->parent )) keep_band_order( win );
+ 
+     win->is_linked = 1;
+     return old_prev != win->entry.prev;
+@@ -2785,6 +2830,9 @@ static int list_composited( struct window *parent, struct composition_window *da
+             client_to_screen_rect( win->parent, &data[i].visible_rect );
+             data[i].client_rect  = win->client_rect;
+             client_to_screen_rect( win->parent, &data[i].client_rect );
++            data[i].owner        = win->owner;
++            data[i].class_atom   = win->atom;
++            data[i].band         = win->band;
+         }
+         i++;
+     }
+@@ -2831,6 +2879,9 @@ DECL_HANDLER(get_composition_list)
+                 data[i].ex_style     = win->ex_style;
+                 data[i].visible_rect = win->visible_rect;
+                 data[i].client_rect  = win->client_rect;
++                data[i].owner        = win->owner;
++                data[i].class_atom   = win->atom;
++                data[i].band         = win->band;
+                 i++;
+             }
+         }
+@@ -2840,6 +2891,23 @@ DECL_HANDLER(get_composition_list)
+ }
+ 
+ 
++/* put a window in the band over program windows, or take it out */
++DECL_HANDLER(set_window_band)
++{
++    struct window *win = get_window( req->handle );
++
++    if (!win) return;
++    reply->band = win->band;
++    if (req->band < 0) return;
++    if (is_desktop_window( win ) || !win->parent || !is_desktop_window( win->parent ))
++    {
++        set_error( STATUS_INVALID_PARAMETER );
++        return;
++    }
++    win->band = !!req->band;
++}
++
++
+ /* get window tree information from a window handle */
+ DECL_HANDLER(get_window_tree)
+ {
+-- 
+2.53.0
+

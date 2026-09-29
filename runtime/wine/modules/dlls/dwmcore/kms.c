@@ -663,7 +663,7 @@ static bool flip_legacy( struct kms_output *out, uint32_t fb )
 }
 
 bool kms_present( struct kms_output *out, uint32_t fb, uint32_t src_width, uint32_t src_height,
-                  bool vrr, void *buffer )
+                  bool vrr, void *buffer, bool composed )
 {
     uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
     bool vrr_before = out->vrr_on;
@@ -681,7 +681,7 @@ bool kms_present( struct kms_output *out, uint32_t fb, uint32_t src_width, uint3
         MESSAGE( "dwm: %s cannot switch variable refresh without a modeset\n", out->name );
         out->vrr_refused = true;
     }
-    else if (buffer)
+    else if (!composed)
         return false;  /* composed instead */
     else
     {
@@ -775,6 +775,36 @@ uint32_t kms_add_dmabuf( int fd, uint32_t width, uint32_t height, uint32_t forma
     imported[slot].fb = cmd.fb_id;
     imported[slot].handle = prime.handle;
     return cmd.fb_id;
+}
+
+/* the handles belong to GBM, which closes them */
+uint32_t kms_add_fb( uint32_t width, uint32_t height, uint32_t format, uint32_t planes, const uint32_t *handles,
+                     const uint32_t *pitches, const uint32_t *offsets, uint64_t modifier )
+{
+    struct drm_mode_fb_cmd2 cmd = { .width = width, .height = height, .pixel_format = format };
+
+    for (uint32_t i = 0; i < planes && i < 4; i++)
+    {
+        cmd.handles[i] = handles[i];
+        cmd.pitches[i] = pitches[i];
+        cmd.offsets[i] = offsets[i];
+        if (modifier != DRM_FORMAT_MOD_INVALID) cmd.modifier[i] = modifier;
+    }
+    if (modifier != DRM_FORMAT_MOD_INVALID) cmd.flags = DRM_MODE_FB_MODIFIERS;
+    if (!ioctl( kms.fd, DRM_IOCTL_MODE_ADDFB2, &cmd )) return cmd.fb_id;
+    if (modifier == DRM_FORMAT_MOD_LINEAR)
+    {
+        cmd.flags = 0;
+        memset( cmd.modifier, 0, sizeof(cmd.modifier) );
+        if (!ioctl( kms.fd, DRM_IOCTL_MODE_ADDFB2, &cmd )) return cmd.fb_id;
+    }
+    WARN( "cannot make a framebuffer of a %ux%u buffer: %s\n", width, height, strerror( errno ) );
+    return 0;
+}
+
+void kms_remove_fb( uint32_t fb )
+{
+    if (fb && kms.fd >= 0) ioctl( kms.fd, DRM_IOCTL_MODE_RMFB, &fb );
 }
 
 void kms_remove_dmabuf( uint32_t fb )

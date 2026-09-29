@@ -11,6 +11,7 @@
 #define __WINE_DWMCORE_UNIXLIB_H
 
 #include "wine/unixlib.h"
+#include "wine/arctic_dwm.h"
 
 #define DWM_MAX_OUTPUTS 8
 #define DWM_MAX_MODES   160
@@ -39,6 +40,10 @@ struct dwm_window
     UINT32 ex_style;
     INT32  left, top, right, bottom;  /* visible rectangle, screen coordinates */
     INT32  client_left, client_top;   /* where the client area starts, screen coordinates */
+    INT32  client_right, client_bottom;
+    UINT32 owner;
+    UINT32 class_atom;                /* 0x8000: a menu */
+    UINT32 band;                      /* the taskbar's band, over program windows */
 };
 
 struct dwm_set_windows_params
@@ -107,6 +112,13 @@ struct dwm_set_options_params
     UINT32 vrr_off[DWM_MAX_OUTPUTS];  /* connectors whose monitor the user turned it off for */
 };
 
+/* what programs asked of their windows through dwmapi (wine/arctic_dwm.h) */
+struct dwm_set_attributes_params
+{
+    UINT32                         count;
+    const struct arctic_dwm_entry *entries;  /* the rows in use */
+};
+
 enum dwm_funcs
 {
     unix_dwm_start,        /* take the display, start serving buffers */
@@ -116,6 +128,7 @@ enum dwm_funcs
     unix_dwm_get_outputs,  /* the connected monitors with their modes */
     unix_dwm_set_config,   /* modes and positions of the monitors */
     unix_dwm_set_options,  /* Windows settings the compositor follows */
+    unix_dwm_set_attributes, /* window attributes and thumbnails from dwmapi */
     unix_funcs_count
 };
 

@@ -118,10 +118,11 @@ struct kms_mode *kms_find_mode( struct kms_output *output, uint32_t width, uint3
 
 /* Frames. kms_present queues a flip to fb, showing src_width x src_height of
  * it over the whole mode, with variable refresh on or off; buffer is what the
- * compositor gets back once it is off screen. It returns false if the flip
- * cannot be made; output->no_flip then says whether it never will. */
+ * compositor gets back once it is off screen. A composed frame falls back to
+ * a legacy flip; a client's buffer is composed instead. It returns false if
+ * the flip cannot be made; output->no_flip then says whether it never will. */
 bool kms_present( struct kms_output *output, uint32_t fb, uint32_t src_width, uint32_t src_height,
-                  bool vrr, void *buffer );
+                  bool vrr, void *buffer, bool composed );
 struct kms_fb *kms_back_buffer( struct kms_output *output );   /* NULL if both are busy */
 struct kms_fb *kms_front_buffer( struct kms_output *output );
 bool kms_can_scanout( struct kms_output *output, uint32_t fb, uint32_t src_width, uint32_t src_height );
@@ -164,6 +165,12 @@ struct dmabuf
     size_t              map_size;
     bool                map_failed;
     bool                gpu_failed;        /* the GPU could not read it back */
+    /* composed on the GPU: the buffer as a texture, without a copy */
+    void               *image;             /* EGLImage */
+    uint32_t            texture;
+    uint32_t            texture_generation;  /* of the GL context */
+    bool                texture_external;  /* GL_TEXTURE_EXTERNAL_OES */
+    bool                texture_failed;
 };
 
 void dmabuf_init( struct wl_display *display );
@@ -173,7 +180,13 @@ void dmabuf_unref( struct dmabuf *buffer );  /* the client gets its buffer back 
 bool dmabuf_read( struct dmabuf *buffer, uint32_t *pixels );  /* width x height, packed */
 uint32_t dmabuf_fb( struct dmabuf *buffer );  /* 0 if the card cannot scan it out */
 
-/* gpuread.c */
+/* gl.c */
 bool gpu_read_dmabuf( struct dmabuf *buffer, uint32_t *pixels );
+void gl_dmabuf_gone( struct dmabuf *buffer );
+
+/* a framebuffer of a buffer object of ours (GBM), 0 if the card cannot take it */
+uint32_t kms_add_fb( uint32_t width, uint32_t height, uint32_t format, uint32_t planes, const uint32_t *handles,
+                     const uint32_t *pitches, const uint32_t *offsets, uint64_t modifier );
+void kms_remove_fb( uint32_t fb );
 
 #endif

@@ -66,6 +66,7 @@ static size_t format_table_size;
 
 static void buffer_free( struct dmabuf *buffer )
 {
+    gl_dmabuf_gone( buffer );
     if (buffer->fb && buffer->fb_generation == kms.generation) kms_remove_dmabuf( buffer->fb );
     if (buffer->map) munmap( buffer->map, buffer->map_size );
     close( buffer->fd );
