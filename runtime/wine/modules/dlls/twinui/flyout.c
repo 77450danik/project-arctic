@@ -252,5 +252,15 @@ void flyout_hover( HWND hwnd, const RECT *button, DWORD flags )
     pending = NULL;
     KillTimer( flyout, TIMER_SHOW );
     if (flags & 1) hide_flyout();
-    else if (IsWindowVisible( flyout )) SetTimer( flyout, TIMER_HIDE, HIDE_DELAY, NULL );
+    else if (IsWindowVisible( flyout ))
+    {
+        POINT pt;
+        RECT rect;
+
+        /* the pointer went from the button onto the flyout: it stays, and
+         * goes once the pointer leaves it */
+        GetCursorPos( &pt );
+        GetWindowRect( flyout, &rect );
+        if (!PtInRect( &rect, pt )) SetTimer( flyout, TIMER_HIDE, HIDE_DELAY, NULL );
+    }
 }

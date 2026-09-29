@@ -745,13 +745,25 @@ static void update_window_states(void)
             }
             else animate_out( ws, &ws->last );
         }
-        else if (ws->shown && shown && ((ws->last.style ^ w->style) & WS_MAXIMIZE) &&
-                 window_transition( w, ws ) == TRANSITION_WINDOW &&
-                 (ws->last.left != w->left || ws->last.top != w->top ||
-                  ws->last.right != w->right || ws->last.bottom != w->bottom))
+        else if (ws->shown && shown && window_transition( w, ws ) == TRANSITION_WINDOW)
         {
-            animate( ws, ANIM_MORPH, window_frect( &ws->last ), window_frect( w ), 1, 1, 200, false );
-            ws->anim_start = kms_now();
+            /* Maximized or restored: WS_MAXIMIZE and the new rectangle may
+             * come in two lists, the style first */
+            bool moved = ws->last.left != w->left || ws->last.top != w->top ||
+                         ws->last.right != w->right || ws->last.bottom != w->bottom;
+            uint64_t now = kms_now();
+
+            if ((ws->last.style ^ w->style) & WS_MAXIMIZE)
+            {
+                ws->maximize_time = now;
+                ws->maximize_from = window_frect( &ws->last );
+            }
+            if (moved && ws->maximize_time && now - ws->maximize_time < 300000)
+            {
+                animate( ws, ANIM_MORPH, ws->maximize_from, window_frect( w ), 1, 1, 200, false );
+                ws->anim_start = now;
+                ws->maximize_time = 0;
+            }
         }
         ws->last = *w;
         ws->shown = shown;

@@ -157,6 +157,8 @@ struct window_state
     struct frect        anim_from, anim_to;  /* the window rectangle, animated */
     float               alpha_from, alpha_to;
     bool                ghost;               /* drawn from the snapshot: the window itself is gone */
+    uint64_t            maximize_time;       /* µs: WS_MAXIMIZE came or went; the new rectangle follows */
+    struct frect        maximize_from;       /* the rectangle it had then */
 
     struct window_image snapshot;            /* the last thing it showed, at its size */
     RECT                snapshot_rect;       /* where it showed it */
