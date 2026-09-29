@@ -86,10 +86,11 @@ static PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC create_window_surface;
 struct program
 {
     GLuint id;
-    GLint  proj, tex, opacity, clip, radius, mode, swizzle, color, tint, noise, half, offset;
+    GLint  proj, tex, opacity, clip, radius, mode, swizzle, color, tint, noise, half, offset, shadow;
 };
 
 static struct program prog_texture, prog_external, prog_color, prog_down, prog_up, prog_acrylic;
+static struct program prog_shadow, prog_outline;
 static GLfloat        proj[4];            /* screen to clip space: xy * proj.xy + proj.zw */
 
 /* the frames of one monitor */
@@ -242,6 +243,44 @@ static const char fragment_acrylic[] =
     "    gl_FragColor = vec4( clamp( c, 0.0, 1.0 ), 1.0 ) * (u_opacity * coverage());\n"
     "}\n";
 
+/* the distance from the rounded rectangle, negative inside */
+#define GLSL_BOX \
+    "float box( vec2 p, vec4 r, float radius )\n" \
+    "{\n" \
+    "    vec2 c = (r.xy + r.zw) * 0.5;\n" \
+    "    vec2 h = (r.zw - r.xy) * 0.5;\n" \
+    "    vec2 q = abs( p - c ) - h + vec2( radius );\n" \
+    "    return length( max( q, 0.0 ) ) + min( max( q.x, q.y ), 0.0 ) - radius;\n" \
+    "}\n"
+
+/* The shadow of Windows 11 under a window: a wide one dropped a little
+ * (u_shadow.x down, u_shadow.y its sigma, u_shadow.z its strength) and a
+ * close one all around (u_shadow.w its strength); none under the window. */
+static const char fragment_shadow[] =
+    GLSL_BOX
+    "uniform vec4 u_shadow;\n"
+    "void main()\n"
+    "{\n"
+    "    float r = max( u_radius, 0.0 );\n"
+    "    float d = box( v_pos, u_clip, r );\n"
+    "    float dk = max( box( v_pos, u_clip + vec4( 0.0, u_shadow.x, 0.0, u_shadow.x ), r ), 0.0 );\n"
+    "    float da = max( d, 0.0 );\n"
+    "    float a = u_shadow.z * exp( -dk * dk / (2.0 * u_shadow.y * u_shadow.y) ) +\n"
+    "              u_shadow.w * exp( -da * da / 32.0 );\n"
+    "    gl_FragColor = vec4( 0.0, 0.0, 0.0, min( a, 1.0 ) * clamp( d + 0.5, 0.0, 1.0 ) * u_opacity );\n"
+    "}\n";
+
+/* the thin line around a window, on its outermost pixels */
+static const char fragment_outline[] =
+    GLSL_BOX
+    "uniform vec4 u_color;\n"
+    "void main()\n"
+    "{\n"
+    "    float d = box( v_pos, u_clip, max( u_radius, 0.0 ) );\n"
+    "    float ring = clamp( 0.5 - d, 0.0, 1.0 ) - clamp( -0.5 - d, 0.0, 1.0 );\n"
+    "    gl_FragColor = u_color * (ring * u_opacity);\n"
+    "}\n";
+
 static GLuint compile( GLenum type, const char *const *sources, int count )
 {
     GLuint shader = glCreateShader( type );
@@ -305,6 +344,7 @@ static bool link_program( struct program *p, const char *body, const char *prefi
     p->noise = glGetUniformLocation( p->id, "u_noise" );
     p->half = glGetUniformLocation( p->id, "u_half" );
     p->offset = glGetUniformLocation( p->id, "u_offset" );
+    p->shadow = glGetUniformLocation( p->id, "u_shadow" );
     return true;
 }
 
@@ -318,7 +358,9 @@ static bool init_programs(void)
         !link_program( &prog_color, fragment_color, "" ) ||
         !link_program( &prog_down, fragment_down, "" ) ||
         !link_program( &prog_up, fragment_up, "" ) ||
-        !link_program( &prog_acrylic, fragment_acrylic, "" ))
+        !link_program( &prog_acrylic, fragment_acrylic, "" ) ||
+        !link_program( &prog_shadow, fragment_shadow, "" ) ||
+        !link_program( &prog_outline, fragment_outline, "" ))
         return false;
     if (has_external && !link_program( &prog_external, fragment_texture, sampler_external )) has_external = false;
     return true;
@@ -854,8 +896,28 @@ static void set_target( const struct target *target )
     memcpy( proj, target->proj, sizeof(proj) );
 }
 
+static void count_layer( struct surface *s, int x, int y, void *ctx )
+{
+    struct surface *child;
+    int *count = ctx;
+
+    if (s->pixels || s->dmabuf) (*count)++;
+    wl_list_for_each( child, &s->children, child_link )
+        if (!child->hwnd) count_layer( child, x, y, ctx );
+}
+
+/* a window of one layer fades and zooms as it is; several layers are
+ * drawn into an image first, so that they fade as one */
+static bool needs_image( const struct window_draw *draw )
+{
+    int count = 0;
+
+    scene_surfaces( draw, count_layer, &count );
+    return count > 1;
+}
+
 /* the window as it is now, into an image of its size (top row first) */
-static bool render_window_image( const struct window_draw *draw, struct window_image *image )
+static bool render_window_image( const struct window_draw *draw, struct window_image *image, bool mipmaps )
 {
     const struct dwm_window *w = draw->w;
     struct xform identity = { 1, 1, 0, 0 };
@@ -873,7 +935,12 @@ static bool render_window_image( const struct window_draw *draw, struct window_i
     glClearColor( 0, 0, 0, 0 );
     glClear( GL_COLOR_BUFFER_BIT );
     scene_surfaces( draw, draw_tree_callback, &ctx );
-    image_mipmaps( image );
+    if (mipmaps) image_mipmaps( image );
+    else
+    {
+        glBindTexture( GL_TEXTURE_2D, image->texture );
+        glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+    }
     set_target( &saved );
     return true;
 }
@@ -886,7 +953,8 @@ bool gl_snapshot( struct window_state *ws, const struct dwm_window *w )
     if (!compositing || !make_current()) return false;
     scene_static_draw( &draw, w, ws );
     current_target = none;
-    if (!render_window_image( &draw, &ws->snapshot )) return false;
+    /* it may be shrunk into a thumbnail */
+    if (!render_window_image( &draw, &ws->snapshot, true )) return false;
     ws->snapshot_rect.left = w->left;
     ws->snapshot_rect.top = w->top;
     ws->snapshot_rect.right = w->right;
@@ -1004,10 +1072,40 @@ static void draw_thumbnail( const struct thumbnail_draw *t )
     else
     {
         scene_static_draw( &draw, t->source, ws );
-        if (!render_window_image( &draw, &ws->scratch )) return;
+        if (!render_window_image( &draw, &ws->scratch, true )) return;
         image = &ws->scratch;
     }
     draw_image( image, &t->dest, &t->source_rect, NULL, t->opacity );
+}
+
+#define SHADOW_OFFSET 10.0f   /* how far the wide shadow drops */
+#define SHADOW_SIGMA  16.0f
+#define SHADOW_SPREAD 64.0f   /* how far around the window it reaches */
+
+static void draw_shadow( const struct window_draw *draw )
+{
+    const struct frect *r = &draw->shown;
+    struct clip clip = draw->clip;
+
+    clip.radius = max( clip.radius, 0.0f );
+    use_program( &prog_shadow );
+    glUniform4f( prog_shadow.shadow, SHADOW_OFFSET, SHADOW_SIGMA, 0.30f, 0.14f );
+    set_clip( &prog_shadow, &clip, draw->opacity );
+    draw_quad( r->left - SHADOW_SPREAD, r->top - SHADOW_SPREAD, r->right + SHADOW_SPREAD,
+               r->bottom + SHADOW_SPREAD + SHADOW_OFFSET, 0, 0, 1, 1 );
+}
+
+static void draw_outline( const struct window_draw *draw )
+{
+    const struct frect *r = &draw->shown;
+    struct clip clip = draw->clip;
+
+    clip.radius = max( clip.radius, 0.0f );
+    use_program( &prog_outline );
+    /* black at a fifth: the light grey line of Windows 11 over a white frame */
+    glUniform4f( prog_outline.color, 0, 0, 0, 0.2f );
+    set_clip( &prog_outline, &clip, draw->opacity );
+    draw_quad( r->left - 1, r->top - 1, r->right + 1, r->bottom + 1, 0, 0, 1, 1 );
 }
 
 static void draw_window( const struct window_draw *draw, int ox, int oy )
@@ -1016,13 +1114,14 @@ static void draw_window( const struct window_draw *draw, int ox, int oy )
     struct thumbnail_draw thumbs[32];
     uint32_t count;
 
+    if (draw->decorated) draw_shadow( draw );
     if (draw->backdrop) draw_backdrop( draw, ox, oy );
 
     if (draw->from_snapshot)
     {
         if (ws && ws->snapshot_valid) draw_image( &ws->snapshot, &draw->shown, NULL, &draw->clip, draw->opacity );
     }
-    else if (draw->as_image && ws && render_window_image( draw, &ws->scratch ))
+    else if (draw->as_image && ws && needs_image( draw ) && render_window_image( draw, &ws->scratch, false ))
     {
         draw_image( &ws->scratch, &draw->shown, NULL, &draw->clip, draw->opacity );
     }
@@ -1031,6 +1130,7 @@ static void draw_window( const struct window_draw *draw, int ox, int oy )
         struct layer_ctx ctx = { draw, &draw->xform, draw->clip.radius > 0 ? &draw->clip : NULL, draw->opacity };
         scene_surfaces( draw, draw_tree_callback, &ctx );
     }
+    if (draw->decorated) draw_outline( draw );
 
     count = scene_thumbnails( draw, thumbs, ARRAY_SIZE(thumbs) );
     for (uint32_t i = 0; i < count; i++) draw_thumbnail( &thumbs[i] );

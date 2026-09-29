@@ -114,7 +114,8 @@ static void paint( HDC hdc, const RECT *client )
     icon = window_icon( task, FALSE );
     DrawIconEx( hdc, PADDING, (TITLE_HEIGHT - ICON_SIZE) / 2 + PADDING / 2, icon, ICON_SIZE, ICON_SIZE, 0, NULL,
                 DI_NORMAL );
-    InternalGetWindowText( task, title, ARRAY_SIZE(title) );
+    if (!InternalGetWindowText( task, title, ARRAY_SIZE(title) )) GetWindowTextW( task, title, ARRAY_SIZE(title) );
+    TRACE( "%p %s, icon %p, font %p\n", task, debugstr_w(title), icon, font );
     SelectObject( hdc, font );
     SetBkMode( hdc, TRANSPARENT );
     SetTextColor( hdc, RGB(255, 255, 255) );

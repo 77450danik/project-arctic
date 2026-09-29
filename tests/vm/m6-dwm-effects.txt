@@ -15,8 +15,8 @@ shot d3-hot-maximize          # the maximize button under the pointer
 click                         # maximize: from its rectangle to the screen's
 burst maximize 8 40
 sleep 2
-move 1234 12
-click                         # restore
+move 1211 12
+click                         # restore (maximized, the buttons reach the screen's edge)
 burst restore 8 40
 sleep 2
 move 645 14

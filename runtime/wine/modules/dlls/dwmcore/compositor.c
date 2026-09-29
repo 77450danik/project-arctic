@@ -489,6 +489,16 @@ static bool covers_monitor( const struct dwm_window *w )
            w->right >= rect.right && w->bottom >= rect.bottom;
 }
 
+/* nine tenths of the monitor or more, both ways */
+static bool nearly_covers_monitor( const struct dwm_window *w )
+{
+    RECT rect;
+
+    if (!monitor_rect( (w->left + w->right) / 2, (w->top + w->bottom) / 2, &rect )) return false;
+    return (w->right - w->left) * 10 >= (rect.right - rect.left) * 9 &&
+           (w->bottom - w->top) * 10 >= (rect.bottom - rect.top) * 9;
+}
+
 static bool is_cloaked( const struct window_state *ws )
 {
     return ws && ws->has_attr && ws->attr.cloaked;
@@ -510,6 +520,14 @@ static float corner_radius( const struct dwm_window *w, const struct window_stat
     if (corner == 3 /* DWMWCP_ROUNDSMALL */) return CORNER_RADIUS / 2;
     if (corner == 2 /* DWMWCP_ROUND */) return CORNER_RADIUS;
     return has_caption( w ) || (w->style & WS_THICKFRAME) ? CORNER_RADIUS : 0;
+}
+
+/* Windows 11 puts a soft shadow under windows with a frame and under menus,
+ * and outlines them with a thin line */
+static bool window_decorated( const struct dwm_window *w, float radius )
+{
+    if (w->style & (WS_CHILD | WS_MAXIMIZE | WS_MINIMIZE)) return false;
+    return radius > 0 || w->class_atom == 0x8000;
 }
 
 /* The backdrop a window asked for: SetWindowCompositionAttribute's accent
@@ -574,7 +592,8 @@ static enum transition window_transition( const struct dwm_window *w, const stru
     /* layered windows (the toasts) animate themselves */
     if ((w->ex_style & WS_EX_LAYERED) || covers_monitor( w )) return TRANSITION_NONE;
     if (has_caption( w )) return TRANSITION_WINDOW;
-    if (w->style & WS_POPUP) return TRANSITION_POPUP;
+    /* menus and flyouts, not the desktop in the work area */
+    if ((w->style & WS_POPUP) && !nearly_covers_monitor( w )) return TRANSITION_POPUP;
     return TRANSITION_NONE;
 }
 
@@ -840,6 +859,8 @@ static bool animation_frame( struct window_state *ws, uint64_t now, struct frect
     if (ws->anim == ANIM_MINIMIZE) *alpha = 1 - t * t;
     else if (ws->anim == ANIM_RESTORE) *alpha = min( 1.0f, t * 3 );
     else *alpha = lerp( ws->alpha_from, ws->alpha_to, e );
+    TRACE( "%08x at %.2f: %.0f,%.0f-%.0f,%.0f opacity %.2f\n", ws->hwnd, t, rect->left, rect->top, rect->right,
+           rect->bottom, *alpha );
     return true;
 }
 
@@ -854,6 +875,7 @@ static bool fill_draw( struct window_draw *draw, const struct dwm_window *w, str
     draw->opacity = 1;
     draw->mode = layer_mode;
     draw->clip.radius = corner_radius( w, ws );
+    draw->decorated = window_decorated( w, draw->clip.radius );
     draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
 
     if (ws && ws->anim && !ws->ghost)
@@ -916,6 +938,7 @@ uint32_t scene_windows( struct window_draw *draws, uint32_t max )
         draw->from_snapshot = true;
         draw->as_image = true;
         draw->clip.radius = corner_radius( &ws->last, ws );
+        draw->decorated = window_decorated( &ws->last, draw->clip.radius );
         draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
         set_draw_geometry( draw, frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top,
                                              ws->snapshot_rect.right, ws->snapshot_rect.bottom ), shown );
@@ -934,6 +957,7 @@ void scene_static_draw( struct window_draw *draw, const struct dwm_window *w, st
     draw->opacity = 1;
     draw->mode = layer_mode;
     draw->clip.radius = corner_radius( w, ws );
+    draw->decorated = window_decorated( w, draw->clip.radius );
     draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
     set_draw_geometry( draw, r, r );
 }

@@ -289,7 +289,7 @@ index f6824cc3..c09f23ea 100644
  IsSameObject(IN IUnknown *punk1, IN IUnknown *punk2)
  {
 diff --git a/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI b/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI
-index 0c93d854..d68e360f 100644
+index 0c93d854..a77d9a73 100644
 --- a/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI
 +++ b/media/themes/Mizu/mizu.msstyles/textfiles/NormalNormal.INI
 @@ -1022,39 +1022,30 @@ TransparentColor = 255 0 255
@@ -349,7 +349,155 @@ index 0c93d854..d68e360f 100644
  ContentMargins = 1, 1, 1, 1
  
  [TaskBar.SizingBarBottom]
-@@ -1979,60 +1970,44 @@ ImageFile = Normal\TaskBandScrollShaftVertical.bmp
+@@ -1332,17 +1323,16 @@ TextShadowColor = 0 0 0
+ TextShadowOffset = 1,1
+ Transparent = true
+ 
++; the frame of Windows 10 and 11: all of it in the caption's white; the thin
++; outline and the shadow around the window are drawn by dwm.exe
+ [Window.Caption]
+ CaptionMargins = 7, 7, 2, 0
+ ContentMargins = 7, 7, 2, 0
+ ContentAlignment = Left
+-FillColorHint = 0 0 0
+-ImageCount = 2
+-ImageFile = Normal\FrameCaption.bmp
+-Imagelayout = Vertical
+-SizingMargins = 6, 6, 4, 2
+-SizingType = stretch
+-Transparent = True
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.Caption(Active)]
+ TextColor = 0 0 0
+@@ -1400,32 +1390,22 @@ BorderColor = 239 238 243
+ FillColor = 0 255 0
+ 
+ [Window.FrameBottom]
+-Borderonly = FALSE
+-ImageCount = 2
+-ImageFile = Normal\frameBottom.bmp
+-ImageLayout = vertical
+-SizingMargins = 6, 6, 1, 2
+-SizingType = stretch
+-Transparent = True
+-TRANSPARENTCOLOR = 255 0 255
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.FrameLeft]
+-Borderonly = FALSE
+-ImageCount = 2
+-ImageFile = Normal\frameLeft.bmp
+-ImageLayout = vertical
+-SizingMargins = 2, 1, 0, 0
+-SizingType = stretch
+-Transparent = FALSE
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.FrameRight]
+-Borderonly = FALSE
+-ImageCount = 2
+-ImageFile = Normal\frameRight.bmp
+-ImageLayout = vertical
+-SizingMargins = 1, 2, 0, 0
+-SizingType = stretch
+-Transparent = FALSE
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.HelpButton]
+ BgType = ImageFile
+@@ -1482,13 +1462,10 @@ UniformSizing = true
+ CaptionMargins = 4, 3, 4, 2
+ ContentAlignment = Left
+ ContentMargins = 1, 1, 1, 1
+-FillColorHint = 0 84 229
+-ImageCount = 2
+-ImageFile = Normal\FrameMaximized.bmp
+-Imagelayout = vertical
+-SizingMargins = 46, 75, 16, 4
+-SizingType = stretch
+-SizingType = Tile
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.MDICloseButton]
+ BgType = ImageFile
+@@ -1601,12 +1578,10 @@ UniformSizing = true
+ [Window.SmallCaption]
+ ContentMargins = 7, 7, 1, 1
+ ContentAlignment = left
+-FillColorHint = 0 84 229
+-ImageCount = 2
+-ImageFile = Normal\SmallFrameCaption.bmp
+-Imagelayout = vertical
+-SizingMargins = 24, 37, 9, 8
+-SizingType = Stretch
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.SmallCaptionSizingTemplate]
+ ContentMargins = 14, 14, 16, 0
+@@ -1635,31 +1610,22 @@ SizingMargins = 5, 5, 5, 5
+ SizingType = TrueSize
+ 
+ [Window.SmallFrameBottom]
+-Borderonly = False
+-ImageCount = 2
+-ImageFile = Normal\frameBottom.bmp
+-ImageLayout = vertical
+-SizingMargins = 6, 6, 1, 2
+-SizingType = stretch
+-Transparent = FALSE
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.SmallFrameLeft]
+-Borderonly = False
+-ImageCount = 2
+-ImageFile = Normal\frameLeft.bmp
+-ImageLayout = vertical
+-SizingMargins = 2, 1, 0, 0
+-SizingType = stretch
+-Transparent = FALSE
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.SmallFrameRight]
+-Borderonly = False
+-ImageCount = 2
+-ImageFile = Normal\frameRight.bmp
+-ImageLayout = vertical
+-SizingMargins = 1, 2, 0, 0
+-SizingType = stretch
+-Transparent = FALSE
++BgType = BorderFill
++BorderSize = 0
++FillColor = 255 255 255
++FillColorHint = 255 255 255
+ 
+ [Window.SysButton]
+ Offset = 10, 3
+@@ -1979,60 +1945,44 @@ ImageFile = Normal\TaskBandScrollShaftVertical.bmp
  ImageLayout = Vertical
  SizingMargins = 1, 1, 0, 0
  
@@ -416,7 +564,7 @@ index 0c93d854..d68e360f 100644
  SizingType = Stretch
  Transparent = True
  
-@@ -2230,15 +2205,9 @@ Transparent = false
+@@ -2230,15 +2180,9 @@ Transparent = false
  TransparentColor = 255 0 255
  
  [TrayNotifyHoriz::TrayNotify.Background]
@@ -435,7 +583,7 @@ index 0c93d854..d68e360f 100644
  
  [TrayNotifyHorizOpen::Button]
  BgType = ImageFile
-@@ -2260,15 +2229,9 @@ SizingType = TrueSize
+@@ -2260,15 +2204,9 @@ SizingType = TrueSize
  Transparent = True
  
  [TrayNotifyVert::TrayNotify.Background]

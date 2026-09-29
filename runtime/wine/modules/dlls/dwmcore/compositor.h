@@ -195,6 +195,7 @@ struct window_draw
     struct clip              clip;
     bool                     from_snapshot;  /* the window is gone: its snapshot stands in */
     bool                     as_image;       /* drawn once into an image, then faded or zoomed */
+    bool                     decorated;      /* a shadow under it and a thin outline, as Windows 11 draws */
     bool                     backdrop;       /* blurred or tinted behind it */
     bool                     blur;
     uint32_t                 tint;           /* 0xAARRGGBB, straight alpha */
