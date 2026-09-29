@@ -1,0 +1,9 @@
+MODULE    = twinui.dll
+IMPORTS   = dwmapi user32 gdi32
+
+VER_FILEDESCRIPTION_STR = "Windows shell experience: task switching"
+
+SOURCES = \
+	flyout.c \
+	main.c \
+	switcher.c
