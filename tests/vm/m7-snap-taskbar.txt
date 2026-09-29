@@ -1,0 +1,52 @@
+# Aero Snap, the combined taskbar of Windows 10 and its settings
+# (boot with --append "arctic.winedebug=fixme-all,+dwm" to see each animation)
+sleep 6
+shot s1-desktop               # large taskbar, buttons without labels
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 3
+move 300 14
+down                          # take Notepad by its caption
+move 320 60
+move 400 200
+sleep 0.5
+move 640 100
+move 640 0                    # the top of the screen
+sleep 0.6
+shot s2-snap-preview          # the translucent preview of the maximized window
+up
+sleep 1.5
+shot s3-snapped-maximized
+move 640 12
+down                          # a maximized window torn off its place
+move 640 40
+move 640 200
+sleep 0.5
+shot s4-restored-drag         # back to its size, under the pointer
+move 0 400                    # the left edge
+sleep 0.6
+shot s5-snap-left-preview
+up
+sleep 1.5
+shot s6-snapped-left
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 3
+shot s7-two-notepads          # one button for both
+move 72 780
+sleep 1.5
+shot s8-group-thumbnails      # both windows over the button
+click
+sleep 1
+shot s9-group-click
+move 640 400
+click
+sleep 1
+move 700 780
+click right                   # the taskbar's own menu
+sleep 1
+shot s10-taskbar-menu
