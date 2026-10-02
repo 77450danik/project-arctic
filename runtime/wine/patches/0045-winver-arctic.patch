@@ -1,0 +1,22 @@
+diff --git a/programs/winver/winver.c b/programs/winver/winver.c
+index ee31204..8eb4130 100644
+--- a/programs/winver/winver.c
++++ b/programs/winver/winver.c
+@@ -22,14 +22,11 @@
+ #include "commctrl.h"
+ #include "shellapi.h"
+ 
++/* Arctic: "About Arctic", as Windows' winver says "About Windows"; the
++ * version line under it is the shell's (ShellAbout), with the build */
+ int PASCAL WinMain (HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
+ {
+-    char name[128] = "Wine ";
+-    const char * (CDECL *wine_get_version)(void);
+-
+     InitCommonControls();
+ 
+-    wine_get_version = (void *)GetProcAddress( GetModuleHandleA("ntdll.dll"), "wine_get_version" );
+-    if (wine_get_version) strcat( name, wine_get_version() );
+-    return !ShellAboutA( NULL, name, NULL, 0 );
++    return !ShellAboutW( NULL, L"Arctic", NULL, 0 );
+ }

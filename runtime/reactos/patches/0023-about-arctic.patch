@@ -1,0 +1,168 @@
+diff --git a/dll/win32/browseui/shellbrowser.cpp b/dll/win32/browseui/shellbrowser.cpp
+index 430d8187..96a6ab08 100644
+--- a/dll/win32/browseui/shellbrowser.cpp
++++ b/dll/win32/browseui/shellbrowser.cpp
+@@ -3957,7 +3957,7 @@ LRESULT CShellBrowser::OnDisconnectNetworkDrive(WORD wNotifyCode, WORD wID, HWND
+ 
+ LRESULT CShellBrowser::OnAboutReactOS(WORD wNotifyCode, WORD wID, HWND hWndCtl, BOOL &bHandled)
+ {
+-    ShellAbout(m_hWnd, _T("ReactOS"), NULL, NULL);
++    ShellAbout(m_hWnd, _T("Arctic"), NULL, NULL);
+     return 0;
+ }
+ 
+diff --git a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
+index 3ad1c699..e8b667ba 100644
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -143,11 +143,9 @@ BEGIN
+     ICON "", IDC_ABOUT_ICON, 7, 55, 21, 20
+     LTEXT "", IDC_ABOUT_APPNAME, 35, 55, 200, 10, SS_NOPREFIX
+     LTEXT "", IDC_ABOUT_VERSION, 35, 65, 250, 10, SS_NOPREFIX
+-    LTEXT "Copyright 1996-", IDC_STATIC, 35, 75, 53, 10
+-    LTEXT COPYRIGHT_YEAR, IDC_STATIC, 88, 75, 17, 10
+-    LTEXT " ReactOS Team\0", IDC_STATIC, 105, 75, 53, 10
++    LTEXT "Copyright (C) Project Arctic", IDC_STATIC, 35, 75, 200, 10
+     LTEXT "", IDC_ABOUT_OTHERSTUFF, 35, 90, 180, 20, SS_NOPREFIX
+-    LTEXT "This ReactOS version is registered to:", IDC_ABOUT_REG_TO, 35, 115, 180, 10
++    LTEXT "This copy of Arctic is registered to:", IDC_ABOUT_REG_TO, 35, 115, 180, 10
+     LTEXT "", IDC_ABOUT_REG_USERNAME, 45, 125, 180, 10, SS_NOPREFIX
+     LTEXT "", IDC_ABOUT_REG_ORGNAME, 45, 135, 180, 10, SS_NOPREFIX
+     LTEXT "", IDC_STATIC, 35, 147, 235, 1, SS_ETCHEDHORZ
+@@ -784,6 +782,7 @@ BEGIN
+ 
+     /* About shell dialog version string */
+     IDS_ABOUT_VERSION_STRING "Version %S (%S)"
++    IDS_ARCTIC_VERSION "Version %s (build %s, %s)"
+ 
+     /* context menus */
+     IDS_VIEW_LARGE "Lar&ge Icons"
+diff --git a/dll/win32/shell32/lang/ru-RU.rc b/dll/win32/shell32/lang/ru-RU.rc
+index be72e40c..780eb414 100644
+--- a/dll/win32/shell32/lang/ru-RU.rc
++++ b/dll/win32/shell32/lang/ru-RU.rc
+@@ -152,11 +152,9 @@ BEGIN
+     ICON "", IDC_ABOUT_ICON, 7, 55, 21, 20
+     LTEXT "", IDC_ABOUT_APPNAME, 35, 55, 200, 10, SS_NOPREFIX
+     LTEXT "", IDC_ABOUT_VERSION, 35, 65, 250, 10, SS_NOPREFIX
+-    LTEXT "Copyright 1996-", IDC_STATIC, 35, 75, 53, 10
+-    LTEXT COPYRIGHT_YEAR, IDC_STATIC, 88, 75, 17, 10
+-    LTEXT " Команда ReactOS\0", IDC_STATIC, 105, 75, 65, 10
++    LTEXT "© Project Arctic", IDC_STATIC, 35, 75, 200, 10
+     LTEXT "", IDC_ABOUT_OTHERSTUFF, 35, 90, 180, 20, SS_NOPREFIX
+-    LTEXT "Данная версия ReactOS зарегистрирована на:", IDC_ABOUT_REG_TO, 35, 115, 180, 10
++    LTEXT "Эта копия Arctic зарегистрирована на:", IDC_ABOUT_REG_TO, 35, 115, 180, 10
+     LTEXT "", IDC_ABOUT_REG_USERNAME, 45, 125, 180, 10, SS_NOPREFIX
+     LTEXT "", IDC_ABOUT_REG_ORGNAME, 45, 135, 180, 10, SS_NOPREFIX
+     LTEXT "", IDC_STATIC, 35, 147, 235, 1, SS_ETCHEDHORZ
+@@ -793,6 +791,7 @@ BEGIN
+ 
+     /* About shell dialog version string */
+     IDS_ABOUT_VERSION_STRING "Версия %S (%S)"
++    IDS_ARCTIC_VERSION "Версия %s (сборка %s от %s)"
+ 
+     /* context menus */
+     IDS_VIEW_LARGE "&Крупные значки"
+diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+index 09e05289..29ce82f0 100644
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -143,11 +143,9 @@ BEGIN
+     ICON "", IDC_ABOUT_ICON, 7, 55, 21, 20
+     LTEXT "", IDC_ABOUT_APPNAME, 35, 55, 200, 10, SS_NOPREFIX
+     LTEXT "", IDC_ABOUT_VERSION, 35, 65, 250, 10, SS_NOPREFIX
+-    LTEXT "Copyright 1996-", IDC_STATIC, 35, 75, 53, 10
+-    LTEXT COPYRIGHT_YEAR, IDC_STATIC, 88, 75, 17, 10
+-    LTEXT " ReactOS Team\0", IDC_STATIC, 105, 75, 53, 10
++    LTEXT "© Project Arctic", IDC_STATIC, 35, 75, 200, 10
+     LTEXT "", IDC_ABOUT_OTHERSTUFF, 35, 90, 180, 20, SS_NOPREFIX
+-    LTEXT "Ця версія ReactOS зареєстрована на:", IDC_ABOUT_REG_TO, 35, 115, 180, 10
++    LTEXT "Ця копія Arctic зареєстрована на:", IDC_ABOUT_REG_TO, 35, 115, 180, 10
+     LTEXT "", IDC_ABOUT_REG_USERNAME, 45, 125, 180, 10, SS_NOPREFIX
+     LTEXT "", IDC_ABOUT_REG_ORGNAME, 45, 135, 180, 10, SS_NOPREFIX
+     LTEXT "", IDC_STATIC, 35, 147, 235, 1, SS_ETCHEDHORZ
+@@ -784,6 +782,7 @@ BEGIN
+ 
+     /* About shell dialog version string */
+     IDS_ABOUT_VERSION_STRING "Версія %S (%S)"
++    IDS_ARCTIC_VERSION "Версія %s (збірка %s від %s)"
+ 
+     /* context menus */
+     IDS_VIEW_LARGE "&Великі значки"
+diff --git a/dll/win32/shell32/shresdef.h b/dll/win32/shell32/shresdef.h
+index a15ce581..9c96331c 100644
+--- a/dll/win32/shell32/shresdef.h
++++ b/dll/win32/shell32/shresdef.h
+@@ -417,6 +417,7 @@
+ #define IDC_ABOUT_REG_USERNAME        0x3507
+ #define IDC_ABOUT_REG_ORGNAME         0x3508
+ #define IDC_ABOUT_PHYSMEM             0x3503
++#define IDS_ARCTIC_VERSION            0x350E  /* Arctic: the version line, from HKLM\Software\Arctic */
+ 
+ /* About authors dialog */
+ #define IDD_ABOUT_AUTHORS         3
+diff --git a/dll/win32/shell32/wine/shell32_main.c b/dll/win32/shell32/wine/shell32_main.c
+index 919b168e..552aa4e0 100644
+--- a/dll/win32/shell32/wine/shell32_main.c
++++ b/dll/win32/shell32/wine/shell32_main.c
+@@ -1317,6 +1317,46 @@ BOOL WINAPI ShellAboutA( HWND hWnd, LPCSTR szApp, LPCSTR szOtherStuff, HICON hIc
+ }
+ 
+ 
++#ifdef __REACTOS__
++/* Arctic: the version line is Arctic's, with the build number and the date
++ * the image was built (HKLM\Software\Arctic, which ci/build-rootfs.sh
++ * writes): "Version pre-alpha (build 214, 03.10.2026)" */
++static BOOL GetArcticVersion(LPWSTR pszBuf, UINT cchBuf)
++{
++    WCHAR szVersion[64] = L"", szBuild[32] = L"", szDate[32] = L"", szShown[64], szFormat[128];
++    SYSTEMTIME st = { 0 };
++    DWORD cb;
++    HKEY hKey;
++
++    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Arctic", 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
++        return FALSE;
++    cb = sizeof(szVersion) - sizeof(WCHAR);
++    RegQueryValueExW(hKey, L"Version", NULL, NULL, (LPBYTE)szVersion, &cb);
++    cb = sizeof(szBuild) - sizeof(WCHAR);
++    RegQueryValueExW(hKey, L"Build", NULL, NULL, (LPBYTE)szBuild, &cb);
++    cb = sizeof(szDate) - sizeof(WCHAR);
++    RegQueryValueExW(hKey, L"BuildDate", NULL, NULL, (LPBYTE)szDate, &cb);
++    RegCloseKey(hKey);
++
++    /* the date as the user's locale writes it */
++    StringCchCopyW(szShown, _countof(szShown), szDate);
++    if (wcslen(szDate) == 10 && szDate[4] == L'-' && szDate[7] == L'-')
++    {
++        for (int i = 0; i < 10; i++)
++        {
++            WORD *pPart = i < 4 ? &st.wYear : i < 7 ? &st.wMonth : &st.wDay;
++            if (i == 4 || i == 7) continue;
++            *pPart = *pPart * 10 + (szDate[i] - L'0');
++        }
++        GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &st, NULL, szShown, _countof(szShown));
++    }
++    if (!LoadStringW(shell32_hInstance, IDS_ARCTIC_VERSION, szFormat, _countof(szFormat)))
++        StringCchCopyW(szFormat, _countof(szFormat), L"Version %s (build %s, %s)");
++    StringCchPrintfW(pszBuf, cchBuf, szFormat, szVersion, szBuild, szShown);
++    return TRUE;
++}
++#endif
++
+ /*************************************************************************
+  * ShellAboutW                [SHELL32.289]
+  */
+@@ -1345,8 +1385,11 @@ BOOL WINAPI ShellAboutW( HWND hWnd, LPCWSTR szApp, LPCWSTR szOtherStuff,
+ 
+ #ifdef __REACTOS__
+     /* Output the version OS kernel strings */
+-    LoadStringW(shell32_hInstance, IDS_ABOUT_VERSION_STRING, szFormat, _countof(szFormat));
+-    StringCchPrintfW(szVersionString, _countof(szVersionString), szFormat, KERNEL_VERSION_STR, KERNEL_VERSION_BUILD_STR);
++    if (!GetArcticVersion(szVersionString, _countof(szVersionString)))
++    {
++        LoadStringW(shell32_hInstance, IDS_ABOUT_VERSION_STRING, szFormat, _countof(szFormat));
++        StringCchPrintfW(szVersionString, _countof(szVersionString), szFormat, KERNEL_VERSION_STR, KERNEL_VERSION_BUILD_STR);
++    }
+ #endif
+ 
+     info.szApp        = szApp;

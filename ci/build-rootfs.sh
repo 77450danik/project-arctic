@@ -76,6 +76,22 @@ wineserver -w
 EOF
 mkdir -p "$RFS/var/tmp/registry"
 cp "$ROOT"/runtime/registry/*.reg "$RFS/var/tmp/registry/"
+# Arctic's version, which the About dialog (ShellAbout, winver) shows: the
+# build is the number of commits, the date the day the image was built. CI
+# passes them in (its container has no git); a local build counts them itself.
+BUILD=${ARCTIC_BUILD:-$(git -c safe.directory='*' -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 0)}
+COMMIT=${ARCTIC_COMMIT:-$(git -c safe.directory='*' -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)}
+BUILD_DATE=${ARCTIC_BUILD_DATE:-$(date -u +%Y-%m-%d)}
+cat > "$RFS/var/tmp/registry/zz-build.reg" <<EOF
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\\Software\\Arctic]
+"Version"="pre-alpha"
+"Build"="$BUILD"
+"BuildDate"="$BUILD_DATE"
+"Commit"="$COMMIT"
+EOF
+echo "Arctic pre-alpha, build $BUILD of $BUILD_DATE ($COMMIT)"
 timeout 900 arch-chroot "$RFS" /usr/bin/busybox sh /var/tmp/mkprefix.sh
 
 PFX="$RFS/var/tmp/prefix"

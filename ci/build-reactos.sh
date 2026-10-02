@@ -23,7 +23,9 @@ SHELL_DLLS="shell32 browseui shdocvw shlwapi comctl32 uxtheme devmgr"
 SHELL_EXTENSIONS="zipfldr stobject netshell"
 CONTROL_PANELS="desk mmsys"
 APPLICATIONS="sndvol32"
-TARGETS="explorer $SHELL_DLLS $SHELL_EXTENSIONS $CONTROL_PANELS $APPLICATIONS mizu.msstyles $KEYBOARDS"
+# the About dialog's banner (ShellAbout), drawn by tools/make-brand.py
+BRANDING="rosbrand"
+TARGETS="explorer $SHELL_DLLS $SHELL_EXTENSIONS $CONTROL_PANELS $APPLICATIONS $BRANDING mizu.msstyles $KEYBOARDS"
 
 ROSBE_SCRIPT=https://gist.githubusercontent.com/zefklop/b2d6a0b470c70183e93d5285a03f5899/raw/build_rosbe_ci.sh
 ROSBE_SCRIPT_SHA256=ea42b032fdf9b8b51e993ebe0d1aedc8714f7eff522f4a2fbac7b9aa32a9263c
@@ -82,6 +84,9 @@ for cpl in $CONTROL_PANELS; do
 done
 for app in $APPLICATIONS; do
     cp "build/base/applications/$app/$app.exe" "$OUT/Windows/System32/"
+done
+for brand in $BRANDING; do
+    cp "build/dll/branding/$brand/$brand.dll" "$OUT/Windows/System32/"
 done
 for kbd in $KEYBOARDS; do
     # the layouts are linked straight into dll/keyboard, not into a folder each

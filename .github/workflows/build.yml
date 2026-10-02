@@ -135,7 +135,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      # the whole history: the build number is the number of commits
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: bash ci/free-disk.sh
       - uses: actions/cache/restore@v4
         with:
@@ -161,8 +164,13 @@ jobs:
           name: reactos-shell
           path: out/reactos
 
+      # the build's number and date for the About dialog: the container has no git
       - name: Host root filesystem and NT prefix
-        run: docker run --rm --privileged -v "$PWD:/work" archlinux:latest bash /work/ci/build-rootfs.sh
+        run: |
+          export ARCTIC_BUILD=$(git rev-list --count HEAD) ARCTIC_COMMIT=$(git rev-parse --short=7 HEAD)
+          export ARCTIC_BUILD_DATE=$(date -u +%Y-%m-%d)
+          docker run --rm --privileged -e ARCTIC_BUILD -e ARCTIC_COMMIT -e ARCTIC_BUILD_DATE -v "$PWD:/work" \
+              archlinux:latest bash /work/ci/build-rootfs.sh
       - name: "C: image (NTFS)"
         run: bash ci/make-windows-img.sh
       # Limine is signed with the Arctic Secure Boot key (ci/sign-efi.sh)
