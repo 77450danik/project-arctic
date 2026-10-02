@@ -43,7 +43,7 @@ index 986c6652..b010e870 100644
 +        return S_OK;
  
 -        g_mmDeviceChange = RegisterWindowMessageW(L"winmm_devicechange");
-+    hr = CoCreateInstance(CLSID_SndVolSSO, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARG(IOleCommandTarget, &g_pctVolume));
++    hr = CoCreateInstance(CLSID_SndVolSSO, NULL, CLSCTX_INPROC_SERVER, IID_IOleCommandTarget, (void **)&g_pctVolume);
 +    if (FAILED(hr))
 +    {
 +        /* the other icons come up all the same */
