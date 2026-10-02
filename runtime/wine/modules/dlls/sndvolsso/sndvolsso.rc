@@ -1,0 +1,70 @@
+/*
+ * Volume icon of the notification area: resources
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "sndvolsso.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TIP_LEVEL         "%s: %d%%"
+    IDS_TIP_MUTED         "%s: Muted"
+    IDS_NO_DEVICE         "No audio output device is installed"
+    IDS_OPEN_SETTINGS     "Open Sound settings"
+    IDS_OPEN_MIXER        "Open Volume mixer"
+    IDS_SOUNDS            "Sounds"
+    IDS_SPEAKERS          "Speakers"
+    IDS_HEADPHONES        "Headphones"
+    IDS_DIGITAL_OUTPUT    "Digital Output"
+    IDS_DIGITAL_DISPLAY   "Digital Display"
+    IDS_MUTE              "Mute"
+    IDS_UNMUTE            "Unmute"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TIP_LEVEL         "%s: %d%%"
+    IDS_TIP_MUTED         "%s: звук вимкнуто"
+    IDS_NO_DEVICE         "Пристрій виведення звуку не встановлено"
+    IDS_OPEN_SETTINGS     "Відкрити параметри звуку"
+    IDS_OPEN_MIXER        "Відкрити мікшер гучності"
+    IDS_SOUNDS            "Звуки"
+    IDS_SPEAKERS          "Динаміки"
+    IDS_HEADPHONES        "Навушники"
+    IDS_DIGITAL_OUTPUT    "Цифровий вихід"
+    IDS_DIGITAL_DISPLAY   "Цифровий дисплей"
+    IDS_MUTE              "Вимкнути звук"
+    IDS_UNMUTE            "Увімкнути звук"
+}
+
+LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TIP_LEVEL         "%s: %d%%"
+    IDS_TIP_MUTED         "%s: звук выключен"
+    IDS_NO_DEVICE         "Устройство вывода звука не установлено"
+    IDS_OPEN_SETTINGS     "Открыть параметры звука"
+    IDS_OPEN_MIXER        "Открыть микшер громкости"
+    IDS_SOUNDS            "Звуки"
+    IDS_SPEAKERS          "Динамики"
+    IDS_HEADPHONES        "Наушники"
+    IDS_DIGITAL_OUTPUT    "Цифровой выход"
+    IDS_DIGITAL_DISPLAY   "Цифровой дисплей"
+    IDS_MUTE              "Выключить звук"
+    IDS_UNMUTE            "Включить звук"
+}

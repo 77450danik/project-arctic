@@ -1,0 +1,38 @@
+# The volume icon of the notification area and its flyout of Windows 10
+# (sndvolsso.dll), on the two outputs --sound gives (HD Audio and USB): run
+# with --sound --disk out/test-local/tools.img. tests/tools/volumetest.c
+# starts the icon where stobject does not yet. The flyout opens over the
+# icon; its header opens the list of outputs, the second one becomes the
+# default, then the slider goes to 80 and the speaker mutes.
+sleep 8
+key meta_l-r
+sleep 3
+type D:\volumetest.exe
+key ret
+sleep 4
+shot v1-icon
+move 1163 784
+sleep 2
+shot v2-tooltip
+click
+sleep 2
+shot v3-flyout
+move 1100 689
+click
+sleep 1
+shot v4-list
+move 1100 689
+click
+sleep 1
+shot v5-switched
+move 1167 738
+click
+sleep 1
+shot v6-level
+move 954 735
+click
+sleep 1
+shot v7-muted
+move 1163 784
+sleep 2
+shot v8-tooltip-muted

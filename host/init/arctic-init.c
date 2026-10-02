@@ -693,6 +693,23 @@ static int sound_card_rank(int card, int *device)
     return monitor ? 2 : 1;
 }
 
+/* The volume Windows programs hear is the endpoint's, applied in software by
+ * mmdevapi as Windows' audio engine does, and 100% there is the card at full,
+ * as with the card's Windows driver. alsactl init leaves Master at -20 dB, so
+ * the main playback controls go to 0 dB (their top, when that is lower) and
+ * are unmuted; a card without one of them just has nothing to set. */
+static void raise_playback(int card)
+{
+    static const char *const controls[] = {"Master", "PCM", "Speaker", "Headphone", "Front"};
+    char number[12];
+
+    snprintf(number, sizeof(number), "%d", card);
+    for (size_t i = 0; i < sizeof(controls) / sizeof(controls[0]); i++) {
+        char *argv[] = {"/usr/bin/amixer", "-q", "-c", number, "sset", (char *)controls[i], "0dB", "unmute", NULL};
+        run(argv, 0, -1, 5);
+    }
+}
+
 /* Sound: every card's mixer to sensible levels (the kernel leaves them
  * muted), and the best one as ALSA's default, which is what Windows
  * programs play to. The config lies on /run; /etc/asound.conf points to it. */
@@ -703,6 +720,11 @@ static void setup_sound(void)
     int best = -1, best_rank = 0, best_device = 0;
 
     run(init, 0, hostlog, 20);
+    for (int card = 0; card < 32; card++) {
+        snprintf(path, sizeof(path), "/proc/asound/card%d", card);
+        if (!access(path, F_OK))
+            raise_playback(card);
+    }
     for (int card = 0; card < 32; card++) {
         int device = 0, rank = sound_card_rank(card, &device);
         if (rank > best_rank) {

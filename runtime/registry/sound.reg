@@ -1,0 +1,11 @@
+REGEDIT4
+
+; The volume icon of the notification area: the shell service object that
+; the taskbar's stobject.dll starts for its volume service, with the volume
+; flyout of Windows 10 (sndvolsso.dll, as SndVolSSO.dll on Windows)
+[HKEY_CLASSES_ROOT\CLSID\{A6B0E3C1-5F2D-4B8A-9C7E-31D4F0A2B6E8}]
+@="Volume Control"
+
+[HKEY_CLASSES_ROOT\CLSID\{A6B0E3C1-5F2D-4B8A-9C7E-31D4F0A2B6E8}\InProcServer32]
+@="C:\\Windows\\System32\\sndvolsso.dll"
+"ThreadingModel"="Apartment"

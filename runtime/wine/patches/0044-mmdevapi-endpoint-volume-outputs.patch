@@ -1,0 +1,1107 @@
+diff --git a/dlls/mmdevapi/audiovolume.c b/dlls/mmdevapi/audiovolume.c
+index 61efcc8..540a1da 100644
+--- a/dlls/mmdevapi/audiovolume.c
++++ b/dlls/mmdevapi/audiovolume.c
+@@ -19,12 +19,14 @@
+ #define COBJMACROS
+ 
+ #include <stdarg.h>
++#include <math.h>
+ 
+ #include "windef.h"
+ #include "winbase.h"
+ #include "winnls.h"
+ #include "winreg.h"
+ #include "wine/debug.h"
++#include "wine/list.h"
+ 
+ #include "ole2.h"
+ #include "mmdeviceapi.h"
+@@ -39,20 +41,263 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
+ 
++/* Arctic: the volume of an endpoint is the whole system's, as in Windows.
++ * Every process sees it in a shared section, keyed by the endpoint's GUID;
++ * the audio clients of all processes scale what they play by it (client.c),
++ * and it is kept in HKCU\Software\Arctic\Audio across sessions. The scalar
++ * maps to decibels the way Windows' does, so that half is half as loud:
++ * dB = 33.22 * log10(scalar). Callbacks hear of changes made anywhere, a
++ * fifth of a second later at most. */
++#define AUDIO_SECTION     L"Global\\__arctic_audio"
++#define AUDIO_MUTEX       L"Global\\__arctic_audio_lock"
++#define AUDIO_KEY         L"Software\\Arctic\\Audio"
++#define AUDIO_VERSION     1
++#define AUDIO_ENDPOINTS   64
++#define TAPER_DB          33.22f
++#define MIN_DB            -96.f
++#define VOLUME_STEPS      51       /* 2% a step, as the volume keys go */
++#define CHANNELS          2
++
++struct endpoint_volume
++{
++    GUID  device;
++    float level;                   /* 0-1 */
++    LONG  mute;
++    GUID  context;                 /* of the last change */
++};
++
++struct endpoint_volume_shared
++{
++    UINT32        version;
++    volatile LONG serial;          /* moves after every change */
++    volatile LONG count;
++    struct endpoint_volume entries[AUDIO_ENDPOINTS];
++};
++
++static struct endpoint_volume_shared *get_shared(void)
++{
++    static struct endpoint_volume_shared *shared;
++    struct endpoint_volume_shared *view;
++    HANDLE mapping;
++
++    if (shared) return shared;
++    if (!(mapping = CreateFileMappingW( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(*view), AUDIO_SECTION )))
++        return NULL;
++    view = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*view) );
++    CloseHandle( mapping );
++    if (!view) return NULL;
++    InterlockedCompareExchange( (LONG *)&view->version, AUDIO_VERSION, 0 );
++    if (view->version != AUDIO_VERSION)
++    {
++        UnmapViewOfFile( view );
++        return NULL;
++    }
++    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL )) UnmapViewOfFile( view );
++    return shared;
++}
++
++/* changes go one at a time, across processes; a mutex outlives a process
++ * that dies holding it */
++static HANDLE lock_shared(void)
++{
++    HANDLE mutex = CreateMutexW( NULL, FALSE, AUDIO_MUTEX );
++
++    if (mutex) WaitForSingleObject( mutex, INFINITE );
++    return mutex;
++}
++
++static void unlock_shared( HANDLE mutex )
++{
++    if (!mutex) return;
++    ReleaseMutex( mutex );
++    CloseHandle( mutex );
++}
++
++static HKEY open_endpoint_key( const GUID *device, REGSAM access )
++{
++    WCHAR name[ARRAY_SIZE(AUDIO_KEY) + 40];
++    HKEY key;
++
++    lstrcpyW( name, AUDIO_KEY L"\\" );
++    StringFromGUID2( device, name + lstrlenW( name ), 39 );
++    if (RegCreateKeyExW( HKEY_CURRENT_USER, name, 0, NULL, 0, access, NULL, &key, NULL )) return NULL;
++    return key;
++}
++
++static void save_entry( const struct endpoint_volume *entry )
++{
++    DWORD level = (DWORD)(entry->level * 100000.f + 0.5f), mute = !!entry->mute;
++    HKEY key;
++
++    if (!(key = open_endpoint_key( &entry->device, KEY_SET_VALUE ))) return;
++    RegSetValueExW( key, L"Volume", 0, REG_DWORD, (BYTE *)&level, sizeof(level) );
++    RegSetValueExW( key, L"Mute", 0, REG_DWORD, (BYTE *)&mute, sizeof(mute) );
++    RegCloseKey( key );
++}
++
++/* a new output starts at half, a microphone at full, as Windows has them */
++static void load_entry( struct endpoint_volume *entry, EDataFlow flow )
++{
++    DWORD value, size = sizeof(value);
++    HKEY key;
++
++    entry->level = flow == eCapture ? 1.f : 0.5f;
++    entry->mute = FALSE;
++    if (!(key = open_endpoint_key( &entry->device, KEY_QUERY_VALUE ))) return;
++    if (!RegQueryValueExW( key, L"Volume", NULL, NULL, (BYTE *)&value, &size ) && size == sizeof(value))
++        entry->level = min( value, 100000 ) / 100000.f;
++    size = sizeof(value);
++    if (!RegQueryValueExW( key, L"Mute", NULL, NULL, (BYTE *)&value, &size ) && size == sizeof(value))
++        entry->mute = !!value;
++    RegCloseKey( key );
++}
++
++static struct endpoint_volume *find_entry( const GUID *device, EDataFlow flow )
++{
++    struct endpoint_volume_shared *shared = get_shared();
++    struct endpoint_volume *entry = NULL;
++    LONG count, i;
++    HANDLE mutex;
++
++    if (!shared) return NULL;
++    count = ReadAcquire( &shared->count );
++    for (i = 0; i < count && i < AUDIO_ENDPOINTS; i++)
++        if (IsEqualGUID( &shared->entries[i].device, device )) return &shared->entries[i];
++
++    /* the first process to ask brings it in from the registry */
++    mutex = lock_shared();
++    count = shared->count;
++    for (i = 0; i < count && i < AUDIO_ENDPOINTS; i++)
++        if (IsEqualGUID( &shared->entries[i].device, device )) entry = &shared->entries[i];
++    if (!entry && count < AUDIO_ENDPOINTS)
++    {
++        entry = &shared->entries[count];
++        entry->device = *device;
++        load_entry( entry, flow );
++        WriteRelease( &shared->count, count + 1 );
++    }
++    unlock_shared( mutex );
++    return entry;
++}
++
++static void change_entry( const GUID *device, EDataFlow flow, const float *level, const BOOL *mute,
++                          const GUID *context )
++{
++    struct endpoint_volume_shared *shared = get_shared();
++    struct endpoint_volume *entry = find_entry( device, flow );
++    HANDLE mutex;
++
++    if (!entry) return;
++    mutex = lock_shared();
++    if (level) entry->level = max( 0.f, min( 1.f, *level ) );
++    if (mute) entry->mute = !!*mute;
++    entry->context = context ? *context : GUID_NULL;
++    save_entry( entry );
++    InterlockedIncrement( &shared->serial );
++    unlock_shared( mutex );
++}
++
++LONG endpoint_volume_serial(void)
++{
++    struct endpoint_volume_shared *shared = get_shared();
++    return shared ? ReadAcquire( &shared->serial ) : 0;
++}
++
++/* what the endpoint's volume and mute make of a sample's amplitude */
++float endpoint_volume_amplitude( const GUID *device, EDataFlow flow )
++{
++    struct endpoint_volume *entry = find_entry( device, flow );
++
++    if (!entry) return 1.f;
++    if (entry->mute || entry->level <= 0.f) return 0.f;
++    return powf( entry->level, TAPER_DB / 20.f );
++}
++
+ typedef struct AEVImpl {
+     IAudioEndpointVolumeEx IAudioEndpointVolumeEx_iface;
+     LONG ref;
+-    float master_vol;
+-    BOOL mute;
++    GUID device;
++    EDataFlow flow;
++
++    IAudioEndpointVolumeCallback **callbacks;
++    UINT callback_count;
++    float notified_level;
++    BOOL notified_mute;
++    struct list entry;             /* in watched, while it has callbacks */
+ } AEVImpl;
+ 
++static CRITICAL_SECTION watch_lock;
++static CRITICAL_SECTION_DEBUG watch_lock_debug =
++{
++    0, 0, &watch_lock,
++    { &watch_lock_debug.ProcessLocksList, &watch_lock_debug.ProcessLocksList },
++      0, 0, { (DWORD_PTR)(__FILE__ ": watch_lock") }
++};
++static CRITICAL_SECTION watch_lock = { &watch_lock_debug, -1, 0, 0, 0, 0 };
++static struct list watched = LIST_INIT(watched);
++static HANDLE watch_thread;
++
+ static inline AEVImpl *impl_from_IAudioEndpointVolumeEx(IAudioEndpointVolumeEx *iface)
+ {
+     return CONTAINING_RECORD(iface, AEVImpl, IAudioEndpointVolumeEx_iface);
+ }
+ 
++static void notify_callbacks( AEVImpl *This, const struct endpoint_volume *entry )
++{
++    AUDIO_VOLUME_NOTIFICATION_DATA *data;
++    UINT i;
++
++    if (!(data = malloc( offsetof( AUDIO_VOLUME_NOTIFICATION_DATA, afChannelVolumes[CHANNELS] ) ))) return;
++    data->guidEventContext = entry->context;
++    data->bMuted = !!entry->mute;
++    data->fMasterVolume = entry->level;
++    data->nChannels = CHANNELS;
++    for (i = 0; i < CHANNELS; i++) data->afChannelVolumes[i] = entry->level;
++    for (i = 0; i < This->callback_count; i++)
++        IAudioEndpointVolumeCallback_OnNotify( This->callbacks[i], data );
++    free( data );
++}
++
++static DWORD WINAPI watch_proc( void *arg )
++{
++    LONG serial = endpoint_volume_serial();
++
++    SetThreadDescription( GetCurrentThread(), L"wine_mmdevapi_endpoint_volume" );
++    for (;;)
++    {
++        AEVImpl *aev, *next;
++        LONG now;
++
++        Sleep( 200 );
++        if ((now = endpoint_volume_serial()) == serial) continue;
++        serial = now;
++
++        EnterCriticalSection( &watch_lock );
++        LIST_FOR_EACH_ENTRY_SAFE( aev, next, &watched, AEVImpl, entry )
++        {
++            struct endpoint_volume *entry = find_entry( &aev->device, aev->flow );
++
++            if (!entry || (entry->level == aev->notified_level && !!entry->mute == aev->notified_mute)) continue;
++            aev->notified_level = entry->level;
++            aev->notified_mute = !!entry->mute;
++            IAudioEndpointVolumeEx_AddRef( &aev->IAudioEndpointVolumeEx_iface );
++            notify_callbacks( aev, entry );
++            IAudioEndpointVolumeEx_Release( &aev->IAudioEndpointVolumeEx_iface );
++        }
++        LeaveCriticalSection( &watch_lock );
++    }
++    return 0;
++}
++
+ static void AudioEndpointVolume_Destroy(AEVImpl *This)
+ {
++    UINT i;
++
++    EnterCriticalSection( &watch_lock );
++    if (This->callback_count) list_remove( &This->entry );
++    LeaveCriticalSection( &watch_lock );
++    for (i = 0; i < This->callback_count; i++) IAudioEndpointVolumeCallback_Release( This->callbacks[i] );
++    free( This->callbacks );
+     free(This);
+ }
+ 
+@@ -94,19 +339,56 @@ static ULONG WINAPI AEV_Release(IAudioEndpointVolumeEx *iface)
+ 
+ static HRESULT WINAPI AEV_RegisterControlChangeNotify(IAudioEndpointVolumeEx *iface, IAudioEndpointVolumeCallback *notify)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    IAudioEndpointVolumeCallback **grown;
++    struct endpoint_volume *entry;
++
+     TRACE("(%p)->(%p)\n", iface, notify);
+     if (!notify)
+         return E_POINTER;
+-    FIXME("stub\n");
++
++    EnterCriticalSection( &watch_lock );
++    if (!(grown = realloc( This->callbacks, (This->callback_count + 1) * sizeof(*grown) )))
++    {
++        LeaveCriticalSection( &watch_lock );
++        return E_OUTOFMEMORY;
++    }
++    This->callbacks = grown;
++    if (!This->callback_count)
++    {
++        if ((entry = find_entry( &This->device, This->flow )))
++        {
++            This->notified_level = entry->level;
++            This->notified_mute = !!entry->mute;
++        }
++        list_add_tail( &watched, &This->entry );
++    }
++    IAudioEndpointVolumeCallback_AddRef( notify );
++    This->callbacks[This->callback_count++] = notify;
++    if (!watch_thread) watch_thread = CreateThread( NULL, 0, watch_proc, NULL, 0, NULL );
++    LeaveCriticalSection( &watch_lock );
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_UnregisterControlChangeNotify(IAudioEndpointVolumeEx *iface, IAudioEndpointVolumeCallback *notify)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    UINT i;
++
+     TRACE("(%p)->(%p)\n", iface, notify);
+     if (!notify)
+         return E_POINTER;
+-    FIXME("stub\n");
++
++    EnterCriticalSection( &watch_lock );
++    for (i = 0; i < This->callback_count; i++)
++    {
++        if (This->callbacks[i] != notify) continue;
++        IAudioEndpointVolumeCallback_Release( notify );
++        This->callbacks[i] = This->callbacks[--This->callback_count];
++        if (!This->callback_count) list_remove( &This->entry );
++        break;
++    }
++    LeaveCriticalSection( &watch_lock );
+     return S_OK;
+ }
+ 
+@@ -115,67 +397,92 @@ static HRESULT WINAPI AEV_GetChannelCount(IAudioEndpointVolumeEx *iface, UINT *c
+     TRACE("(%p)->(%p)\n", iface, count);
+     if (!count)
+         return E_POINTER;
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    *count = CHANNELS;
++    return S_OK;
++}
++
++static float level_from_db( float leveldb )
++{
++    return leveldb <= MIN_DB ? 0.f : powf( 10.f, leveldb / TAPER_DB );
++}
++
++static float db_from_level( float level )
++{
++    return level <= 0.f ? MIN_DB : max( MIN_DB, TAPER_DB * log10f( level ) );
+ }
+ 
+ static HRESULT WINAPI AEV_SetMasterVolumeLevel(IAudioEndpointVolumeEx *iface, float leveldb, const GUID *ctx)
+ {
+     AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    float level;
+ 
+     TRACE("(%p)->(%f,%s)\n", iface, leveldb, debugstr_guid(ctx));
+ 
+-    if(leveldb < -100.f || leveldb > 0.f)
++    if(leveldb < MIN_DB || leveldb > 0.f)
+         return E_INVALIDARG;
+ 
+-    This->master_vol = leveldb;
+-
++    level = level_from_db( leveldb );
++    change_entry( &This->device, This->flow, &level, NULL, ctx );
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_SetMasterVolumeLevelScalar(IAudioEndpointVolumeEx *iface, float level, const GUID *ctx)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++
+     TRACE("(%p)->(%f,%s)\n", iface, level, debugstr_guid(ctx));
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++
++    if (level < 0.f || level > 1.f)
++        return E_INVALIDARG;
++
++    change_entry( &This->device, This->flow, &level, NULL, ctx );
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_GetMasterVolumeLevel(IAudioEndpointVolumeEx *iface, float *leveldb)
+ {
+     AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    struct endpoint_volume *entry;
+ 
+     TRACE("(%p)->(%p)\n", iface, leveldb);
+ 
+     if (!leveldb)
+         return E_POINTER;
+ 
+-    *leveldb = This->master_vol;
+-
++    entry = find_entry( &This->device, This->flow );
++    *leveldb = db_from_level( entry ? entry->level : 1.f );
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_GetMasterVolumeLevelScalar(IAudioEndpointVolumeEx *iface, float *level)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    struct endpoint_volume *entry;
++
+     TRACE("(%p)->(%p)\n", iface, level);
+     if (!level)
+         return E_POINTER;
+-    FIXME("stub\n");
+-    *level = 1.0;
++
++    entry = find_entry( &This->device, This->flow );
++    *level = entry ? entry->level : 1.f;
+     return S_OK;
+ }
+ 
++/* the channels follow the master volume: there is one level per endpoint */
+ static HRESULT WINAPI AEV_SetChannelVolumeLevel(IAudioEndpointVolumeEx *iface, UINT chan, float leveldb, const GUID *ctx)
+ {
+-    TRACE("(%p)->(%f,%s)\n", iface, leveldb, debugstr_guid(ctx));
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    TRACE("(%p)->(%u,%f,%s)\n", iface, chan, leveldb, debugstr_guid(ctx));
++    if (chan >= CHANNELS)
++        return E_INVALIDARG;
++    return AEV_SetMasterVolumeLevel(iface, leveldb, ctx);
+ }
+ 
+ static HRESULT WINAPI AEV_SetChannelVolumeLevelScalar(IAudioEndpointVolumeEx *iface, UINT chan, float level, const GUID *ctx)
+ {
+     TRACE("(%p)->(%u,%f,%s)\n", iface, chan, level, debugstr_guid(ctx));
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    if (chan >= CHANNELS)
++        return E_INVALIDARG;
++    return AEV_SetMasterVolumeLevelScalar(iface, level, ctx);
+ }
+ 
+ static HRESULT WINAPI AEV_GetChannelVolumeLevel(IAudioEndpointVolumeEx *iface, UINT chan, float *leveldb)
+@@ -183,8 +490,9 @@ static HRESULT WINAPI AEV_GetChannelVolumeLevel(IAudioEndpointVolumeEx *iface, U
+     TRACE("(%p)->(%u,%p)\n", iface, chan, leveldb);
+     if (!leveldb)
+         return E_POINTER;
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    if (chan >= CHANNELS)
++        return E_INVALIDARG;
++    return AEV_GetMasterVolumeLevel(iface, leveldb);
+ }
+ 
+ static HRESULT WINAPI AEV_GetChannelVolumeLevelScalar(IAudioEndpointVolumeEx *iface, UINT chan, float *level)
+@@ -192,68 +500,90 @@ static HRESULT WINAPI AEV_GetChannelVolumeLevelScalar(IAudioEndpointVolumeEx *if
+     TRACE("(%p)->(%u,%p)\n", iface, chan, level);
+     if (!level)
+         return E_POINTER;
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    if (chan >= CHANNELS)
++        return E_INVALIDARG;
++    return AEV_GetMasterVolumeLevelScalar(iface, level);
+ }
+ 
+ static HRESULT WINAPI AEV_SetMute(IAudioEndpointVolumeEx *iface, BOOL mute, const GUID *ctx)
+ {
+     AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    struct endpoint_volume *entry;
+     HRESULT ret;
+ 
+     TRACE("(%p)->(%u,%s)\n", iface, mute, debugstr_guid(ctx));
+ 
+-    ret = This->mute == mute ? S_FALSE : S_OK;
+-
+-    This->mute = mute;
+-
++    entry = find_entry( &This->device, This->flow );
++    ret = entry && !!entry->mute == !!mute ? S_FALSE : S_OK;
++    change_entry( &This->device, This->flow, NULL, &mute, ctx );
+     return ret;
+ }
+ 
+ static HRESULT WINAPI AEV_GetMute(IAudioEndpointVolumeEx *iface, BOOL *mute)
+ {
+     AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    struct endpoint_volume *entry;
+ 
+     TRACE("(%p)->(%p)\n", iface, mute);
+ 
+     if (!mute)
+         return E_POINTER;
+ 
+-    *mute = This->mute;
+-
++    entry = find_entry( &This->device, This->flow );
++    *mute = entry && entry->mute;
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_GetVolumeStepInfo(IAudioEndpointVolumeEx *iface, UINT *stepsize, UINT *stepcount)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    struct endpoint_volume *entry;
++
+     TRACE("(%p)->(%p,%p)\n", iface, stepsize, stepcount);
+     if (!stepsize && !stepcount)
+         return E_POINTER;
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++
++    entry = find_entry( &This->device, This->flow );
++    if (stepsize) *stepsize = (UINT)((entry ? entry->level : 1.f) * (VOLUME_STEPS - 1) + 0.5f);
++    if (stepcount) *stepcount = VOLUME_STEPS;
++    return S_OK;
++}
++
++static HRESULT step_volume( AEVImpl *This, int direction, const GUID *ctx )
++{
++    struct endpoint_volume *entry = find_entry( &This->device, This->flow );
++    float level;
++    int step;
++
++    if (!entry) return E_FAIL;
++    step = (int)(entry->level * (VOLUME_STEPS - 1) + 0.5f) + direction;
++    step = max( 0, min( VOLUME_STEPS - 1, step ) );
++    level = (float)step / (VOLUME_STEPS - 1);
++    change_entry( &This->device, This->flow, &level, NULL, ctx );
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_VolumeStepUp(IAudioEndpointVolumeEx *iface, const GUID *ctx)
+ {
+     TRACE("(%p)->(%s)\n", iface, debugstr_guid(ctx));
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    return step_volume( impl_from_IAudioEndpointVolumeEx(iface), 1, ctx );
+ }
+ 
+ static HRESULT WINAPI AEV_VolumeStepDown(IAudioEndpointVolumeEx *iface, const GUID *ctx)
+ {
+     TRACE("(%p)->(%s)\n", iface, debugstr_guid(ctx));
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    return step_volume( impl_from_IAudioEndpointVolumeEx(iface), -1, ctx );
+ }
+ 
++/* the volume is applied in software, as Windows' audio engine does for a
++ * device without a hardware volume */
+ static HRESULT WINAPI AEV_QueryHardwareSupport(IAudioEndpointVolumeEx *iface, DWORD *mask)
+ {
+     TRACE("(%p)->(%p)\n", iface, mask);
+     if (!mask)
+         return E_POINTER;
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    *mask = 0;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_GetVolumeRange(IAudioEndpointVolumeEx *iface, float *mindb, float *maxdb, float *inc)
+@@ -263,20 +593,21 @@ static HRESULT WINAPI AEV_GetVolumeRange(IAudioEndpointVolumeEx *iface, float *m
+     if (!mindb || !maxdb || !inc)
+         return E_POINTER;
+ 
+-    *mindb = -100.f;
++    *mindb = MIN_DB;
+     *maxdb = 0.f;
+-    *inc = 1.f;
++    *inc = 0.03125f;
+ 
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_GetVolumeRangeChannel(IAudioEndpointVolumeEx *iface, UINT chan, float *mindb, float *maxdb, float *inc)
+ {
+-    TRACE("(%p)->(%p,%p,%p)\n", iface, mindb, maxdb, inc);
++    TRACE("(%p)->(%u,%p,%p,%p)\n", iface, chan, mindb, maxdb, inc);
+     if (!mindb || !maxdb || !inc)
+         return E_POINTER;
+-    FIXME("stub\n");
+-    return E_NOTIMPL;
++    if (chan >= CHANNELS)
++        return E_INVALIDARG;
++    return AEV_GetVolumeRange(iface, mindb, maxdb, inc);
+ }
+ 
+ static const IAudioEndpointVolumeExVtbl AEVImpl_Vtbl = {
+@@ -314,6 +645,8 @@ HRESULT AudioEndpointVolume_Create(MMDevice *parent, IAudioEndpointVolumeEx **pp
+         return E_OUTOFMEMORY;
+     This->IAudioEndpointVolumeEx_iface.lpVtbl = &AEVImpl_Vtbl;
+     This->ref = 1;
++    This->device = parent->devguid;
++    This->flow = parent->flow;
+ 
+     *ppv = &This->IAudioEndpointVolumeEx_iface;
+     return S_OK;
+diff --git a/dlls/mmdevapi/client.c b/dlls/mmdevapi/client.c
+index e22dae1..beaa837 100644
+--- a/dlls/mmdevapi/client.c
++++ b/dlls/mmdevapi/client.c
+@@ -42,12 +42,17 @@ typedef struct tagLANGANDCODEPAGE
+     WORD wCodePage;
+ } LANGANDCODEPAGE;
+ 
++/* the session's volume times the endpoint's, which is the whole system's
++ * (audiovolume.c) */
+ void set_stream_volumes(struct audio_client *This)
+ {
++    MMDevice *device = CONTAINING_RECORD(This->parent, MMDevice, IMMDevice_iface);
+     struct set_volumes_params params;
+ 
++    This->endpoint_serial  = endpoint_volume_serial();
+     params.stream          = This->stream;
+-    params.master_volume   = (This->session->mute ? 0.0f : This->session->master_vol);
++    params.master_volume   = (This->session->mute ? 0.0f : This->session->master_vol) *
++                             endpoint_volume_amplitude(&device->devguid, This->dataflow);
+     params.volumes         = This->vols;
+     params.session_volumes = This->session->channel_vols;
+ 
+@@ -1446,6 +1451,14 @@ static HRESULT WINAPI render_GetBuffer(IAudioRenderClient *iface, UINT32 frames,
+     if (!This->stream)
+         return AUDCLNT_E_NOT_INITIALIZED;
+ 
++    /* the endpoint's volume was changed, maybe by another process */
++    if (This->endpoint_serial != endpoint_volume_serial())
++    {
++        sessions_lock();
++        set_stream_volumes(This);
++        sessions_unlock();
++    }
++
+     *data = NULL;
+ 
+     params.stream = This->stream;
+diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
+index 8440b5d..51561d8 100644
+--- a/dlls/mmdevapi/devenum.c
++++ b/dlls/mmdevapi/devenum.c
+@@ -496,7 +496,7 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+         RegSetValueExW(key, L"DeviceState", 0, REG_DWORD, (const BYTE*)&state, sizeof(DWORD));
+         if (!RegCreateKeyExW(key, L"Properties", 0, NULL, 0, KEY_WRITE|KEY_READ|KEY_WOW64_64KEY, NULL, &keyprop, NULL))
+         {
+-            PROPVARIANT pv;
++            PROPVARIANT pv, desc;
+             WCHAR *type;
+             DWORD len;
+ 
+@@ -521,8 +521,18 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+ 
+             MMDevice_SetPropValue(id, flow, (const PROPERTYKEY*)&DEVPKEY_DeviceInterface_FriendlyName, &pv);
+ 
+-            pv.pwszVal = type = (WCHAR *)(flow == eCapture ? L"Microphone" : L"Speakers");
+-            MMDevice_SetPropValue(id, flow, (const PROPERTYKEY*)&DEVPKEY_Device_DeviceDesc, &pv);
++            /* what the endpoint is, when the driver says it (Speakers, Digital
++             * Output, a monitor's name), as "Speakers (Realtek ALC892)" */
++            PropVariantInit(&desc);
++            if (SUCCEEDED(set_driver_prop_value(id, flow, (const PROPERTYKEY*)&DEVPKEY_Device_DeviceDesc)) &&
++                SUCCEEDED(MMDevice_GetPropValue(id, flow, (const PROPERTYKEY*)&DEVPKEY_Device_DeviceDesc, &desc)) &&
++                desc.vt == VT_LPWSTR)
++                type = desc.pwszVal;
++            else
++            {
++                pv.pwszVal = type = (WCHAR *)(flow == eCapture ? L"Microphone" : L"Speakers");
++                MMDevice_SetPropValue(id, flow, (const PROPERTYKEY*)&DEVPKEY_Device_DeviceDesc, &pv);
++            }
+ 
+             len = (wcslen(type) + wcslen(cur->drv_id) + wcslen(L" ()") + 1);
+             pv.vt = VT_LPWSTR;
+@@ -530,6 +540,7 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+             swprintf(pv.pwszVal, len, L"%ls (%ls)", type, cur->drv_id);
+             MMDevice_SetPropValue(id, flow, (const PROPERTYKEY*)&DEVPKEY_Device_FriendlyName, &pv);
+             CoTaskMemFree(pv.pwszVal);
++            PropVariantClear(&desc);
+ 
+             pv.pwszVal = guidstr;
+             MMDevice_SetPropValue(id, flow, &deviceinterface_key, &pv);
+@@ -621,8 +632,10 @@ HRESULT load_devices_from_reg(void)
+         }
+         if (ret != ERROR_SUCCESS)
+             continue;
++        /* the adapter's name, which MMDevice_Create takes; the friendly name
++         * would come back wrapped in one more "Speakers (...)" every time */
+         if (SUCCEEDED(CLSIDFromString(guidvalue, &guid))
+-            && SUCCEEDED(MMDevice_GetPropValue(&guid, curflow, (const PROPERTYKEY*)&DEVPKEY_Device_FriendlyName, &pv))
++            && SUCCEEDED(MMDevice_GetPropValue(&guid, curflow, (const PROPERTYKEY*)&DEVPKEY_DeviceInterface_FriendlyName, &pv))
+             && pv.vt == VT_LPWSTR)
+         {
+             MMDevice_Create(pv.pwszVal, &guid, curflow,
+@@ -665,11 +678,14 @@ static HRESULT set_format(MMDevice *dev)
+     return S_OK;
+ }
+ 
++static DWORD devices_loaded[EDataFlow_enum_count];
++
+ HRESULT load_driver_devices(EDataFlow flow)
+ {
+     struct get_endpoint_ids_params params;
+     UINT i;
+ 
++    devices_loaded[flow] = GetTickCount();
+     params.flow = flow;
+     params.size = 1024;
+     params.endpoints = NULL;
+@@ -1123,6 +1139,38 @@ static ULONG WINAPI MMDevEnum_Release(IMMDeviceEnumerator *iface)
+     return ref;
+ }
+ 
++static CRITICAL_SECTION refresh_lock;
++static CRITICAL_SECTION_DEBUG refresh_lock_debug =
++{
++    0, 0, &refresh_lock,
++    { &refresh_lock_debug.ProcessLocksList, &refresh_lock_debug.ProcessLocksList },
++      0, 0, { (DWORD_PTR)(__FILE__ ": refresh_lock") }
++};
++static CRITICAL_SECTION refresh_lock = { &refresh_lock_debug, -1, 0, 0, 0, 0 };
++
++/* Arctic: endpoints come and go (a USB headset, a monitor with speakers) and
++ * a process such as explorer lives long, so the driver is asked for them
++ * again when they are enumerated, at most every two seconds. Those it no
++ * longer has are not present. */
++static void refresh_driver_devices(EDataFlow flow)
++{
++    MMDevice *dev;
++
++    if (!drvs.module_unixlib || flow >= EDataFlow_enum_count)
++        return;
++    EnterCriticalSection(&refresh_lock);
++    if (GetTickCount() - devices_loaded[flow] >= 2000)
++    {
++        LIST_FOR_EACH_ENTRY(dev, &device_list, MMDevice, entry)
++            if (dev->flow == flow && dev->state == DEVICE_STATE_ACTIVE)
++                dev->state = DEVICE_STATE_NOTPRESENT;
++        if (flow == eRender) MMDevice_def_play = NULL;
++        else MMDevice_def_rec = NULL;
++        load_driver_devices(flow);
++    }
++    LeaveCriticalSection(&refresh_lock);
++}
++
+ static HRESULT WINAPI MMDevEnum_EnumAudioEndpoints(IMMDeviceEnumerator *iface, EDataFlow flow, DWORD mask, IMMDeviceCollection **devices)
+ {
+     MMDevEnumImpl *This = impl_from_IMMDeviceEnumerator(iface);
+@@ -1134,6 +1182,13 @@ static HRESULT WINAPI MMDevEnum_EnumAudioEndpoints(IMMDeviceEnumerator *iface, E
+         return E_INVALIDARG;
+     if (mask & ~DEVICE_STATEMASK_ALL)
+         return E_INVALIDARG;
++    if (flow == eAll)
++    {
++        refresh_driver_devices(eRender);
++        refresh_driver_devices(eCapture);
++    }
++    else
++        refresh_driver_devices(flow);
+     return MMDevCol_Create(devices, flow, mask);
+ }
+ 
+diff --git a/dlls/mmdevapi/mmdevapi_private.h b/dlls/mmdevapi/mmdevapi_private.h
+index b475d81..87f2eb1 100644
+--- a/dlls/mmdevapi/mmdevapi_private.h
++++ b/dlls/mmdevapi/mmdevapi_private.h
+@@ -80,6 +80,7 @@ struct audio_client {
+ 
+     struct list entry;
+     char *device_name;
++    LONG endpoint_serial;   /* of the endpoint volume it plays at */
+ };
+ 
+ extern HRESULT MMDevEnum_Create(REFIID riid, void **ppv);
+@@ -120,6 +121,8 @@ static inline void wine_unix_call(const unsigned int code, void *args)
+ 
+ extern HRESULT AudioClient_Create(GUID *guid, IMMDevice *device, IAudioClient **out);
+ extern HRESULT AudioEndpointVolume_Create(MMDevice *parent, IAudioEndpointVolumeEx **ppv);
++extern float endpoint_volume_amplitude(const GUID *device, EDataFlow flow);
++extern LONG endpoint_volume_serial(void);
+ extern HRESULT AudioSessionManager_Create(IMMDevice *device, IAudioSessionManager2 **ppv);
+ extern HRESULT SpatialAudioClient_Create(IMMDevice *device, ISpatialAudioClient **out);
+ 
+diff --git a/dlls/winealsa.drv/alsa.c b/dlls/winealsa.drv/alsa.c
+index 4ad83bd..968ac52 100644
+--- a/dlls/winealsa.drv/alsa.c
++++ b/dlls/winealsa.drv/alsa.c
+@@ -478,6 +478,236 @@ static WCHAR *alsa_get_card_name(int card)
+     return ret;
+ }
+ 
++/* Arctic: the outputs as Windows lists them. Each output device of each card
++ * is an endpoint of its own, played to through dmix so that programs share
++ * it (the device alone takes one program at a time); an HDMI or DisplayPort
++ * output is one only while a monitor that takes sound is on it. The
++ * endpoint's name is its adapter's (the HD Audio codec, or the card), and
++ * DEVPKEY_Device_DeviceDesc says what it is: Speakers, Headphones, Digital
++ * Output, or the monitor's name. The default is the output arctic-init made
++ * ALSA's default. */
++#define ARCTIC_OUTPUT_FORMAT "plug:'dmix:CARD=%u,DEV=%u'"
++
++static const PROPERTYKEY devicedesc_key = { /* DEVPKEY_Device_DeviceDesc */
++    {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 2
++};
++
++enum output_kind { OUTPUT_ANALOG, OUTPUT_SPDIF, OUTPUT_HDMI };
++
++static BOOL parse_card_device(const char *name, unsigned int *card, unsigned int *device)
++{
++    return sscanf(name, "plughw:%u,%u", card, device) == 2 ||
++           sscanf(name, "plug:'dmix:CARD=%u,DEV=%u'", card, device) == 2;
++}
++
++static enum output_kind get_output_kind(const char *pcm_name)
++{
++    if (strstr(pcm_name, "HDMI") || strstr(pcm_name, "DP") || strstr(pcm_name, "DisplayPort"))
++        return OUTPUT_HDMI;
++    if (strstr(pcm_name, "Digital") || strstr(pcm_name, "IEC958") || strstr(pcm_name, "SPDIF") ||
++        strstr(pcm_name, "S/PDIF"))
++        return OUTPUT_SPDIF;
++    return OUTPUT_ANALOG;
++}
++
++/* 1: a monitor is on the HDMI/DP output, 0: nothing, -1: the card does not say */
++static int hdmi_monitor_present(snd_ctl_t *ctl, int device)
++{
++    snd_ctl_elem_value_t *value;
++    char name[64];
++
++    snd_ctl_elem_value_alloca(&value);
++    snd_ctl_elem_value_set_interface(value, SND_CTL_ELEM_IFACE_CARD);
++    snprintf(name, sizeof(name), "HDMI/DP,pcm=%d Jack", device);
++    snd_ctl_elem_value_set_name(value, name);
++    if (snd_ctl_elem_read(ctl, value) < 0)
++        return -1;
++    return snd_ctl_elem_value_get_boolean(value, 0) ? 1 : 0;
++}
++
++/* the monitor's name from the ELD the card keeps for the output: its
++ * baseline block starts at byte 4, whose low five bits are the name's length,
++ * and the name itself at byte 20 */
++static BOOL hdmi_monitor_name(snd_ctl_t *ctl, int device, char *buf, size_t size)
++{
++    snd_ctl_elem_value_t *value;
++    snd_ctl_elem_info_t *info;
++    const unsigned char *eld;
++    unsigned int count, len;
++
++    snd_ctl_elem_info_alloca(&info);
++    snd_ctl_elem_value_alloca(&value);
++    snd_ctl_elem_info_set_interface(info, SND_CTL_ELEM_IFACE_PCM);
++    snd_ctl_elem_info_set_name(info, "ELD");
++    snd_ctl_elem_info_set_device(info, device);
++    if (snd_ctl_elem_info(ctl, info) < 0 || snd_ctl_elem_info_get_type(info) != SND_CTL_ELEM_TYPE_BYTES)
++        return FALSE;
++    count = snd_ctl_elem_info_get_count(info);
++    snd_ctl_elem_value_set_interface(value, SND_CTL_ELEM_IFACE_PCM);
++    snd_ctl_elem_value_set_name(value, "ELD");
++    snd_ctl_elem_value_set_device(value, device);
++    if (snd_ctl_elem_read(ctl, value) < 0 || count < 21)
++        return FALSE;
++    eld = snd_ctl_elem_value_get_bytes(value);
++    len = eld[4] & 0x1f;
++    if (!len || 20 + len > count)
++        return FALSE;
++    if (len > size - 1) len = size - 1;
++    memcpy(buf, eld + 20, len);
++    while (len && (buf[len - 1] == ' ' || !buf[len - 1])) len--;
++    buf[len] = 0;
++    return len > 0;
++}
++
++/* "Realtek ALC892": the HD Audio codec behind the analog and S/PDIF outputs */
++static BOOL hda_codec_name(unsigned int card, char *buf, size_t size)
++{
++    char path[64], line[128];
++    FILE *f;
++
++    for (int codec = 0; codec < 4; codec++)
++    {
++        BOOL found = FALSE;
++
++        snprintf(path, sizeof(path), "/proc/asound/card%u/codec#%d", card, codec);
++        if (!(f = fopen(path, "r"))) continue;
++        if (fgets(line, sizeof(line), f) && !strncmp(line, "Codec: ", 7) &&
++            !strstr(line, "HDMI") && !strstr(line, "DisplayPort"))
++        {
++            size_t len = strcspn(line + 7, "\n");
++            if (len > size - 1) len = size - 1;
++            memcpy(buf, line + 7, len);
++            buf[len] = 0;
++            found = len > 0;
++        }
++        fclose(f);
++        if (found) return TRUE;
++    }
++    return FALSE;
++}
++
++/* the card and device arctic-init made ALSA's default (/etc/asound.conf) */
++static void get_default_output(int *card, int *device)
++{
++    snd_config_t *node;
++    const char *str;
++    long value;
++
++    *card = -1;
++    *device = 0;
++    if (snd_config_update() < 0)
++        return;
++    if (!snd_config_search(snd_config, "defaults.pcm.card", &node))
++    {
++        if (!snd_config_get_integer(node, &value)) *card = value;
++        else if (!snd_config_get_string(node, &str)) *card = snd_card_get_index(str);
++    }
++    if (!snd_config_search(snd_config, "defaults.pcm.device", &node) && !snd_config_get_integer(node, &value))
++        *device = value;
++}
++
++/* what the output is, as DEVPKEY_Device_DeviceDesc says it; FALSE: no such output */
++static BOOL get_output_description(unsigned int card, unsigned int device, char *buf, size_t size)
++{
++    snd_pcm_info_t *info;
++    snd_ctl_t *ctl;
++    char cardpath[16], *cardname = NULL;
++    BOOL ret = FALSE;
++
++    snprintf(cardpath, sizeof(cardpath), "hw:%u", card);
++    if (snd_ctl_open(&ctl, cardpath, 0) < 0)
++        return FALSE;
++    snd_pcm_info_alloca(&info);
++    snd_pcm_info_set_device(info, device);
++    snd_pcm_info_set_subdevice(info, 0);
++    snd_pcm_info_set_stream(info, SND_PCM_STREAM_PLAYBACK);
++    if (snd_ctl_pcm_info(ctl, info) >= 0)
++    {
++        ret = TRUE;
++        switch (get_output_kind(snd_pcm_info_get_name(info)))
++        {
++        case OUTPUT_HDMI:
++            if (!hdmi_monitor_name(ctl, device, buf, size))
++                snprintf(buf, size, "Digital Display");
++            break;
++        case OUTPUT_SPDIF:
++            snprintf(buf, size, "Digital Output");
++            break;
++        case OUTPUT_ANALOG:
++            snd_card_get_name(card, &cardname);
++            snprintf(buf, size, cardname && (strstr(cardname, "Headset") || strstr(cardname, "Headphone")) ?
++                     "Headphones" : "Speakers");
++            free(cardname);
++            break;
++        }
++    }
++    snd_ctl_close(ctl);
++    return ret;
++}
++
++static void alsa_get_outputs(struct endpoints_info *endpoints_info, unsigned int *default_idx)
++{
++    int card = -1, def_card, def_device, err;
++    unsigned int first_analog = ~0u;
++
++    *default_idx = ~0u;
++    get_default_output(&def_card, &def_device);
++
++    for (err = snd_card_next(&card); card != -1 && err >= 0; err = snd_card_next(&card))
++    {
++        snd_pcm_info_t *info;
++        char cardpath[16], codec[64];
++        WCHAR *cardname;
++        snd_ctl_t *ctl;
++        int device = -1;
++        BOOL has_codec;
++
++        snprintf(cardpath, sizeof(cardpath), "hw:%u", card);
++        if (snd_ctl_open(&ctl, cardpath, 0) < 0)
++            continue;
++        cardname = alsa_get_card_name(card);
++        has_codec = hda_codec_name(card, codec, sizeof(codec));
++        snd_pcm_info_alloca(&info);
++
++        while (snd_ctl_pcm_next_device(ctl, &device) >= 0 && device >= 0)
++        {
++            enum output_kind kind;
++            char devnode[64];
++            WCHAR *name;
++
++            snd_pcm_info_set_device(info, device);
++            snd_pcm_info_set_subdevice(info, 0);
++            snd_pcm_info_set_stream(info, SND_PCM_STREAM_PLAYBACK);
++            if (snd_ctl_pcm_info(ctl, info) < 0)
++                continue;
++            kind = get_output_kind(snd_pcm_info_get_name(info));
++            if (kind == OUTPUT_HDMI && !hdmi_monitor_present(ctl, device))
++                continue;
++            snprintf(devnode, sizeof(devnode), ARCTIC_OUTPUT_FORMAT, card, device);
++            if (!alsa_try_open(devnode, eRender))
++                continue;
++
++            if (has_codec && kind != OUTPUT_HDMI)
++                name = strdupAtoW(codec);
++            else if ((name = malloc((wcslen(cardname) + 1) * sizeof(WCHAR))))
++                memcpy(name, cardname, (wcslen(cardname) + 1) * sizeof(WCHAR));
++            if (!name)
++                continue;
++            if (card == def_card && device == def_device)
++                *default_idx = endpoints_info->num;
++            if (kind == OUTPUT_ANALOG && first_analog == ~0u)
++                first_analog = endpoints_info->num;
++            TRACE("output %s: %s\n", devnode, wine_dbgstr_w(name));
++            endpoints_add(endpoints_info, name, strdup(devnode));
++        }
++        free(cardname);
++        snd_ctl_close(ctl);
++    }
++
++    if (*default_idx == ~0u)
++        *default_idx = first_analog != ~0u ? first_analog : 0;
++}
++
+ static NTSTATUS alsa_get_endpoint_ids(void *args)
+ {
+     static const WCHAR defaultW[] = {'d','e','f','a','u','l','t',0};
+@@ -491,6 +721,16 @@ static NTSTATUS alsa_get_endpoint_ids(void *args)
+ 
+     endpoints_info.num = endpoints_info.size = 0;
+     endpoints_info.endpoints = NULL;
++    params->default_idx = 0;
++
++    if(params->flow == eRender){
++        alsa_get_outputs(&endpoints_info, &params->default_idx);
++        /* "default" stands for them all, and is one only when no output is */
++        if(!endpoints_info.num && alsa_try_open("default", params->flow))
++            endpoints_add(&endpoints_info, construct_device_id(params->flow, defaultW, NULL), strdup("default"));
++        get_reg_devices(params->flow, &endpoints_info);
++        goto done;
++    }
+ 
+     if(alsa_try_open("default", params->flow))
+         endpoints_add(&endpoints_info, construct_device_id(params->flow, defaultW, NULL), strdup("default"));
+@@ -520,6 +760,7 @@ static NTSTATUS alsa_get_endpoint_ids(void *args)
+     if(err != 0)
+         WARN("Got a failure during card enumeration: %d (%s)\n", err, snd_strerror(err));
+ 
++done:
+     offset = needed = endpoints_info.num * sizeof(*params->endpoints);
+     endpoint = params->endpoints;
+ 
+@@ -543,7 +784,6 @@ static NTSTATUS alsa_get_endpoint_ids(void *args)
+     free(endpoints_info.endpoints);
+ 
+     params->num = endpoints_info.num;
+-    params->default_idx = 0;
+ 
+     if(needed > params->size){
+         params->size = needed;
+@@ -2297,7 +2537,7 @@ static NTSTATUS alsa_get_prop_value(void *args)
+         char buf[128];
+         int len;
+ 
+-        if(sscanf(name, "plughw:%u,%u", &card, &device)){
++        if(parse_card_device(name, (unsigned int *)&card, (unsigned int *)&device)){
+             sprintf(uevent, "/sys/class/sound/card%u/device/uevent", card);
+             fuevent = fopen(uevent, "r");
+         }
+@@ -2366,7 +2606,7 @@ static NTSTATUS alsa_get_prop_value(void *args)
+         unsigned int num_speakers, card, device;
+         char hwname[255];
+ 
+-        if (sscanf(name, "plughw:%u,%u", &card, &device))
++        if (parse_card_device(name, &card, &device))
+             sprintf(hwname, "hw:%u,%u", card, device); /* must be hw rather than plughw to work */
+         else
+             strcpy(hwname, name);
+@@ -2391,6 +2631,25 @@ static NTSTATUS alsa_get_prop_value(void *args)
+ 
+         params->result = S_OK;
+         return STATUS_SUCCESS;
++    } else if (flow == eRender && IsEqualPropertyKey(*prop, devicedesc_key)) {
++        unsigned int card, device, len;
++        char desc[64];
++
++        if (!parse_card_device(name, &card, &device) || !get_output_description(card, device, desc, sizeof(desc))){
++            params->result = E_NOTIMPL;
++            return STATUS_SUCCESS;
++        }
++        len = strlen(desc) + 1;
++        if(*params->buffer_size < len * sizeof(WCHAR)){
++            params->result = E_NOT_SUFFICIENT_BUFFER;
++            *params->buffer_size = len * sizeof(WCHAR);
++            return STATUS_SUCCESS;
++        }
++        out->vt = VT_LPWSTR;
++        out->pwszVal = params->buffer;
++        ntdll_umbstowcs(desc, len, out->pwszVal, len);
++        params->result = S_OK;
++        return STATUS_SUCCESS;
+     }
+ 
+     TRACE("Unimplemented property %s,%u\n", wine_dbgstr_guid(&prop->fmtid), (unsigned)prop->pid);

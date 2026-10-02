@@ -2,7 +2,7 @@
 the NT world, and saves the serial log and a screenshot.
 
 usage: python tools/vm-test.py [image] [--wait SECONDS] [--append "kernel params"] [--script FILE]
-                               [--usb] [--uefi] [--headless] [--keep] [--disk IMAGE]
+                               [--usb] [--uefi] [--headless] [--keep] [--disk IMAGE] [--sound]
 
 --usb boots out/arctic-usb.img as a USB disk and --uefi boots through OVMF, which
 is how the image is tried the way real machines boot it.
@@ -37,6 +37,8 @@ parser.add_argument("--uefi", action="store_true", help="boot through OVMF inste
 parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
 parser.add_argument("--disk", action="append", default=[],
                     help="a raw disk image attached as an internal disk (repeatable)")
+parser.add_argument("--sound", action="store_true",
+                    help="two outputs that play through this PC's speakers: an HD Audio card and a USB one")
 args = parser.parse_args()
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -70,6 +72,9 @@ else:
 
 for disk in args.disk:
     cmd += ["-drive", "if=virtio,format=raw,file=" + os.path.abspath(disk)]
+if args.sound:
+    cmd += ["-audiodev", "dsound,id=snd0", "-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0",
+            "-audiodev", "dsound,id=snd1", "-device", "usb-audio,audiodev=snd1,bus=xhci.0"]
 if args.uefi:
     fw = os.path.join(ROOT, "tools", "qemu", "share")
     nvram = os.path.join(RES, "uefi-vars.fd")

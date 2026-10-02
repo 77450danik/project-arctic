@@ -2,7 +2,8 @@
 # Builds the parts of ReactOS that Arctic takes: the shell (explorer.exe,
 # shell32, browseui, shdocvw, shlwapi, comctl32, uxtheme, compressed folders,
 # Safely Remove Hardware and the volume in the notification area, Network Connections), the Display
-# and Sound control panels (desk.cpl, mmsys.cpl), the volume control (sndvol32.exe),
+# and Sound control panels (desk.cpl, mmsys.cpl) with the Device Manager pages the
+# Sound panel's Hardware page opens (devmgr.dll), the volume control (sndvol32.exe),
 # the Mizu theme and the keyboard layouts. They are built with
 # ReactOS's own toolchain (RosBE), the way ReactOS's CI builds them, and go
 # to C: as native Windows binaries. Output: out/reactos, laid out as on C:.
@@ -18,7 +19,7 @@ OUT=${REACTOS_OUT:-$ROOT/out/reactos}
 COMMIT=$(cat "$ROOT/runtime/reactos/COMMIT")
 ARCH=amd64
 KEYBOARDS="kbdus kbdur kbdru"
-SHELL_DLLS="shell32 browseui shdocvw shlwapi comctl32 uxtheme"
+SHELL_DLLS="shell32 browseui shdocvw shlwapi comctl32 uxtheme devmgr"
 SHELL_EXTENSIONS="zipfldr stobject netshell"
 CONTROL_PANELS="desk mmsys"
 APPLICATIONS="sndvol32"
