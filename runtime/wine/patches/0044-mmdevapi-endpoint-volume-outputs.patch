@@ -1,5 +1,5 @@
 diff --git a/dlls/mmdevapi/audiovolume.c b/dlls/mmdevapi/audiovolume.c
-index 61efcc8..540a1da 100644
+index 61efcc8..d53296a 100644
 --- a/dlls/mmdevapi/audiovolume.c
 +++ b/dlls/mmdevapi/audiovolume.c
 @@ -19,12 +19,14 @@
@@ -17,7 +17,7 @@ index 61efcc8..540a1da 100644
  
  #include "ole2.h"
  #include "mmdeviceapi.h"
-@@ -39,20 +41,263 @@
+@@ -39,20 +41,273 @@
  
  WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
  
@@ -64,15 +64,25 @@ index 61efcc8..540a1da 100644
 +    if (!(mapping = CreateFileMappingW( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(*view), AUDIO_SECTION )))
 +        return NULL;
 +    view = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*view) );
-+    CloseHandle( mapping );
-+    if (!view) return NULL;
++    if (!view)
++    {
++        CloseHandle( mapping );
++        return NULL;
++    }
++    /* the handle stays open: in Wine the section's name goes with its
++     * last handle, and other processes would make a section of their own */
 +    InterlockedCompareExchange( (LONG *)&view->version, AUDIO_VERSION, 0 );
 +    if (view->version != AUDIO_VERSION)
 +    {
 +        UnmapViewOfFile( view );
++        CloseHandle( mapping );
 +        return NULL;
 +    }
-+    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL )) UnmapViewOfFile( view );
++    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL ))
++    {
++        UnmapViewOfFile( view );
++        CloseHandle( mapping );
++    }
 +    return shared;
 +}
 +
@@ -283,7 +293,7 @@ index 61efcc8..540a1da 100644
      free(This);
  }
  
-@@ -94,19 +339,56 @@ static ULONG WINAPI AEV_Release(IAudioEndpointVolumeEx *iface)
+@@ -94,19 +349,56 @@ static ULONG WINAPI AEV_Release(IAudioEndpointVolumeEx *iface)
  
  static HRESULT WINAPI AEV_RegisterControlChangeNotify(IAudioEndpointVolumeEx *iface, IAudioEndpointVolumeCallback *notify)
  {
@@ -342,7 +352,7 @@ index 61efcc8..540a1da 100644
      return S_OK;
  }
  
-@@ -115,67 +397,92 @@ static HRESULT WINAPI AEV_GetChannelCount(IAudioEndpointVolumeEx *iface, UINT *c
+@@ -115,67 +407,92 @@ static HRESULT WINAPI AEV_GetChannelCount(IAudioEndpointVolumeEx *iface, UINT *c
      TRACE("(%p)->(%p)\n", iface, count);
      if (!count)
          return E_POINTER;
@@ -451,7 +461,7 @@ index 61efcc8..540a1da 100644
  }
  
  static HRESULT WINAPI AEV_GetChannelVolumeLevel(IAudioEndpointVolumeEx *iface, UINT chan, float *leveldb)
-@@ -183,8 +490,9 @@ static HRESULT WINAPI AEV_GetChannelVolumeLevel(IAudioEndpointVolumeEx *iface, U
+@@ -183,8 +500,9 @@ static HRESULT WINAPI AEV_GetChannelVolumeLevel(IAudioEndpointVolumeEx *iface, U
      TRACE("(%p)->(%u,%p)\n", iface, chan, leveldb);
      if (!leveldb)
          return E_POINTER;
@@ -463,7 +473,7 @@ index 61efcc8..540a1da 100644
  }
  
  static HRESULT WINAPI AEV_GetChannelVolumeLevelScalar(IAudioEndpointVolumeEx *iface, UINT chan, float *level)
-@@ -192,68 +500,90 @@ static HRESULT WINAPI AEV_GetChannelVolumeLevelScalar(IAudioEndpointVolumeEx *if
+@@ -192,68 +510,90 @@ static HRESULT WINAPI AEV_GetChannelVolumeLevelScalar(IAudioEndpointVolumeEx *if
      TRACE("(%p)->(%u,%p)\n", iface, chan, level);
      if (!level)
          return E_POINTER;
@@ -570,7 +580,7 @@ index 61efcc8..540a1da 100644
  }
  
  static HRESULT WINAPI AEV_GetVolumeRange(IAudioEndpointVolumeEx *iface, float *mindb, float *maxdb, float *inc)
-@@ -263,20 +593,21 @@ static HRESULT WINAPI AEV_GetVolumeRange(IAudioEndpointVolumeEx *iface, float *m
+@@ -263,20 +603,21 @@ static HRESULT WINAPI AEV_GetVolumeRange(IAudioEndpointVolumeEx *iface, float *m
      if (!mindb || !maxdb || !inc)
          return E_POINTER;
  
@@ -597,7 +607,7 @@ index 61efcc8..540a1da 100644
  }
  
  static const IAudioEndpointVolumeExVtbl AEVImpl_Vtbl = {
-@@ -314,6 +645,8 @@ HRESULT AudioEndpointVolume_Create(MMDevice *parent, IAudioEndpointVolumeEx **pp
+@@ -314,6 +655,8 @@ HRESULT AudioEndpointVolume_Create(MMDevice *parent, IAudioEndpointVolumeEx **pp
          return E_OUTOFMEMORY;
      This->IAudioEndpointVolumeEx_iface.lpVtbl = &AEVImpl_Vtbl;
      This->ref = 1;

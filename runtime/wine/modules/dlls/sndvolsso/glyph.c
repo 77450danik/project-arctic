@@ -117,7 +117,20 @@ static HBITMAP create_dib( HDC hdc, int width, int height, UINT32 **bits )
     return CreateDIBSection( hdc, &info, DIB_RGB_COLORS, (void **)bits, NULL, 0 );
 }
 
-static void blend_white( HDC hdc, int x, int y, int width, int height, const float *alpha )
+/* the message font of the theme, at a height of our own */
+HFONT shell_font( int height, int weight )
+{
+    NONCLIENTMETRICSW metrics = { sizeof(metrics) };
+
+    SystemParametersInfoW( SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0 );
+    metrics.lfMessageFont.lfHeight = -height;
+    metrics.lfMessageFont.lfWeight = weight;
+    metrics.lfMessageFont.lfQuality = CLEARTYPE_QUALITY;
+    return CreateFontIndirectW( &metrics.lfMessageFont );
+}
+
+/* white at the coverage given, per pixel, over what is there */
+void blend_white( HDC hdc, int x, int y, int width, int height, const float *alpha )
 {
     BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     HDC mem = CreateCompatibleDC( hdc );

@@ -6,7 +6,8 @@
  * there is no output, and "Speakers (Realtek ALC892): 50%" as its tip. A
  * click opens the flyout (flyout.c); the menu opens the Sound control panel
  * and the volume mixer. The keyboard's volume keys work wherever the focus
- * is: two steps of the 51 up or down, and mute, as Windows has them.
+ * is: two steps of the 51 up or down, and mute, as Windows has them, and
+ * bring up the overlay (osd.c); its media keys go to what plays (media.c).
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -22,6 +23,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
 
 #define WM_TRAY_ICON     (WM_APP + 1)
+#define WM_SHOW_OSD      (WM_APP + 2)
 #define TIMER_REFRESH    1
 #define ICON_ID          1
 
@@ -35,6 +37,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
 
 static HANDLE thread;
 static HWND tray_hwnd;
+static HHOOK hook;
 static UINT taskbar_created;
 static HICON current_icon;
 static int current_glyph = -1;
@@ -104,6 +107,38 @@ static void on_hotkey( UINT id )
     }
     tray_update();
     flyout_refresh();
+    if (!flyout_visible()) osd_show();
+}
+
+/* The media keys go to what plays, as Windows routes them to the session of
+ * SystemMediaTransportControls: the press and its release are the session's
+ * and the overlay shows it. With no session they go on to the programs, so
+ * that players which take the keys themselves still have them. */
+static LRESULT CALLBACK keyboard_proc( int code, WPARAM wparam, LPARAM lparam )
+{
+    const KBDLLHOOKSTRUCT *key = (const KBDLLHOOKSTRUCT *)lparam;
+    struct media_info info;
+    int action = -1;
+
+    if (code == HC_ACTION)
+    {
+        switch (key->vkCode)
+        {
+        case VK_MEDIA_PLAY_PAUSE: action = MEDIA_PLAYPAUSE; break;
+        case VK_MEDIA_NEXT_TRACK: action = MEDIA_NEXT; break;
+        case VK_MEDIA_PREV_TRACK: action = MEDIA_PREVIOUS; break;
+        }
+    }
+    if (action >= 0 && media_session( &info ))
+    {
+        if (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN)
+        {
+            media_press( &info, action );
+            PostMessageW( tray_hwnd, WM_SHOW_OSD, 0, 0 );
+        }
+        return 1;
+    }
+    return CallNextHookEx( NULL, code, wparam, lparam );
 }
 
 static void show_menu( HWND hwnd )
@@ -158,6 +193,10 @@ static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     case WM_HOTKEY:
         on_hotkey( wp );
         return 0;
+    case WM_SHOW_OSD:
+        if (!flyout_visible()) osd_show();
+        else flyout_refresh();
+        return 0;
     case WM_CLOSE:
         DestroyWindow( hwnd );
         return 0;
@@ -188,6 +227,7 @@ static DWORD WINAPI tray_thread( void *arg )
     RegisterHotKey( tray_hwnd, HOTKEY_MUTE, 0, VK_VOLUME_MUTE );
     RegisterHotKey( tray_hwnd, HOTKEY_DOWN, 0, VK_VOLUME_DOWN );
     RegisterHotKey( tray_hwnd, HOTKEY_UP, 0, VK_VOLUME_UP );
+    hook = SetWindowsHookExW( WH_KEYBOARD_LL, keyboard_proc, sndvolsso_instance, 0 );
 
     tray_update();
     /* other programs and other outputs change it too */
@@ -198,7 +238,10 @@ static DWORD WINAPI tray_thread( void *arg )
         DispatchMessageW( &msg );
     }
 
+    if (hook) UnhookWindowsHookEx( hook );
+    hook = NULL;
     flyout_hide();
+    osd_hide();
     if (current_icon) DestroyIcon( current_icon );
     current_icon = NULL;
     current_glyph = -1;

@@ -53,7 +53,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
 
 BOOL WINAPI SetWindowCompositionAttribute( HWND hwnd, void *data );
 
-enum hit { HIT_NONE, HIT_HEADER, HIT_ITEM, HIT_MUTE, HIT_SLIDER };
+enum hit { HIT_NONE, HIT_MEDIA, HIT_HEADER, HIT_ITEM, HIT_MUTE, HIT_SLIDER };
 
 static HWND flyout, tray_window;
 static UINT tray_icon;
@@ -72,17 +72,6 @@ static DWORD hidden_at;
 static int anchor_x, anchor_y;
 static BOOL anchor_above;
 
-static HFONT shell_font( int height, int weight )
-{
-    NONCLIENTMETRICSW metrics = { sizeof(metrics) };
-
-    SystemParametersInfoW( SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0 );
-    metrics.lfMessageFont.lfHeight = -height;
-    metrics.lfMessageFont.lfWeight = weight;
-    metrics.lfMessageFont.lfQuality = CLEARTYPE_QUALITY;
-    return CreateFontIndirectW( &metrics.lfMessageFont );
-}
-
 static BOOL can_choose(void)
 {
     return have_device && endpoint_count > 1;
@@ -98,9 +87,17 @@ static int shown_list_height(void)
     return (int)(list_height() * list_shown + 0.5f);
 }
 
+/* what plays, on top, as MtcUvc's TransportControls (media.c) */
+static struct media_info media;
+
+static int media_height(void)
+{
+    return media.present ? MEDIA_CARD_HEIGHT : 0;
+}
+
 static int volume_top(void)
 {
-    return ROW_HEIGHT + shown_list_height();
+    return media_height() + ROW_HEIGHT + shown_list_height();
 }
 
 static int flyout_height(void)
@@ -145,6 +142,7 @@ static void reload( BOOL with_list )
 {
     have_device = audio_state( &current, &level, &muted );
     if (with_list) endpoint_count = have_device ? audio_endpoints( endpoints, MAX_ENDPOINTS ) : 0;
+    media_current( &media );
 }
 
 /**********************************************************************
@@ -163,7 +161,7 @@ static void draw_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, BYTE 
 
 static void paint_header( HDC hdc )
 {
-    RECT rect = { 0, 0, FLYOUT_WIDTH, ROW_HEIGHT };
+    RECT rect = { 0, media_height(), FLYOUT_WIDTH, media_height() + ROW_HEIGHT };
     const WCHAR *name = have_device ? current.name : load_string( IDS_NO_DEVICE );
 
     if (can_choose() && (hot == HIT_HEADER || pressed == HIT_HEADER))
@@ -171,12 +169,12 @@ static void paint_header( HDC hdc )
     rect.left = 12;
     rect.right = can_choose() ? FLYOUT_WIDTH - 36 : FLYOUT_WIDTH - 12;
     draw_text( hdc, name, &rect, expanded ? font_body_bold : font_body, 255, DT_LEFT | DT_VCENTER );
-    if (can_choose()) draw_chevron( hdc, FLYOUT_WIDTH - 18, ROW_HEIGHT / 2, !expanded, 255 );
+    if (can_choose()) draw_chevron( hdc, FLYOUT_WIDTH - 18, media_height() + ROW_HEIGHT / 2, !expanded, 255 );
 }
 
 static void paint_list( HDC hdc )
 {
-    int top = ROW_HEIGHT, shown = shown_list_height(), total = endpoint_count * ROW_HEIGHT;
+    int top = media_height() + ROW_HEIGHT, shown = shown_list_height(), total = endpoint_count * ROW_HEIGHT;
     HRGN clip;
 
     if (shown <= 0) return;
@@ -258,6 +256,11 @@ static void on_paint( HWND hwnd )
         /* black is the acrylic seen through */
         FillRect( mem, &client, GetStockObject( BLACK_BRUSH ) );
         SetBkMode( mem, TRANSPARENT );
+        if (media.present)
+        {
+            RECT card = { 0, 0, MEDIA_CARD_WIDTH, MEDIA_CARD_HEIGHT };
+            media_paint( mem, &card, &media, hot == HIT_MEDIA ? hot_item : -1, pressed == HIT_MEDIA, 255 );
+        }
         paint_header( mem );
         paint_list( mem );
         paint_volume( mem );
@@ -279,10 +282,15 @@ static enum hit hit_test( POINT pt, int *item )
 
     *item = -1;
     if (pt.y < 0 || pt.x < 0 || pt.x >= FLYOUT_WIDTH) return HIT_NONE;
-    if (pt.y < ROW_HEIGHT) return can_choose() ? HIT_HEADER : HIT_NONE;
+    if (pt.y < media_height())
+    {
+        RECT card = { 0, 0, MEDIA_CARD_WIDTH, MEDIA_CARD_HEIGHT };
+        return (*item = media_hit( &card, pt, &media )) >= 0 ? HIT_MEDIA : HIT_NONE;
+    }
+    if (pt.y < media_height() + ROW_HEIGHT) return can_choose() ? HIT_HEADER : HIT_NONE;
     if (pt.y < top)
     {
-        int i = (pt.y - ROW_HEIGHT + scroll) / ROW_HEIGHT;
+        int i = (pt.y - media_height() - ROW_HEIGHT + scroll) / ROW_HEIGHT;
 
         if (!expanded || pt.x >= FLYOUT_WIDTH - 12 || i < 0 || i >= (int)endpoint_count) return HIT_NONE;
         *item = i;
@@ -373,6 +381,9 @@ static void on_click( enum hit hit, int item )
         InvalidateRect( flyout, NULL, FALSE );
         tray_update();
         break;
+    case HIT_MEDIA:
+        media_press( &media, item );
+        break;
     default:
         break;
     }
@@ -388,11 +399,14 @@ static LRESULT CALLBACK flyout_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
         {
             /* the volume keys and other programs change it too */
             struct endpoint before = current;
+            struct media_info old_media = media;
             float old_level = level;
             BOOL old_muted = muted, old_device = have_device;
 
             reload( FALSE );
-            if (old_level != level || old_muted != muted || old_device != have_device || wcscmp( before.id, current.id ))
+            if (old_media.present != media.present) place();
+            if (old_level != level || old_muted != muted || old_device != have_device || wcscmp( before.id, current.id ) ||
+                memcmp( &old_media, &media, sizeof(media) ))
                 InvalidateRect( hwnd, NULL, FALSE );
         }
         return 0;
@@ -474,7 +488,7 @@ static LRESULT CALLBACK flyout_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
         int notches = GET_WHEEL_DELTA_WPARAM( wparam ) / WHEEL_DELTA, item;
 
         ScreenToClient( hwnd, &pt );
-        if (expanded && pt.y >= ROW_HEIGHT && pt.y < volume_top())
+        if (expanded && pt.y >= media_height() + ROW_HEIGHT && pt.y < volume_top())
         {
             int most = max( 0, (int)endpoint_count * ROW_HEIGHT - list_height() );
             scroll = max( 0, min( most, scroll - notches * ROW_HEIGHT ) );

@@ -1,0 +1,37 @@
+# The overlay of the volume keys (Windows 11's, corners of 4) with what a
+# program plays (SystemMediaTransportControls): run with --sound --disk
+# out/test-local/tools.img (volumetest.exe starts the volume icon where
+# stobject does not yet, mediatest.exe plays "Shchedryk"). The volume key
+# brings the overlay up with mediatest's card; its Next and Pause go to
+# mediatest, whose title says so ("Next 1", "Pause 2") and whose card then
+# offers Play; the tray's flyout has the card on top.
+sleep 8
+key meta_l-r
+sleep 3
+type D:\volumetest.exe
+key ret
+sleep 3
+key meta_l-r
+sleep 3
+type D:\mediatest.exe
+key ret
+sleep 4
+shot o1-playing
+key volumeup
+move 562 710
+sleep 1
+shot o2-overlay
+click
+sleep 1
+shot o3-next
+move 526 710
+click
+sleep 1
+shot o4-paused
+move 640 400
+sleep 4
+shot o5-gone
+move 1163 784
+click
+sleep 2
+shot o6-flyout-card

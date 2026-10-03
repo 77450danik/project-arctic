@@ -1,5 +1,5 @@
 MODULE    = sndvolsso.dll
-IMPORTS   = uuid dwmapi shell32 user32 gdi32 advapi32 ole32
+IMPORTS   = uuid dwmapi version shell32 user32 gdi32 advapi32 ole32
 
 VER_FILEDESCRIPTION_STR = "Volume icon of the notification area"
 
@@ -8,5 +8,7 @@ SOURCES = \
 	flyout.c \
 	glyph.c \
 	main.c \
+	media.c \
+	osd.c \
 	sndvolsso.rc \
 	tray.c

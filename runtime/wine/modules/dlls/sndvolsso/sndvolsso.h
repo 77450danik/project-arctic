@@ -56,11 +56,40 @@ void audio_set_mute( BOOL mute );
 void audio_set_default( const WCHAR *id );
 
 /* glyph.c: the speaker of Segoe MDL2 Assets, drawn */
+HFONT shell_font( int height, int weight );
+void blend_white( HDC hdc, int x, int y, int width, int height, const float *alpha );
 void draw_speaker( HDC hdc, int x, int y, int size, float level, BOOL mute, BYTE alpha, BYTE bars_alpha );
 void draw_chevron( HDC hdc, int cx, int cy, BOOL up, BYTE alpha );
 HICON make_speaker_icon( int size, float level, BOOL mute );
 void fill_alpha( HDC hdc, const RECT *rect, COLORREF color, BYTE alpha );
 void fill_round_rect( HDC hdc, const RECT *rect, float radius, COLORREF color, BYTE alpha );
+
+/* media.c: what programs play (SystemMediaTransportControls) */
+#define MEDIA_CARD_WIDTH  360
+#define MEDIA_CARD_HEIGHT 120
+
+enum media_action { MEDIA_PREVIOUS, MEDIA_PLAYPAUSE, MEDIA_NEXT };
+
+struct media_info
+{
+    BOOL   present;
+    UINT32 id;
+    HWND   notify, window;
+    BOOL   playing;
+    UINT32 buttons;
+    WCHAR  app[128], title[128], artist[128];
+    HICON  icon;
+};
+
+BOOL media_current( struct media_info *info );
+BOOL media_session( struct media_info *info );
+BOOL media_press( const struct media_info *info, int action );
+int  media_hit( const RECT *card, POINT pt, const struct media_info *info );
+void media_paint( HDC hdc, const RECT *card, const struct media_info *info, int hot, BOOL pressed, BYTE opacity );
+
+/* osd.c: the overlay the volume and media keys bring up */
+void osd_show(void);
+void osd_hide(void);
 
 /* flyout.c */
 void flyout_toggle( HWND tray, UINT icon_id );
