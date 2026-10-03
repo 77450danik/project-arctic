@@ -211,7 +211,7 @@ static void draw_tree( struct surface *s, int x, int y, bool backdrop )
 }
 
 /* the standard arrow, until cursor shapes come from win32u */
-const char arrow[20][13] =
+static const char arrow[20][13] =
 {
     "B           ",
     "BB          ",
@@ -235,31 +235,133 @@ const char arrow[20][13] =
     "        BB  ",
 };
 
+/* its outline, in the pixels of the 100 % arrow above: at a larger scale
+ * the arrow is drawn from it, smooth, with a border as wide as the scale,
+ * as Windows 10 picks the larger pointer */
+static const struct { float x, y; } arrow_outline[] =
+{
+    { 0, 0 }, { 12, 12 }, { 8, 12 }, { 11, 18.6f }, { 9.6f, 20 }, { 8.2f, 20 }, { 4.8f, 12.6f }, { 0, 17.4f },
+};
+
+struct cursor_image cursor_image;
+static float cursor_scale;
+
+static float monitor_scale( const struct dwm_window *w );
+static const struct dwm_window *taskbar_window(void);
+
+static bool in_arrow( float x, float y, float *border )
+{
+    bool inside = false;
+    float d = 1e9f;
+
+    for (size_t i = 0, j = ARRAY_SIZE(arrow_outline) - 1; i < ARRAY_SIZE(arrow_outline); j = i++)
+    {
+        float ax = arrow_outline[j].x, ay = arrow_outline[j].y, bx = arrow_outline[i].x, by = arrow_outline[i].y;
+        float dx = bx - ax, dy = by - ay, t, ex, ey;
+
+        if ((ay > y) != (by > y) && x < ax + (y - ay) * dx / dy) inside = !inside;
+        t = ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy);
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        ex = ax + t * dx - x;
+        ey = ay + t * dy - y;
+        d = min( d, ex * ex + ey * ey );
+    }
+    *border = d;
+    return inside;
+}
+
+static void make_cursor_image( float scale )
+{
+    struct cursor_image *img = &cursor_image;
+
+    memset( img->pixels, 0, sizeof(img->pixels) );
+    if (scale <= 1.0f)
+    {
+        img->width = 12;
+        img->height = ARRAY_SIZE(arrow);
+        for (int y = 0; y < img->height; y++)
+            for (int x = 0; arrow[y][x]; x++)
+                if (arrow[y][x] != ' ') img->pixels[y * img->width + x] = arrow[y][x] == 'B' ? 0xff000000 : 0xffffffff;
+    }
+    else
+    {
+        img->width = min( CURSOR_MAX_W, (int)(12 * scale + 0.999f) + 1 );
+        img->height = min( CURSOR_MAX_H, (int)(20 * scale + 0.999f) + 1 );
+        for (int y = 0; y < img->height; y++)
+            for (int x = 0; x < img->width; x++)
+            {
+                unsigned int total = 0, white = 0, a, g;
+
+                /* 4 x 4 samples a pixel: black within one arrow pixel of the outline, white inside */
+                for (int sy = 0; sy < 4; sy++)
+                    for (int sx = 0; sx < 4; sx++)
+                    {
+                        float border;
+
+                        if (!in_arrow( (x + (sx + 0.5f) / 4) / scale, (y + (sy + 0.5f) / 4) / scale, &border )) continue;
+                        total++;
+                        if (border >= 1.0f) white++;
+                    }
+                a = total * 255 / 16;
+                g = white * 255 / 16;
+                img->pixels[y * img->width + x] = (a << 24) | (g << 16) | (g << 8) | g;
+            }
+    }
+    img->serial++;
+    hw_cursor = kms_set_cursor_image( img->pixels, img->width, img->height );
+}
+
+/* the scale of the monitor the pointer is on: the topmost window there knows it */
+void update_cursor_image(void)
+{
+    float scale = 0;
+
+    for (uint32_t i = 0; i < window_count && !scale; i++)
+    {
+        const struct dwm_window *w = &windows[i];
+
+        if (!(w->style & WS_VISIBLE) || !w->raw_dpi) continue;
+        if (cursor_x >= w->left && cursor_x < w->right && cursor_y >= w->top && cursor_y < w->bottom)
+            scale = monitor_scale( w );
+    }
+    if (!scale) scale = monitor_scale( taskbar_window() );
+    scale = max( 1.0f, min( scale, 5.0f ) );
+    if (scale == cursor_scale && cursor_image.width) return;
+    cursor_scale = scale;
+    make_cursor_image( scale );
+}
+
 static void set_cursor_image(void)
 {
-    uint32_t argb[ARRAY_SIZE(arrow) * 12] = {0};
-
-    for (int y = 0; y < (int)ARRAY_SIZE(arrow); y++)
-        for (int x = 0; arrow[y][x]; x++)
-            if (arrow[y][x] != ' ') argb[y * 12 + x] = arrow[y][x] == 'B' ? 0xff000000 : 0xffffffff;
-    hw_cursor = kms_set_cursor_image( argb, 12, ARRAY_SIZE(arrow) );
+    cursor_scale = 0;
+    update_cursor_image();
 }
 
 static void draw_cursor(void)
 {
+    const struct cursor_image *img = &cursor_image;
+
     if (cursor_hidden) return;
-    for (int y = 0; y < (int)ARRAY_SIZE(arrow); y++)
+    update_cursor_image();
+    for (int y = 0; y < img->height; y++)
     {
         int py = cursor_y + y;
 
         if (py < screen.top || py >= screen.bottom) continue;
-        for (int x = 0; arrow[y][x]; x++)
+        for (int x = 0; x < img->width; x++)
         {
             int px = cursor_x + x;
+            uint32_t src = img->pixels[y * img->width + x], *dst, a;
 
-            if (px < screen.left || px >= screen.right || arrow[y][x] == ' ') continue;
-            shadow[(size_t)(py - screen.top) * (screen.right - screen.left) + px - screen.left] =
-                arrow[y][x] == 'B' ? 0xff000000 : 0xffffffff;
+            if (px < screen.left || px >= screen.right || !src) continue;
+            dst = &shadow[(size_t)(py - screen.top) * (screen.right - screen.left) + px - screen.left];
+            if ((a = src >> 24) == 0xff) *dst = src;
+            else
+            {
+                uint32_t r = ((*dst >> 16) & 0xff) * (255 - a) / 255, g = ((*dst >> 8) & 0xff) * (255 - a) / 255,
+                         b = (*dst & 0xff) * (255 - a) / 255;
+                *dst = src + ((r << 16) | (g << 8) | b);
+            }
         }
     }
 }
@@ -2895,6 +2997,7 @@ static NTSTATUS dwm_set_cursor( void *args )
     cursor_x = params->x;
     cursor_y = params->y;
     cursor_hidden = params->hidden;
+    update_cursor_image();  /* another monitor, another scale */
     /* monitors showing a window directly move the cursor plane; the others compose */
     wl_list_for_each( output, &outputs, link )
     {

@@ -821,36 +821,39 @@ void kms_remove_dmabuf( uint32_t fb )
     }
 }
 
-/* the hardware cursor: one image for every CRTC */
-static struct { uint32_t handle, width, height; } cursor;
+/* the hardware cursor: one image for every CRTC, its buffer made once for
+ * the card and drawn into again when the image changes (another scale) */
+static struct { uint32_t handle, width, height, pitch; uint64_t size; } cursor;
 
 bool kms_set_cursor_image( const uint32_t *argb, uint32_t width, uint32_t height )
 {
-    struct drm_get_cap cap_width = { .capability = DRM_CAP_CURSOR_WIDTH };
-    struct drm_get_cap cap_height = { .capability = DRM_CAP_CURSOR_HEIGHT };
-    struct drm_mode_create_dumb create = { .bpp = 32 };
-    struct drm_mode_destroy_dumb destroy = {0};
     struct drm_mode_map_dumb map = {0};
     uint8_t *pixels;
 
-    create.width = !ioctl( kms.fd, DRM_IOCTL_GET_CAP, &cap_width ) && cap_width.value ? cap_width.value : 64;
-    create.height = !ioctl( kms.fd, DRM_IOCTL_GET_CAP, &cap_height ) && cap_height.value ? cap_height.value : 64;
-    if (width > create.width || height > create.height) return false;
-    if (ioctl( kms.fd, DRM_IOCTL_MODE_CREATE_DUMB, &create )) return false;
-    map.handle = destroy.handle = create.handle;
-    if (ioctl( kms.fd, DRM_IOCTL_MODE_MAP_DUMB, &map ) ||
-        (pixels = mmap( NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED, kms.fd, (off_t)map.offset )) == MAP_FAILED)
+    if (!cursor.handle)
     {
-        ioctl( kms.fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy );
-        return false;
+        struct drm_get_cap cap_width = { .capability = DRM_CAP_CURSOR_WIDTH };
+        struct drm_get_cap cap_height = { .capability = DRM_CAP_CURSOR_HEIGHT };
+        struct drm_mode_create_dumb create = { .bpp = 32 };
+
+        create.width = !ioctl( kms.fd, DRM_IOCTL_GET_CAP, &cap_width ) && cap_width.value ? cap_width.value : 64;
+        create.height = !ioctl( kms.fd, DRM_IOCTL_GET_CAP, &cap_height ) && cap_height.value ? cap_height.value : 64;
+        if (ioctl( kms.fd, DRM_IOCTL_MODE_CREATE_DUMB, &create )) return false;
+        cursor.handle = create.handle;
+        cursor.width = create.width;
+        cursor.height = create.height;
+        cursor.pitch = create.pitch;
+        cursor.size = create.size;
     }
-    memset( pixels, 0, create.size );
+    if (width > cursor.width || height > cursor.height) return false;
+    map.handle = cursor.handle;
+    if (ioctl( kms.fd, DRM_IOCTL_MODE_MAP_DUMB, &map ) ||
+        (pixels = mmap( NULL, cursor.size, PROT_READ | PROT_WRITE, MAP_SHARED, kms.fd, (off_t)map.offset )) == MAP_FAILED)
+        return false;
+    memset( pixels, 0, cursor.size );
     for (uint32_t y = 0; y < height; y++)
-        memcpy( pixels + (size_t)y * create.pitch, argb + (size_t)y * width, width * 4 );
-    munmap( pixels, create.size );
-    cursor.handle = create.handle;
-    cursor.width = create.width;
-    cursor.height = create.height;
+        memcpy( pixels + (size_t)y * cursor.pitch, argb + (size_t)y * width, width * 4 );
+    munmap( pixels, cursor.size );
     return true;
 }
 

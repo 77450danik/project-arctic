@@ -77,6 +77,7 @@ static bool       gles3, has_bgra, has_unpack, has_external;
 static GLint      max_texture;
 static GLuint     read_framebuffer, read_texture;  /* gpu_read_dmabuf */
 static GLuint     cursor_texture;
+static unsigned   cursor_texture_serial;
 
 static PFNEGLCREATEIMAGEKHRPROC create_image;
 static PFNEGLDESTROYIMAGEKHRPROC destroy_image;
@@ -1165,17 +1166,16 @@ static void draw_cursor( void )
     struct clip none = { { 0 }, -1 };
 
     if (cursor_hidden) return;
-    if (!cursor_texture)
+    update_cursor_image();
+    /* the image is grey: RGBA and BGRA read the same */
+    if (!cursor_texture || cursor_texture_serial != cursor_image.serial)
     {
-        uint32_t rgba[20 * 12] = {0};
-
-        for (int y = 0; y < 20; y++)
-            for (int x = 0; x < 12 && arrow[y][x]; x++)
-                if (arrow[y][x] != ' ') rgba[y * 12 + x] = arrow[y][x] == 'B' ? 0xff000000 : 0xffffffff;
-        glGenTextures( 1, &cursor_texture );
+        if (!cursor_texture) glGenTextures( 1, &cursor_texture );
         glBindTexture( GL_TEXTURE_2D, cursor_texture );
-        glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, 12, 20, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba );
+        glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, cursor_image.width, cursor_image.height, 0, GL_RGBA,
+                      GL_UNSIGNED_BYTE, cursor_image.pixels );
         texture_parameters( GL_TEXTURE_2D, GL_NEAREST );
+        cursor_texture_serial = cursor_image.serial;
     }
     use_program( &prog_texture );
     glActiveTexture( GL_TEXTURE0 );
@@ -1184,7 +1184,7 @@ static void draw_cursor( void )
     glUniform1f( prog_texture.swizzle, 0 );
     set_clip( &prog_texture, &none, 1 );
     glUniform1f( prog_texture.radius, -1 );
-    draw_quad( cursor_x, cursor_y, cursor_x + 12, cursor_y + 20, 0, 0, 1, 1 );
+    draw_quad( cursor_x, cursor_y, cursor_x + cursor_image.width, cursor_y + cursor_image.height, 0, 0, 1, 1 );
 }
 
 static void draw_unowned( struct surface *s, int x, int y, void *ctx )

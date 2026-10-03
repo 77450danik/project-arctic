@@ -173,7 +173,17 @@ extern uint32_t             window_count;
 extern uint32_t             background;      /* XRGB */
 extern int                  cursor_x, cursor_y;
 extern bool                 cursor_hidden;
-extern const char           arrow[20][13];
+/* the pointer at the scale of the monitor under it, premultiplied ARGB */
+#define CURSOR_MAX_W 64
+#define CURSOR_MAX_H 104
+struct cursor_image
+{
+    uint32_t pixels[CURSOR_MAX_W * CURSOR_MAX_H];
+    int      width, height;
+    unsigned serial;            /* changes with the image */
+};
+extern struct cursor_image  cursor_image;
+extern void update_cursor_image(void);
 
 /* gl.c */
 bool gl_start(void);                         /* a GL context on the card: composition on the GPU */
