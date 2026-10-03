@@ -1,0 +1,12 @@
+# The taskbar's windows with their sizes (run with --disk
+# out/test-local/tools.img): trayinfo.exe lists Shell_TrayWnd, its Start
+# button, rebar, task toolbar and notification area with their rectangles,
+# and the theme's sizing bars. Windows 10's large taskbar is 40 high, its
+# Start and task buttons 48x40.
+sleep 8
+key meta_l-r
+sleep 3
+type D:\trayinfo.exe
+key ret
+sleep 5
+shot t1-trayinfo

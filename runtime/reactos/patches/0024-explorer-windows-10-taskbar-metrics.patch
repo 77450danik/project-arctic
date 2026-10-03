@@ -1,0 +1,130 @@
+diff --git a/base/shell/explorer/settings.cpp b/base/shell/explorer/settings.cpp
+index 19e37d49..3a72a9ed 100644
+--- a/base/shell/explorer/settings.cpp
++++ b/base/shell/explorer/settings.cpp
+@@ -49,7 +49,8 @@ BOOL TaskbarSettings::Load()
+     bLock = (dwRet == ERROR_SUCCESS) ? (dwValue == 0) : TRUE;
+ 
+     dwRet = SHGetValueW(hkExplorer, L"Advanced", L"PreferDateOverWeekday", NULL, &dwValue, &cbSize);
+-    bPreferDate = (dwRet == ERROR_SUCCESS) ? (dwValue != 0) : FALSE; /* This is opt-in setting */
++    /* Arctic: the date under the time, as in Windows 10 */
++    bPreferDate = (dwRet == ERROR_SUCCESS) ? (dwValue != 0) : TRUE;
+ 
+     dwRet = SHGetValueW(hkExplorer, L"Advanced", L"ShowSeconds", NULL, &dwValue, &cbSize);
+     bShowSeconds = (dwRet == ERROR_SUCCESS) ? (dwValue != 0) : FALSE;
+diff --git a/base/shell/explorer/taskband.cpp b/base/shell/explorer/taskband.cpp
+index 48b4be6d..9160908f 100644
+--- a/base/shell/explorer/taskband.cpp
++++ b/base/shell/explorer/taskband.cpp
+@@ -129,8 +129,12 @@ public:
+             }
+             else
+             {
++                /* Arctic: a row is as high as the buttons of Windows 10 (40,
++                   or 30 with small buttons), whatever the toolbar has yet:
++                   the taskbar takes its height from it */
++                pdbi->ptMinSize.y = g_TaskbarSettings.bSmallIcons ? 30 : 40;
+                 pdbi->ptIntegral.x = 0;
+-                pdbi->ptIntegral.y = GET_Y_LPARAM(size);
++                pdbi->ptIntegral.y = pdbi->ptMinSize.y;
+             }
+ 
+             /* Ignored: pdbi->ptMaxSize.x */
+diff --git a/base/shell/explorer/trayclock.cpp b/base/shell/explorer/trayclock.cpp
+index 04c131e7..b810211f 100644
+--- a/base/shell/explorer/trayclock.cpp
++++ b/base/shell/explorer/trayclock.cpp
+@@ -247,8 +247,9 @@ BOOL CTrayClockWnd::MeasureLines()
+ 
+             if (c > 0)
+             {
+-                /* We want a spacing of 1/2 line */
+-                LineSpacing = (LineSpacing / c) / 2;
++                /* Arctic: the lines of Windows 10's clock nearly touch, so
++                   that time and date fit a taskbar of 40 */
++                LineSpacing = (LineSpacing / c) / 8;
+             }
+ 
+             return TRUE;
+diff --git a/base/shell/explorer/traydeskbtn.cpp b/base/shell/explorer/traydeskbtn.cpp
+index 3295d47f..07bf2b9e 100644
+--- a/base/shell/explorer/traydeskbtn.cpp
++++ b/base/shell/explorer/traydeskbtn.cpp
+@@ -42,7 +42,7 @@ INT CTrayShowDesktopButton::WidthOrHeight() const
+                 return 24;
+             }
+             else
+-                return 15;
++                return 5; /* Arctic: the sliver of Windows 10 */
+         }
+         else
+         {
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+index f747d643..e3c9e297 100644
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -1782,6 +1782,11 @@ ChangePos:
+             StartSize.cy = HIWORD(size) + (m_Theme ? GetSystemMetrics(SM_CYEDGE) : 0);
+         }
+ 
++        /* Arctic: Start is a row of Windows 10 high (48x40), with or
++           without task buttons yet */
++        if (Horizontal && m_Theme)
++            StartSize.cy = GetMinimumRowHeight();
++
+         if (m_StartButton.m_hWnd != NULL)
+         {
+             /* Resize and reposition the button */
+@@ -1846,15 +1851,19 @@ ChangePos:
+ 
+             SetWindowStyle(m_Rebar, CCS_VERT, Horizontal ? 0 : CCS_VERT);
+ 
++            /* Arctic: the buttons follow Start without a gap on a locked
++               taskbar, as in Windows 10; the gripper needs one */
++            BOOL bGap = !m_Theme || !g_TaskbarSettings.bLock;
++
+             if (Horizontal)
+             {
+-                ptRebar.x = StartSize.cx + GetSystemMetrics(SM_CXSIZEFRAME);
++                ptRebar.x = StartSize.cx + (bGap ? GetSystemMetrics(SM_CXSIZEFRAME) : 0);
+                 szRebar.cx = ptTrayNotify.x - ptRebar.x;
+                 szRebar.cy = rcClient.bottom;
+             }
+             else
+             {
+-                ptRebar.y = StartSize.cy + GetSystemMetrics(SM_CYSIZEFRAME);
++                ptRebar.y = StartSize.cy + (bGap ? GetSystemMetrics(SM_CYSIZEFRAME) : 0);
+                 szRebar.cx = rcClient.right;
+                 szRebar.cy = ptTrayNotify.y - ptRebar.y;
+             }
+@@ -1879,6 +1888,13 @@ ChangePos:
+         }
+     }
+ 
++    /* Arctic: the height of a row of the taskbar in Windows 10: 40, or 30
++       with small buttons */
++    LONG GetMinimumRowHeight()
++    {
++        return g_TaskbarSettings.bSmallIcons ? 30 : 40;
++    }
++
+     void FitToRebar(PRECT pRect)
+     {
+         /* Get the rect of the rebar */
+@@ -1899,11 +1915,16 @@ ChangePos:
+         case ABE_TOP:
+             rebarRect.bottom = rebarRect.top + pRect->bottom - pRect->top - margins.cy;
+             ::SendMessageW(m_Rebar, RB_SIZETORECT, RBSTR_CHANGERECT,  (LPARAM)&rebarRect);
++            /* Arctic: never lower than a row of Windows 10's buttons */
++            if (rebarRect.bottom - rebarRect.top < GetMinimumRowHeight())
++                rebarRect.bottom = rebarRect.top + GetMinimumRowHeight();
+             pRect->bottom = pRect->top + rebarRect.bottom - rebarRect.top + margins.cy;
+             break;
+         case ABE_BOTTOM:
+             rebarRect.top = rebarRect.bottom - (pRect->bottom - pRect->top - margins.cy);
+             ::SendMessageW(m_Rebar, RB_SIZETORECT, RBSTR_CHANGERECT,  (LPARAM)&rebarRect);
++            if (rebarRect.bottom - rebarRect.top < GetMinimumRowHeight())
++                rebarRect.top = rebarRect.bottom - GetMinimumRowHeight();
+             pRect->top = pRect->bottom - (rebarRect.bottom - rebarRect.top + margins.cy);
+             break;
+         case ABE_LEFT:
