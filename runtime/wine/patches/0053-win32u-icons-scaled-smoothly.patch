@@ -1,0 +1,142 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 4 Oct 2026 01:10:00 +0200
+Subject: [PATCH] win32u: Draw an icon at another size smoothly.
+
+At 125 and 150 % the shell draws 16 and 32 pixel icons at 20, 24, 30 or
+36 pixels, and so do image lists: DrawIconEx stretched them with
+AlphaBlend or StretchBlt, which take the nearest pixel, and the icons
+came out torn. An icon drawn at another size than its frame's is now
+resampled with a tent filter as wide as the scale, on premultiplied
+colours, and blended at its size, as Windows draws it.
+---
+--- a/dlls/win32u/cursoricon.c
++++ b/dlls/win32u/cursoricon.c
+@@ -740,6 +740,97 @@
+ /******************************************************************************
+  *	     NtUserDrawIconEx (win32u.@)
+  */
++/* Arctic: an icon drawn at another size than its frame's (16 or 32 pixels
++ * at 125 or 150 %, in image lists, on the taskbar) is resampled smoothly, as
++ * Windows does: every source pixel weighs in, by a tent as wide as the scale,
++ * on premultiplied colours. StretchBlt and AlphaBlend took the nearest pixel,
++ * and icons came out torn. */
++static void resample_icon_line( const float *src, int src_len, int src_step, float *dst, int dst_len,
++                                int dst_step )
++{
++    float scale = (float)dst_len / src_len, support = scale < 1 ? 1 / scale : 1;
++
++    for (int i = 0; i < dst_len; i++)
++    {
++        float center = (i + 0.5f) / scale, sum[4] = { 0 }, total = 0;
++        int lo = max( 0, (int)(center - support) - 1 ), hi = min( src_len, (int)(center + support) + 2 );
++
++        for (int j = lo; j < hi; j++)
++        {
++            float d = (j + 0.5f - center) / support, w = 1 - (d < 0 ? -d : d);
++
++            if (w <= 0) continue;
++            for (int c = 0; c < 4; c++) sum[c] += src[j * src_step * 4 + c] * w;
++            total += w;
++        }
++        for (int c = 0; c < 4; c++) dst[i * dst_step * 4 + c] = total > 0 ? sum[c] / total : 0;
++    }
++}
++
++/* the frame as premultiplied BGRA: its alpha bitmap, or its colours where its mask is black */
++static BOOL get_icon_pixels( HDC hdc, struct cursoricon_object *obj, UINT32 *pixels )
++{
++    int width = obj->frame.width, height = obj->frame.height;
++    BITMAPINFO info = {{ sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB }};
++    UINT32 *mask;
++    BOOL ret;
++
++    if (obj->frame.alpha)
++        return NtGdiGetDIBitsInternal( hdc, obj->frame.alpha, 0, height, pixels, &info, DIB_RGB_COLORS, 0, 0 ) == height;
++    if (!obj->frame.color || !obj->frame.mask) return FALSE;
++    if (NtGdiGetDIBitsInternal( hdc, obj->frame.color, 0, height, pixels, &info, DIB_RGB_COLORS, 0, 0 ) != height)
++        return FALSE;
++    if (!(mask = malloc( width * height * 4 ))) return FALSE;
++    info.bmiHeader.biHeight = -height;
++    ret = NtGdiGetDIBitsInternal( hdc, obj->frame.mask, 0, height, mask, &info, DIB_RGB_COLORS, 0, 0 ) == height;
++    for (int i = 0; ret && i < width * height; i++)
++        pixels[i] = (mask[i] & 0xffffff) ? 0 : (pixels[i] | 0xff000000);
++    free( mask );
++    return ret;
++}
++
++static HBITMAP create_scaled_icon( HDC hdc, struct cursoricon_object *obj, int width, int height )
++{
++    int src_width = obj->frame.width, src_height = obj->frame.height;
++    BITMAPINFO info = {{ sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB }};
++    float *src = NULL, *tmp = NULL, *dst = NULL;
++    UINT32 *pixels = NULL, *bits;
++    HBITMAP bitmap = 0;
++
++    if (src_width <= 0 || src_height <= 0 || width <= 0 || height <= 0 || width > 1024 || height > 1024)
++        return 0;
++    if (!(pixels = malloc( src_width * src_height * 4 )) ||
++        !(src = malloc( src_width * src_height * 4 * sizeof(float) )) ||
++        !(tmp = malloc( width * src_height * 4 * sizeof(float) )) ||
++        !(dst = malloc( width * height * 4 * sizeof(float) )))
++        goto done;
++    if (!get_icon_pixels( hdc, obj, pixels )) goto done;
++
++    for (int i = 0; i < src_width * src_height; i++)
++        for (int c = 0; c < 4; c++) src[i * 4 + c] = (pixels[i] >> (c * 8)) & 0xff;
++    for (int y = 0; y < src_height; y++)
++        resample_icon_line( src + y * src_width * 4, src_width, 1, tmp + y * width * 4, width, 1 );
++    for (int x = 0; x < width; x++)
++        resample_icon_line( tmp + x * 4, src_height, width, dst + x * 4, height, width );
++
++    if (!(bitmap = NtGdiCreateDIBSection( hdc, NULL, 0, &info, DIB_RGB_COLORS, 0, 0, 0, (void **)&bits )))
++        goto done;
++    for (int i = 0; i < width * height; i++)
++    {
++        UINT32 pixel = 0, a = min( 255, (int)(dst[i * 4 + 3] + 0.5f) );
++
++        for (int c = 0; c < 3; c++) pixel |= (UINT32)min( a, (UINT32)max( 0, (int)(dst[i * 4 + c] + 0.5f) ) ) << (c * 8);
++        bits[i] = pixel | (a << 24);
++    }
++
++done:
++    free( dst );
++    free( tmp );
++    free( src );
++    free( pixels );
++    return bitmap;
++}
++
+ BOOL WINAPI NtUserDrawIconEx( HDC hdc, INT x0, INT y0, HICON icon, INT width,
+                               INT height, UINT step, HBRUSH brush, UINT flags )
+ {
+@@ -814,6 +905,30 @@
+     NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, RGB(0,0,0), &old_fg );
+     NtGdiGetAndSetDCDword( hdc, NtGdiSetBkColor, RGB(255,255,255), &old_bg );
+ 
++    if ((flags & DI_NORMAL) == DI_NORMAL && (width != obj->frame.width || height != obj->frame.height))
++    {
++        BOOL alpha_blend = TRUE;
++        HBITMAP scaled;
++
++        if (get_gdi_object_type( hdc_dest ) == NTGDI_OBJ_MEMDC)
++        {
++            BITMAP bm;
++            HBITMAP bmp = NtGdiGetDCObject( hdc_dest, NTGDI_OBJ_SURF );
++            alpha_blend = NtGdiExtGetObjectW( bmp, sizeof(bm), &bm ) && bm.bmBitsPixel > 8;
++        }
++        if (alpha_blend && (scaled = create_scaled_icon( hdc, obj, width, height )))
++        {
++            BOOL drawn;
++
++            NtGdiSelectBitmap( mem_dc, scaled );
++            drawn = NtGdiAlphaBlend( hdc_dest, x, y, width, height, mem_dc, 0, 0, width, height,
++                                     MAKEFOURCC( AC_SRC_OVER, 0, 255, AC_SRC_ALPHA ), 0 );
++            NtGdiSelectBitmap( mem_dc, GetStockObject( DEFAULT_BITMAP ) );
++            NtGdiDeleteObjectApp( scaled );
++            if (drawn) goto done;
++        }
++    }
++
+     if (obj->frame.alpha && (flags & DI_IMAGE))
+     {
+         BOOL alpha_blend = TRUE;

@@ -1,0 +1,44 @@
+# A maximized window stays maximized when another window opens over it and
+# when the taskbar switches between them: none of them minimizes by itself.
+# Chrome: a maximized browser stays when its own popup (Open dialog) comes up.
+sleep 6
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 4
+move 300 10
+dblclick                      # maximize from its caption
+sleep 2
+shot x1-notepad-maximized
+key win-r
+sleep 2
+type explorer C:\
+key ret
+sleep 6
+shot x2-folder-over-notepad   # Notepad still maximized behind the folder
+move 71 780
+click                         # Notepad's button: Notepad comes up, maximized
+sleep 2
+shot x3-notepad-from-taskbar
+move 120 780
+click                         # the folder's button: the folder comes up
+sleep 2
+shot x4-folder-from-taskbar
+move 71 780
+click
+sleep 2
+shot x5-notepad-again
+move 37 400
+dblclick                      # Chrome from the desktop
+sleep 40
+shot x6-chrome
+key win-up                    # maximized
+sleep 3
+shot x7-chrome-maximized
+key ctrl-o                    # its Open dialog, a popup it owns
+sleep 6
+shot x8-chrome-open-dialog    # Chrome still maximized under the dialog
+key esc
+sleep 3
+shot x9-chrome-after

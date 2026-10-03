@@ -1,0 +1,17 @@
+# Icons at 150 % (an image built with the monitor two steps above its
+# recommended scale, run with --resolution 1920x1080): the desktop, the
+# taskbar, the tray and a folder window draw their 16 and 32 pixel icons at
+# 24 and 48 smoothly, not torn by the nearest pixel.
+sleep 12
+shot i1-desktop
+key win-r
+sleep 3
+type notepad
+key ret
+sleep 5
+key win-r
+sleep 3
+type explorer C:\
+key ret
+sleep 8
+shot i2-folder-taskbar

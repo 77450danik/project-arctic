@@ -1,0 +1,29 @@
+# A maximized Chrome stays maximized when its own popups come up over it:
+# its menu, the Open dialog, a second browser window.
+sleep 6
+key win-r
+sleep 2
+type chrome
+key ret
+sleep 45
+shot c1-chrome
+key win-up                    # maximized
+sleep 4
+shot c2-chrome-maximized
+key alt-f                     # its menu, a popup
+sleep 4
+shot c3-chrome-menu
+key esc
+sleep 2
+key ctrl-o                    # the Open dialog
+sleep 8
+shot c4-chrome-open-dialog
+key esc
+sleep 3
+shot c5-chrome-after-dialog
+key ctrl-n                    # a second window over the first
+sleep 10
+shot c6-chrome-second-window
+key alt-f4
+sleep 4
+shot c7-chrome-first-again    # the first still maximized
