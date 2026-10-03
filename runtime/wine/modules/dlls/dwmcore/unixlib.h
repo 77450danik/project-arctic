@@ -44,6 +44,8 @@ struct dwm_window
     UINT32 owner;
     UINT32 class_atom;                /* 0x8000: a menu */
     UINT32 band;                      /* the taskbar's band, over program windows */
+    UINT32 dpi;                       /* DPI of the window's own coordinates */
+    UINT32 raw_dpi;                   /* DPI of its monitor's pixels, which the rectangles above are in */
 };
 
 struct dwm_set_windows_params

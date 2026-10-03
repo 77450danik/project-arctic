@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 3 Oct 2026 18:00:00 +0300
+Subject: [PATCH] server: The composition list in the pixels of the monitors.
+
+The compositor got each window's rectangles in the window's own DPI: a
+program that knows nothing of DPI keeps 96, so at 150 % the taskbar came
+out two thirds the size, in the middle of the screen, while its surface
+had the monitor's size. The rectangles now go to the monitor's DPI and
+then to its pixels, and each window says the DPI of its own coordinates
+and of its monitor's pixels, for what programs give the compositor in
+their own coordinates (thumbnails, the taskbar's buttons).
+---
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -293,11 +293,13 @@
+     user_handle_t    handle;       /* window handle */
+     unsigned int     style;        /* window style */
+     unsigned int     ex_style;     /* window extended style */
+-    struct rectangle visible_rect; /* visible rectangle, in screen coordinates */
+-    struct rectangle client_rect;  /* client rectangle, in screen coordinates */
++    struct rectangle visible_rect; /* visible rectangle, in the pixels of the monitor */
++    struct rectangle client_rect;  /* client rectangle, in the pixels of the monitor */
+     user_handle_t    owner;        /* owner window */
+     unsigned int     class_atom;   /* class atom, 0x8000 for menus */
+     unsigned int     band;         /* in the band over program windows (the taskbar) */
++    unsigned int     dpi;          /* DPI of the window's own coordinates */
++    unsigned int     raw_dpi;      /* DPI of the pixels of its monitor */
+ };
+ 
+ /* structure for parameters of async I/O calls */
+--- a/server/window.c
++++ b/server/window.c
+@@ -2834,6 +2834,38 @@
+ /* get the toplevel windows of the thread desktop in z-order, for the compositor */
+ /* the composited descendants of a window, topmost first, from entry i on;
+  * returns the next entry, counting past max without writing */
++/* Arctic: the compositor works in the pixels of the monitors, whatever DPI a
++ * window has its coordinates in: a window that knows nothing of DPI keeps
++ * 96, and its rectangles go to the monitor's DPI, then to its pixels */
++static void composition_rects( struct window *win, struct composition_window *data )
++{
++    struct window *top = win;
++    struct ratio dpi = get_window_dpi( win ), monitor_dpi;
++    struct monitor_info *monitor;
++    struct rectangle *rects[2] = { &data->visible_rect, &data->client_rect };
++
++    while (!is_toplevel( top )) top = top->parent;
++    monitor_dpi = get_monitor_dpi( top );
++    data->dpi = dpi.den ? dpi.num / dpi.den : USER_DEFAULT_SCREEN_DPI;
++    data->raw_dpi = data->dpi;
++    for (int r = 0; r < 2; r++) map_dpi_rect( win, rects[r], dpi, monitor_dpi );
++    if (!(monitor = get_monitor_from_rect( win->desktop->winstation, &data->visible_rect, 0 ))) return;
++    if (top->shared->raw_dpi.den) data->raw_dpi = top->shared->raw_dpi.num / top->shared->raw_dpi.den;
++    for (int r = 0; r < 2; r++)
++    {
++        struct rectangle *rect = rects[r];
++        long long virt_w = monitor->virt.right - monitor->virt.left, raw_w = monitor->raw.right - monitor->raw.left;
++        long long virt_h = monitor->virt.bottom - monitor->virt.top, raw_h = monitor->raw.bottom - monitor->raw.top;
++
++        if (!virt_w || !virt_h || (virt_w == raw_w && virt_h == raw_h && monitor->virt.left == monitor->raw.left &&
++                                   monitor->virt.top == monitor->raw.top)) continue;
++        rect->left   = monitor->raw.left + (rect->left - monitor->virt.left) * raw_w / virt_w;
++        rect->right  = monitor->raw.left + (rect->right - monitor->virt.left) * raw_w / virt_w;
++        rect->top    = monitor->raw.top + (rect->top - monitor->virt.top) * raw_h / virt_h;
++        rect->bottom = monitor->raw.top + (rect->bottom - monitor->virt.top) * raw_h / virt_h;
++    }
++}
++
+ static int list_composited( struct window *parent, struct composition_window *data, int i, int max )
+ {
+     struct window *win;
+@@ -2854,6 +2886,7 @@
+             data[i].owner        = win->owner;
+             data[i].class_atom   = win->atom;
+             data[i].band         = win->band;
++            composition_rects( win, &data[i] );
+         }
+         i++;
+     }
+@@ -2905,6 +2938,7 @@
+                 data[i].owner        = win->owner;
+                 data[i].class_atom   = win->atom;
+                 data[i].band         = win->band;
++                composition_rects( win, &data[i] );
+                 i++;
+             }
+         }

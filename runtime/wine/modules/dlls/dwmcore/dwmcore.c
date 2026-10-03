@@ -544,6 +544,8 @@ static void update_windows(void)
         windows[i].owner      = list[i].owner;
         windows[i].class_atom = list[i].class_atom;
         windows[i].band       = list[i].band;
+        windows[i].dpi        = list[i].dpi;
+        windows[i].raw_dpi    = list[i].raw_dpi;
     }
     params.count = got;
     params.windows = windows;

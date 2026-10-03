@@ -517,17 +517,31 @@ static bool window_shown( const struct dwm_window *w, const struct window_state 
     return (w->style & WS_VISIBLE) && !(w->style & WS_MINIMIZE) && !(w->style & WS_CHILD) && !is_cloaked( ws );
 }
 
+/* the rectangles of the window list are in the pixels of the monitor; what
+ * a program gives in its own coordinates (thumbnails, its taskbar button)
+ * grows by its scale, and what DWM draws of its own by the monitor's */
+static float window_scale( const struct dwm_window *w )
+{
+    return w && w->dpi && w->raw_dpi ? (float)w->raw_dpi / w->dpi : 1.0f;
+}
+
+static float monitor_scale( const struct dwm_window *w )
+{
+    return w && w->raw_dpi ? w->raw_dpi / 96.0f : 1.0f;
+}
+
 /* Windows 11 rounds a window with a frame unless it is maximized or full
  * screen, or the program said not to (DWMWA_WINDOW_CORNER_PREFERENCE) */
 static float corner_radius( const struct dwm_window *w, const struct window_state *ws )
 {
     UINT32 corner = ws && ws->has_attr ? ws->attr.corner : 0;
+    float radius = CORNER_RADIUS * monitor_scale( w );
 
     if (w->style & (WS_CHILD | WS_MAXIMIZE | WS_MINIMIZE)) return 0;
     if (corner == 1 /* DWMWCP_DONOTROUND */ || covers_monitor( w )) return 0;
-    if (corner == 3 /* DWMWCP_ROUNDSMALL */) return CORNER_RADIUS / 2;
-    if (corner == 2 /* DWMWCP_ROUND */) return CORNER_RADIUS;
-    return has_caption( w ) || (w->style & WS_THICKFRAME) ? CORNER_RADIUS : 0;
+    if (corner == 3 /* DWMWCP_ROUNDSMALL */) return radius / 2;
+    if (corner == 2 /* DWMWCP_ROUND */) return radius;
+    return has_caption( w ) || (w->style & WS_THICKFRAME) ? radius : 0;
 }
 
 /* Windows 11 puts a soft shadow under windows with a frame and under menus,
@@ -632,19 +646,31 @@ static struct frect moved( struct frect r, float dx, float dy )
 
 /* where a minimized window goes: its taskbar button, which the taskbar
  * names (DWMWA_ARCTIC_MINIMIZE_RECT), else the middle of the bottom edge */
+/* the taskbar: the window in the band over program windows */
+static const struct dwm_window *taskbar_window(void)
+{
+    for (uint32_t i = 0; i < window_count; i++) if (windows[i].band) return &windows[i];
+    return NULL;
+}
+
 static struct frect minimize_target( const struct window_state *ws, const struct dwm_window *w )
 {
+    float s = monitor_scale( w );
     RECT rect;
 
     if (ws->has_attr && ws->attr.minimize_right > ws->attr.minimize_left &&
         ws->attr.minimize_bottom > ws->attr.minimize_top)
-        return frect_from( ws->attr.minimize_left, ws->attr.minimize_top, ws->attr.minimize_right,
-                           ws->attr.minimize_bottom );
+    {
+        /* the button's rectangle is in the taskbar's coordinates */
+        float ts = window_scale( taskbar_window() );
+        return frect_from( ws->attr.minimize_left * ts, ws->attr.minimize_top * ts, ws->attr.minimize_right * ts,
+                           ws->attr.minimize_bottom * ts );
+    }
     if (!monitor_rect( (w->left + w->right) / 2, (w->top + w->bottom) / 2, &rect ) &&
         !monitor_rect( 0, 0, &rect ))
         set_rect(&rect, 0, 0, 1024, 768 );
-    return frect_from( (rect.left + rect.right) / 2 - 24, rect.bottom - 40, (rect.left + rect.right) / 2 + 24,
-                       rect.bottom );
+    return frect_from( (rect.left + rect.right) / 2 - 24 * s, rect.bottom - 40 * s,
+                       (rect.left + rect.right) / 2 + 24 * s, rect.bottom );
 }
 
 static void animate( struct window_state *ws, enum animation anim, struct frect from, struct frect to,
@@ -673,8 +699,8 @@ static void animate_in( struct window_state *ws, const struct dwm_window *w )
     {
     case TRANSITION_NONE: break;
     case TRANSITION_WINDOW: animate( ws, ANIM_OPEN, zoomed( r, 0.94f ), r, 0, 1, 250, false ); break;
-    case TRANSITION_POPUP: animate( ws, ANIM_POPUP_IN, moved( r, 0, -8 ), r, 0, 1, 167, false ); break;
-    case TRANSITION_SLIDE: animate( ws, ANIM_SLIDE_IN, moved( r, 0, 48 ), r, 0, 1, 250, false ); break;
+    case TRANSITION_POPUP: animate( ws, ANIM_POPUP_IN, moved( r, 0, -8 * monitor_scale( w ) ), r, 0, 1, 167, false ); break;
+    case TRANSITION_SLIDE: animate( ws, ANIM_SLIDE_IN, moved( r, 0, 48 * monitor_scale( w ) ), r, 0, 1, 250, false ); break;
     case TRANSITION_FADE: animate( ws, ANIM_FADE_IN, r, r, 0, 1, 150, false ); break;
     }
 }
@@ -1150,17 +1176,22 @@ uint32_t scene_thumbnails( const struct window_draw *draw, struct thumbnail_draw
             height = t->source_state->snapshot_rect.bottom - t->source_state->snapshot_rect.top;
         }
         if (thumb->source_right > thumb->source_left && thumb->source_bottom > thumb->source_top)
-            set_rect(&t->source_rect, thumb->source_left, thumb->source_top, thumb->source_right, thumb->source_bottom );
+        {
+            float ss = window_scale( source );
+            set_rect(&t->source_rect, thumb->source_left * ss, thumb->source_top * ss, thumb->source_right * ss,
+                     thumb->source_bottom * ss );
+        }
         else if (thumb->client_only && !t->from_snapshot)
             set_rect(&t->source_rect, source->client_left - source->left, source->client_top - source->top,
                      source->client_right - source->left, source->client_bottom - source->top );
         else
             set_rect(&t->source_rect, 0, 0, width, height );
 
-        dest.left = draw->w->client_left + thumb->dest_left;
-        dest.top = draw->w->client_top + thumb->dest_top;
-        dest.right = draw->w->client_left + thumb->dest_right;
-        dest.bottom = draw->w->client_top + thumb->dest_bottom;
+        /* the destination is in the client coordinates of the window it is drawn in */
+        dest.left = draw->w->client_left + thumb->dest_left * window_scale( draw->w );
+        dest.top = draw->w->client_top + thumb->dest_top * window_scale( draw->w );
+        dest.right = draw->w->client_left + thumb->dest_right * window_scale( draw->w );
+        dest.bottom = draw->w->client_top + thumb->dest_bottom * window_scale( draw->w );
         t->dest.left = dest.left * draw->xform.sx + draw->xform.tx;
         t->dest.top = dest.top * draw->xform.sy + draw->xform.ty;
         t->dest.right = dest.right * draw->xform.sx + draw->xform.tx;
