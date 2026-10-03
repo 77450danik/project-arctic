@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 3 Oct 2026 14:50:00 +0300
+Subject: [PATCH] win32u: The work area outlives the monitors being made anew.
+
+The display driver makes the monitors anew on every event of its
+outputs, and Wayland sends them after the shell is up: the monitors came
+back with the whole screen as their work area, and maximized windows
+went under the taskbar, which was never told. The work area a shell sets
+is now kept as insets from the monitor's edges, by the monitor's path,
+in a volatile key, and given back to the monitor whenever it is made
+again; it follows a change of size as the taskbar of Windows does.
+---
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -63,6 +63,8 @@
+ static const char devpropkey_monitor_gpu_luidA[] = "Properties\\{CA085853-16CE-48AA-B114-DE9C72334223}\\0001";
+ static const char devpropkey_monitor_output_idA[] = "Properties\\{CA085853-16CE-48AA-B114-DE9C72334223}\\0002";
+ static const char wine_devpropkey_monitor_rcworkA[] = "Properties\\{233a9ef3-afc4-4abd-b564-c32f21f1535b}\\0004";
++/* Arctic: what the shell keeps of each monitor, by its path */
++static const char arctic_work_insets_keyA[] = "\\Registry\\Machine\\Software\\Wine\\ArcticWorkInsets";
+ static const char wine_devpropkey_monitor_hdr_enabledA[] = "Properties\\{233a9ef3-afc4-4abd-b564-c32f21f1535b}\\0006";
+ 
+ static const WCHAR linkedW[] = {'L','i','n','k','e','d',0};
+@@ -2014,6 +2016,51 @@
+     return TRUE;
+ }
+ 
++/* Arctic: the work area a shell set stays the monitor's while the monitors
++ * are made anew, which the display driver does on every event of its
++ * outputs (Wayland sends them after the shell is up). It is kept as insets
++ * from the monitor's edges, so that it also follows a change of size, as
++ * the taskbar of Windows does. */
++static RECT monitor_get_rect( struct monitor *monitor, struct ratio dpi, MONITOR_DPI_TYPE type );
++
++static void save_work_insets( struct monitor *monitor )
++{
++    RECT rc = monitor_get_rect( monitor, no_dpi, MDT_RAW_DPI ), insets;
++    HKEY hkey, subkey;
++
++    SetRect( &insets, monitor->rc_work.left - rc.left, monitor->rc_work.top - rc.top,
++             rc.right - monitor->rc_work.right, rc.bottom - monitor->rc_work.bottom );
++    if (!(hkey = reg_create_ascii_key( NULL, arctic_work_insets_keyA, REG_OPTION_VOLATILE, NULL ))) return;
++    if ((subkey = reg_create_ascii_key( hkey, monitor->path, REG_OPTION_VOLATILE, NULL )))
++    {
++        set_reg_value( subkey, NULL, REG_BINARY, &insets, sizeof(insets) );
++        NtClose( subkey );
++    }
++    NtClose( hkey );
++}
++
++static void load_work_insets( struct monitor *monitor, const RECT *rc_monitor )
++{
++    char buffer[offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data[sizeof(RECT)])];
++    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
++    HKEY hkey, subkey;
++    RECT insets, rc;
++
++    if (!(hkey = reg_open_ascii_key( NULL, arctic_work_insets_keyA ))) return;
++    if ((subkey = reg_open_ascii_key( hkey, monitor->path )))
++    {
++        if (query_reg_value( subkey, NULL, value, sizeof(buffer) ) == sizeof(insets))
++        {
++            memcpy( &insets, value->Data, sizeof(insets) );
++            SetRect( &rc, rc_monitor->left + insets.left, rc_monitor->top + insets.top,
++                     rc_monitor->right - insets.right, rc_monitor->bottom - insets.bottom );
++            if (!IsRectEmpty( &rc )) monitor->rc_work = rc;
++        }
++        NtClose( subkey );
++    }
++    NtClose( hkey );
++}
++
+ static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
+ {
+     struct device_manager_ctx *ctx = param;
+@@ -2044,6 +2091,7 @@
+     snprintf( buffer, sizeof(buffer), "MonitorID%u", monitor->id );
+     snprintf( monitor->path, sizeof(monitor->path), "DISPLAY\\%s\\%04X&%04X", monitor_id_string, source->id, monitor->id );
+     set_reg_ascii_value( source->key, buffer, monitor->path );
++    load_work_insets( monitor, &gdi_monitor->rc_monitor );
+ 
+     if (!write_monitor_to_registry( monitor, gdi_monitor->edid, gdi_monitor->edid_len ))
+     {
+@@ -6473,6 +6521,7 @@
+         if ((monitor = get_monitor_from_rect( *(RECT *)ptr, MONITOR_DEFAULTTOPRIMARY, dpi, MDT_DEFAULT )))
+         {
+             monitor->rc_work = map_monitor_rect( monitor, *(RECT *)ptr, dpi, MDT_DEFAULT, no_dpi, MDT_RAW_DPI );
++            save_work_insets( monitor );
+             if ((hkey = reg_open_ascii_key( enum_key, monitor->path )))
+             {
+                 if ((subkey = reg_create_ascii_key( hkey, wine_devpropkey_monitor_rcworkA, 0, NULL )))
