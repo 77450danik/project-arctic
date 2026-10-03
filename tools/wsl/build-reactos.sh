@@ -12,12 +12,13 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 export ARCTIC_ROOT=$ROOT REACTOS_WORK=/root/reactos REACTOS_OUT=$ROOT/out/reactos
 
-if [ ! -f /root/reactos-deps.done ]; then
+if [ ! -f /root/reactos-deps.v2 ]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -q
     apt-get install -y -q build-essential git wget curl xz-utils bzip2 texinfo ninja-build \
-        flex bison libgmp-dev libmpfr-dev libmpc-dev zlib1g-dev python3 cmake
-    touch /root/reactos-deps.done
+        flex bison libgmp-dev libmpfr-dev libmpc-dev zlib1g-dev python3 python-is-python3 \
+        pkg-config cmake
+    touch /root/reactos-deps.v2
 fi
 
 # the script runs from a copy: switching branches meanwhile must not change it
