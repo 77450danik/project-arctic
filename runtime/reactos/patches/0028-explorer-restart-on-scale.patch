@@ -1,0 +1,43 @@
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+index e1616587..f14f31f5 100644
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -439,4 +439,15 @@ static inline int ArcticDpiScale(int px)
+     return ::MulDiv(px, s_dpi, 96);
+ }
+ 
++/* Arctic: the system's DPI the processes started now get (LogPixels, which
++   the scale of the primary monitor sets) */
++static inline int ArcticNewSystemDpi()
++{
++    DWORD dpi = 0, size = sizeof(dpi);
++    if (::RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\Desktop", L"LogPixels", RRF_RT_REG_DWORD, NULL,
++                       &dpi, &size) != ERROR_SUCCESS || !dpi)
++        dpi = 96;
++    return (int)dpi;
++}
++
+ #endif /* _EXPLORER_PRECOMP__H_ */
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+index 3bbde8be..550c5e5e 100644
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -2575,6 +2575,18 @@ ChangePos:
+ 
+     LRESULT OnDisplayChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
++        /* Arctic: the scale of the primary monitor changed on the fly: the
++           shell draws itself at the system's DPI of when it started, so it
++           leaves as when it is told to (its desktop, DDE and COM objects go
++           with it), and winlogon starts it again (AutoRestartShell), sharp
++           at the new scale, as "Restart Explorer" does; programs put their
++           notification icons back when they hear TaskbarCreated */
++        if (ArcticNewSystemDpi() != ArcticDpiScale(96))
++        {
++            PostQuitMessage(0);
++            return TRUE;
++        }
++
+         /* Refresh workareas */
+         RecomputeAllWorkareas();
+ 

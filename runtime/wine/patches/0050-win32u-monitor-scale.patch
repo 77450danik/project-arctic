@@ -53,6 +53,14 @@ maximized windows take the maximized place again.
  extern HWND get_window_relative( HWND hwnd, UINT rel );
  extern DWORD get_window_thread( HWND hwnd, DWORD *process );
  extern HWND is_current_process_window( HWND hwnd );
+@@ -365,6 +366,7 @@
+ extern HKEY reg_open_hkcu_key( const char *name );
+ extern HKEY reg_open_key( HKEY root, const WCHAR *name, ULONG name_len );
+ extern HKEY reg_open_ascii_key( HKEY root, const char *name );
++extern HKEY get_hkcu_key(void);
+ extern ULONG query_reg_value( HKEY hkey, const WCHAR *name,
+                               KEY_VALUE_PARTIAL_INFORMATION *info, ULONG size );
+ extern ULONG query_reg_ascii_value( HKEY hkey, const char *name,
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
 @@ -4987,6 +4987,76 @@
@@ -134,7 +142,7 @@ maximized windows take the maximized place again.
   *
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c
-@@ -2061,6 +2061,280 @@
+@@ -2061,6 +2061,299 @@
      NtClose( hkey );
  }
  
@@ -225,7 +233,7 @@ maximized windows take the maximized place again.
 +    HKEY hkey;
 +
 +    snprintf( path, sizeof(path), "%s\\%s", arctic_per_monitor_keyA, key );
-+    if (!(hkey = reg_create_ascii_key( hkcu_key, path, 0, NULL ))) return;
++    if (!(hkey = reg_create_ascii_key( get_hkcu_key(), path, 0, NULL ))) return;
 +    set_reg_value( hkey, arctic_dpi_valueW, REG_DWORD, &steps, sizeof(steps) );
 +    NtClose( hkey );
 +}
@@ -234,7 +242,7 @@ maximized windows take the maximized place again.
 +{
 +    HKEY hkey;
 +
-+    if (!(hkey = reg_create_ascii_key( hkcu_key, "Control Panel\\Desktop", 0, NULL ))) return;
++    if (!(hkey = reg_create_ascii_key( get_hkcu_key(), "Control Panel\\Desktop", 0, NULL ))) return;
 +    set_reg_value( hkey, arctic_log_pixelsW, REG_DWORD, &dpi, sizeof(dpi) );
 +    NtClose( hkey );
 +}
@@ -351,6 +359,7 @@ maximized windows take the maximized place again.
 +{
 +    UINT recommended, max_index, index, old_dpi = 0, new_dpi = 0;
 +    struct source *source;
++    struct monitor *monitor;
 +    char key[64];
 +    NTSTATUS ret = STATUS_UNSUCCESSFUL;
 +
@@ -377,6 +386,24 @@ maximized windows take the maximized place again.
 +                NtClose( hkey );
 +            }
 +            if (source->state_flags & DISPLAY_DEVICE_PRIMARY_DEVICE) arctic_set_system_dpi( new_dpi );
++            /* the taskbar is another size at the new scale: the work area is the
++             * whole monitor until the shell, started again, sets its own */
++            LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
++            {
++                HKEY mkey, subkey;
++
++                if (monitor->source != source) continue;
++                monitor->rc_work = monitor_get_rect( monitor, no_dpi, MDT_RAW_DPI );
++                save_work_insets( monitor );
++                if (!enum_key || !(mkey = reg_open_ascii_key( enum_key, monitor->path ))) continue;
++                if ((subkey = reg_create_ascii_key( mkey, wine_devpropkey_monitor_rcworkA, 0, NULL )))
++                {
++                    set_reg_value( subkey, NULL, 0xffff0000 | DEVPROP_TYPE_BINARY, &monitor->rc_work,
++                                   sizeof(monitor->rc_work) );
++                    NtClose( subkey );
++                }
++                NtClose( mkey );
++            }
 +            /* every process reads the monitors again */
 +            if (video_key) set_reg_ascii_value( video_key, "ArcticDpi", "" );
 +            set_winstation_monitors( TRUE );
@@ -415,7 +442,7 @@ maximized windows take the maximized place again.
  static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
  {
      struct device_manager_ctx *ctx = param;
-@@ -2092,6 +2366,7 @@
+@@ -2092,6 +2385,7 @@
      snprintf( monitor->path, sizeof(monitor->path), "DISPLAY\\%s\\%04X&%04X", monitor_id_string, source->id, monitor->id );
      set_reg_ascii_value( source->key, buffer, monitor->path );
      load_work_insets( monitor, &gdi_monitor->rc_monitor );
@@ -423,7 +450,7 @@ maximized windows take the maximized place again.
  
      if (!write_monitor_to_registry( monitor, gdi_monitor->edid, gdi_monitor->edid_len ))
      {
-@@ -7846,6 +8121,14 @@
+@@ -7846,6 +8140,14 @@
  
      switch (packet->type)
      {
@@ -438,6 +465,29 @@ maximized windows take the maximized place again.
      case DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME:
      {
          DISPLAYCONFIG_SOURCE_DEVICE_NAME *source_name = (DISPLAYCONFIG_SOURCE_DEVICE_NAME *)packet;
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -584,9 +584,19 @@
+                            options, disposition );
+ }
+ 
++static HKEY open_hkcu(void);
++
++/* Arctic: the current user's key, opened by whoever needs it first: a process
++ * that draws no text has not set up the fonts, which open it otherwise */
++HKEY get_hkcu_key(void)
++{
++    if (!hkcu_key) hkcu_key = open_hkcu();
++    return hkcu_key;
++}
++
+ HKEY reg_open_hkcu_key( const char *name )
+ {
+-    return reg_open_ascii_key( hkcu_key, name );
++    return reg_open_ascii_key( get_hkcu_key(), name );
+ }
+ 
+ BOOL set_reg_value( HKEY hkey, const WCHAR *name, UINT type, const void *value, DWORD count )
 --- a/dlls/user32/sysparams.c
 +++ b/dlls/user32/sysparams.c
 @@ -1067,6 +1067,9 @@

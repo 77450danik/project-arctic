@@ -16,7 +16,7 @@ key meta_l-r
 sleep 3
 type control desk.cpl
 key ret
-sleep 6
+sleep 12
 key meta_l-r
 sleep 3
 type D:\scaletest.exe
@@ -27,17 +27,17 @@ key meta_l-r
 sleep 3
 type D:\scaletest.exe 150
 key ret
-sleep 6
+sleep 12
 shot s2-150
 key meta_l-r
 sleep 3
 type D:\scaletest.exe 125
 key ret
-sleep 6
+sleep 12
 shot s3-125
 key meta_l-r
 sleep 3
 type D:\scaletest.exe 100
 key ret
-sleep 6
+sleep 12
 shot s4-100

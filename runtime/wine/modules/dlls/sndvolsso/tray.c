@@ -219,6 +219,12 @@ static DWORD WINAPI tray_thread( void *arg )
     WNDCLASSW cls = { .lpfnWndProc = tray_proc, .hInstance = sndvolsso_instance, .lpszClassName = L"ArcticVolumeTray" };
     MSG msg;
 
+    /* the sound comes up once the shell has: the shell's desktop and taskbar
+     * came out unpainted when it came up at the same time (at boot now and
+     * then, and every time the shell started again at a new scale) */
+    for (int i = 0; i < 100 && !GetShellWindow(); i++) Sleep( 100 );
+    Sleep( 1000 );
+
     CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
     taskbar_created = RegisterWindowMessageW( L"TaskbarCreated" );
     RegisterClassW( &cls );
