@@ -1,0 +1,17 @@
+# A maximized window stays as it is when "This PC" opens from the Start menu
+# (on the hardware a maximized Chrome minimized then). 1920x1080 at 125 %:
+# the Start button at the taskbar's left end. The minimize log
+# ("arctic-minimize" in serial.log) says who minimized a window, if one did.
+sleep 12
+key win-r
+sleep 3
+type notepad
+key ret
+sleep 5
+key win-up                    # maximized
+sleep 3
+shot s1-notepad-maximized
+move 30 1055
+click
+sleep 4
+shot s2-start-menu

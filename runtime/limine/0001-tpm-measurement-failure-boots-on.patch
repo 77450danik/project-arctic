@@ -1,0 +1,59 @@
+Subject: [PATCH] tpm: A measurement the firmware refuses does not stop the boot.
+
+With Secure Boot on and a config hash enrolled, Limine measures every file
+it loads, and when the firmware's HashLogExtendEvent fails it waits for Y
+or panics. Some laptops' firmware fails it every time (0xb, a full event
+log), so Arctic stopped at "Press Y to continue" on each boot. Nothing in
+Arctic is sealed to these PCRs: the failure is a verbose-only warning.
+---
+--- a/common/lib/tpm.c
++++ b/common/lib/tpm.c
+@@ -100,14 +100,11 @@
+     return tcg2 != NULL || cc != NULL;
+ }
+ 
++/* Arctic: a firmware that refuses a measurement (a TPM event log already
++ * full, EFI_VOLUME_FULL, on some laptops) does not stop the boot at a
++ * prompt: nothing is sealed to these PCRs, and GRUB boots on as well. The
++ * warning is shown with "verbose: yes". */
+ static void tpm_extend_failed(void) {
+-    print("         Press Y to continue, press any other key to panic...");
+-
+-    char ch = getchar();
+-    print("\n");
+-    if (ch != 'Y' && ch != 'y') {
+-        panic(false, "tpm: refusing to boot with an unmeasured component");
+-    }
+ }
+ 
+ void tpm_measure(uint32_t pcr, uint32_t event_type,
+@@ -142,8 +139,7 @@
+             (EFI_PHYSICAL_ADDRESS)(uintptr_t)data, (UINT64)data_size,
+             event);
+         if (status != EFI_SUCCESS) {
+-            quiet = false;
+-            print("WARNING: tpm: HashLogExtendEvent for PCR %u failed: %X\n"
++            printv("WARNING: tpm: HashLogExtendEvent for PCR %u failed: %X\n"
+                   "         This component has not been measured.\n",
+                   pcr, (uint64_t)status);
+             tpm_extend_failed();
+@@ -157,8 +153,7 @@
+         EFI_CC_MR_INDEX mr_index;
+         EFI_STATUS status = cc->MapPcrToMrIndex(cc, pcr, &mr_index);
+         if (status != EFI_SUCCESS) {
+-            quiet = false;
+-            print("WARNING: tpm: no measurement register for PCR %u: %X\n"
++            printv("WARNING: tpm: no measurement register for PCR %u: %X\n"
+                   "         This component has not been measured.\n",
+                   pcr, (uint64_t)status);
+             tpm_extend_failed();
+@@ -185,8 +180,7 @@
+             (EFI_PHYSICAL_ADDRESS)(uintptr_t)data, (UINT64)data_size,
+             event);
+         if (status != EFI_SUCCESS) {
+-            quiet = false;
+-            print("WARNING: tpm: CC HashLogExtendEvent for PCR %u (MR %u) failed: %X\n"
++            printv("WARNING: tpm: CC HashLogExtendEvent for PCR %u (MR %u) failed: %X\n"
+                   "         This component has not been measured.\n",
+                   pcr, (uint32_t)mr_index, (uint64_t)status);
+             tpm_extend_failed();

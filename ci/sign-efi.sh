@@ -65,19 +65,23 @@ for entry in "${SHIM_DEBS[@]}"; do
     bsdtar -xOf "$deb" 'data.tar.*' | bsdtar -xf - -C "$WORK"
 done
 
-# Limine: shim loads nothing without an .sbat section, and Arch's build has
-# none. The section goes after the last one, where SizeOfImage ends.
+# Limine with Arctic's patches (ci/build-limine.sh): Arch's stops at a
+# prompt where the firmware refuses TPM measurements. Shim loads nothing
+# without an .sbat section, and Limine's build has none. The section goes
+# after the last one, where SizeOfImage ends.
+bash "$ROOT/ci/build-limine.sh" "$WORK/limine-x64"
+LIMINE_X64="$WORK/limine-x64/BOOTX64.EFI"
 LIMINE_VER=$(limine --version | awk '{print $NF; exit}')
 cat > "$WORK/sbat.csv" <<EOF
 sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md
 limine,1,Limine,limine,$LIMINE_VER,https://github.com/limine-bootloader/limine
-limine.arctic,1,Project Arctic,limine,$LIMINE_VER,https://github.com/77450danik/project-arctic
+limine.arctic,1,Project Arctic,limine,$LIMINE_VER-arctic.1,https://github.com/77450danik/project-arctic
 EOF
 pe_field() { objdump -p "$1" | awk -v f="$2" '$1 == f {print strtonum("0x" $2); exit}'; }
-base=$(pe_field "$LIMINE_EFI/BOOTX64.EFI" ImageBase)
-size=$(pe_field "$LIMINE_EFI/BOOTX64.EFI" SizeOfImage)
+base=$(pe_field "$LIMINE_X64" ImageBase)
+size=$(pe_field "$LIMINE_X64" SizeOfImage)
 objcopy --add-section .sbat="$WORK/sbat.csv" --set-section-flags .sbat=contents,alloc,load,readonly,data \
-    --change-section-vma .sbat=$((base + size)) "$LIMINE_EFI/BOOTX64.EFI" "$WORK/limine.efi"
+    --change-section-vma .sbat=$((base + size)) "$LIMINE_X64" "$WORK/limine.efi"
 objdump -h "$WORK/limine.efi" | grep -q ' \.sbat ' || { echo "no .sbat in Limine"; exit 1; }
 
 # the config's hash goes into Limine; with Secure Boot on, Limine then

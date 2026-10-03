@@ -1,0 +1,16 @@
+# Icons at 125 % (an image built with the monitor one step above its
+# recommended scale, run with --resolution 1920x1080): the 20 and 40 pixel
+# icons few files have come out smooth, not torn, on the desktop, the
+# taskbar, in a folder window and in the Start menu.
+sleep 12
+shot k1-desktop
+key win-r
+sleep 3
+type explorer C:\Windows
+key ret
+sleep 8
+shot k2-folder
+key meta_l
+sleep 3
+shot k3-start-menu
+key esc

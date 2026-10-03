@@ -1,0 +1,278 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 4 Oct 2026 02:30:00 +0200
+Subject: [PATCH] user32: Load and copy icons at another size smoothly.
+
+At 125 % the shell asks for 20, 30 and 40 pixel icons, which few icon
+files have: a frame of another size was stretched with StretchDIBits or
+StretchBlt in their default mode, which ANDs the pixels it drops, and its
+mask and alpha by the nearest pixel, so program and folder icons came out
+torn and the taskbar's speckled. A frame loaded at another size is now
+decoded at its own, resampled with a tent filter on premultiplied
+colours and made into a colour bitmap, an alpha bitmap and a mask at the
+size asked for; CopyImage to another size draws the icon at that size
+through DrawIconEx, which resamples it the same way, and copies that.
+---
+--- a/dlls/user32/cursoricon.c
++++ b/dlls/user32/cursoricon.c
+@@ -765,6 +765,152 @@
+     return alpha;
+ }
+ 
++/* Arctic: an icon loaded at a size its file does not have (20 and 40 pixels
++ * at 125 %) is resampled smoothly, as Windows does: every source pixel weighs
++ * in, by a tent as wide as the scale, on premultiplied colours, and its edges
++ * come out with alpha. StretchDIBits took the nearest pixel, and blended
++ * colours in its default mode, and such icons came out torn. */
++static void resample_line( const float *src, int src_len, int src_step, float *dst, int dst_len, int dst_step )
++{
++    float scale = (float)dst_len / src_len, support = scale < 1 ? 1 / scale : 1;
++
++    for (int i = 0; i < dst_len; i++)
++    {
++        float center = (i + 0.5f) / scale, sum[4] = { 0 }, total = 0;
++        int lo = max( 0, (int)(center - support) - 1 ), hi = min( src_len, (int)(center + support) + 2 );
++
++        for (int j = lo; j < hi; j++)
++        {
++            float d = (j + 0.5f - center) / support, w = 1 - (d < 0 ? -d : d);
++
++            if (w <= 0) continue;
++            for (int c = 0; c < 4; c++) sum[c] += src[j * src_step * 4 + c] * w;
++            total += w;
++        }
++        for (int c = 0; c < 4; c++) dst[i * dst_step * 4 + c] = total > 0 ? sum[c] / total : 0;
++    }
++}
++
++/* the frame's pixels, 32 bits, top-down: what StretchDIBits makes of them 1:1 */
++static BOOL decode_icon_bits( HDC hdc, const BITMAPINFO *info, const void *bits, int width, int height, DWORD *out )
++{
++    BITMAPINFO dst_info = {{ sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB }};
++    HBITMAP dib;
++    HGDIOBJ old;
++    void *dst;
++
++    if (!(dib = CreateDIBSection( hdc, &dst_info, DIB_RGB_COLORS, &dst, NULL, 0 ))) return FALSE;
++    old = SelectObject( hdc, dib );
++    StretchDIBits( hdc, 0, 0, width, height, 0, 0, width, height, bits, info, DIB_RGB_COLORS, SRCCOPY );
++    GdiFlush();
++    memcpy( out, dst, width * height * 4 );
++    SelectObject( hdc, old );
++    DeleteObject( dib );
++    return TRUE;
++}
++
++static BOOL create_smooth_frame( HDC hdc, struct cursoricon_frame *frame, const BITMAPINFO *bmi_copy,
++                                 const void *color_bits, const void *mask_bits, int src_width, int src_height,
++                                 int width, int height )
++{
++    BITMAPINFO info32 = {{ sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB }};
++    struct { BITMAPINFOHEADER header; RGBQUAD colors[2]; } mono;
++    DWORD *src = NULL, *mask = NULL, *straight = NULL, *premultiplied = NULL;
++    float *fsrc = NULL, *tmp = NULL, *fdst = NULL;
++    BYTE *mask_out = NULL;
++    BOOL alpha = FALSE, translucent = FALSE, ret = FALSE;
++    int mask_stride = (width + 15) / 16 * 2;
++    void *alpha_bits;
++
++    if (bmi_copy->bmiHeader.biSize != sizeof(BITMAPINFOHEADER) || src_width <= 0 || src_height <= 0 ||
++        width <= 0 || height <= 0 || width > 1024 || height > 1024)
++        return FALSE;
++    if (!(src = malloc( src_width * src_height * 4 )) || !(mask = malloc( src_width * src_height * 4 )) ||
++        !(fsrc = malloc( src_width * src_height * 4 * sizeof(float) )) ||
++        !(tmp = malloc( width * src_height * 4 * sizeof(float) )) ||
++        !(fdst = malloc( width * height * 4 * sizeof(float) )) ||
++        !(straight = malloc( width * height * 4 )) || !(premultiplied = malloc( width * height * 4 )) ||
++        !(mask_out = calloc( height, mask_stride )))
++        goto done;
++
++    if (bmi_copy->bmiHeader.biBitCount == 32 && bmi_copy->bmiHeader.biCompression == BI_RGB &&
++        bmi_has_alpha( bmi_copy, color_bits ))
++    {
++        /* its own alpha, which StretchDIBits would drop */
++        const DWORD *rows = color_bits;
++        BOOL bottom_up = bmi_copy->bmiHeader.biHeight > 0;
++
++        for (int y = 0; y < src_height; y++)
++            memcpy( src + y * src_width, rows + (bottom_up ? src_height - 1 - y : y) * src_width, src_width * 4 );
++        alpha = TRUE;
++    }
++    else if (!decode_icon_bits( hdc, bmi_copy, color_bits, src_width, src_height, src )) goto done;
++
++    if (!alpha)
++    {
++        /* the AND mask: white is transparent */
++        mono.header = bmi_copy->bmiHeader;
++        mono.header.biBitCount = 1;
++        mono.header.biCompression = BI_RGB;
++        mono.header.biSizeImage = 0;
++        mono.header.biClrUsed = mono.header.biClrImportant = 2;
++        mono.colors[0] = (RGBQUAD){ 0, 0, 0, 0 };
++        mono.colors[1] = (RGBQUAD){ 0xff, 0xff, 0xff, 0 };
++        if (mask_bits && !decode_icon_bits( hdc, (BITMAPINFO *)&mono, mask_bits, src_width, src_height, mask ))
++            goto done;
++    }
++
++    for (int i = 0; i < src_width * src_height; i++)
++    {
++        float a = alpha ? (src[i] >> 24) : (mask_bits && (mask[i] & 0xffffff)) ? 0 : 255;
++
++        for (int c = 0; c < 3; c++) fsrc[i * 4 + c] = ((src[i] >> (c * 8)) & 0xff) * a / 255;
++        fsrc[i * 4 + 3] = a;
++    }
++    for (int y = 0; y < src_height; y++)
++        resample_line( fsrc + y * src_width * 4, src_width, 1, tmp + y * width * 4, width, 1 );
++    for (int x = 0; x < width; x++)
++        resample_line( tmp + x * 4, src_height, width, fdst + x * 4, height, width );
++
++    for (int i = 0; i < width * height; i++)
++    {
++        int a = min( 255, (int)(fdst[i * 4 + 3] + 0.5f) );
++        DWORD p = 0, q = 0;
++
++        for (int c = 0; c < 3; c++)
++        {
++            int v = min( a, max( 0, (int)(fdst[i * 4 + c] + 0.5f) ) );
++            p |= (DWORD)v << (c * 8);
++            q |= (DWORD)(a ? v * 255 / a : 0) << (c * 8);
++        }
++        premultiplied[i] = p | ((DWORD)a << 24);
++        straight[i] = q | ((DWORD)a << 24);
++        if (a < 255) translucent = TRUE;
++        if (a < 128) mask_out[(i / width) * mask_stride + (i % width) / 8] |= 0x80 >> (i % 8);
++    }
++
++    if (!(frame->color = create_color_bitmap( width, height ))) goto done;
++    SetDIBits( hdc, frame->color, 0, height, straight, &info32, DIB_RGB_COLORS );
++    if (!(frame->mask = CreateBitmap( width, height, 1, 1, mask_out ))) goto done;
++    if (translucent)
++    {
++        if (!(frame->alpha = CreateDIBSection( hdc, &info32, DIB_RGB_COLORS, &alpha_bits, NULL, 0 ))) goto done;
++        memcpy( alpha_bits, premultiplied, width * height * 4 );
++    }
++    ret = TRUE;
++
++done:
++    free( src );
++    free( mask );
++    free( fsrc );
++    free( tmp );
++    free( fdst );
++    free( straight );
++    free( premultiplied );
++    free( mask_out );
++    return ret;
++}
++
+ static BOOL create_icon_frame( const BITMAPINFO *bmi, DWORD maxsize, POINT hotspot, BOOL is_icon,
+                                INT width, INT height, UINT flags, struct cursoricon_frame *frame )
+ {
+@@ -861,6 +1007,20 @@
+     color_bits = (const char*)bmi + size;
+     mask_bits = (const char*)color_bits + color_size;
+ 
++    if (do_stretch && !is_dib_monochrome( bmi ) &&
++        create_smooth_frame( hdc, frame, bmi_copy, color_bits, mask_size ? mask_bits : NULL,
++                             bmi_width, bmi_height, width, height ))
++    {
++        frame->width   = width;
++        frame->height  = height;
++        frame->hotspot = hotspot;
++        ret = TRUE;
++        goto done;
++    }
++    if (frame->color) DeleteObject( frame->color );
++    if (frame->mask) DeleteObject( frame->mask );
++    frame->color = frame->mask = 0;
++
+     if (is_dib_monochrome( bmi ))
+     {
+         if (!(frame->mask = CreateBitmap( width, height * 2, 1, 1, NULL ))) goto done;
+@@ -1826,6 +1986,70 @@
+     DeleteDC( hdc );
+ }
+ 
++/* Arctic: CopyImage to another size (image lists, the taskbar's 30 pixel
++ * buttons at 125 %) draws the icon at that size, which DrawIconEx resamples
++ * smoothly, and makes the copy from that. StretchBlt in its default mode
++ * ANDed the pixels it dropped, and such copies came out speckled. */
++static HICON copy_icon_smoothly( HICON icon, int width, int height, int src_width, int src_height,
++                                 const ICONINFO *base )
++{
++    BITMAPINFO bi = {{ sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB }};
++    int stride = (width + 15) / 16 * 2;
++    HBITMAP dib = 0, color = 0, mask = 0;
++    DWORD *bits, *straight = NULL;
++    BYTE *mask_bits = NULL;
++    ICONINFO info = *base;
++    BOOL any_alpha = FALSE;
++    HICON ret = 0;
++    HGDIOBJ old;
++    HDC hdc;
++
++    if (width <= 0 || height <= 0 || width > 1024 || height > 1024 || !(hdc = CreateCompatibleDC( 0 ))) return 0;
++    if (!(dib = CreateDIBSection( hdc, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0 ))) goto done;
++    old = SelectObject( hdc, dib );
++    memset( bits, 0, width * height * 4 );
++    if (!NtUserDrawIconEx( hdc, 0, 0, icon, width, height, 0, NULL, DI_NORMAL ))
++    {
++        SelectObject( hdc, old );
++        goto done;
++    }
++    GdiFlush();
++    SelectObject( hdc, old );
++    if (!(straight = malloc( width * height * 4 )) || !(mask_bits = calloc( height, stride ))) goto done;
++    for (int i = 0; i < width * height; i++)
++    {
++        DWORD p = bits[i], a = p >> 24, q = 0;
++
++        if (a) any_alpha = TRUE;
++        for (int c = 0; c < 24; c += 8)
++            q |= (a ? min( 255, ((p >> c) & 0xff) * 255 / a ) : 0) << c;
++        straight[i] = q | (a << 24);
++        if (a < 128) mask_bits[(i / width) * stride + (i % width) / 8] |= 0x80 >> (i % 8);
++    }
++    if (!any_alpha) goto done;  /* drawn the old way, with no alpha to go by */
++
++    if (!(color = create_color_bitmap( width, height ))) goto done;
++    SetDIBits( hdc, color, 0, height, straight, &bi, DIB_RGB_COLORS );
++    if (!(mask = CreateBitmap( width, height, 1, 1, mask_bits ))) goto done;
++    info.hbmColor = color;
++    info.hbmMask = mask;
++    if (src_width > 0 && src_height > 0)
++    {
++        info.xHotspot = MulDiv( base->xHotspot, width, src_width );
++        info.yHotspot = MulDiv( base->yHotspot, height, src_height );
++    }
++    ret = CreateIconIndirect( &info );
++
++done:
++    if (color) DeleteObject( color );
++    if (mask) DeleteObject( mask );
++    if (dib) DeleteObject( dib );
++    free( straight );
++    free( mask_bits );
++    DeleteDC( hdc );
++    return ret;
++}
++
+ /**********************************************************************
+  *		CreateIconIndirect (USER32.@)
+  */
+@@ -2450,6 +2674,16 @@
+             }
+             else
+             {
++                if (icon_info.hbmColor &&
++                    (res = copy_icon_smoothly( resource_icon ? resource_icon : hnd, desiredx, desiredy,
++                                               width, height, &info )))
++                {
++                    DeleteObject( icon_info.hbmColor );
++                    DeleteObject( icon_info.hbmMask );
++                    if (flags & LR_COPYDELETEORG) DestroyIcon( hnd );
++                    if (resource_icon) DestroyIcon( resource_icon );
++                    return res;
++                }
+                 if (icon_info.hbmColor)
+                 {
+                     if (!(info.hbmColor = create_color_bitmap( desiredx, desiredy )))

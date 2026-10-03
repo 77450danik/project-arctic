@@ -12,7 +12,8 @@ ISO="$OUT/iso"
 if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
     pacman -Syu --noconfirm --needed squashfs-tools xorriso limine cpio zstd \
-        sbsigntools binutils openssl dosfstools mtools libarchive
+        sbsigntools binutils openssl dosfstools mtools libarchive \
+        clang lld llvm nasm patch
 fi
 
 cp "$OUT/windows.img" "$RFS/usr/share/arctic/windows.img"
