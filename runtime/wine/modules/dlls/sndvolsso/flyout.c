@@ -36,15 +36,15 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
 
-#define FLYOUT_WIDTH   360
-#define ROW_HEIGHT     44     /* SpeakerListItemHeight */
-#define LIST_MAX       157    /* SpeakerListScrollViewerMaxHeight */
-#define VOLUME_ROW     56     /* SliderControlHeight */
-#define SIDE_COLUMN    64     /* the mute toggle's and the level's */
-#define SLIDER_WIDTH   232
-#define THUMB_WIDTH    8
-#define THUMB_HEIGHT   24
-#define GLYPH_SIZE     24
+#define FLYOUT_WIDTH   px(360)
+#define ROW_HEIGHT     px(44)    /* SpeakerListItemHeight */
+#define LIST_MAX       px(157)    /* SpeakerListScrollViewerMaxHeight */
+#define VOLUME_ROW     px(56)    /* SliderControlHeight */
+#define SIDE_COLUMN    px(64)    /* the mute toggle's and the level's */
+#define SLIDER_WIDTH   px(232)
+#define THUMB_WIDTH    px(8)
+#define THUMB_HEIGHT   px(24)
+#define GLYPH_SIZE     px(24)
 #define DIMMED         0.15f  /* VolumeControl_Opacity_Disabled */
 #define EXPAND_MS      250
 
@@ -166,10 +166,10 @@ static void paint_header( HDC hdc )
 
     if (can_choose() && (hot == HIT_HEADER || pressed == HIT_HEADER))
         fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), 0x33 );
-    rect.left = 12;
-    rect.right = can_choose() ? FLYOUT_WIDTH - 36 : FLYOUT_WIDTH - 12;
+    rect.left = px( 12 );
+    rect.right = can_choose() ? FLYOUT_WIDTH - px( 36 ) : FLYOUT_WIDTH - px( 12 );
     draw_text( hdc, name, &rect, expanded ? font_body_bold : font_body, 255, DT_LEFT | DT_VCENTER );
-    if (can_choose()) draw_chevron( hdc, FLYOUT_WIDTH - 18, media_height() + ROW_HEIGHT / 2, !expanded, 255 );
+    if (can_choose()) draw_chevron( hdc, FLYOUT_WIDTH - px( 18 ), media_height() + ROW_HEIGHT / 2, !expanded, 255 );
 }
 
 static void paint_list( HDC hdc )
@@ -182,21 +182,21 @@ static void paint_list( HDC hdc )
     SelectClipRgn( hdc, clip );
     for (UINT i = 0; i < endpoint_count; i++)
     {
-        RECT rect = { 0, top + i * ROW_HEIGHT - scroll, FLYOUT_WIDTH - 12, top + (i + 1) * ROW_HEIGHT - scroll };
+        RECT rect = { 0, top + i * ROW_HEIGHT - scroll, FLYOUT_WIDTH - px( 12 ), top + (i + 1) * ROW_HEIGHT - scroll };
         BOOL chosen = !wcscmp( endpoints[i].id, current.id ), over = hot == HIT_ITEM && hot_item == (int)i;
 
         if (rect.bottom <= top || rect.top >= top + shown) continue;
         if (chosen) fill_alpha( hdc, &rect, ACCENT_COLOR, over ? 0xcc : 0x99 );
         else if (over) fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), pressed == HIT_ITEM ? 0x33 : 0x19 );
-        rect.left += 12;
-        rect.right -= 12;
+        rect.left += px( 12 );
+        rect.right -= px( 12 );
         draw_text( hdc, endpoints[i].name, &rect, font_body, 255, DT_LEFT | DT_VCENTER );
     }
     /* the scroll bar of the ScrollViewer, a thin one, while the list is longer */
     if (total > LIST_MAX)
     {
-        int length = max( 16, LIST_MAX * LIST_MAX / total ), pos = scroll * (LIST_MAX - length) / (total - LIST_MAX);
-        RECT bar = { FLYOUT_WIDTH - 6, top + pos + 2, FLYOUT_WIDTH - 4, top + pos + length - 2 };
+        int length = max( px( 16 ), LIST_MAX * LIST_MAX / total ), pos = scroll * (LIST_MAX - length) / (total - LIST_MAX);
+        RECT bar = { FLYOUT_WIDTH - px( 6 ), top + pos + px( 2 ), FLYOUT_WIDTH - px( 4 ), top + pos + length - px( 2 ) };
         fill_alpha( hdc, &bar, RGB( 255, 255, 255 ), 0x66 );
     }
     SelectClipRgn( hdc, NULL );
@@ -205,7 +205,7 @@ static void paint_list( HDC hdc )
 
 static void paint_volume( HDC hdc )
 {
-    int top = volume_top(), center = thumb_center(), track_y = top + 26;
+    int top = volume_top(), center = thumb_center(), track_y = top + px( 26 );
     float opacity = 1.f - (1.f - DIMMED) * list_shown;
     BOOL over_mute = hot == HIT_MUTE, down_mute = pressed == HIT_MUTE && over_mute;
     BOOL over_slider = (hot == HIT_SLIDER || dragging) && have_device;
@@ -214,25 +214,25 @@ static void paint_volume( HDC hdc )
     WCHAR text[8];
 
     /* the mute toggle: the glyph centred in 12..56, over the 8 left under it */
-    draw_speaker( hdc, 34 - GLYPH_SIZE / 2, top + 24 - GLYPH_SIZE / 2, GLYPH_SIZE, level, muted || !have_device,
+    draw_speaker( hdc, px( 34 ) - GLYPH_SIZE / 2, top + px( 24 ) - GLYPH_SIZE / 2, GLYPH_SIZE, level, muted || !have_device,
                   (BYTE)(glyph * opacity), (BYTE)(bars * opacity) );
 
     /* the slider: the track, the part up to the thumb, the thumb */
-    SetRect( &rect, SIDE_COLUMN, track_y, SIDE_COLUMN + SLIDER_WIDTH, track_y + 2 );
+    SetRect( &rect, SIDE_COLUMN, track_y, SIDE_COLUMN + SLIDER_WIDTH, track_y + px( 2 ) );
     fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), (BYTE)(0x66 * opacity) );
     if (have_device)
     {
-        SetRect( &rect, SIDE_COLUMN, track_y, center, track_y + 2 );
+        SetRect( &rect, SIDE_COLUMN, track_y, center, track_y + px( 2 ) );
         fill_alpha( hdc, &rect, ACCENT_COLOR, (BYTE)(255 * opacity) );
     }
-    SetRect( &rect, center - THUMB_WIDTH / 2, track_y + 1 - THUMB_HEIGHT / 2, center + THUMB_WIDTH / 2,
-             track_y + 1 + THUMB_HEIGHT / 2 );
-    fill_round_rect( hdc, &rect, 4.f, over_slider ? RGB( 255, 255, 255 ) : have_device ? ACCENT_COLOR : RGB( 128, 128, 128 ),
+    SetRect( &rect, center - THUMB_WIDTH / 2, track_y + px( 1 ) - THUMB_HEIGHT / 2, center + THUMB_WIDTH / 2,
+             track_y + px( 1 ) + THUMB_HEIGHT / 2 );
+    fill_round_rect( hdc, &rect, px( 4 ), over_slider ? RGB( 255, 255, 255 ) : have_device ? ACCENT_COLOR : RGB( 128, 128, 128 ),
                      (BYTE)(255 * opacity) );
 
     /* the level */
     swprintf( text, ARRAY_SIZE(text), L"%d", have_device ? (int)(level * 100 + 0.5f) : 0 );
-    SetRect( &rect, SIDE_COLUMN + SLIDER_WIDTH + 8, top, FLYOUT_WIDTH - 12, top + VOLUME_ROW - 8 );
+    SetRect( &rect, SIDE_COLUMN + SLIDER_WIDTH + px( 8 ), top, FLYOUT_WIDTH - px( 12 ), top + VOLUME_ROW - px( 8 ) );
     draw_text( hdc, text, &rect, font_level, (BYTE)(255 * opacity), DT_CENTER | DT_VCENTER );
 }
 
@@ -292,12 +292,12 @@ static enum hit hit_test( POINT pt, int *item )
     {
         int i = (pt.y - media_height() - ROW_HEIGHT + scroll) / ROW_HEIGHT;
 
-        if (!expanded || pt.x >= FLYOUT_WIDTH - 12 || i < 0 || i >= (int)endpoint_count) return HIT_NONE;
+        if (!expanded || pt.x >= FLYOUT_WIDTH - px( 12 ) || i < 0 || i >= (int)endpoint_count) return HIT_NONE;
         *item = i;
         return HIT_ITEM;
     }
     if (list_shown > 0 || !have_device) return HIT_NONE;
-    if (pt.x >= 12 && pt.x < SIDE_COLUMN - 8 && pt.y < top + VOLUME_ROW - 8) return HIT_MUTE;
+    if (pt.x >= px( 12 ) && pt.x < SIDE_COLUMN - px( 8 ) && pt.y < top + VOLUME_ROW - px( 8 )) return HIT_MUTE;
     if (pt.x >= SIDE_COLUMN && pt.x < SIDE_COLUMN + SLIDER_WIDTH) return HIT_SLIDER;
     return HIT_NONE;
 }
@@ -551,9 +551,9 @@ static BOOL create_flyout(void)
     if (!flyout) return FALSE;
     SetWindowCompositionAttribute( flyout, &attr );
     DwmSetWindowAttribute( flyout, DWMWA_ARCTIC_TRANSITION, &transition, sizeof(transition) );
-    font_body = shell_font( 15, FW_NORMAL );
-    font_body_bold = shell_font( 15, FW_SEMIBOLD );
-    font_level = shell_font( 24, 350 /* SemiLight */ );
+    font_body = shell_font( px( 15 ), FW_NORMAL );
+    font_body_bold = shell_font( px( 15 ), FW_SEMIBOLD );
+    font_level = shell_font( px( 24 ), 350 /* SemiLight */ );
     return TRUE;
 }
 

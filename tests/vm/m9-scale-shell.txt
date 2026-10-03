@@ -1,0 +1,36 @@
+# The shell at the scale the session starts with (run with --resolution
+# 1920x1080 --disk out/test-local/tools.img, on an image whose monitor is
+# set some steps above the recommended scale): the desktop, the taskbar,
+# the Start menu, a program started then (Notepad: sharp, at the system
+# DPI), Alt+Tab and trayinfo's numbers.
+sleep 12
+shot h1-desktop
+move 36 1050
+click
+sleep 3
+shot h2-start
+key esc
+sleep 2
+key meta_l-r
+sleep 3
+type notepad
+key ret
+sleep 4
+shot h3-notepad
+keydown alt
+key tab
+sleep 2
+shot h4-alttab
+keyup alt
+sleep 2
+key meta_l-r
+sleep 3
+type D:\trayinfo.exe
+key ret
+sleep 5
+shot h5-trayinfo
+move 1688 1050
+click
+sleep 2
+shot h6-volume
+key esc

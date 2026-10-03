@@ -30,6 +30,7 @@ extern HINSTANCE twinui_instance;
 void set_acrylic( HWND hwnd );
 void set_transition( HWND hwnd, DWORD transition );
 void set_cloaked( HWND hwnd, BOOL cloaked );
+int px( int n );
 HFONT shell_font( int height, int weight );
 HICON window_icon( HWND hwnd, BOOL big );
 BOOL is_task_window( HWND hwnd );

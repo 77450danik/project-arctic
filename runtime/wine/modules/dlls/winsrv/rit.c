@@ -342,6 +342,10 @@ static DWORD WINAPI raw_input_thread( void *arg )
     NTSTATUS status;
 
     SetThreadDescription( GetCurrentThread(), L"RawInputThread" );
+    /* the pointer of a tablet or a touch screen lands in the pixels of the
+     * screen, not in the screen a program that knows nothing of DPI sees: at
+     * 150 % that is two thirds of it */
+    SetThreadDpiAwarenessContext( DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 );
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL );
 
     for (;;)

@@ -118,6 +118,13 @@ static HBITMAP create_dib( HDC hdc, int width, int height, UINT32 **bits )
 }
 
 /* the message font of the theme, at a height of our own */
+/* every size is given at 96 DPI and drawn at the DPI of the system: the
+ * shell's, which is the primary monitor's scale when the session starts */
+int px( int n )
+{
+    return MulDiv( n, GetDpiForSystem(), 96 );
+}
+
 HFONT shell_font( int height, int weight )
 {
     NONCLIENTMETRICSW metrics = { sizeof(metrics) };
@@ -176,8 +183,11 @@ void draw_speaker( HDC hdc, int x, int y, int size, float level, BOOL mute, BYTE
 /* ChevronUp or ChevronDown at 12 pixels: 10 across, 5 high */
 void draw_chevron( HDC hdc, int cx, int cy, BOOL up, BYTE alpha )
 {
-    const int size = 12;
-    float cov[12 * 12];
+    const int size = px( 12 );
+    const float unit = 12.0f / size;  /* the chevron is drawn on a grid of 12 */
+    float *cov = malloc( size * size * sizeof(float) );
+
+    if (!cov) return;
 
     for (int py = 0; py < size; py++)
     {
@@ -189,7 +199,7 @@ void draw_chevron( HDC hdc, int cx, int cy, BOOL up, BYTE alpha )
             {
                 for (int i = 0; i < SUPERSAMPLE; i++)
                 {
-                    float x = px + (i + 0.5f) / SUPERSAMPLE - 6, y = py + (j + 0.5f) / SUPERSAMPLE - 6;
+                    float x = (px + (i + 0.5f) / SUPERSAMPLE) * unit - 6, y = (py + (j + 0.5f) / SUPERSAMPLE) * unit - 6;
                     float tip = up ? -2.5f : 2.5f;
 
                     if (near_segment( x, y, -5, -tip, 0, tip ) || near_segment( x, y, 0, tip, 5, -tip )) hits++;
@@ -198,7 +208,8 @@ void draw_chevron( HDC hdc, int cx, int cy, BOOL up, BYTE alpha )
             cov[py * size + px] = hits * (alpha / 255.f) / (SUPERSAMPLE * SUPERSAMPLE);
         }
     }
-    blend_white( hdc, cx - 6, cy - 6, size, size, cov );
+    blend_white( hdc, cx - size / 2, cy - size / 2, size, size, cov );
+    free( cov );
 }
 
 /* the notification area's icon: white, as on the dark taskbar */

@@ -29,13 +29,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(twinui);
 #define HIDE_DELAY    300
 
 #define MAX_ITEMS     10
-#define PADDING       8
-#define TITLE_HEIGHT  30
-#define ICON_SIZE     16
-#define THUMB_WIDTH   200
-#define THUMB_HEIGHT  120
-#define BAR_HEIGHT    30     /* the row of the program's buttons */
-#define BUTTON_SIZE   26
+#define PADDING       px(8)
+#define TITLE_HEIGHT  px(30)
+#define ICON_SIZE     px(16)
+#define THUMB_WIDTH   px(200)
+#define THUMB_HEIGHT  px(120)
+#define BAR_HEIGHT    px(30)     /* the row of the program's buttons */
+#define BUTTON_SIZE   px(26)
 
 #ifndef THBN_CLICKED
 #define THBN_CLICKED  0x1800
@@ -158,8 +158,8 @@ static void layout( const RECT *monitor )
 {
     int thumb_width = THUMB_WIDTH, item_height, x = 0;
 
-    while (thumb_width > 80 && (int)count * (thumb_width + 2 * PADDING) > monitor->right - monitor->left)
-        thumb_width -= 20;
+    while (thumb_width > px( 80 ) && (int)count * (thumb_width + 2 * PADDING) > monitor->right - monitor->left)
+        thumb_width -= px( 20 );
     item_height = 2 * PADDING + TITLE_HEIGHT + THUMB_HEIGHT + (with_bar ? BAR_HEIGHT : 0);
 
     for (UINT i = 0; i < count; i++)
@@ -287,14 +287,14 @@ static void paint( HDC hdc, const RECT *client )
                     ICON_SIZE, ICON_SIZE, 0, NULL, DI_NORMAL );
         if (!InternalGetWindowText( item->hwnd, title, ARRAY_SIZE(title) ))
             GetWindowTextW( item->hwnd, title, ARRAY_SIZE(title) );
-        SetRect( &text, item->rect.left + PADDING + ICON_SIZE + 8, PADDING / 2,
+        SetRect( &text, item->rect.left + PADDING + ICON_SIZE + px( 8 ), PADDING / 2,
                  is_hot ? item->close.left : item->rect.right - PADDING, TITLE_HEIGHT + PADDING / 2 );
         DrawTextW( hdc, title, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX );
 
         /* under the thumbnail, for a window that has none */
         icon = window_icon( item->hwnd, TRUE );
-        DrawIconEx( hdc, (item->thumb.left + item->thumb.right) / 2 - 16, (item->thumb.top + item->thumb.bottom) / 2 - 16,
-                    icon, 32, 32, 0, NULL, DI_NORMAL );
+        DrawIconEx( hdc, (item->thumb.left + item->thumb.right) / 2 - px( 16 ), (item->thumb.top + item->thumb.bottom) / 2 - px( 16 ),
+                    icon, px( 32 ), px( 32 ), 0, NULL, DI_NORMAL );
 
         if (is_hot)
         {
@@ -475,7 +475,7 @@ static BOOL create_flyout(void)
     if (!flyout) return FALSE;
     tooltip = CreateWindowExW( WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
                                0, 0, 0, 0, flyout, NULL, twinui_instance, NULL );
-    font = shell_font( 12, FW_NORMAL );
+    font = shell_font( px( 12 ), FW_NORMAL );
     set_acrylic( flyout );
     set_transition( flyout, ARCTIC_TRANSITION_FADE );
     return TRUE;

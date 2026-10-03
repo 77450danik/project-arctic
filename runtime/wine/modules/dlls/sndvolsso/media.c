@@ -28,10 +28,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
 
-#define BUTTON_SIZE     36
-#define TEXT_COLUMN     260
-#define TILE_AREA       120
-#define TILE_SIZE       96
+#define BUTTON_SIZE     px(36)
+#define TEXT_COLUMN     px(260)
+#define TILE_AREA       px(120)
+#define TILE_SIZE       px(96)
 
 /* MediaPlaybackStatus */
 #define STATUS_PLAYING  3
@@ -236,7 +236,7 @@ BOOL media_press( const struct media_info *info, int action )
 
 static void button_rect( const RECT *card, int action, RECT *rect )
 {
-    int x = card->left + 12 + action * BUTTON_SIZE, y = card->bottom - BUTTON_SIZE;
+    int x = card->left + px( 12 ) + action * BUTTON_SIZE, y = card->bottom - BUTTON_SIZE;
     SetRect( rect, x, y, x + BUTTON_SIZE, y + BUTTON_SIZE );
 }
 
@@ -266,9 +266,12 @@ static float tri_cov( float x, float y, const float p[3][2] )
 
 static void draw_button_glyph( HDC hdc, const RECT *rect, int action, BOOL playing, BYTE alpha )
 {
-    const int size = 18;
-    float cov[18 * 18];
+    const int size = px( 18 );
+    const float unit = 18.0f / size;  /* the glyphs are drawn on a grid of 18 */
+    float *cov = malloc( size * size * sizeof(float) );
     int ox = (rect->left + rect->right - size) / 2, oy = (rect->top + rect->bottom - size) / 2;
+
+    if (!cov) return;
 
     for (int py = 0; py < size; py++)
     {
@@ -280,7 +283,7 @@ static void draw_button_glyph( HDC hdc, const RECT *rect, int action, BOOL playi
             {
                 for (int i = 0; i < 4; i++)
                 {
-                    float x = px + (i + 0.5f) / 4, y = py + (j + 0.5f) / 4;
+                    float x = (px + (i + 0.5f) / 4) * unit, y = (py + (j + 0.5f) / 4) * unit;
                     BOOL on = FALSE;
 
                     if (action == MEDIA_PLAYPAUSE && playing)
@@ -307,6 +310,7 @@ static void draw_button_glyph( HDC hdc, const RECT *rect, int action, BOOL playi
         }
     }
     blend_white( hdc, ox, oy, size, size, cov );
+    free( cov );
 }
 
 static void draw_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, BYTE alpha )
@@ -325,15 +329,15 @@ void media_paint( HDC hdc, const RECT *card, const struct media_info *info, int 
     RECT rect;
 
     if (!info->present) return;
-    if (!title_font) title_font = shell_font( 15, FW_NORMAL );
-    if (!caption_font) caption_font = shell_font( 12, FW_NORMAL );
+    if (!title_font) title_font = shell_font( px( 15 ), FW_NORMAL );
+    if (!caption_font) caption_font = shell_font( px( 12 ), FW_NORMAL );
     SetBkMode( hdc, TRANSPARENT );
 
-    SetRect( &rect, card->left + 12, card->top + 12, card->left + 12 + 228, card->top + 32 );
+    SetRect( &rect, card->left + px( 12 ), card->top + px( 12 ), card->left + px( 12 + 228 ), card->top + px( 32 ) );
     draw_text( hdc, info->app, &rect, title_font, (BYTE)(0xcc * opacity / 255) );
-    SetRect( &rect, card->left + 12, card->top + 38, card->left + 12 + 228, card->top + 58 );
+    SetRect( &rect, card->left + px( 12 ), card->top + px( 38 ), card->left + px( 12 + 228 ), card->top + px( 58 ) );
     draw_text( hdc, info->title, &rect, title_font, opacity );
-    SetRect( &rect, card->left + 12, card->top + 64, card->left + 12 + 228, card->top + 80 );
+    SetRect( &rect, card->left + px( 12 ), card->top + px( 64 ), card->left + px( 12 + 228 ), card->top + px( 80 ) );
     draw_text( hdc, info->artist, &rect, caption_font, (BYTE)(0xcc * opacity / 255) );
 
     for (int action = MEDIA_PREVIOUS; action <= MEDIA_NEXT; action++)
@@ -350,6 +354,7 @@ void media_paint( HDC hdc, const RECT *card, const struct media_info *info, int 
              card->right - TILE_AREA + (TILE_AREA + TILE_SIZE) / 2, card->top + (TILE_AREA + TILE_SIZE) / 2 );
     fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), (BYTE)(0x19 * opacity / 255) );
     if (info->icon)
-        DrawIconEx( hdc, (rect.left + rect.right) / 2 - 24, (rect.top + rect.bottom) / 2 - 24, info->icon, 48, 48, 0, NULL,
+        DrawIconEx( hdc, (rect.left + rect.right) / 2 - px( 24 ), (rect.top + rect.bottom) / 2 - px( 24 ), info->icon,
+                    px( 48 ), px( 48 ), 0, NULL,
                     DI_NORMAL );
 }

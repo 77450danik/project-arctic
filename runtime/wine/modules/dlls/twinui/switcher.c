@@ -32,14 +32,14 @@ WINE_DEFAULT_DEBUG_CHANNEL(twinui);
 #define MAX_ITEMS       64
 
 /* the Windows 10 switcher's layout, at 96 dpi */
-#define PANEL_PADDING   16
-#define ITEM_PADDING    8
-#define ITEM_GAP        8
-#define TITLE_HEIGHT    30
-#define ICON_SIZE       16
-#define THUMB_HEIGHT    160
-#define THUMB_MIN_WIDTH 100
-#define FRAME           3     /* the frame of the selected window */
+#define PANEL_PADDING   px(16)
+#define ITEM_PADDING    px(8)
+#define ITEM_GAP        px(8)
+#define TITLE_HEIGHT    px(30)
+#define ICON_SIZE       px(16)
+#define THUMB_HEIGHT    px(160)
+#define THUMB_MIN_WIDTH px(100)
+#define FRAME           px(3)     /* the frame of the selected window */
 
 struct item
 {
@@ -116,8 +116,8 @@ static SIZE layout( const RECT *work )
         row_width[rows - 1] = x;
         row_start[rows] = count;
         for (r = 0; r < rows; r++) widest = max( widest, row_width[r] );
-        if (rows <= 3 || thumb_height <= 64) break;
-        thumb_height -= 16;
+        if (rows <= 3 || thumb_height <= px( 64 )) break;
+        thumb_height -= px( 16 );
     }
 
     item_height = 2 * ITEM_PADDING + TITLE_HEIGHT + thumb_height;
@@ -229,13 +229,13 @@ static void paint( HDC hdc, const RECT *client )
 
         DrawIconEx( hdc, item->rect.left + ITEM_PADDING, item->rect.top + ITEM_PADDING + (TITLE_HEIGHT - ICON_SIZE) / 2,
                     item->icon, ICON_SIZE, ICON_SIZE, 0, NULL, DI_NORMAL );
-        SetRect( &text, item->rect.left + ITEM_PADDING + ICON_SIZE + 8, item->rect.top + ITEM_PADDING,
-                 with_close ? item->close.left - 4 : item->rect.right - ITEM_PADDING, item->rect.top + ITEM_PADDING + TITLE_HEIGHT );
+        SetRect( &text, item->rect.left + ITEM_PADDING + ICON_SIZE + px( 8 ), item->rect.top + ITEM_PADDING,
+                 with_close ? item->close.left - px( 4 ) : item->rect.right - ITEM_PADDING, item->rect.top + ITEM_PADDING + TITLE_HEIGHT );
         DrawTextW( hdc, item->title, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX );
 
         /* under the thumbnail, for a window that has none (minimized before dwm saw it) */
-        DrawIconEx( hdc, (item->box.left + item->box.right) / 2 - 24, (item->box.top + item->box.bottom) / 2 - 24,
-                    item->big_icon, 48, 48, 0, NULL, DI_NORMAL );
+        DrawIconEx( hdc, (item->box.left + item->box.right) / 2 - px( 24 ), (item->box.top + item->box.bottom) / 2 - px( 24 ),
+                    item->big_icon, px( 48 ), px( 48 ), 0, NULL, DI_NORMAL );
 
         if (with_close)
         {
@@ -518,7 +518,7 @@ static DWORD WINAPI switcher_thread( void *arg )
                                 0, 0, 1, 1, NULL, NULL, twinui_instance, NULL );
     if (switcher)
     {
-        font = shell_font( 12, FW_NORMAL );
+        font = shell_font( px( 12 ), FW_NORMAL );
         set_acrylic( switcher );
         set_transition( switcher, ARCTIC_TRANSITION_FADE );
         if (!RegisterHotKey( switcher, HOTKEY_NEXT, MOD_ALT, VK_TAB ) ||

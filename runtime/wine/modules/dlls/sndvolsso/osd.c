@@ -24,10 +24,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
 
-#define COMPACT_WIDTH  220
-#define ROW_HEIGHT     48
-#define MARGIN         24      /* over the taskbar */
-#define GLYPH          20
+#define COMPACT_WIDTH  px(220)
+#define ROW_HEIGHT     px(48)
+#define MARGIN         px(24)     /* over the taskbar */
+#define GLYPH          px(20)
 #define TIMER_HIDE     1
 #define TIMER_POLL     2
 #define SHOWN_MS       2500
@@ -63,8 +63,8 @@ static int row_top(void)
 
 static void bar_extent( int *left, int *right )
 {
-    *left = 16 + GLYPH + 16;
-    *right = osd_width() - 20;
+    *left = px( 16 ) + GLYPH + px( 16 );
+    *right = osd_width() - px( 20 );
 }
 
 static void reload(void)
@@ -98,19 +98,19 @@ static void paint( HDC hdc, const RECT *client )
     if (media.present)
     {
         media_paint( hdc, &card, &media, hot, pressed, 255 );
-        SetRect( &rect, 12, MEDIA_CARD_HEIGHT, client->right - 12, MEDIA_CARD_HEIGHT + 1 );
+        SetRect( &rect, px( 12 ), MEDIA_CARD_HEIGHT, client->right - px( 12 ), MEDIA_CARD_HEIGHT + 1 );
         fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), 0x33 );
     }
 
-    draw_speaker( hdc, 16, top + (ROW_HEIGHT - GLYPH) / 2, GLYPH, level, muted || !have_device, 0xff, 0 );
+    draw_speaker( hdc, px( 16 ), top + (ROW_HEIGHT - GLYPH) / 2, GLYPH, level, muted || !have_device, 0xff, 0 );
     bar_extent( &left, &right );
-    SetRect( &rect, left, top + ROW_HEIGHT / 2 - 2, right, top + ROW_HEIGHT / 2 + 2 );
-    fill_round_rect( hdc, &rect, 2.f, RGB( 255, 255, 255 ), 0x66 );
+    SetRect( &rect, left, top + ROW_HEIGHT / 2 - px( 2 ), right, top + ROW_HEIGHT / 2 + px( 2 ) );
+    fill_round_rect( hdc, &rect, px( 2 ), RGB( 255, 255, 255 ), 0x66 );
     fill = left + (int)((right - left) * (have_device && !muted ? level : 0) + 0.5f);
     if (fill > left)
     {
-        rect.right = max( fill, left + 4 );
-        fill_round_rect( hdc, &rect, 2.f, ACCENT_COLOR, 0xff );
+        rect.right = max( fill, left + px( 4 ) );
+        fill_round_rect( hdc, &rect, px( 2 ), ACCENT_COLOR, 0xff );
     }
 }
 
@@ -164,7 +164,7 @@ static BOOL on_bar( POINT pt )
     int left, right, top = row_top();
 
     bar_extent( &left, &right );
-    return pt.y >= top && pt.y < top + ROW_HEIGHT && pt.x >= left - 8 && pt.x < right + 8;
+    return pt.y >= top && pt.y < top + ROW_HEIGHT && pt.x >= left - px( 8 ) && pt.x < right + px( 8 );
 }
 
 static LRESULT CALLBACK osd_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )

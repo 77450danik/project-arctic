@@ -116,7 +116,8 @@ try:
     if args.script and "dwm ready" in seen:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
         import vmscript
-        vmscript.run(vmscript.Qmp(heads=args.monitors), open(args.script, encoding="utf-8").read().splitlines())
+        size = tuple(int(n) for n in args.resolution.lower().split("x")) if args.resolution else None
+        vmscript.run(vmscript.Qmp(heads=args.monitors, size=size), open(args.script, encoding="utf-8").read().splitlines())
     subprocess.run([sys.executable, os.path.join(ROOT, "ci", "qmp-shot.py"), "tcp:127.0.0.1:4455",
                     os.path.join(RES, "screen.ppm"), shot], check=False)
 finally:

@@ -56,6 +56,7 @@ void audio_set_mute( BOOL mute );
 void audio_set_default( const WCHAR *id );
 
 /* glyph.c: the speaker of Segoe MDL2 Assets, drawn */
+int px( int n );
 HFONT shell_font( int height, int weight );
 void blend_white( HDC hdc, int x, int y, int width, int height, const float *alpha );
 void draw_speaker( HDC hdc, int x, int y, int size, float level, BOOL mute, BYTE alpha, BYTE bars_alpha );
@@ -65,8 +66,8 @@ void fill_alpha( HDC hdc, const RECT *rect, COLORREF color, BYTE alpha );
 void fill_round_rect( HDC hdc, const RECT *rect, float radius, COLORREF color, BYTE alpha );
 
 /* media.c: what programs play (SystemMediaTransportControls) */
-#define MEDIA_CARD_WIDTH  360
-#define MEDIA_CARD_HEIGHT 120
+#define MEDIA_CARD_WIDTH  px(360)
+#define MEDIA_CARD_HEIGHT px(120)
 
 enum media_action { MEDIA_PREVIOUS, MEDIA_PLAYPAUSE, MEDIA_NEXT };
 

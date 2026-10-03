@@ -35,8 +35,9 @@ ALIASES = {'ctrl': 'ctrl', 'alt': 'alt', 'shift': 'shift', 'win': 'meta_l', 'ent
 
 
 class Qmp:
-    def __init__(self, address="tcp:127.0.0.1:4455", heads=1):
+    def __init__(self, address="tcp:127.0.0.1:4455", heads=1, size=None):
         self.heads = heads
+        self.fixed_size = size  # the mode is known (vm-test.py --resolution): no guessing from screendumps
         host, port = address[4:].rsplit(":", 1)
         for _ in range(50):
             try:
@@ -84,6 +85,9 @@ class Qmp:
         not the first one, and they stand side by side as dwm puts them.
         The count comes from the caller: asking the card for a head it does
         not have takes QEMU down with it."""
+        if self.fixed_size:
+            self.width, self.height = self.fixed_size
+            return
         width = height = 0
         for head in range(self.heads):
             size = self.head_size(head)

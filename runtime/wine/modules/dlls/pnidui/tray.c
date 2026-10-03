@@ -45,10 +45,16 @@ WINE_DEFAULT_DEBUG_CHANNEL(pnidui);
 #define ACM_DISCONNECTED              21
 #define REASON_KEY_MISMATCH           0x00048014
 
-#define FLYOUT_WIDTH  300
-#define ROW_HEIGHT    30
-#define ROW_EXPANDED  64
-#define HEADER_HEIGHT 26
+/* sizes are given at 96 DPI and drawn at the DPI of the system: the shell's */
+static int px( int n )
+{
+    return MulDiv( n, GetDpiForSystem(), 96 );
+}
+
+#define FLYOUT_WIDTH  px(300)
+#define ROW_HEIGHT    px(30)
+#define ROW_EXPANDED  px(64)
+#define HEADER_HEIGHT px(26)
 
 enum row_kind { ROW_HEADER, ROW_CURRENT, ROW_WIRELESS, ROW_MESSAGE };
 
@@ -526,7 +532,7 @@ static int row_height( UINT i, BOOL selected )
 {
     if (rows[i].kind == ROW_HEADER) return HEADER_HEIGHT;
     if (rows[i].kind == ROW_WIRELESS && selected) return ROW_EXPANDED;
-    return ROW_HEIGHT + (rows[i].kind == ROW_CURRENT ? 6 : 0);
+    return ROW_HEIGHT + (rows[i].kind == ROW_CURRENT ? px( 6 ) : 0);
 }
 
 /* the Connect / Disconnect button sits in the row picked */
@@ -544,13 +550,13 @@ static void place_button(void)
     MapWindowPoints( list_hwnd, flyout_hwnd, (POINT *)&rect, 2 );
     SetWindowTextW( button_hwnd, load_string( rows[sel].connected ? IDS_DISCONNECT : IDS_CONNECT ) );
     EnableWindow( button_hwnd, !rows[sel].connecting );
-    SetWindowPos( button_hwnd, HWND_TOP, rect.right - 110, rect.bottom - 30, 100, 24, SWP_SHOWWINDOW );
+    SetWindowPos( button_hwnd, HWND_TOP, rect.right - px( 110 ), rect.bottom - px( 30 ), px( 100 ), px( 24 ), SWP_SHOWWINDOW );
 }
 
 /* the rows again, row sel picked (-1: none), and the flyout sized to them */
 static void layout_flyout( int sel, BOOL reposition )
 {
-    int height = 0, list_height, link_height = link_hwnd ? 30 : 0;
+    int height = 0, list_height, link_height = link_hwnd ? px( 30 ) : 0;
     RECT work, rect;
     POINT pt;
 
@@ -565,19 +571,19 @@ static void layout_flyout( int sel, BOOL reposition )
     if (sel >= 0 && sel < (int)row_count) SendMessageW( list_hwnd, LB_SETCURSEL, sel, 0 );
     SendMessageW( list_hwnd, WM_SETREDRAW, TRUE, 0 );
 
-    list_height = min( height + 4, 420 );
+    list_height = min( height + px( 4 ), px( 420 ) );
     SystemParametersInfoW( SPI_GETWORKAREA, 0, &work, 0 );
     GetWindowRect( flyout_hwnd, &rect );
     if (reposition)
     {
         GetCursorPos( &pt );
-        rect.left = min( max( pt.x - FLYOUT_WIDTH / 2, work.left + 8 ), work.right - FLYOUT_WIDTH - 8 );
-        rect.bottom = work.bottom - 8;
+        rect.left = min( max( pt.x - FLYOUT_WIDTH / 2, work.left + px( 8 ) ), work.right - FLYOUT_WIDTH - px( 8 ) );
+        rect.bottom = work.bottom - px( 8 );
     }
-    rect.top = rect.bottom - (list_height + link_height + 2);
+    rect.top = rect.bottom - (list_height + link_height + px( 2 ));
     SetWindowPos( flyout_hwnd, HWND_TOPMOST, rect.left, rect.top, FLYOUT_WIDTH, rect.bottom - rect.top, SWP_NOACTIVATE );
-    MoveWindow( list_hwnd, 0, 0, FLYOUT_WIDTH - 2, list_height, TRUE );
-    if (link_hwnd) MoveWindow( link_hwnd, 12, list_height + 7, FLYOUT_WIDTH - 24, 18, TRUE );
+    MoveWindow( list_hwnd, 0, 0, FLYOUT_WIDTH - px( 2 ), list_height, TRUE );
+    if (link_hwnd) MoveWindow( link_hwnd, px( 12 ), list_height + px( 7 ), FLYOUT_WIDTH - px( 24 ), px( 18 ), TRUE );
     InvalidateRect( list_hwnd, NULL, TRUE );
     place_button();
 }
@@ -603,19 +609,21 @@ static void draw_bars( HDC hdc, int right, int bottom, UINT quality, BOOL secure
 
     for (UINT i = 0; i < 5; i++)
     {
-        RECT bar = { right - 20 + i * 4, bottom - 4 - (int)(3 + i * 3), right - 17 + i * 4, bottom - 4 };
+        RECT bar = { right - px( 20 - (int)i * 4 ), bottom - px( 4 + 3 + (int)i * 3 ), right - px( 17 - (int)i * 4 ),
+                     bottom - px( 4 ) };
         FillRect( hdc, &bar, i < bars ? on : off );
     }
     if (secured)
     {
         /* a padlock under the bars' left end */
         HBRUSH gold = CreateSolidBrush( RGB( 176, 136, 40 ) );
-        RECT body = { right - 27, bottom - 9, right - 21, bottom - 4 }, arc = { right - 26, bottom - 13, right - 22, bottom - 9 };
-        HPEN pen = CreatePen( PS_SOLID, 1, RGB( 176, 136, 40 ) ), old_pen = SelectObject( hdc, pen );
+        RECT body = { right - px( 27 ), bottom - px( 9 ), right - px( 21 ), bottom - px( 4 ) };
+        RECT arc = { right - px( 26 ), bottom - px( 13 ), right - px( 22 ), bottom - px( 9 ) };
+        HPEN pen = CreatePen( PS_SOLID, px( 1 ), RGB( 176, 136, 40 ) ), old_pen = SelectObject( hdc, pen );
         HBRUSH old_brush = SelectObject( hdc, GetStockObject( NULL_BRUSH ) );
 
         FillRect( hdc, &body, gold );
-        Arc( hdc, arc.left, arc.top, arc.right, arc.bottom + 4, arc.right, arc.top + 3, arc.left, arc.top + 3 );
+        Arc( hdc, arc.left, arc.top, arc.right, arc.bottom + px( 4 ), arc.right, arc.top + px( 3 ), arc.left, arc.top + px( 3 ) );
         SelectObject( hdc, old_pen );
         SelectObject( hdc, old_brush );
         DeleteObject( pen );
@@ -647,10 +655,10 @@ static void draw_row( const DRAWITEMSTRUCT *draw )
         old = SelectObject( hdc, bold_font );
         SetTextColor( hdc, RGB( 30, 57, 91 ) );
         text = rect;
-        text.left += 10;
+        text.left += px( 10 );
         DrawTextW( hdc, row->text, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX );
-        MoveToEx( hdc, rect.left + 10, rect.bottom - 2, NULL );
-        LineTo( hdc, rect.right - 10, rect.bottom - 2 );
+        MoveToEx( hdc, rect.left + px( 10 ), rect.bottom - px( 2 ), NULL );
+        LineTo( hdc, rect.right - px( 10 ), rect.bottom - px( 2 ) );
         SelectObject( hdc, old_pen );
         DeleteObject( pen );
         SelectObject( hdc, old );
@@ -660,8 +668,8 @@ static void draw_row( const DRAWITEMSTRUCT *draw )
         old = SelectObject( hdc, bold_font );
         SetTextColor( hdc, RGB( 0, 0, 0 ) );
         text = rect;
-        text.left += 10;
-        text.bottom = rect.top + ROW_HEIGHT / 2 + 4;
+        text.left += px( 10 );
+        text.bottom = rect.top + ROW_HEIGHT / 2 + px( 4 );
         DrawTextW( hdc, row->text, -1, &text, DT_SINGLELINE | DT_BOTTOM | DT_END_ELLIPSIS | DT_NOPREFIX );
         SelectObject( hdc, font );
         SetTextColor( hdc, RGB( 100, 100, 100 ) );
@@ -674,13 +682,13 @@ static void draw_row( const DRAWITEMSTRUCT *draw )
         old = SelectObject( hdc, font );
         SetTextColor( hdc, RGB( 100, 100, 100 ) );
         text = rect;
-        text.left += 10;
+        text.left += px( 10 );
         DrawTextW( hdc, row->text, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX );
         SelectObject( hdc, old );
         break;
     case ROW_WIRELESS:
     {
-        RECT inner = { rect.left + 4, rect.top + 1, rect.right - 4, rect.bottom - 1 };
+        RECT inner = { rect.left + px( 4 ), rect.top + px( 1 ), rect.right - px( 4 ), rect.bottom - px( 1 ) };
 
         if (selected)
         {
@@ -693,18 +701,18 @@ static void draw_row( const DRAWITEMSTRUCT *draw )
         old = SelectObject( hdc, font );
         SetTextColor( hdc, RGB( 0, 0, 0 ) );
         text = rect;
-        text.left += 12;
-        text.right -= 110;
+        text.left += px( 12 );
+        text.right -= px( 110 );
         text.bottom = rect.top + ROW_HEIGHT;
         DrawTextW( hdc, row->text, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX );
         if (row->detail[0])
         {
-            text.left = rect.right - 110;
-            text.right = rect.right - 34;
+            text.left = rect.right - px( 110 );
+            text.right = rect.right - px( 34 );
             SetTextColor( hdc, RGB( 100, 100, 100 ) );
             DrawTextW( hdc, row->detail, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_END_ELLIPSIS | DT_NOPREFIX );
         }
-        draw_bars( hdc, rect.right - 8, rect.top + ROW_HEIGHT - 4, row->quality, row->secured );
+        draw_bars( hdc, rect.right - px( 8 ), rect.top + ROW_HEIGHT - px( 4 ), row->quality, row->secured );
         SelectObject( hdc, old );
         break;
     }

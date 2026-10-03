@@ -1,0 +1,201 @@
+diff --git a/base/shell/explorer/explorer.exe.manifest b/base/shell/explorer/explorer.exe.manifest
+index 5e869db8..a6885191 100644
+--- a/base/shell/explorer/explorer.exe.manifest
++++ b/base/shell/explorer/explorer.exe.manifest
+@@ -19,4 +19,11 @@
+         />
+     </dependentAssembly>
+ </dependency>
++<!-- Arctic: the shell draws itself at the DPI of the system, which is the
++     primary monitor's scale when the session starts -->
++<application xmlns="urn:schemas-microsoft-com:asm.v3">
++    <windowsSettings>
++        <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
++    </windowsSettings>
++</application>
+ </assembly>
+\ No newline at end of file
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+index 5f07f38a..e1616587 100644
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -424,4 +424,19 @@ Tray_OnStartMenuDismissed(ITrayWindow* Tray);
+ HRESULT
+ IsSameObject(IN IUnknown *punk1, IN IUnknown *punk2);
+ 
++/* Arctic: a size in pixels at 96 DPI, in the DPI the shell draws at: the
++   system's, which is the primary monitor's scale when the session starts */
++static inline int ArcticDpiScale(int px)
++{
++    static int s_dpi;
++    if (!s_dpi)
++    {
++        HDC hdc = ::GetDC(NULL);
++        s_dpi = hdc ? ::GetDeviceCaps(hdc, LOGPIXELSY) : 96;
++        if (hdc) ::ReleaseDC(NULL, hdc);
++        if (s_dpi <= 0) s_dpi = 96;
++    }
++    return ::MulDiv(px, s_dpi, 96);
++}
++
+ #endif /* _EXPLORER_PRECOMP__H_ */
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+index 8fc014fa..79f5459a 100644
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -48,17 +48,17 @@
+  * then the app logo override 60x60 (16 to its right) beside the title, the
+  * text and the attribution 12 at #99FFFFFF 3 below them, 4 above and 5
+  * below. */
+-#define TOAST_WIDTH         364
+-#define TOAST_MARGIN        16
+-#define TOAST_PADDING       16
+-#define TOAST_LOGO          16
+-#define TOAST_BUTTON_WIDTH  36
+-#define TOAST_BUTTON_HEIGHT 20
+-#define TOAST_HEADER_BUTTON 20   /* HorizontalGlyphButtonStyle */
+-#define TOAST_IMAGE         60
++#define TOAST_WIDTH         ArcticDpiScale(364)
++#define TOAST_MARGIN        ArcticDpiScale(16)
++#define TOAST_PADDING       ArcticDpiScale(16)
++#define TOAST_LOGO          ArcticDpiScale(16)
++#define TOAST_BUTTON_WIDTH  ArcticDpiScale(36)
++#define TOAST_BUTTON_HEIGHT ArcticDpiScale(20)
++#define TOAST_HEADER_BUTTON ArcticDpiScale(20)   /* HorizontalGlyphButtonStyle */
++#define TOAST_IMAGE         ArcticDpiScale(60)
+ #define TOAST_TIMER         1
+ #define TOAST_FRAME_MS      15
+-#define TOAST_BLUR          30   /* the acrylic's blur */
++#define TOAST_BLUR          ArcticDpiScale(30)   /* the acrylic's blur */
+ #define WM_TOAST_CLICKED    (WM_USER + 300) /* to the pager; wParam: closed with its X */
+ 
+ enum TOAST_ANIMATION
+diff --git a/base/shell/explorer/taskband.cpp b/base/shell/explorer/taskband.cpp
+index 9160908f..94e34d94 100644
+--- a/base/shell/explorer/taskband.cpp
++++ b/base/shell/explorer/taskband.cpp
+@@ -132,7 +132,7 @@ public:
+                 /* Arctic: a row is as high as the buttons of Windows 10 (40,
+                    or 30 with small buttons), whatever the toolbar has yet:
+                    the taskbar takes its height from it */
+-                pdbi->ptMinSize.y = g_TaskbarSettings.bSmallIcons ? 30 : 40;
++                pdbi->ptMinSize.y = ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 30 : 40);
+                 pdbi->ptIntegral.x = 0;
+                 pdbi->ptIntegral.y = pdbi->ptMinSize.y;
+             }
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+index 26e6198c..dfbea782 100644
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -22,7 +22,7 @@
+ /* Arctic: the task buttons are to be made anew, once the current message is done */
+ #define TSWM_ARCTIC_REBUILD (WM_APP + 0x3A)
+ /* the narrowest a labelled button gets before the windows of a program combine */
+-#define MIN_LABELLED_BUTTON 100
++#define MIN_LABELLED_BUTTON ArcticDpiScale(100)
+ #define TASK_ITEM_ARRAY_ALLOC   64
+ 
+ //************************************************************************
+@@ -732,7 +732,7 @@ public:
+     INT GetIconSize()
+     {
+         /* the large taskbar of Windows 10 has icons of 24 pixels */
+-        return g_TaskbarSettings.bSmallIcons ? GetSystemMetrics(SM_CXSMICON) : 24;
++        return g_TaskbarSettings.bSmallIcons ? GetSystemMetrics(SM_CXSMICON) : ArcticDpiScale(24);
+     }
+ 
+     INT UpdateTaskGroupButton(IN PTASK_GROUP TaskGroup)
+@@ -1608,7 +1608,7 @@ public:
+                 Horizontal = m_Tray->IsHorizontal();
+ 
+                 /* Arctic: buttons as high as in Windows 10, or the whole row */
+-                m_ButtonSize.cy = g_TaskbarSettings.bSmallIcons ? 30 : 40;
++                m_ButtonSize.cy = ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 30 : 40);
+                 if (Horizontal && m_ButtonSize.cy > rcClient.bottom)
+                     m_ButtonSize.cy = rcClient.bottom;
+ 
+@@ -1659,7 +1659,7 @@ public:
+ 
+                     /* Arctic: a button without a label is as wide as in Windows 10 */
+                     if (g_TaskbarSettings.bHideLabels)
+-                        NewBtnSize = min(NewBtnSize, g_TaskbarSettings.bSmallIcons ? 40 : 48);
++                        NewBtnSize = min(NewBtnSize, ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 40 : 48));
+ 
+                     /* Recalculate how many buttons actually fit into one line */
+                     uiBtnsPerLine = rcClient.right / (NewBtnSize + cxButtonSpacing);
+diff --git a/base/shell/explorer/traydeskbtn.cpp b/base/shell/explorer/traydeskbtn.cpp
+index 07bf2b9e..10357491 100644
+--- a/base/shell/explorer/traydeskbtn.cpp
++++ b/base/shell/explorer/traydeskbtn.cpp
+@@ -42,7 +42,7 @@ INT CTrayShowDesktopButton::WidthOrHeight() const
+                 return 24;
+             }
+             else
+-                return 5; /* Arctic: the sliver of Windows 10 */
++                return ArcticDpiScale(5); /* Arctic: the sliver of Windows 10 */
+         }
+         else
+         {
+diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
+index 75363ed2..df93bb64 100644
+--- a/base/shell/explorer/trayntfy.cpp
++++ b/base/shell/explorer/trayntfy.cpp
+@@ -43,11 +43,11 @@ static const WCHAR szTrayNotifyWndClass[] = L"TrayNotifyWnd";
+  * The abbreviation is the first three letters of the language's own name
+  * (ENG, УКР, РУС). Choosing a language asks the Raw Input Thread of csrss for
+  * it, as Alt+Shift does. */
+-#define INPUT_INDICATOR_WIDTH   50
+-#define INPUT_FLYOUT_WIDTH      300
+-#define INPUT_TILE_HEIGHT       60
+-#define INPUT_TILE_COLUMN       74
+-#define INPUT_SETTINGS_HEIGHT   48
++#define INPUT_INDICATOR_WIDTH   ArcticDpiScale(50)
++#define INPUT_FLYOUT_WIDTH      ArcticDpiScale(300)
++#define INPUT_TILE_HEIGHT       ArcticDpiScale(60)
++#define INPUT_TILE_COLUMN       ArcticDpiScale(74)
++#define INPUT_SETTINGS_HEIGHT   ArcticDpiScale(48)
+ #define INPUT_POLL_TIMER        1
+ #define INPUT_ACCENT            RGB(0x00, 0x78, 0xd7)
+ 
+@@ -239,14 +239,14 @@ public:
+ 
+             /* the abbreviation, bottom-centred in the upper 30 of the 74 wide column less its 14 of padding */
+             HGDIOBJ hOld = SelectObject(hdc, m_hfAbbr);
+-            SetRect(&rcText, 0, rcTile.top, INPUT_TILE_COLUMN - 14, rcTile.top + 30);
++            SetRect(&rcText, 0, rcTile.top, INPUT_TILE_COLUMN - ArcticDpiScale(14), rcTile.top + ArcticDpiScale(30));
+             DrawTextW(hdc, szAbbr, -1, &rcText, DT_CENTER | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
+ 
+             /* the language and its keyboard, bottom-left and top-left of the two rows */
+             SelectObject(hdc, m_hfName);
+-            SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top, rc.right - 22, rcTile.top + 30);
++            SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top, rc.right - ArcticDpiScale(22), rcTile.top + ArcticDpiScale(30));
+             DrawTextW(hdc, szLanguage, -1, &rcText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+-            SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top + 30, rc.right - 22, rcTile.bottom);
++            SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top + ArcticDpiScale(30), rc.right - ArcticDpiScale(22), rcTile.bottom);
+             DrawTextW(hdc, szKeyboard, -1, &rcText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+             SelectObject(hdc, hOld);
+         }
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+index e3c9e297..3bbde8be 100644
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -221,8 +221,8 @@ public:
+ 
+         /* Arctic: the Start button of Windows 10 is 48x40, and the taskbar
+            takes its height from it */
+-        Size.cx = 48;
+-        Size.cy = 40 + GetSystemMetrics(SM_CYEDGE);
++        Size.cx = ArcticDpiScale(48);
++        Size.cy = ArcticDpiScale(40) + GetSystemMetrics(SM_CYEDGE);
+ 
+         /* Save the size of the start button */
+         m_Size = Size;
+@@ -1892,7 +1892,7 @@ ChangePos:
+        with small buttons */
+     LONG GetMinimumRowHeight()
+     {
+-        return g_TaskbarSettings.bSmallIcons ? 30 : 40;
++        return ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 30 : 40);
+     }
+ 
+     void FitToRebar(PRECT pRect)

@@ -139,6 +139,13 @@ void set_cloaked( HWND hwnd, BOOL cloaked )
 }
 
 /* the message font of the theme, at a height of our own */
+/* every size is given at 96 DPI and drawn at the DPI of the system: the
+ * shell's, which is the primary monitor's scale when the session starts */
+int px( int n )
+{
+    return MulDiv( n, GetDpiForSystem(), 96 );
+}
+
 HFONT shell_font( int height, int weight )
 {
     NONCLIENTMETRICSW metrics = { sizeof(metrics) };
@@ -223,16 +230,16 @@ void fill_alpha( HDC hdc, const RECT *rect, COLORREF color, BYTE alpha )
     DeleteDC( mem );
 }
 
-/* the X of Windows 10: two strokes, a pixel wide, 10 pixels across */
+/* the X of Windows 10: two strokes, a pixel wide, 10 pixels across (at 96 DPI) */
 void draw_glyph_close( HDC hdc, const RECT *rect, COLORREF color )
 {
-    int cx = (rect->left + rect->right) / 2, cy = (rect->top + rect->bottom) / 2;
-    HPEN pen = CreatePen( PS_SOLID, 1, color ), old = SelectObject( hdc, pen );
+    int cx = (rect->left + rect->right) / 2, cy = (rect->top + rect->bottom) / 2, r = px( 5 );
+    HPEN pen = CreatePen( PS_SOLID, px( 1 ), color ), old = SelectObject( hdc, pen );
 
-    MoveToEx( hdc, cx - 5, cy - 5, NULL );
-    LineTo( hdc, cx + 5, cy + 5 );
-    MoveToEx( hdc, cx + 4, cy - 5, NULL );
-    LineTo( hdc, cx - 6, cy + 5 );
+    MoveToEx( hdc, cx - r, cy - r, NULL );
+    LineTo( hdc, cx + r, cy + r );
+    MoveToEx( hdc, cx + r - 1, cy - r, NULL );
+    LineTo( hdc, cx - r - 1, cy + r );
     SelectObject( hdc, old );
     DeleteObject( pen );
 }
