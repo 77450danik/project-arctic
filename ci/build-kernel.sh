@@ -9,7 +9,7 @@ VER=$(cat "$ROOT/kernel/VERSION")
 OUT="$ROOT/out/kernel"
 WORK=/tmp/kbuild
 
-pacman -Syu --noconfirm --needed base-devel bc cpio kmod libelf openssl pahole perl python tar xz zstd curl linux-headers \
+pacman -Syu --noconfirm --needed base-devel bc cpio kmod libelf openssl pahole perl python tar xz zstd curl linux-headers ccache \
     python-pillow noto-fonts
 
 rm -rf "$OUT" "$WORK"
@@ -46,8 +46,14 @@ while IFS= read -r line; do
 done < "$ROOT/kernel/arctic.config"
 [ "$missing" = 0 ] || exit 1
 
+# ccache of the last run (CCACHE_DIR, kept by the workflow; locally
+# tools/wsl/build-kernel.sh): the tree is unpacked anew each time, always at
+# the same path, so whatever did not change comes from the cache
+source "$ROOT/ci/ccache-env.sh"
+CC=(CC="ccache gcc" HOSTCC="ccache gcc")
 echo "building with $(nproc) CPUs"
-make -j"$(nproc)" bzImage modules
+make -j"$(nproc)" "${CC[@]}" bzImage modules
+ccache -s
 make INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
 
 # NVIDIA's open kernel modules (Turing and newer) for this very kernel, signed
@@ -57,7 +63,7 @@ NV=$(cat "$ROOT/kernel/NVIDIA_VERSION")
 curl -fL --retry 5 -o "$WORK/nvidia.tar.gz" \
     "https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/$NV.tar.gz"
 tar xf "$WORK/nvidia.tar.gz" -C "$WORK"
-make -C "$WORK/open-gpu-kernel-modules-$NV" -j"$(nproc)" SYSSRC="$PWD" SYSOUT="$PWD" modules
+make -C "$WORK/open-gpu-kernel-modules-$NV" -j"$(nproc)" "${CC[@]}" SYSSRC="$PWD" SYSOUT="$PWD" modules
 make -C "$WORK/open-gpu-kernel-modules-$NV" SYSSRC="$PWD" SYSOUT="$PWD" \
     INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
 depmod -b "$OUT" "$(make -s kernelrelease)"

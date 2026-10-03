@@ -2,10 +2,12 @@
 # Builds Wine: the upstream tag plus Arctic modules and patches, new WoW64
 # (64-bit unix side only).
 #
-# CI runs it once in a clean archlinux container. tools/wsl/build-wine.sh runs
-# it locally with a persistent WINE_WORK, and then only what changed gets
-# rebuilt: files are synced into the build tree by content, so an untouched
-# file keeps its timestamp even when it was regenerated.
+# CI runs it in a clean archlinux container with the ccache of the last run
+# (CCACHE_DIR, kept by the workflow), so only what changed is compiled again.
+# tools/wsl/build-wine.sh runs it locally with a persistent WINE_WORK, and
+# then only what changed gets rebuilt: files are synced into the build tree by
+# content, so an untouched file keeps its timestamp even when it was
+# regenerated.
 #
 # Output: $WINE_OUT (default out/wine)/usr/{bin,lib/wine,share/wine}
 set -euo pipefail
@@ -17,7 +19,7 @@ WORK=${WINE_WORK:-/tmp/winebuild}
 
 if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
-    pacman -Syu --noconfirm --needed base-devel git rsync mingw-w64-gcc \
+    pacman -Syu --noconfirm --needed base-devel git rsync mingw-w64-gcc ccache \
         freetype2 gnutls alsa-lib vulkan-icd-loader vulkan-headers systemd-libs libusb \
         wayland libxkbcommon libinput mesa libglvnd
 fi
@@ -54,6 +56,7 @@ mkdir -p "$WORK/src" "$WORK/build"
 rsync -rlc --delete --exclude=.git --exclude=autom4te.cache "$WORK/stage/" "$WORK/src/"
 
 cd "$WORK/build"
+source "$ROOT/ci/ccache-env.sh"
 if [ ! -f Makefile ]; then
     cc=() # ccache when available: fast rebuilds after a reconfigure
     if command -v ccache >/dev/null; then
@@ -73,6 +76,7 @@ if [ ! -f Makefile ]; then
 fi
 
 make -j"$(nproc)"
+! command -v ccache >/dev/null || ccache -s
 rm -rf "$OUT"
 make install-lib DESTDIR="$OUT"
 # for compile checks of runtime changes on the build machine

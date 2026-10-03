@@ -5,3 +5,4 @@
 /tools/zig/
 /wsl/
 __pycache__/
+/.ccache/

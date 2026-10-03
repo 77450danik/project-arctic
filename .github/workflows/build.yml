@@ -32,15 +32,27 @@ jobs:
           lookup-only: true
       - if: steps.cache.outputs.cache-hit != 'true'
         run: bash ci/free-disk.sh
+      # the compiler's results of the last kernel build: only what changed is compiled again
       - if: steps.cache.outputs.cache-hit != 'true'
-        run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/build-kernel.sh
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache/kernel
+          key: kernel-ccache-${{ github.run_id }}
+          restore-keys: kernel-ccache-
       - if: steps.cache.outputs.cache-hit != 'true'
-        run: sudo chown -R "$(id -u):$(id -g)" out
+        run: docker run --rm -e CCACHE_DIR=/work/.ccache/kernel -v "$PWD:/work" archlinux:latest bash /work/ci/build-kernel.sh
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo chown -R "$(id -u):$(id -g)" out .ccache
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: out/kernel
           key: ${{ steps.key.outputs.key }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache/kernel
+          key: kernel-ccache-${{ github.run_id }}
       # the kernel on its own, for an image built locally (tools/wsl/build-image.sh)
       - if: steps.cache.outputs.cache-hit == 'true'
         uses: actions/cache/restore@v4
@@ -71,15 +83,28 @@ jobs:
           lookup-only: true
       - if: steps.cache.outputs.cache-hit != 'true'
         run: bash ci/free-disk.sh
+      # the compiler's results of the last Wine build: a changed patch or
+      # module compiles only its own files again, not all of Wine
       - if: steps.cache.outputs.cache-hit != 'true'
-        run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/build-wine.sh
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache/wine
+          key: wine-ccache-${{ github.run_id }}
+          restore-keys: wine-ccache-
       - if: steps.cache.outputs.cache-hit != 'true'
-        run: sudo chown -R "$(id -u):$(id -g)" out
+        run: docker run --rm -e CCACHE_DIR=/work/.ccache/wine -v "$PWD:/work" archlinux:latest bash /work/ci/build-wine.sh
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo chown -R "$(id -u):$(id -g)" out .ccache
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: out/wine
           key: ${{ steps.key.outputs.key }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache/wine
+          key: wine-ccache-${{ github.run_id }}
 
   reactos:
     concurrency:
@@ -208,3 +233,27 @@ jobs:
           gh release delete dev --cleanup-tag --yes || true
           gh release create dev out/arctic.iso out/arctic-usb.img --prerelease --target "$GITHUB_SHA" \
             --title "Arctic dev ${GITHUB_SHA::7}" --notes "$notes"
+
+  # Old caches go, so that the compiler caches do not push the builds out of
+  # GitHub's 10 GB: of the compiler caches only the newest of each stays, of
+  # the builds those some run used in the last two days, and RosBE always
+  prune-caches:
+    needs: [image]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api --paginate "repos/$REPO/actions/caches?per_page=100" \
+              --jq '.actions_caches[] | [.id, .key, .created_at, .last_accessed_at] | @tsv' > caches.tsv
+          for kind in wine-ccache kernel-ccache; do
+            awk -F'\t' -v k="$kind-" 'index($2, k) == 1' caches.tsv | sort -t$'\t' -k3 -r | tail -n +2 | cut -f1
+          done > delete.txt
+          cutoff=$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%S)
+          awk -F'\t' -v c="$cutoff" '$2 !~ /-ccache-/ && $2 !~ /^rosbe-/ && $4 < c { print $1 }' caches.tsv >> delete.txt
+          echo "$(wc -l < delete.txt) of $(wc -l < caches.tsv) caches go"
+          while read -r id; do gh api -X DELETE "repos/$REPO/actions/caches/$id" || true; done < delete.txt
