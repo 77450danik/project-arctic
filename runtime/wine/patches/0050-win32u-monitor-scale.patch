@@ -1,0 +1,496 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 3 Oct 2026 19:00:00 +0300
+Subject: [PATCH] win32u: The scale of each monitor, recommended and changed on the fly.
+
+As in Windows 10, every monitor has a scale of its own: recommended from
+its size (EDID) and resolution, about 110 pixels an inch taken as 100 %,
+and moved some steps from there by the user, which is kept in
+HKCU\Control Panel\Desktop\PerMonitorSettings\<monitor>\DpiValue. The
+monitor's source gets the DPI; the primary one's goes to LogPixels too,
+the system DPI of the processes to come.
+
+DisplayConfigGetDeviceInfo and DisplayConfigSetDeviceInfo read and set
+it with the types Windows' Settings use (GET/SET_SOURCE_DPI_SCALE). A new
+scale applies at once, without a restart: every process reads the
+monitors again, the server gives every window its monitor's new DPI,
+and every toplevel window hears of it in its own thread
+(WM_WINE_DPICHANGED). A window that knows its monitor's DPI gets
+WM_DPICHANGED with a rectangle that keeps its size in its own terms
+(and its children WM_DPICHANGED_BEFOREPARENT/AFTERPARENT in v2); any
+other window keeps its coordinates and is drawn again at the new scale;
+maximized windows take the maximized place again.
+---
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -641,6 +641,7 @@
+     WM_WINE_TRACKMOUSEEVENT,
+     WM_WINE_SETPIXELFORMAT,
+     WM_WINE_GETICONBITS,  /* the pixels of an icon, for another process to draw it */
++    WM_WINE_DPICHANGED,   /* Arctic: the DPI of the window's monitor changed (old, new) */
+     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
+     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
+     WM_WINE_SETCURSOR,
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2278,6 +2278,9 @@
+     case WM_WINE_UPDATEWINDOWSTATE:
+         update_window_state( hwnd );
+         return 0;
++    case WM_WINE_DPICHANGED:
++        window_monitor_dpi_changed( hwnd, wparam, lparam );
++        return 0;
+     case WM_WINE_SETPIXELFORMAT:
+         set_window_pixel_format( hwnd, wparam, lparam );
+         return 0;
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -299,6 +299,7 @@
+ extern HWND get_hwnd_message_parent(void);
+ extern UINT get_window_dpi_awareness_context( HWND hwnd );
+ extern MINMAXINFO get_min_max_info( HWND hwnd );
++extern void window_monitor_dpi_changed( HWND hwnd, UINT old_dpi, UINT new_dpi );
+ extern HWND get_window_relative( HWND hwnd, UINT rel );
+ extern DWORD get_window_thread( HWND hwnd, DWORD *process );
+ extern HWND is_current_process_window( HWND hwnd );
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -4987,6 +4987,76 @@
+     set_thread_dpi_awareness_context( context );
+ }
+ 
++/* Arctic: a maximized window takes the maximized place again, which the
++ * new DPI made larger or smaller */
++static void remaximize_window( HWND hwnd )
++{
++    MINMAXINFO info = get_min_max_info( hwnd );
++
++    NtUserSetWindowPos( hwnd, 0, info.ptMaxPosition.x, info.ptMaxPosition.y, info.ptMaxSize.x,
++                        info.ptMaxSize.y, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED );
++}
++
++static void send_dpi_changed_to_children( HWND parent, UINT msg )
++{
++    HWND *list = list_window_children( parent );
++
++    if (!list) return;
++    for (int i = 0; list[i]; i++)
++    {
++        if (msg == WM_DPICHANGED_BEFOREPARENT) send_message( list[i], msg, 0, 0 );
++        send_dpi_changed_to_children( list[i], msg );
++        if (msg == WM_DPICHANGED_AFTERPARENT) send_message( list[i], msg, 0, 0 );
++    }
++    free( list );
++}
++
++/***********************************************************************
++ *              window_monitor_dpi_changed
++ *
++ * Arctic: the scale of the window's monitor changed on the fly
++ * (DisplayConfigSetDeviceInfo, as the Display panel does), in the thread of
++ * the window. As in Windows, a window that knows the DPI of its monitor is
++ * told with WM_DPICHANGED and a rectangle that keeps its size in its own
++ * terms, which it is expected to take; any other window keeps its
++ * coordinates, and its surface is drawn at the monitor's new scale.
++ */
++void window_monitor_dpi_changed( HWND hwnd, UINT old_dpi, UINT new_dpi )
++{
++    UINT context = get_window_dpi_awareness_context( hwnd ), prev;
++    DWORD style = get_window_long( hwnd, GWL_STYLE );
++
++    if (!old_dpi || !new_dpi || old_dpi == new_dpi) return;
++    TRACE( "%p dpi %u -> %u, context %#x\n", hwnd, old_dpi, new_dpi, context );
++
++    prev = set_thread_dpi_awareness_context( context );
++    if (NTUSER_DPI_CONTEXT_IS_MONITOR_AWARE( context ))
++    {
++        BOOL v2 = NTUSER_DPI_CONTEXT_GET_VERSION( context ) >= 2;
++        RECT rect;
++
++        get_window_rect( hwnd, &rect, get_thread_dpi() );
++        if (!(style & (WS_MAXIMIZE | WS_MINIMIZE)))
++        {
++            rect.right = rect.left + muldiv( rect.right - rect.left, new_dpi, old_dpi );
++            rect.bottom = rect.top + muldiv( rect.bottom - rect.top, new_dpi, old_dpi );
++        }
++        if (v2) send_dpi_changed_to_children( hwnd, WM_DPICHANGED_BEFOREPARENT );
++        send_message( hwnd, WM_DPICHANGED, MAKEWPARAM( new_dpi, new_dpi ), (LPARAM)&rect );
++        if (v2) send_dpi_changed_to_children( hwnd, WM_DPICHANGED_AFTERPARENT );
++        if (style & WS_MAXIMIZE) remaximize_window( hwnd );
++        else NtUserSetWindowPos( hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
++                                 SWP_NOACTIVATE | SWP_FRAMECHANGED );
++    }
++    else
++    {
++        update_window_state( hwnd );
++        if (style & WS_MAXIMIZE) remaximize_window( hwnd );
++    }
++    NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
++    set_thread_dpi_awareness_context( prev );
++}
++
+ /***********************************************************************
+  *              show_window
+  *
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -2061,6 +2061,280 @@
+     NtClose( hkey );
+ }
+ 
++/* Arctic: the scale of each monitor, as in Windows 10. It is "recommended"
++ * from the monitor's size (EDID) and resolution, and the user moves it some
++ * steps from there, which Windows keeps in PerMonitorSettings\<monitor>\DpiValue
++ * and so do we. The source of the monitor gets its DPI; the primary one's also
++ * goes to LogPixels, the DPI of the system for the processes to come. */
++static const UINT arctic_scales[] = { 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500 };
++static const char arctic_per_monitor_keyA[] = "Control Panel\\Desktop\\PerMonitorSettings";
++static const WCHAR arctic_dpi_valueW[] = {'D','p','i','V','a','l','u','e',0};
++static const WCHAR arctic_log_pixelsW[] = {'L','o','g','P','i','x','e','l','s',0};
++static const WCHAR arctic_recommendedW[] = {'A','r','c','t','i','c','S','c','a','l','e',
++                                            'R','e','c','o','m','m','e','n','d','e','d',0};
++static const WCHAR arctic_maxW[] = {'A','r','c','t','i','c','S','c','a','l','e','M','a','x',0};
++
++static BOOL lock_display_devices( BOOL force );
++static void unlock_display_devices(void);
++static void set_winstation_monitors( BOOL increment );
++
++/* the biggest scale that leaves at least 1024x600 of room, as Windows offers */
++static UINT arctic_max_scale_index( UINT width, UINT height )
++{
++    UINT i = 0;
++
++    while (i + 1 < ARRAY_SIZE(arctic_scales) && width * 100 / arctic_scales[i + 1] >= 1024 &&
++           height * 100 / arctic_scales[i + 1] >= 600) i++;
++    return i;
++}
++
++/* the screen's width in millimetres: the first detailed timing, else the size in centimetres */
++static UINT arctic_edid_width_mm( const unsigned char *edid, UINT len )
++{
++    UINT mm = 0;
++
++    if (!edid || len < 128) return 0;
++    if (edid[54] | edid[55]) mm = edid[66] | ((edid[68] & 0xf0) << 4);
++    if (!mm) mm = edid[21] * 10;
++    return mm;
++}
++
++/* about 110 pixels an inch looks as 96 do on the screens Windows had in mind;
++ * the nearest step of 25 %: a 15.6" 1080p laptop 125 %, a 13.3" one 150 %,
++ * a 24" 1080p monitor 100 %, a 27" 4K one 150 % */
++static UINT arctic_recommended_scale_index( const unsigned char *edid, UINT len, UINT width, UINT height )
++{
++    UINT mm = arctic_edid_width_mm( edid, len ), best = 0, i, percent;
++
++    if (!mm || !width) return 0;
++    percent = width * 254 / (mm * 11);  /* pixels an inch (width * 25.4 / mm) / 110, in percent */
++    for (i = 1; i < ARRAY_SIZE(arctic_scales); i++)
++    {
++        int d = (int)arctic_scales[i] - (int)percent, d_best = (int)arctic_scales[best] - (int)percent;
++        if ((d < 0 ? -d : d) < (d_best < 0 ? -d_best : d_best)) best = i;
++    }
++    return min( best, arctic_max_scale_index( width, height ) );
++}
++
++static void arctic_monitor_scale_key( const struct gdi_monitor *gdi_monitor, const char *id, char *key, size_t size )
++{
++    const unsigned char *edid = gdi_monitor->edid;
++
++    if (edid && gdi_monitor->edid_len >= 16)
++        snprintf( key, size, "%s_%02X%02X%02X%02X", id, edid[15], edid[14], edid[13], edid[12] );
++    else
++        snprintf( key, size, "%s", id );
++}
++
++static INT arctic_read_scale_steps( const char *key )
++{
++    char buffer[offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data[sizeof(DWORD)])];
++    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
++    char path[MAX_PATH];
++    INT steps = 0;
++    HKEY hkey;
++
++    snprintf( path, sizeof(path), "%s\\%s", arctic_per_monitor_keyA, key );
++    if (!(hkey = reg_open_hkcu_key( path ))) return 0;
++    if (query_reg_ascii_value( hkey, "DpiValue", value, sizeof(buffer) ) == sizeof(DWORD))
++        steps = *(INT *)value->Data;
++    NtClose( hkey );
++    return steps;
++}
++
++static void arctic_write_scale_steps( const char *key, INT steps )
++{
++    char path[MAX_PATH];
++    HKEY hkey;
++
++    snprintf( path, sizeof(path), "%s\\%s", arctic_per_monitor_keyA, key );
++    if (!(hkey = reg_create_ascii_key( hkcu_key, path, 0, NULL ))) return;
++    set_reg_value( hkey, arctic_dpi_valueW, REG_DWORD, &steps, sizeof(steps) );
++    NtClose( hkey );
++}
++
++static void arctic_set_system_dpi( UINT dpi )
++{
++    HKEY hkey;
++
++    if (!(hkey = reg_create_ascii_key( hkcu_key, "Control Panel\\Desktop", 0, NULL ))) return;
++    set_reg_value( hkey, arctic_log_pixelsW, REG_DWORD, &dpi, sizeof(dpi) );
++    NtClose( hkey );
++}
++
++/* the DPI of a source from the monitor shown on it, when it is made */
++static void arctic_choose_source_dpi( struct source *source, const struct gdi_monitor *gdi_monitor, const char *id )
++{
++    UINT width = gdi_monitor->rc_monitor.right - gdi_monitor->rc_monitor.left;
++    UINT height = gdi_monitor->rc_monitor.bottom - gdi_monitor->rc_monitor.top;
++    UINT recommended, max_index, index;
++    DWORD value;
++    char key[64];
++    INT steps;
++
++    arctic_monitor_scale_key( gdi_monitor, id, key, sizeof(key) );
++    recommended = arctic_recommended_scale_index( gdi_monitor->edid, gdi_monitor->edid_len, width, height );
++    max_index = arctic_max_scale_index( width, height );
++    steps = arctic_read_scale_steps( key );
++    index = max( 0, min( (INT)max_index, (INT)recommended + steps ) );
++
++    source->dpi = USER_DEFAULT_SCREEN_DPI * arctic_scales[index] / 100;
++    TRACE( "%s: %ux%u, recommended %u%%, %d steps: %u dpi\n", key, width, height, arctic_scales[recommended],
++           steps, source->dpi );
++    set_reg_value( source->key, dpiW, REG_DWORD, &source->dpi, sizeof(source->dpi) );
++    set_reg_ascii_value( source->key, "ArcticScaleKey", key );
++    value = recommended;
++    set_reg_value( source->key, arctic_recommendedW, REG_DWORD, &value, sizeof(value) );
++    value = max_index;
++    set_reg_value( source->key, arctic_maxW, REG_DWORD, &value, sizeof(value) );
++    if (source->state_flags & DISPLAY_DEVICE_PRIMARY_DEVICE) arctic_set_system_dpi( source->dpi );
++}
++
++/* the source's key: its path is absolute where the source was made, relative
++ * to the configuration key where it was read back from the registry */
++static HKEY arctic_open_source_key( struct source *source )
++{
++    HKEY hkey;
++
++    if (config_key && (hkey = reg_open_ascii_key( config_key, source->path ))) return hkey;
++    return reg_open_ascii_key( NULL, source->path );
++}
++
++static BOOL arctic_source_scale_info( struct source *source, char *key, size_t size, UINT *recommended, UINT *max_index )
++{
++    char buffer[offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data[128])];
++    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
++    HKEY hkey;
++    BOOL ret = FALSE;
++
++    if (!(hkey = arctic_open_source_key( source ))) return FALSE;
++    if (query_reg_ascii_value( hkey, "ArcticScaleKey", value, sizeof(buffer) ) && value->Type == REG_SZ)
++    {
++        WCHAR *str = (WCHAR *)value->Data;
++        UINT i;
++
++        for (i = 0; i + 1 < size && i < value->DataLength / sizeof(WCHAR) && str[i]; i++) key[i] = str[i];
++        key[i] = 0;
++        ret = TRUE;
++    }
++    *recommended = query_reg_ascii_value( hkey, "ArcticScaleRecommended", value, sizeof(buffer) ) == sizeof(DWORD)
++                   ? *(DWORD *)value->Data : 0;
++    *max_index = query_reg_ascii_value( hkey, "ArcticScaleMax", value, sizeof(buffer) ) == sizeof(DWORD)
++                 ? *(DWORD *)value->Data : 0;
++    NtClose( hkey );
++    return ret;
++}
++
++static UINT arctic_scale_index( UINT dpi )
++{
++    UINT i, percent = dpi * 100 / USER_DEFAULT_SCREEN_DPI;
++
++    for (i = 0; i + 1 < ARRAY_SIZE(arctic_scales); i++) if (arctic_scales[i] >= percent) break;
++    return i;
++}
++
++/* the layouts of DISPLAYCONFIG_DEVICE_INFO_GET/SET_SOURCE_DPI_SCALE, which Windows does not document */
++struct arctic_source_dpi_scale_get
++{
++    DISPLAYCONFIG_DEVICE_INFO_HEADER header;
++    INT32 min_scale_rel;
++    INT32 cur_scale_rel;
++    INT32 max_scale_rel;
++};
++
++struct arctic_source_dpi_scale_set
++{
++    DISPLAYCONFIG_DEVICE_INFO_HEADER header;
++    INT32 scale_rel;
++};
++
++static BOOL get_primary_source_mode( DEVMODEW *mode );
++
++/* every toplevel window hears in its own thread that its monitor's DPI
++ * changed; then, as the screen of a window that knows nothing of DPI grew
++ * or shrank in its terms, that the display changed (the taskbar of a shell
++ * that does not know DPI takes its place again from it), and that the
++ * metrics did */
++static void arctic_tell_windows_dpi_changed( UINT old_dpi, UINT new_dpi )
++{
++    HWND *list = list_window_children( get_desktop_window() );
++    DEVMODEW mode = {.dmSize = sizeof(mode)};
++    LPARAM size;
++
++    if (!list) return;
++    if (!get_primary_source_mode( &mode )) mode.dmBitsPerPel = 32;
++    size = MAKELPARAM( mode.dmPelsWidth, mode.dmPelsHeight );
++    for (int i = 0; list[i]; i++) NtUserPostMessage( list[i], WM_WINE_DPICHANGED, old_dpi, new_dpi );
++    for (int i = 0; list[i]; i++) NtUserPostMessage( list[i], WM_DISPLAYCHANGE, mode.dmBitsPerPel, size );
++    for (int i = 0; list[i]; i++) NtUserPostMessage( list[i], WM_SETTINGCHANGE, SPI_SETNONCLIENTMETRICS, 0 );
++    free( list );
++}
++
++static NTSTATUS arctic_set_source_scale( const struct arctic_source_dpi_scale_set *set )
++{
++    UINT recommended, max_index, index, old_dpi = 0, new_dpi = 0;
++    struct source *source;
++    char key[64];
++    NTSTATUS ret = STATUS_UNSUCCESSFUL;
++
++    if (!lock_display_devices( FALSE )) return STATUS_UNSUCCESSFUL;
++    LIST_FOR_EACH_ENTRY( source, &sources, struct source, entry )
++    {
++        if (set->header.id != source->id) continue;
++        if (memcmp( &set->header.adapterId, &source->gpu->luid, sizeof(source->gpu->luid) )) continue;
++        if (!arctic_source_scale_info( source, key, sizeof(key), &recommended, &max_index )) break;
++
++        index = max( 0, min( (INT)max_index, (INT)recommended + set->scale_rel ) );
++        arctic_write_scale_steps( key, (INT)index - (INT)recommended );
++        old_dpi = source->dpi ? source->dpi : system_dpi;
++        new_dpi = USER_DEFAULT_SCREEN_DPI * arctic_scales[index] / 100;
++        TRACE( "%s: %u -> %u dpi\n", key, old_dpi, new_dpi );
++        if (new_dpi != old_dpi)
++        {
++            HKEY hkey;
++
++            source->dpi = new_dpi;
++            if ((hkey = arctic_open_source_key( source )))
++            {
++                set_reg_value( hkey, dpiW, REG_DWORD, &new_dpi, sizeof(new_dpi) );
++                NtClose( hkey );
++            }
++            if (source->state_flags & DISPLAY_DEVICE_PRIMARY_DEVICE) arctic_set_system_dpi( new_dpi );
++            /* every process reads the monitors again */
++            if (video_key) set_reg_ascii_value( video_key, "ArcticDpi", "" );
++            set_winstation_monitors( TRUE );
++        }
++        ret = STATUS_SUCCESS;
++        break;
++    }
++    unlock_display_devices();
++    if (!ret && old_dpi != new_dpi) arctic_tell_windows_dpi_changed( old_dpi, new_dpi );
++    return ret;
++}
++
++static NTSTATUS arctic_get_source_scale( struct arctic_source_dpi_scale_get *get )
++{
++    UINT recommended, max_index;
++    struct source *source;
++    char key[64];
++    NTSTATUS ret = STATUS_UNSUCCESSFUL;
++
++    if (!lock_display_devices( FALSE )) return STATUS_UNSUCCESSFUL;
++    LIST_FOR_EACH_ENTRY( source, &sources, struct source, entry )
++    {
++        if (get->header.id != source->id) continue;
++        if (memcmp( &get->header.adapterId, &source->gpu->luid, sizeof(source->gpu->luid) )) continue;
++        if (!arctic_source_scale_info( source, key, sizeof(key), &recommended, &max_index )) break;
++        get->min_scale_rel = -(INT32)recommended;
++        get->max_scale_rel = (INT32)max_index - (INT32)recommended;
++        get->cur_scale_rel = (INT32)arctic_scale_index( source->dpi ? source->dpi : system_dpi ) - (INT32)recommended;
++        ret = STATUS_SUCCESS;
++        break;
++    }
++    unlock_display_devices();
++    return ret;
++}
++
+ static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
+ {
+     struct device_manager_ctx *ctx = param;
+@@ -2092,6 +2366,7 @@
+     snprintf( monitor->path, sizeof(monitor->path), "DISPLAY\\%s\\%04X&%04X", monitor_id_string, source->id, monitor->id );
+     set_reg_ascii_value( source->key, buffer, monitor->path );
+     load_work_insets( monitor, &gdi_monitor->rc_monitor );
++    if (!source->monitor_count) arctic_choose_source_dpi( source, gdi_monitor, monitor_id_string );
+ 
+     if (!write_monitor_to_registry( monitor, gdi_monitor->edid, gdi_monitor->edid_len ))
+     {
+@@ -7846,6 +8121,14 @@
+ 
+     switch (packet->type)
+     {
++    /* Arctic: the scale of a monitor, as the Display panel of Windows 10 reads
++     * and sets it; user32 sends the setting through here as well */
++    case DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_DPI_SCALE:
++        if (packet->size < sizeof(struct arctic_source_dpi_scale_get)) return STATUS_INVALID_PARAMETER;
++        return arctic_get_source_scale( (struct arctic_source_dpi_scale_get *)packet );
++    case DISPLAYCONFIG_DEVICE_INFO_SET_SOURCE_DPI_SCALE:
++        if (packet->size < sizeof(struct arctic_source_dpi_scale_set)) return STATUS_INVALID_PARAMETER;
++        return arctic_set_source_scale( (struct arctic_source_dpi_scale_set *)packet );
+     case DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME:
+     {
+         DISPLAYCONFIG_SOURCE_DEVICE_NAME *source_name = (DISPLAYCONFIG_SOURCE_DEVICE_NAME *)packet;
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -1067,6 +1067,9 @@
+  */
+ LONG WINAPI DisplayConfigSetDeviceInfo( DISPLAYCONFIG_DEVICE_INFO_HEADER *packet )
+ {
++    /* Arctic: the scale of a monitor, which win32u sets through the same call */
++    if (packet && packet->type == DISPLAYCONFIG_DEVICE_INFO_SET_SOURCE_DPI_SCALE)
++        return RtlNtStatusToDosError( NtUserDisplayConfigGetDeviceInfo( packet ));
+     FIXME( "stub!\n" );
+     return RtlNtStatusToDosError( STATUS_NOT_IMPLEMENTED );
+ }
+--- a/server/window.c
++++ b/server/window.c
+@@ -443,6 +443,21 @@
+     SHARED_WRITE_END;
+ }
+ 
++/* Arctic: the monitors changed (their DPI too): every toplevel window takes
++ * its monitor's DPI at once, before the programs hear of it */
++void update_windows_monitor_dpi( struct winstation *winstation )
++{
++    struct desktop *desktop;
++    struct window *win;
++
++    LIST_FOR_EACH_ENTRY( desktop, &winstation->desktops, struct desktop, entry )
++    {
++        if (!desktop->top_window) continue;
++        LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry )
++            set_window_monitor_dpi( win );
++    }
++}
++
+ /* attach or detach the parent window thread input if necessary */
+ static void attach_parent_thread( struct window *win, bool attach )
+ {
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -647,6 +647,7 @@
+ 
+     if (size && (winstation->monitors = memdup( get_req_data(), size )))
+         winstation->monitor_count = size / sizeof(*winstation->monitors);
++    update_windows_monitor_dpi( winstation );
+ 
+     reply->serial = winstation->monitor_serial;
+     release_object( winstation );
+--- a/server/user.h
++++ b/server/user.h
+@@ -175,6 +175,7 @@
+ 
+ extern struct process *get_top_window_owner( struct desktop *desktop );
+ extern void get_virtual_screen_rect( struct desktop *desktop, struct rectangle *rect, int is_raw );
++extern void update_windows_monitor_dpi( struct winstation *winstation );
+ extern void post_desktop_message( struct desktop *desktop, unsigned int message,
+                                   lparam_t wparam, lparam_t lparam );
+ extern void free_window_handle( struct window *win );

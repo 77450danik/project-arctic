@@ -1,0 +1,43 @@
+# The scale changed on the fly, as the Display panel of Windows 10 does it
+# (run with --resolution 1920x1080 --disk out/test-local/tools.img):
+# scaletest.exe without an argument stays open as a per-monitor window that
+# shows its DPI and the WM_DPICHANGED it got; "scaletest N" sets N %.
+# Notepad, the Display panel and the shell stay open through 150, 125 and
+# back to 100 %: windows that know their monitor's DPI stay sharp and keep
+# their size in their own terms, the others are drawn larger, the taskbar
+# stays at the bottom, full width.
+sleep 10
+key meta_l-r
+sleep 3
+type notepad
+key ret
+sleep 4
+key meta_l-r
+sleep 3
+type control desk.cpl
+key ret
+sleep 6
+key meta_l-r
+sleep 3
+type D:\scaletest.exe
+key ret
+sleep 4
+shot s1-100
+key meta_l-r
+sleep 3
+type D:\scaletest.exe 150
+key ret
+sleep 6
+shot s2-150
+key meta_l-r
+sleep 3
+type D:\scaletest.exe 125
+key ret
+sleep 6
+shot s3-125
+key meta_l-r
+sleep 3
+type D:\scaletest.exe 100
+key ret
+sleep 6
+shot s4-100

@@ -35,6 +35,7 @@ parser.add_argument("--script", help="input steps to run once the desktop is up 
 parser.add_argument("--usb", action="store_true", help="the image is a USB disk, not a CD")
 parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
 parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
+parser.add_argument("--resolution", help="WxH: the mode the monitor prefers (its EDID), e.g. 1920x1080")
 parser.add_argument("--disk", action="append", default=[],
                     help="a raw disk image attached as an internal disk (repeatable)")
 parser.add_argument("--sound", action="store_true",
@@ -67,6 +68,9 @@ else:
 # than one needs virtio-gpu, whose heads QEMU shows as separate monitors.
 if args.monitors > 1:
     cmd += ["-device", "virtio-gpu-pci,id=gpu,max_outputs=%d" % args.monitors, "-vga", "none"]
+elif args.resolution:
+    xres, yres = args.resolution.lower().split("x")
+    cmd += ["-vga", "none", "-device", "VGA,edid=on,xres=%s,yres=%s" % (xres, yres)]
 else:
     cmd += ["-vga", "std"]
 
