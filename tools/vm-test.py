@@ -36,6 +36,10 @@ parser.add_argument("--usb", action="store_true", help="the image is a USB disk,
 parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
 parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
 parser.add_argument("--resolution", help="WxH: the mode the monitor prefers (its EDID), e.g. 1920x1080")
+parser.add_argument("--gpu", action="store_true",
+                    help="3D on this PC's graphics card (virtio-gpu with virgl): dwm composes on a real GPU, "
+                         "as on hardware, instead of llvmpipe on the CPU. Not working yet: with SDL on the "
+                         "NVIDIA card the guest stops right after virtio-gpu starts")
 parser.add_argument("--disk", action="append", default=[],
                     help="a raw disk image attached as an internal disk (repeatable)")
 parser.add_argument("--sound", action="store_true",
@@ -51,7 +55,8 @@ for path in (serial, shot):
         os.remove(path)
 
 cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
-       "-display", "none" if args.headless else "gtk",
+       "-display", "egl-headless" if args.headless and args.gpu else "none" if args.headless
+       else "sdl,gl=on" if args.gpu else "gtk",
        "-name", "Arctic", "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet", "-device", "usb-kbd", "-device", "usb-mouse",  # a USB keyboard, as real PCs have: the kernel repeats its keys
       
        "-serial", "file:" + serial, "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]
@@ -66,7 +71,13 @@ else:
             "-device", "ide-cd,drive=cd,bootindex=1"]
 # One monitor is the standard VGA card, which is what a plain PC has; more
 # than one needs virtio-gpu, whose heads QEMU shows as separate monitors.
-if args.monitors > 1:
+if args.gpu:
+    gpu = "virtio-vga-gl,id=gpu,max_outputs=%d" % args.monitors
+    if args.resolution:
+        xres, yres = args.resolution.lower().split("x")
+        gpu += ",edid=on,xres=%s,yres=%s" % (xres, yres)
+    cmd += ["-device", gpu, "-vga", "none"]
+elif args.monitors > 1:
     cmd += ["-device", "virtio-gpu-pci,id=gpu,max_outputs=%d" % args.monitors, "-vga", "none"]
 elif args.resolution:
     xres, yres = args.resolution.lower().split("x")
@@ -88,8 +99,18 @@ if args.uefi:
 if args.append:
     kernel_dir = os.path.join(RES, "kernel")
     os.makedirs(kernel_dir, exist_ok=True)
-    subprocess.run(["C:/Program Files/7-Zip/7z.exe", "e", "-y", "-bso0", "-o" + kernel_dir, args.iso,
-                    "arctic/vmlinuz", "arctic/initrd.img"], check=True)
+    if not os.path.exists("C:/Program Files/7-Zip/7z.exe"):
+        # without 7-Zip on Windows: mtools in the build distro, from the image's first partition
+        wsl = lambda p: "/mnt/" + p[0].lower() + p[2:].replace("\\", "/")
+        src = wsl(os.path.abspath(args.iso))
+        part = src + "@@1M" if src.endswith(".img") else None
+        get = (["mcopy", "-o", "-i", part] if part else ["7z", "e", "-y", "-bso0", "-o" + wsl(kernel_dir), src])
+        for name in ("vmlinuz", "initrd.img"):
+            item = ["::arctic/" + name, wsl(os.path.join(kernel_dir, name))] if part else ["arctic/" + name]
+            subprocess.run(["wsl.exe", "-d", "arctic-build", "--"] + get + item, check=True)
+    else:
+        subprocess.run(["C:/Program Files/7-Zip/7z.exe", "e", "-y", "-bso0", "-o" + kernel_dir, args.iso,
+                        "arctic/vmlinuz", "arctic/initrd.img"], check=True)
     cmd += ["-kernel", os.path.join(kernel_dir, "vmlinuz"), "-initrd", os.path.join(kernel_dir, "initrd.img"),
             "-append", "console=ttyS0,115200 loglevel=6 arctic.dev=1 " + args.append]
 
