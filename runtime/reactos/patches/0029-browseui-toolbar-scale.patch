@@ -1,0 +1,80 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 4 Oct 2026 01:40:00 +0200
+Subject: [PATCH] browseui: The toolbar's icons at the system's scale.
+
+The toolbar loaded its 24 pixel strip at every scale: at 150 % its icons
+were two thirds the size of Windows'. Strips of 30, 36 and 48 pixels
+(Longhorn icons, tools/make-toolbar-icons.py) are picked by the DPI.
+---
+--- a/dll/win32/browseui/browseui.rc
++++ b/dll/win32/browseui/browseui.rc
+@@ -139,6 +139,12 @@
+ IDB_SHELL_EXPLORER_LG_HOT    BITMAP "res/215.bmp"
+ IDB_SHELL_EXPLORER_SM        BITMAP "res/216.bmp"
+ IDB_SHELL_EXPLORER_SM_HOT    BITMAP "res/217.bmp"
++IDB_SHELL_EXPLORER_30        BITMAP "res/218.bmp"
++IDB_SHELL_EXPLORER_30_HOT    BITMAP "res/219.bmp"
++IDB_SHELL_EXPLORER_36        BITMAP "res/220.bmp"
++IDB_SHELL_EXPLORER_36_HOT    BITMAP "res/221.bmp"
++IDB_SHELL_EXPLORER_48        BITMAP "res/222.bmp"
++IDB_SHELL_EXPLORER_48_HOT    BITMAP "res/223.bmp"
+ IDB_SHELL_GO                 BITMAP "res/230.bmp"
+ IDB_SHELL_GO_HOT             BITMAP "res/231.bmp"
+ IDB_SHELL_BRANDBAND_SM_HI    BITMAP "res/240.bmp"
+--- a/dll/win32/browseui/resource.h
++++ b/dll/win32/browseui/resource.h
+@@ -154,6 +154,13 @@
+ #define IDB_SHELL_EXPLORER_LG_HOT   215
+ #define IDB_SHELL_EXPLORER_SM       216
+ #define IDB_SHELL_EXPLORER_SM_HOT   217
++/* Arctic: the toolbar at 125, 150 and 175 % and up */
++#define IDB_SHELL_EXPLORER_30       218
++#define IDB_SHELL_EXPLORER_30_HOT   219
++#define IDB_SHELL_EXPLORER_36       220
++#define IDB_SHELL_EXPLORER_36_HOT   221
++#define IDB_SHELL_EXPLORER_48       222
++#define IDB_SHELL_EXPLORER_48_HOT   223
+ #define IDB_SHELL_GO                230
+ #define IDB_SHELL_GO_HOT            231
+ #define IDB_SHELL_BRANDBAND_SM_HI   240
+--- a/dll/win32/browseui/toolsband.cpp
++++ b/dll/win32/browseui/toolsband.cpp
+@@ -256,6 +256,24 @@
+     { folderOptionsImageIndex, IDM_TOOLS_FOLDEROPTIONS, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_FolderOptions },
+ };
+ 
++/* Arctic: the toolbar's icons at the system's scale, as Windows picks them:
++   24 pixels at 100 %, 30 at 125 %, 36 at 150 %, 48 from 175 % */
++static UINT ArcticToolbarBitmap(BOOL bHot)
++{
++    HDC hdc = GetDC(NULL);
++    int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
++
++    if (hdc)
++        ReleaseDC(NULL, hdc);
++    if (dpi >= 168)
++        return bHot ? IDB_SHELL_EXPLORER_48_HOT : IDB_SHELL_EXPLORER_48;
++    if (dpi >= 132)
++        return bHot ? IDB_SHELL_EXPLORER_36_HOT : IDB_SHELL_EXPLORER_36;
++    if (dpi >= 110)
++        return bHot ? IDB_SHELL_EXPLORER_30_HOT : IDB_SHELL_EXPLORER_30;
++    return bHot ? IDB_SHELL_EXPLORER_LG_HOT : IDB_SHELL_EXPLORER_LG;
++}
++
+ HRESULT STDMETHODCALLTYPE CToolsBand::SetSite(IUnknown* pUnkSite){
+     HWND                    parentWindow;
+     HWND                    toolbar;
+@@ -291,11 +309,11 @@
+     SendMessage(TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_HIDECLIPPEDBUTTONS | TBSTYLE_EX_MIXEDBUTTONS | TBSTYLE_EX_DRAWDDARROWS);
+ 
+     m_himlNormal = ImageList_LoadImageW(_AtlBaseModule.GetResourceInstance(),
+-                                        MAKEINTRESOURCEW(IDB_SHELL_EXPLORER_LG),
++                                        MAKEINTRESOURCEW(ArcticToolbarBitmap(FALSE)),
+                                         0, 0, RGB(255, 0, 255), IMAGE_BITMAP, LR_DEFAULTSIZE | LR_CREATEDIBSECTION);
+ 
+     m_himlHot = ImageList_LoadImageW(_AtlBaseModule.GetResourceInstance(),
+-                                     MAKEINTRESOURCEW(IDB_SHELL_EXPLORER_LG_HOT),
++                                     MAKEINTRESOURCEW(ArcticToolbarBitmap(TRUE)),
+                                      0, 0, RGB(255, 0, 255), IMAGE_BITMAP, LR_DEFAULTSIZE | LR_CREATEDIBSECTION);
+ 
+     SendMessage(TB_SETIMAGELIST, 0, (LPARAM) m_himlNormal);

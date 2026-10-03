@@ -1,0 +1,94 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 4 Oct 2026 01:50:00 +0200
+Subject: [PATCH] win32u: Log every minimize of a toplevel window.
+
+A maximized window sometimes minimizes by nobody's hand on the hardware
+(Chrome, as its extension popup comes up), and it does not happen in the
+VM. Every minimize of a toplevel window is written to the log, with the
+process and thread doing it, the command it came as (and the startup
+info's command when that replaced SW_SHOW), and so is a request to
+minimize another process's window and SC_MINIMIZE: "arctic-minimize" in
+the logs on the boot medium.
+---
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -5076,6 +5076,35 @@
+                         new_pos.bottom - new_pos.top, swp | SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER );
+ }
+ 
++/* Arctic: a window minimized by nobody's hand (a maximized browser when its
++ * popup comes up) is to be caught on the hardware: every minimize of a
++ * toplevel window is written to the log, with the process doing it and the
++ * command it came as, and so is a request to minimize another process's
++ * window. "grep arctic-minimize" in the boot medium's logs. */
++static BOOL is_minimize_command( INT cmd )
++{
++    return cmd == SW_MINIMIZE || cmd == SW_SHOWMINIMIZED || cmd == SW_SHOWMINNOACTIVE || cmd == SW_FORCEMINIMIZE;
++}
++
++void arctic_log_minimize( HWND hwnd, const char *how, INT asked, INT done )
++{
++    const WCHAR *app = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
++    WCHAR title[64] = {0}, class[64] = {0};
++    UNICODE_STRING name = { 0, sizeof(class) - sizeof(WCHAR), class };
++    char command[48];
++    DWORD pid = 0;
++
++    NtUserInternalGetWindowText( hwnd, title, ARRAY_SIZE(title) );
++    NtUserGetClassName( hwnd, FALSE, &name );
++    get_window_thread( hwnd, &pid );
++    if (asked == done) snprintf( command, sizeof(command), "SW %d", done );
++    else snprintf( command, sizeof(command), "SW %d, startup info made it SW %d", asked, done );
++    MESSAGE( "arctic-minimize: %s %p (%s %s, process %04x, style %08x) by %s (%04x, thread %04x): %s, "
++             "foreground %p\n", how, hwnd, debugstr_w(class), debugstr_w(title), (int)pid,
++             (int)get_window_long( hwnd, GWL_STYLE ), debugstr_w(app), (int)GetCurrentProcessId(),
++             (int)GetCurrentThreadId(), command, NtUserGetForegroundWindow() );
++}
++
+ static BOOL show_window( HWND hwnd, INT cmd )
+ {
+     WND *win;
+@@ -5097,10 +5126,15 @@
+     {
+         if (cmd == SW_SHOW || cmd == SW_SHOWNORMAL || cmd == SW_SHOWDEFAULT)
+         {
++            INT asked = cmd;
++
+             cmd = startup_show_window;
+             TRACE( "hwnd=%p, using cmd %d from startup info.\n", hwnd, cmd );
++            if (is_minimize_command( cmd )) arctic_log_minimize( hwnd, "shows minimized", asked, cmd );
+         }
+     }
++    if (is_minimize_command( cmd ) && !(style & WS_CHILD) && !(style & WS_MINIMIZE))
++        arctic_log_minimize( hwnd, "minimizes", cmd, cmd );
+ 
+     switch(cmd)
+     {
+@@ -5284,6 +5318,7 @@
+     if ((full_handle = is_current_thread_window( hwnd )))
+         return show_window( full_handle, cmd );
+ 
++    if (is_minimize_command( cmd )) arctic_log_minimize( hwnd, "asks to minimize", cmd, cmd );
+     return NtUserMessageCall( hwnd, WM_WINE_SHOWWINDOW, cmd, 0, 0,
+                               NtUserSendNotifyMessage, FALSE );
+ }
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -1152,6 +1152,7 @@
+         break;
+ 
+     case SC_MINIMIZE:
++        arctic_log_minimize( hwnd, "gets SC_MINIMIZE", SW_MINIMIZE, SW_MINIMIZE );
+         NtUserShowWindow( hwnd, SW_MINIMIZE );
+         NtUserShowOwnedPopups( hwnd, FALSE );
+         break;
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -302,6 +302,7 @@
+ extern void window_monitor_dpi_changed( HWND hwnd, UINT old_dpi, UINT new_dpi );
+ extern HWND get_window_relative( HWND hwnd, UINT rel );
+ extern DWORD get_window_thread( HWND hwnd, DWORD *process );
++extern void arctic_log_minimize( HWND hwnd, const char *how, INT asked, INT done );
+ extern HWND is_current_process_window( HWND hwnd );
+ extern HWND is_current_thread_window( HWND hwnd );
+ extern BOOL is_desktop_window( HWND hwnd );
