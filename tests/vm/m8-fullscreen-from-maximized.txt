@@ -1,0 +1,16 @@
+# Full screen from a maximized window, as Chrome plays a video (run with
+# --disk out/test-local/tools.img): fullscreentest.exe is maximized, after
+# 4 s drops its caption and covers the screen keeping WS_MAXIMIZE, after 8 s
+# is maximized again. The taskbar shows over the first, is gone over the
+# second (black, "full screen (no taskbar)") and is back over the third.
+sleep 8
+key meta_l-r
+sleep 3
+type D:\fullscreentest.exe
+key ret
+sleep 2
+shot f1-maximized
+sleep 4
+shot f2-full-screen
+sleep 4
+shot f3-maximized-again

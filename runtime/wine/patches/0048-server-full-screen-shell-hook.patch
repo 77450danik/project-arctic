@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 3 Oct 2026 15:30:00 +0300
+Subject: [PATCH] server: The shell hears when a window covers its monitor.
+
+As win32k does, the server sends the shell HSHELL_RUDEAPPACTIVATED when
+a window of its own comes to cover its monitor or stops covering it. A
+video going full screen in a maximized Chrome stays the active window,
+so the shell heard nothing and its taskbar stayed over the video.
+---
+--- a/server/window.c
++++ b/server/window.c
+@@ -78,6 +78,7 @@
+     unsigned int     ex_style;        /* window extended style */
+     unsigned int     is_linked : 1;   /* is it linked into the parent z-order list? */
+     unsigned int     is_layered : 1;  /* has layered info been set? */
++    unsigned int     is_full_screen : 1; /* Arctic: does it cover its monitor? */
+     unsigned int     is_orphan : 1;   /* is window orphaned */
+     unsigned int     set_foreground : 1;/* has window been foreground once */
+     unsigned int     composited : 1;  /* listed for the compositor although it is a child */
+@@ -717,6 +718,7 @@
+     win->ex_style       = 0;
+     win->is_linked      = 0;
+     win->is_layered     = 0;
++    win->is_full_screen = 0;
+     win->is_orphan      = 0;
+     win->set_foreground = 0;
+     win->text           = NULL;
+@@ -2030,6 +2032,24 @@
+         bump_composition_serial( win->desktop );
+ }
+ 
++/* Arctic: as win32k does, the shell hears when a window of its own comes to
++ * cover its monitor or stops covering it, with HSHELL_RUDEAPPACTIVATED: a
++ * video or a game going full screen stays the active window, so the shell
++ * would hear nothing else, and its taskbar would stay over the video */
++static void check_full_screen( struct window *win )
++{
++    struct monitor_info *info;
++    int full = 0;
++
++    if ((win->style & WS_VISIBLE) && !(win->style & WS_MINIMIZE) &&
++        (info = get_monitor_from_rect( win->desktop->winstation, &win->window_rect, 0 )))
++        full = win->window_rect.left <= info->virt.left && win->window_rect.top <= info->virt.top &&
++               win->window_rect.right >= info->virt.right && win->window_rect.bottom >= info->virt.bottom;
++    if (full == win->is_full_screen) return;
++    win->is_full_screen = full;
++    shell_hook_notify( win->desktop, HSHELL_RUDEAPPACTIVATED, win->handle );
++}
++
+ static void set_window_pos( struct window *win, struct window *previous,
+                             unsigned int swp_flags, const struct rectangle *window_rect,
+                             const struct rectangle *client_rect, const struct rectangle *visible_rect,
+@@ -2071,6 +2091,7 @@
+ 
+     /* update window monitor dpi for toplevel windows */
+     if (is_toplevel( win )) set_window_monitor_dpi( win );
++    if (is_shell_hook_window( win )) check_full_screen( win );
+ 
+     /* keep children at the same position relative to top right corner when the parent is mirrored */
+     if (win->ex_style & WS_EX_LAYOUTRTL)

@@ -10,7 +10,7 @@ index f43097a..4cbd42a 100644
  SOURCES = \
  	classes.idl \
 diff --git a/dlls/windows.media.mediacontrol/main.c b/dlls/windows.media.mediacontrol/main.c
-index 2bc0224..553b2ff 100644
+index 2bc0224..55f3702 100644
 --- a/dlls/windows.media.mediacontrol/main.c
 +++ b/dlls/windows.media.mediacontrol/main.c
 @@ -17,15 +17,24 @@
@@ -40,7 +40,7 @@ index 2bc0224..553b2ff 100644
  struct media_control_statics
  {
      IActivationFactory IActivationFactory_iface;
-@@ -119,104 +128,351 @@ static const struct IActivationFactoryVtbl factory_vtbl =
+@@ -119,104 +128,397 @@ static const struct IActivationFactoryVtbl factory_vtbl =
      factory_ActivateInstance,
  };
  
@@ -62,6 +62,7 @@ index 2bc0224..553b2ff 100644
 +    struct list entry;               /* in controls, one a window */
 +
 +    HWND window;
++    HWND press_window;               /* on the thread that asked for the control */
 +    UINT32 session;                  /* its row's id in the shared section, 0: none yet */
 +    MediaPlaybackStatus media_playback_status;
 +    MediaPlaybackType playback_type;
@@ -187,7 +188,7 @@ index 2bc0224..553b2ff 100644
 +        row->process = GetCurrentProcessId();
 +        row->window = HandleToULong( impl->window );
 +        with_display = TRUE;
-     }
++    }
 +    if (row)
 +    {
 +        row->notify = HandleToULong( notify_window );
@@ -204,7 +205,7 @@ index 2bc0224..553b2ff 100644
 +            copy_hstring( row->album, ARRAY_SIZE(row->album), impl->album_title );
 +        }
 +        InterlockedIncrement( &shared->serial );
-+    }
+     }
 +    unlock_shared( mutex );
 +}
  
@@ -362,14 +363,27 @@ index 2bc0224..553b2ff 100644
  }
  
 -static HRESULT WINAPI music_properties_GetIids( IMusicDisplayProperties *iface, ULONG *iid_count, IID **iids )
-+static LRESULT CALLBACK notify_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
++static UINT button_message(void)
  {
 -    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
 -    return E_NOTIMPL;
 +    static UINT button_msg;
 +
 +    if (!button_msg) button_msg = RegisterWindowMessageW( ARCTIC_MEDIA_BUTTON_MSG );
-+    if (msg == button_msg)
++    return button_msg;
+ }
+ 
+-static HRESULT WINAPI music_properties_GetRuntimeClassName( IMusicDisplayProperties *iface, HSTRING *class_name )
++/* Windows raises ButtonPressed on the thread of the window the control was
++ * asked for (ISystemMediaTransportControlsInterop::GetForWindow), in its
++ * message loop: Chrome's handler goes straight to its media session there,
++ * which belongs to its UI thread, and Chrome's sound broke when a press came
++ * on another thread */
++static LRESULT CALLBACK press_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
+-    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
+-    return E_NOTIMPL;
++    if (msg == button_message())
 +    {
 +        press_button( lparam, wparam );
 +        return 0;
@@ -377,12 +391,47 @@ index 2bc0224..553b2ff 100644
 +    return DefWindowProcW( hwnd, msg, wparam, lparam );
  }
  
--static HRESULT WINAPI music_properties_GetRuntimeClassName( IMusicDisplayProperties *iface, HSTRING *class_name )
-+/* the presses come on a thread of their own, as Windows raises the event on one */
-+static DWORD WINAPI notify_thread( void *arg )
+-static HRESULT WINAPI music_properties_GetTrustLevel( IMusicDisplayProperties *iface, TrustLevel *trust_level )
++static HWND create_press_window(void)
  {
--    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
+-    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
 -    return E_NOTIMPL;
++    static const WCHAR class_name[] = L"ArcticMediaPress";
++    WNDCLASSW cls = { .lpfnWndProc = press_proc, .lpszClassName = class_name };
++
++    cls.hInstance = GetModuleHandleW( NULL );
++    RegisterClassW( &cls ); /* fails harmlessly once it is there */
++    return CreateWindowExW( 0, class_name, NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, cls.hInstance, NULL );
+ }
+ 
++static void destroy_press_window( HWND hwnd )
++{
++    if (!hwnd) return;
++    if (GetWindowThreadProcessId( hwnd, NULL ) == GetCurrentThreadId()) DestroyWindow( hwnd );
++    else PostMessageW( hwnd, WM_CLOSE, 0, 0 );
++}
++
++/* a press from the shell goes on to the thread of its control */
++static LRESULT CALLBACK notify_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
++{
++    if (msg == button_message())
++    {
++        struct media_control *impl;
++        HWND target = NULL;
++
++        EnterCriticalSection( &controls_cs );
++        LIST_FOR_EACH_ENTRY( impl, &controls, struct media_control, entry )
++            if (impl->session == lparam) { target = impl->press_window; break; }
++        LeaveCriticalSection( &controls_cs );
++        if (!target || !PostMessageW( target, msg, wparam, lparam )) press_button( lparam, wparam );
++        return 0;
++    }
++    return DefWindowProcW( hwnd, msg, wparam, lparam );
++}
++
++/* the shell's presses come to a thread of their own, which passes them on */
++static DWORD WINAPI notify_thread( void *arg )
++{
 +    WNDCLASSW cls = { .lpfnWndProc = notify_proc, .lpszClassName = L"ArcticMediaNotify" };
 +    HANDLE ready = arg;
 +    MSG msg;
@@ -393,13 +442,10 @@ index 2bc0224..553b2ff 100644
 +    SetEvent( ready );
 +    while (GetMessageW( &msg, NULL, 0, 0 )) DispatchMessageW( &msg );
 +    return 0;
- }
- 
--static HRESULT WINAPI music_properties_GetTrustLevel( IMusicDisplayProperties *iface, TrustLevel *trust_level )
++}
++
 +static void start_notify_thread(void)
- {
--    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
--    return E_NOTIMPL;
++{
 +    HANDLE ready, thread;
 +
 +    if (notify_window) return;
@@ -410,8 +456,8 @@ index 2bc0224..553b2ff 100644
 +        CloseHandle( thread );
 +    }
 +    CloseHandle( ready );
- }
- 
++}
++
 +/**********************************************************************
 + *          IMusicDisplayProperties
 + */
@@ -435,7 +481,7 @@ index 2bc0224..553b2ff 100644
      WindowsDeleteString( impl->title );
      return WindowsDuplicateString( value, &impl->title );
  }
-@@ -230,25 +486,25 @@ static HRESULT WINAPI music_properties_get_AlbumArtist( IMusicDisplayProperties
+@@ -230,25 +532,25 @@ static HRESULT WINAPI music_properties_get_AlbumArtist( IMusicDisplayProperties
  static HRESULT WINAPI music_properties_put_AlbumArtist( IMusicDisplayProperties *iface, HSTRING value )
  {
      FIXME( "iface %p, value %s stub!\n", iface, debugstr_hstring(value) );
@@ -466,7 +512,7 @@ index 2bc0224..553b2ff 100644
  {
      music_properties_QueryInterface,
      music_properties_AddRef,
-@@ -266,19 +522,19 @@ static const IMusicDisplayPropertiesVtbl music_properties_vtbl =
+@@ -266,19 +568,19 @@ static const IMusicDisplayPropertiesVtbl music_properties_vtbl =
      music_properties_put_Artist,
  };
  
@@ -490,7 +536,7 @@ index 2bc0224..553b2ff 100644
      WindowsDeleteString( impl->album_title );
      return WindowsDuplicateString( value, &impl->album_title );
  }
-@@ -292,7 +548,7 @@ static HRESULT STDMETHODCALLTYPE music_properties2_get_TrackNumber( IMusicDispla
+@@ -292,7 +594,7 @@ static HRESULT STDMETHODCALLTYPE music_properties2_get_TrackNumber( IMusicDispla
  static HRESULT STDMETHODCALLTYPE music_properties2_put_TrackNumber( IMusicDisplayProperties2 *iface, UINT32 value )
  {
      FIXME( "iface %p, value %u stub\n", iface, value );
@@ -499,7 +545,7 @@ index 2bc0224..553b2ff 100644
  }
  
  static HRESULT STDMETHODCALLTYPE music_properties2_get_Genres( IMusicDisplayProperties2 *iface, IVector_HSTRING **value )
-@@ -318,80 +574,15 @@ static const struct IMusicDisplayProperties2Vtbl music_properties2_vtbl =
+@@ -318,80 +620,15 @@ static const struct IMusicDisplayProperties2Vtbl music_properties2_vtbl =
      music_properties2_get_Genres,
  };
  
@@ -585,7 +631,7 @@ index 2bc0224..553b2ff 100644
  
      TRACE( "iface %p, value %p\n", iface, value );
  
-@@ -401,7 +592,7 @@ static HRESULT WINAPI display_updater_get_Type( ISystemMediaTransportControlsDis
+@@ -401,7 +638,7 @@ static HRESULT WINAPI display_updater_get_Type( ISystemMediaTransportControlsDis
  
  static HRESULT WINAPI display_updater_put_Type( ISystemMediaTransportControlsDisplayUpdater *iface, MediaPlaybackType value )
  {
@@ -594,7 +640,7 @@ index 2bc0224..553b2ff 100644
  
      TRACE( "iface %p, value %d\n", iface, value );
  
-@@ -419,7 +610,7 @@ static HRESULT WINAPI display_updater_get_AppMediaId( ISystemMediaTransportContr
+@@ -419,7 +656,7 @@ static HRESULT WINAPI display_updater_get_AppMediaId( ISystemMediaTransportContr
  static HRESULT WINAPI display_updater_put_AppMediaId( ISystemMediaTransportControlsDisplayUpdater *iface, HSTRING value )
  {
      FIXME( "iface %p, value %s stub!\n", iface, debugstr_hstring( value ) );
@@ -603,7 +649,7 @@ index 2bc0224..553b2ff 100644
  }
  
  static HRESULT WINAPI display_updater_get_Thumbnail( ISystemMediaTransportControlsDisplayUpdater *iface, IRandomAccessStreamReference **value )
-@@ -438,18 +629,12 @@ static HRESULT WINAPI display_updater_put_Thumbnail( ISystemMediaTransportContro
+@@ -438,18 +675,12 @@ static HRESULT WINAPI display_updater_put_Thumbnail( ISystemMediaTransportContro
  
  static HRESULT WINAPI display_updater_get_MusicProperties( ISystemMediaTransportControlsDisplayUpdater *iface, IMusicDisplayProperties **value )
  {
@@ -624,7 +670,7 @@ index 2bc0224..553b2ff 100644
      return S_OK;
  }
  
-@@ -474,13 +659,26 @@ static HRESULT WINAPI display_updater_CopyFromFileAsync( ISystemMediaTransportCo
+@@ -474,13 +705,26 @@ static HRESULT WINAPI display_updater_CopyFromFileAsync( ISystemMediaTransportCo
  
  static HRESULT WINAPI display_updater_ClearAll( ISystemMediaTransportControlsDisplayUpdater *iface )
  {
@@ -653,7 +699,7 @@ index 2bc0224..553b2ff 100644
      return S_OK;
  }
  
-@@ -508,20 +706,9 @@ static const struct ISystemMediaTransportControlsDisplayUpdaterVtbl display_upda
+@@ -508,20 +752,9 @@ static const struct ISystemMediaTransportControlsDisplayUpdaterVtbl display_upda
      display_updater_Update,
  };
  
@@ -677,7 +723,7 @@ index 2bc0224..553b2ff 100644
  
  static inline struct media_control *impl_from_ISystemMediaTransportControls( ISystemMediaTransportControls *iface )
  {
-@@ -543,6 +730,24 @@ static HRESULT WINAPI media_control_QueryInterface( ISystemMediaTransportControl
+@@ -543,6 +776,24 @@ static HRESULT WINAPI media_control_QueryInterface( ISystemMediaTransportControl
          IInspectable_AddRef( *out );
          return S_OK;
      }
@@ -702,7 +748,7 @@ index 2bc0224..553b2ff 100644
  
      FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
      *out = NULL;
-@@ -560,11 +765,29 @@ static ULONG WINAPI media_control_AddRef( ISystemMediaTransportControls *iface )
+@@ -560,11 +811,30 @@ static ULONG WINAPI media_control_AddRef( ISystemMediaTransportControls *iface )
  static ULONG WINAPI media_control_Release( ISystemMediaTransportControls *iface )
  {
      struct media_control *impl = impl_from_ISystemMediaTransportControls( iface );
@@ -721,6 +767,7 @@ index 2bc0224..553b2ff 100644
 +    if (!ref)
 +    {
 +        withdraw( impl );
++        destroy_press_window( impl->press_window );
 +        LIST_FOR_EACH_ENTRY_SAFE( entry, next, &impl->handlers, struct button_handler, entry )
 +        {
 +            ITypedEventHandler_SystemMediaTransportControls_SystemMediaTransportControlsButtonPressedEventArgs_Release( entry->handler );
@@ -734,7 +781,7 @@ index 2bc0224..553b2ff 100644
      return ref;
  }
  
-@@ -604,236 +827,129 @@ static HRESULT WINAPI media_control_put_PlaybackStatus( ISystemMediaTransportCon
+@@ -604,236 +874,129 @@ static HRESULT WINAPI media_control_put_PlaybackStatus( ISystemMediaTransportCon
  
      if (value < MediaPlaybackStatus_Closed || value > MediaPlaybackStatus_Paused) return E_INVALIDARG;
      impl->media_playback_status = value;
@@ -899,10 +946,6 @@ index 2bc0224..553b2ff 100644
 -    struct media_control *impl = impl_from_ISystemMediaTransportControls( iface );
 -
 -    TRACE( "iface %p, value %d\n", iface, value );
--
--    impl->is_previous_enabled = value;
--    return S_OK;
--}
 +#define DEFINE_FLAG( name, field )                                                                   \
 +static HRESULT WINAPI media_control_get_##name( ISystemMediaTransportControls *iface, boolean *value ) \
 +{                                                                                                    \
@@ -947,6 +990,10 @@ index 2bc0224..553b2ff 100644
 +DEFINE_UNUSED_FLAG( IsChannelUpEnabled )
 +DEFINE_UNUSED_FLAG( IsChannelDownEnabled )
  
+-    impl->is_previous_enabled = value;
+-    return S_OK;
+-}
+-
 -static HRESULT WINAPI media_control_get_IsNextEnabled( ISystemMediaTransportControls *iface, boolean *value )
 +static HRESULT WINAPI media_control_add_ButtonPressed( ISystemMediaTransportControls *iface,
 +    ITypedEventHandler_SystemMediaTransportControls_SystemMediaTransportControlsButtonPressedEventArgs *handler, EventRegistrationToken *token )
@@ -1009,7 +1056,8 @@ index 2bc0224..553b2ff 100644
 -    FIXME( "iface %p, value %d stub!\n", iface, value );
 -    return E_NOTIMPL;
 -}
--
++    TRACE( "iface %p, token %#I64x\n", iface, token.value );
+ 
 -static HRESULT WINAPI media_control_add_ButtonPressed( ISystemMediaTransportControls *iface,
 -    ITypedEventHandler_SystemMediaTransportControls_SystemMediaTransportControlsButtonPressedEventArgs *handler, EventRegistrationToken *token )
 -{
@@ -1017,8 +1065,7 @@ index 2bc0224..553b2ff 100644
 -    *token = dummy_token;
 -    return S_OK;
 -}
-+    TRACE( "iface %p, token %#I64x\n", iface, token.value );
- 
+-
 -static HRESULT WINAPI media_control_remove_ButtonPressed( ISystemMediaTransportControls *iface, EventRegistrationToken token )
 -{
 -    FIXME( "iface %p, token %#I64x stub!\n", iface, token.value );
@@ -1057,7 +1104,7 @@ index 2bc0224..553b2ff 100644
  }
  
  static const struct ISystemMediaTransportControlsVtbl media_control_vtbl =
-@@ -880,6 +996,7 @@ static const struct ISystemMediaTransportControlsVtbl media_control_vtbl =
+@@ -880,6 +1043,7 @@ static const struct ISystemMediaTransportControlsVtbl media_control_vtbl =
  
  DEFINE_IINSPECTABLE( media_control_statics, ISystemMediaTransportControlsInterop, struct media_control_statics, IActivationFactory_iface )
  
@@ -1065,7 +1112,7 @@ index 2bc0224..553b2ff 100644
  static HRESULT WINAPI media_control_statics_GetForWindow( ISystemMediaTransportControlsInterop *iface, HWND window, REFIID riid, void **control )
  {
      struct media_control *impl;
-@@ -888,13 +1005,32 @@ static HRESULT WINAPI media_control_statics_GetForWindow( ISystemMediaTransportC
+@@ -888,13 +1052,33 @@ static HRESULT WINAPI media_control_statics_GetForWindow( ISystemMediaTransportC
      TRACE( "iface %p, window %p, riid %s, control %p\n", iface, window, debugstr_guid( riid ), control );
  
      if (!window) return E_POINTER;
@@ -1092,6 +1139,7 @@ index 2bc0224..553b2ff 100644
 +    impl->IMusicDisplayProperties2_iface.lpVtbl = &music_properties2_vtbl;
 +    impl->ref = 1;
      impl->window = window;
++    impl->press_window = create_press_window();
 +    list_init( &impl->handlers );
 +    list_add_tail( &controls, &impl->entry );
 +    LeaveCriticalSection( &controls_cs );

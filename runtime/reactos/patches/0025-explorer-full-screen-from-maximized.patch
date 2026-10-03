@@ -1,0 +1,50 @@
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+index 277a1c8e..26e6198c 100644
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -87,14 +87,24 @@ SHELL_IsRudeWindow(_In_opt_ HMONITOR hMonitor, _In_ HWND hWnd, _In_ BOOL bDontCh
+     if (!::IsWindowVisible(hWnd) || hWnd == ::GetDesktopWindow())
+         return FALSE;
+ 
++    /* Arctic: the shell's own windows are never full screen programs: its
++       desktop covers the whole screen, and the server tells about it too */
++    DWORD dwProcessId;
++    ::GetWindowThreadProcessId(hWnd, &dwProcessId);
++    if (dwProcessId == ::GetCurrentProcessId())
++        return FALSE;
++
+     RECT rcMonitor;
+     SHELL_GetMonitorRect(hMonitor, &rcMonitor, FALSE);
+ 
+     DWORD style = ::GetWindowLongPtrW(hWnd, GWL_STYLE);
+ 
+-    /* Arctic: a maximized window stays under the taskbar even when its
+-       frame reaches past the screen, as Chrome's does */
+-    if (style & WS_MAXIMIZE)
++    /* Arctic: a maximized window with a caption stays under the taskbar
++       even when its frame reaches past the screen, as Chrome's does; one
++       that dropped its caption to cover the screen is full screen, as
++       Chrome's is when it plays a video full screen from a maximized
++       window: it keeps WS_MAXIMIZE */
++    if ((style & WS_MAXIMIZE) && (style & WS_CAPTION) == WS_CAPTION)
+         return FALSE;
+ 
+     RECT rcWnd;
+@@ -1912,6 +1922,17 @@ public:
+             break;
+ 
+         case HSHELL_RUDEAPPACTIVATED:
++            /* Arctic: the server says so when a window comes to cover its
++               monitor or stops (a video going full screen): the check runs
++               at once, from the timer as always, and the taskbar goes or
++               comes back */
++            KillTimer(TIMER_ID_VALIDATE_RUDE_APP);
++            SetTimer(TIMER_ID_VALIDATE_RUDE_APP, 50, NULL);
++            m_nRudeAppValidationCounter = 0;
++            if ((HWND)lParam == ::GetForegroundWindow())
++                ActivateTask((HWND)lParam);
++            break;
++
+         case HSHELL_WINDOWACTIVATED:
+             OnWindowActivated((HWND)lParam);
+             ActivateTask((HWND)lParam);

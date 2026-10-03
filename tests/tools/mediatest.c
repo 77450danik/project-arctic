@@ -58,7 +58,10 @@ static HRESULT WINAPI handler_Invoke( ITypedEventHandler_SystemMediaTransportCon
         ISystemMediaTransportControls_put_PlaybackStatus( controls, MediaPlaybackStatus_Playing );
     else if (button == SystemMediaTransportControlsButton_Pause)
         ISystemMediaTransportControls_put_PlaybackStatus( controls, MediaPlaybackStatus_Paused );
-    snprintf( title, sizeof(title), "mediatest: %s %d", button < 8 ? names[button] : "?", ++presses );
+    /* Windows raises the event on the thread of the control's window, as
+     * Chrome relies on; "other thread" would mean it did not */
+    snprintf( title, sizeof(title), "mediatest: %s %d%s", button < 8 ? names[button] : "?", ++presses,
+              GetCurrentThreadId() == GetWindowThreadProcessId( window, NULL ) ? "" : " (other thread)" );
     SetWindowTextA( window, title );
     return S_OK;
 }

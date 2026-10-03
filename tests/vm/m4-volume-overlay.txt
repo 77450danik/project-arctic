@@ -18,20 +18,20 @@ key ret
 sleep 4
 shot o1-playing
 key volumeup
-move 562 710
+move 562 670
 sleep 1
 shot o2-overlay
 click
 sleep 1
 shot o3-next
-move 526 710
+move 526 670
 click
 sleep 1
 shot o4-paused
 move 640 400
 sleep 4
 shot o5-gone
-move 1163 784
+move 1146 780
 click
 sleep 2
 shot o6-flyout-card
