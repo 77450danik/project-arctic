@@ -502,7 +502,7 @@ maximized windows take the maximized place again.
  }
 --- a/server/window.c
 +++ b/server/window.c
-@@ -443,6 +443,21 @@
+@@ -443,6 +443,24 @@
      SHARED_WRITE_END;
  }
  
@@ -516,6 +516,9 @@ maximized windows take the maximized place again.
 +    LIST_FOR_EACH_ENTRY( desktop, &winstation->desktops, struct desktop, entry )
 +    {
 +        if (!desktop->top_window) continue;
++        /* the desktop window too: its size, as a program sees it at its DPI,
++         * is what the wallpaper is made for */
++        set_window_monitor_dpi( desktop->top_window );
 +        LIST_FOR_EACH_ENTRY( win, &desktop->top_window->children, struct window, entry )
 +            set_window_monitor_dpi( win );
 +    }

@@ -30,7 +30,7 @@ index 35cf39b9..cc4ca700 100644
  #include "controls.h"
  
  static HBRUSH hbrushPattern;
-@@ -34,24 +37,144 @@ static SIZE bitmapSize;
+@@ -34,24 +37,163 @@
  static BOOL fTileWallPaper;
  
  
@@ -50,15 +50,11 @@ index 35cf39b9..cc4ca700 100644
 +static const GUID wallpaper_format = { 0x6fddc324, 0x4e03, 0x4bfe, { 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x0e } };
 +
 +static int get_desktop_setting( const WCHAR *name, int def )
- {
--    HBITMAP hbitmap;
++{
 +    WCHAR value[16], *p;
 +    DWORD size = sizeof(value);
 +    int n = 0;
- 
--    if (!filename[0]) return 0;
--    hbitmap = LoadImageW( 0, filename, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE );
--    if (!hbitmap)
++
 +    if (RegGetValueW( HKEY_CURRENT_USER, L"Control Panel\\Desktop", name, RRF_RT_REG_SZ, NULL, value, &size ))
 +        return def;
 +    for (p = value; *p >= '0' && *p <= '9'; p++) n = n * 10 + *p - '0';
@@ -81,17 +77,11 @@ index 35cf39b9..cc4ca700 100644
 +    void *bits;
 +
 +    if (!create_factory)
-     {
--        WCHAR buffer[MAX_PATH];
--        UINT len = GetWindowsDirectoryW( buffer, MAX_PATH - 2 );
--        if (buffer[len - 1] != '\\') buffer[len++] = '\\';
--        lstrcpynW( buffer + len, filename, MAX_PATH - len );
--        hbitmap = LoadImageW( 0, buffer, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE );
++    {
 +        HMODULE module = LoadLibraryW( L"windowscodecs.dll" );
 +        if (module) create_factory = (void *)GetProcAddress( module, "WICCreateImagingFactory_Proxy" );
 +        if (!create_factory) return 0;
-     }
--    return hbitmap;
++    }
 +    if (FAILED(create_factory( WINCODEC_SDK_VERSION, &factory ))) return 0;
 +
 +    if (FAILED(IWICImagingFactory_CreateDecoderFromFilename( factory, path, NULL, GENERIC_READ,
@@ -167,8 +157,25 @@ index 35cf39b9..cc4ca700 100644
 +    return bitmap;
 +}
 +
++/* A picture that would not load (the shell started again while the display
++ * changes, the file busy) is tried again a second later, a few times. */
++static HWND wallpaper_retry_hwnd;
++static UINT wallpaper_retries;
++
++static void CALLBACK wallpaper_retry_proc( HWND hwnd, UINT msg, UINT_PTR id, DWORD time )
+ {
+-    HBITMAP hbitmap;
++    NtUserKillTimer( NULL, id );
++    wallpaper_style = -1;
++    if (wallpaper_retry_hwnd) NtUserRedrawWindow( wallpaper_retry_hwnd, NULL, NULL,
++                                                  RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
++}
+ 
+-    if (!filename[0]) return 0;
+-    hbitmap = LoadImageW( 0, filename, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE );
+-    if (!hbitmap)
 +/* keeps the wallpaper this process paints in step with the settings and the desktop */
-+static void refresh_wallpaper( const RECT *rect )
++static void refresh_wallpaper( HDC hdc, const RECT *rect )
 +{
 +    WCHAR path[MAX_PATH];
 +    int style = get_desktop_setting( L"WallpaperStyle", 10 );
@@ -186,10 +193,22 @@ index 35cf39b9..cc4ca700 100644
 +    fTileWallPaper = tile;
 +    if (hbitmapWallPaper) DeleteObject( hbitmapWallPaper );
 +    hbitmapWallPaper = path[0] ? load_wallpaper( path, style, rect->right, rect->bottom, &bitmapSize ) : 0;
++    if (hbitmapWallPaper || !path[0]) wallpaper_retries = 0;
++    else if (wallpaper_retries < 10 && (wallpaper_retry_hwnd = NtUserWindowFromDC( hdc )))
+     {
+-        WCHAR buffer[MAX_PATH];
+-        UINT len = GetWindowsDirectoryW( buffer, MAX_PATH - 2 );
+-        if (buffer[len - 1] != '\\') buffer[len++] = '\\';
+-        lstrcpynW( buffer + len, filename, MAX_PATH - len );
+-        hbitmap = LoadImageW( 0, buffer, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE );
++        wallpaper_retries++;
++        SetTimer( NULL, 0, 1000, wallpaper_retry_proc );
+     }
+-    return hbitmap;
  }
  
  /***********************************************************************
-@@ -59,18 +182,8 @@ static HBITMAP DESKTOP_LoadBitmap( const WCHAR *filename )
+@@ -59,18 +201,8 @@
   */
  static void init_wallpaper( const WCHAR *wallpaper )
  {
@@ -210,14 +229,11 @@ index 35cf39b9..cc4ca700 100644
  }
  
  /***********************************************************************
-@@ -127,6 +240,7 @@ BOOL WINAPI PaintDesktop(HDC hdc)
+@@ -127,6 +259,7 @@
          RECT rect;
  
          GetClientRect( hwnd, &rect );
-+        refresh_wallpaper( &rect );
++        refresh_wallpaper( hdc, &rect );
  
          /* Paint desktop pattern (only if wall paper does not cover everything) */
  
--- 
-2.53.0.windows.2
-

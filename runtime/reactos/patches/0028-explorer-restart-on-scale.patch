@@ -19,10 +19,30 @@ index e1616587..f14f31f5 100644
 +
  #endif /* _EXPLORER_PRECOMP__H_ */
 diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
-index 3bbde8be..550c5e5e 100644
+index 3bbde8be..07f98a5a 100644
 --- a/base/shell/explorer/traywnd.cpp
 +++ b/base/shell/explorer/traywnd.cpp
-@@ -2575,6 +2575,18 @@ ChangePos:
+@@ -18,6 +18,7 @@ HRESULT TrayWindowCtxMenuCreator(ITrayWindow * TrayWnd, IN HWND hWndOwner, ICont
+ 
+ #define TIMER_ID_AUTOHIDE 1
+ #define TIMER_ID_MOUSETRACK 2
++#define TIMER_ID_ARCTIC_SETTLE 3 /* Arctic: the shell's geometry once more after it came up */
+ #define MOUSETRACK_INTERVAL 100
+ #define AUTOHIDE_DELAY_HIDE 2000
+ #define AUTOHIDE_DELAY_SHOW 50
+@@ -2489,6 +2490,11 @@ ChangePos:
+         ArcticSetTrayBand(m_hWnd, TRUE);
+         ArcticStartTaskSwitcher();
+ 
++        /* Arctic: the shell came up while a new scale was still reaching every
++           process, now and then: a little later the desktop and the taskbar
++           take their place once more, with what everyone knows by then */
++        SetTimer(TIMER_ID_ARCTIC_SETTLE, 3000, NULL);
++
+         return TRUE;
+     }
+ 
+@@ -2575,6 +2581,18 @@ ChangePos:
  
      LRESULT OnDisplayChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
      {
@@ -41,3 +61,20 @@ index 3bbde8be..550c5e5e 100644
          /* Refresh workareas */
          RecomputeAllWorkareas();
  
+@@ -3265,6 +3283,16 @@ HandleTrayContextMenu:
+             case TIMER_ID_AUTOHIDE:
+                 ProcessAutoHide();
+                 break;
++            case TIMER_ID_ARCTIC_SETTLE:
++                KillTimer(TIMER_ID_ARCTIC_SETTLE);
++                RegLoadSettings();
++                CheckTrayWndPosition();
++                if (HWND hwndDesktop = ::GetShellWindow())
++                {
++                    ::SendMessageW(hwndDesktop, WM_DISPLAYCHANGE, 0, 0);
++                    ::RedrawWindow(hwndDesktop, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
++                }
++                break;
+             default:
+                 WARN("Invalid timer ID: %u\n", (UINT)wParam);
+                 bHandled = FALSE;
