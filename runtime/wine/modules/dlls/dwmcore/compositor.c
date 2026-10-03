@@ -246,6 +246,17 @@ static const struct { float x, y; } arrow_outline[] =
 struct cursor_image cursor_image;
 static float cursor_scale;
 
+/* the cursor the program under the pointer asked for (arctic_shell_v1.set_cursor) */
+#define CLIENT_CURSOR_MAX 256
+static struct
+{
+    enum { CLIENT_CURSOR_ARROW, CLIENT_CURSOR_IMAGE, CLIENT_CURSOR_NONE } kind;
+    uint32_t pixels[CLIENT_CURSOR_MAX * CLIENT_CURSOR_MAX];
+    int      width, height, hot_x, hot_y;
+    unsigned serial;
+} client_cursor;
+static unsigned cursor_client_serial;
+
 static float monitor_scale( const struct dwm_window *w );
 static const struct dwm_window *taskbar_window(void);
 
@@ -270,12 +281,53 @@ static bool in_arrow( float x, float y, float *border )
     return inside;
 }
 
+/* A program's cursor is made for its own DPI: one of 32 pixels grows by the
+ * monitor's scale (bilinear, on premultiplied pixels), as Windows shows the
+ * cursors of every program at the scale of the monitor */
+static void scale_client_cursor( struct cursor_image *img, float scale )
+{
+    int sw = client_cursor.width, sh = client_cursor.height;
+    float f = max( 1.0f, 32 * scale / max( sw, sh ) );
+
+    img->width = min( CURSOR_MAX_W, (int)(sw * f + 0.5f) );
+    img->height = min( CURSOR_MAX_H, (int)(sh * f + 0.5f) );
+    img->hot_x = client_cursor.hot_x * f;
+    img->hot_y = client_cursor.hot_y * f;
+    for (int y = 0; y < img->height; y++)
+    {
+        float fy = max( 0.0f, (y + 0.5f) / f - 0.5f );
+        int y0 = min( (int)fy, sh - 1 ), y1 = min( y0 + 1, sh - 1 );
+        float wy = fy - y0;
+
+        for (int x = 0; x < img->width; x++)
+        {
+            float fx = max( 0.0f, (x + 0.5f) / f - 0.5f );
+            int x0 = min( (int)fx, sw - 1 ), x1 = min( x0 + 1, sw - 1 );
+            float wx = fx - x0;
+            uint32_t p00 = client_cursor.pixels[y0 * sw + x0], p01 = client_cursor.pixels[y0 * sw + x1];
+            uint32_t p10 = client_cursor.pixels[y1 * sw + x0], p11 = client_cursor.pixels[y1 * sw + x1];
+            uint32_t out = 0;
+
+            for (int shift = 0; shift < 32; shift += 8)
+            {
+                float top = ((p00 >> shift) & 0xff) * (1 - wx) + ((p01 >> shift) & 0xff) * wx;
+                float bottom = ((p10 >> shift) & 0xff) * (1 - wx) + ((p11 >> shift) & 0xff) * wx;
+                out |= (uint32_t)(top * (1 - wy) + bottom * wy + 0.5f) << shift;
+            }
+            img->pixels[y * img->width + x] = out;
+        }
+    }
+}
+
 static void make_cursor_image( float scale )
 {
     struct cursor_image *img = &cursor_image;
 
     memset( img->pixels, 0, sizeof(img->pixels) );
-    if (scale <= 1.0f)
+    img->hot_x = img->hot_y = 0;
+    if (client_cursor.kind == CLIENT_CURSOR_NONE) img->width = img->height = 0;
+    else if (client_cursor.kind == CLIENT_CURSOR_IMAGE) scale_client_cursor( img, scale );
+    else if (scale <= 1.0f)
     {
         img->width = 12;
         img->height = ARRAY_SIZE(arrow);
@@ -326,8 +378,9 @@ void update_cursor_image(void)
     }
     if (!scale) scale = monitor_scale( taskbar_window() );
     scale = max( 1.0f, min( scale, 5.0f ) );
-    if (scale == cursor_scale && cursor_image.width) return;
+    if (scale == cursor_scale && cursor_client_serial == client_cursor.serial) return;
     cursor_scale = scale;
+    cursor_client_serial = client_cursor.serial;
     make_cursor_image( scale );
 }
 
@@ -345,12 +398,12 @@ static void draw_cursor(void)
     update_cursor_image();
     for (int y = 0; y < img->height; y++)
     {
-        int py = cursor_y + y;
+        int py = cursor_y - img->hot_y + y;
 
         if (py < screen.top || py >= screen.bottom) continue;
         for (int x = 0; x < img->width; x++)
         {
-            int px = cursor_x + x;
+            int px = cursor_x - img->hot_x + x;
             uint32_t src = img->pixels[y * img->width + x], *dst, a;
 
             if (px < screen.left || px >= screen.right || !src) continue;
@@ -1496,7 +1549,8 @@ static bool can_show_directly( struct kms_output *o, struct surface *content )
         if (!buffer->scanout_ok) TRACE( "%s cannot scan out a %ux%u buffer\n", o->name, buffer->width, buffer->height );
     }
     /* the pointer cannot be drawn into the game's buffer: it goes to the cursor plane */
-    return buffer->scanout_ok && kms_show_cursor( o, cursor_on( o ), cursor_x - o->x, cursor_y - o->y );
+    return buffer->scanout_ok && kms_show_cursor( o, cursor_on( o ), cursor_x - o->x - cursor_image.hot_x,
+                                                  cursor_y - o->y - cursor_image.hot_y );
 }
 
 /* the display settings of the Control Panel turned it off for this monitor */
@@ -2454,15 +2508,57 @@ static void shell_get_window( struct wl_client *client, struct wl_resource *reso
     damage();
 }
 
+static NTSTATUS dwm_set_cursor( void *args );
+
+static void shell_set_cursor( struct wl_client *client, struct wl_resource *resource, struct wl_resource *buffer,
+                              int32_t hotspot_x, int32_t hotspot_y, uint32_t arrow )
+{
+    struct wl_shm_buffer *shm = buffer && !arrow ? wl_shm_buffer_get( buffer ) : NULL;
+    struct dwm_set_cursor_params pos = { cursor_x, cursor_y, cursor_hidden };
+
+    if (arrow) client_cursor.kind = CLIENT_CURSOR_ARROW;
+    else if (!shm) client_cursor.kind = CLIENT_CURSOR_NONE;
+    else
+    {
+        int width = wl_shm_buffer_get_width( shm ), height = wl_shm_buffer_get_height( shm );
+        int stride = wl_shm_buffer_get_stride( shm );
+        bool alpha = wl_shm_buffer_get_format( shm ) == WL_SHM_FORMAT_ARGB8888;
+        const uint8_t *data;
+
+        if (width <= 0 || height <= 0) client_cursor.kind = CLIENT_CURSOR_NONE;
+        else
+        {
+            client_cursor.kind = CLIENT_CURSOR_IMAGE;
+            client_cursor.width = min( width, CLIENT_CURSOR_MAX );
+            client_cursor.height = min( height, CLIENT_CURSOR_MAX );
+            client_cursor.hot_x = max( 0, min( hotspot_x, client_cursor.width - 1 ) );
+            client_cursor.hot_y = max( 0, min( hotspot_y, client_cursor.height - 1 ) );
+            wl_shm_buffer_begin_access( shm );
+            data = wl_shm_buffer_get_data( shm );
+            for (int y = 0; y < client_cursor.height; y++)
+            {
+                const uint32_t *row = (const uint32_t *)(data + (size_t)y * stride);
+                for (int x = 0; x < client_cursor.width; x++)
+                    client_cursor.pixels[y * client_cursor.width + x] = alpha ? row[x] : row[x] | 0xff000000;
+            }
+            wl_shm_buffer_end_access( shm );
+        }
+    }
+    client_cursor.serial++;
+    /* drawn again where it is, with its new image */
+    dwm_set_cursor( &pos );
+}
+
 static const struct arctic_shell_v1_interface shell_impl =
 {
     .destroy = resource_destroy,
     .get_window = shell_get_window,
+    .set_cursor = shell_set_cursor,
 };
 
 static void bind_shell( struct wl_client *client, void *data, uint32_t version, uint32_t id )
 {
-    struct wl_resource *resource = wl_resource_create( client, &arctic_shell_v1_interface, version, id );
+    struct wl_resource *resource = wl_resource_create( client, &arctic_shell_v1_interface, min( version, 2 ), id );
     if (resource) wl_resource_set_implementation( resource, &shell_impl, NULL, NULL );
 }
 
@@ -2917,7 +3013,7 @@ static NTSTATUS dwm_start( void *args )
     wl_global_create( display, &wp_viewporter_interface, 1, NULL, bind_viewporter );
     wl_global_create( display, &xdg_wm_base_interface, 2, NULL, bind_wm_base );
     wl_global_create( display, &zxdg_output_manager_v1_interface, 3, NULL, bind_xdg_output_manager );
-    wl_global_create( display, &arctic_shell_v1_interface, 1, NULL, bind_shell );
+    wl_global_create( display, &arctic_shell_v1_interface, 2, NULL, bind_shell );
     wl_global_create( display, &arctic_display_v1_interface, 1, NULL, bind_display );
     dmabuf_init( display );
 
@@ -2997,7 +3093,7 @@ static NTSTATUS dwm_set_cursor( void *args )
     cursor_x = params->x;
     cursor_y = params->y;
     cursor_hidden = params->hidden;
-    update_cursor_image();  /* another monitor, another scale */
+    update_cursor_image();  /* another monitor, another scale, or another image */
     /* monitors showing a window directly move the cursor plane; the others compose */
     wl_list_for_each( output, &outputs, link )
     {
@@ -3005,7 +3101,8 @@ static NTSTATUS dwm_set_cursor( void *args )
 
         if (!o || !o->enabled) continue;
         if (!output->direct_hwnd) output->needs_frame = true;
-        else if (!kms_show_cursor( o, cursor_on( o ), cursor_x - o->x, cursor_y - o->y ))
+        else if (!kms_show_cursor( o, cursor_on( o ), cursor_x - o->x - cursor_image.hot_x,
+                                   cursor_y - o->y - cursor_image.hot_y ))
         {
             hw_cursor = false;
             output->needs_frame = true;

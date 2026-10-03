@@ -1,0 +1,46 @@
+# Sizing a window as Windows 10 does it: the cursor over text is the I-beam,
+# over the frame the sizing arrows, and the window redraws at every size
+# while the border is dragged (DragFullWindows), not once at the end.
+# Notepad opens at 0,0, 760 wide (1280x800); the folder window 960 wide.
+sleep 6
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 4
+move 400 300
+sleep 1.5
+shot r0-ibeam                 # the I-beam over the text
+move 758 300
+sleep 1.5
+shot r1-size-cursor           # the left-right sizing arrow on the right edge
+down
+move 820 300
+sleep 1
+shot r2-drag-820              # the window already 820 wide, its text area too
+move 940 310
+sleep 1
+shot r3-drag-940
+move 1060 320
+sleep 1
+shot r4-drag-1060
+up
+sleep 1
+shot r5-released
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type explorer C:\
+key ret
+sleep 6
+move 958 300
+sleep 1.5
+shot r6-folder-size-cursor
+down
+move 1100 300
+sleep 1
+shot r7-folder-drag-1100      # the folder view lays itself out while dragged
+up
+sleep 1
+shot r8-folder-released

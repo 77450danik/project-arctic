@@ -1184,7 +1184,10 @@ static void draw_cursor( void )
     glUniform1f( prog_texture.swizzle, 0 );
     set_clip( &prog_texture, &none, 1 );
     glUniform1f( prog_texture.radius, -1 );
-    draw_quad( cursor_x, cursor_y, cursor_x + cursor_image.width, cursor_y + cursor_image.height, 0, 0, 1, 1 );
+    if (!cursor_image.width) return;
+    draw_quad( cursor_x - cursor_image.hot_x, cursor_y - cursor_image.hot_y,
+               cursor_x - cursor_image.hot_x + cursor_image.width, cursor_y - cursor_image.hot_y + cursor_image.height,
+               0, 0, 1, 1 );
 }
 
 static void draw_unowned( struct surface *s, int x, int y, void *ctx )

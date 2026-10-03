@@ -174,12 +174,13 @@ extern uint32_t             background;      /* XRGB */
 extern int                  cursor_x, cursor_y;
 extern bool                 cursor_hidden;
 /* the pointer at the scale of the monitor under it, premultiplied ARGB */
-#define CURSOR_MAX_W 64
-#define CURSOR_MAX_H 104
+#define CURSOR_MAX_W 128
+#define CURSOR_MAX_H 128
 struct cursor_image
 {
     uint32_t pixels[CURSOR_MAX_W * CURSOR_MAX_H];
     int      width, height;
+    int      hot_x, hot_y;      /* the point of the image at the pointer's position */
     unsigned serial;            /* changes with the image */
 };
 extern struct cursor_image  cursor_image;

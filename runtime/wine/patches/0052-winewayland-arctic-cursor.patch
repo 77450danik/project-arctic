@@ -1,0 +1,104 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 4 Oct 2026 00:30:00 +0200
+Subject: [PATCH] winewayland: Tell dwm.exe the cursor of the window under the
+ pointer.
+
+dwm.exe has no wl_seat: it draws the pointer itself where wineserver has
+it, and only knew the arrow, so sizing a window showed no sizing arrows
+and text no I-beam. The process the server sends WM_WINE_SETCURSOR to
+now gives dwm.exe its cursor with arctic_shell_v1.set_cursor (version 2):
+the standard arrow by name, which dwm.exe draws at the monitor's scale,
+any other cursor as its image.
+---
+--- a/dlls/winewayland.drv/arctic-shell-v1.xml
++++ b/dlls/winewayland.drv/arctic-shell-v1.xml
+@@ -9,7 +9,7 @@
+     version 2.1 of the License, or (at your option) any later version.
+   </copyright>
+ 
+-  <interface name="arctic_shell_v1" version="1">
++  <interface name="arctic_shell_v1" version="2">
+     <description summary="ties surfaces to Win32 windows">
+       Offered by dwm.exe. A client only says which Win32 window a surface
+       shows. Where windows are, which are visible and how they are stacked,
+@@ -23,6 +23,20 @@
+       <arg name="surface" type="object" interface="wl_surface"/>
+       <arg name="hwnd" type="uint" summary="window handle, as wineserver knows it"/>
+     </request>
++
++    <request name="set_cursor" since="2">
++      <description summary="the pointer over this client's windows">
++        Sent by the process whose window is under the pointer when its
++        cursor changes (WM_WINE_SETCURSOR). dwm.exe draws the standard
++        arrow itself at the monitor's scale; any other cursor comes as its
++        image, premultiplied ARGB, which dwm.exe copies at once. No buffer
++        and no arrow: the cursor is hidden.
++      </description>
++      <arg name="buffer" type="object" interface="wl_buffer" allow-null="true"/>
++      <arg name="hotspot_x" type="int"/>
++      <arg name="hotspot_y" type="int"/>
++      <arg name="arrow" type="uint" summary="1: the standard arrow"/>
++    </request>
+   </interface>
+ 
+   <interface name="arctic_window_v1" version="1">
+--- a/dlls/winewayland.drv/wayland.c
++++ b/dlls/winewayland.drv/wayland.c
+@@ -220,7 +220,7 @@
+     else if (strcmp(interface, "arctic_shell_v1") == 0)
+     {
+         process_wayland.arctic_shell_v1 =
+-            wl_registry_bind(registry, id, &arctic_shell_v1_interface, 1);
++            wl_registry_bind(registry, id, &arctic_shell_v1_interface, min(version, 2));
+     }
+     else if (strcmp(interface, "arctic_display_v1") == 0)
+     {
+--- a/dlls/winewayland.drv/wayland_pointer.c
++++ b/dlls/winewayland.drv/wayland_pointer.c
+@@ -973,6 +973,38 @@
+     wayland_pointer_update_constraint(NULL, NULL, FALSE);
+ }
+ 
++/* Arctic: dwm.exe draws the pointer itself, where wineserver has it; the
++ * process whose window is under it (WM_WINE_SETCURSOR) tells it the cursor.
++ * The standard arrow dwm.exe draws from its outline at the monitor's scale,
++ * any other cursor (sizing arrows, the I-beam, the hand) goes as its image. */
++static BOOL arctic_set_cursor(HCURSOR hcursor)
++{
++    struct wayland_pointer *pointer = &process_wayland.pointer;
++    struct wayland_cursor *cursor = &pointer->cursor;
++    ICONINFOEXW info = {0};
++    BOOL arrow = FALSE;
++
++    if (!process_wayland.arctic_shell_v1 ||
++        arctic_shell_v1_get_version(process_wayland.arctic_shell_v1) < ARCTIC_SHELL_V1_SET_CURSOR_SINCE_VERSION)
++        return FALSE;
++
++    if (hcursor && get_icon_info(hcursor, &info))
++    {
++        arrow = cursor_shape_from_info(&info, 1) == WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT;
++        if (info.hbmColor) NtGdiDeleteObjectApp(info.hbmColor);
++        if (info.hbmMask) NtGdiDeleteObjectApp(info.hbmMask);
++    }
++
++    pthread_mutex_lock(&pointer->mutex);
++    if (!arrow) wayland_pointer_update_cursor_buffer(hcursor, 1.0);
++    arctic_shell_v1_set_cursor(process_wayland.arctic_shell_v1,
++                               !arrow && cursor->shm_buffer ? cursor->shm_buffer->wl_buffer : NULL,
++                               cursor->hotspot_x, cursor->hotspot_y, arrow);
++    wl_display_flush(process_wayland.wl_display);
++    pthread_mutex_unlock(&pointer->mutex);
++    return TRUE;
++}
++
+ /***********************************************************************
+  *           WAYLAND_SetCursor
+  */
+@@ -980,6 +1012,7 @@
+ {
+     TRACE("hwnd=%p hcursor=%p\n", hwnd, hcursor);
+ 
++    if (arctic_set_cursor(hcursor)) return;
+     wayland_set_cursor(hwnd, hcursor, TRUE);
+ }
+ 

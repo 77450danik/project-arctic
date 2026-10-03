@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <wayland-server.h>
+#include "wayland-server.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -32,6 +32,7 @@ struct wl_resource;
  */
 struct arctic_shell_v1;
 struct arctic_window_v1;
+struct wl_buffer;
 struct wl_surface;
 
 #ifndef ARCTIC_SHELL_V1_INTERFACE
@@ -86,6 +87,23 @@ struct arctic_shell_v1_interface {
 			   uint32_t id,
 			   struct wl_resource *surface,
 			   uint32_t hwnd);
+	/**
+	 * the pointer over this client's windows
+	 *
+	 * Sent by the process whose window is under the pointer when its
+	 * cursor changes (WM_WINE_SETCURSOR). dwm.exe draws the standard
+	 * arrow itself at the monitor's scale; any other cursor comes as
+	 * its image, premultiplied ARGB, which dwm.exe copies at once. No
+	 * buffer and no arrow: the cursor is hidden.
+	 * @param arrow 1: the standard arrow
+	 * @since 2
+	 */
+	void (*set_cursor)(struct wl_client *client,
+			   struct wl_resource *resource,
+			   struct wl_resource *buffer,
+			   int32_t hotspot_x,
+			   int32_t hotspot_y,
+			   uint32_t arrow);
 };
 
 
@@ -97,6 +115,10 @@ struct arctic_shell_v1_interface {
  * @ingroup iface_arctic_shell_v1
  */
 #define ARCTIC_SHELL_V1_GET_WINDOW_SINCE_VERSION 1
+/**
+ * @ingroup iface_arctic_shell_v1
+ */
+#define ARCTIC_SHELL_V1_SET_CURSOR_SINCE_VERSION 2
 
 /**
  * @ingroup iface_arctic_window_v1

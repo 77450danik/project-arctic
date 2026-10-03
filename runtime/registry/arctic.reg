@@ -122,6 +122,11 @@ REGEDIT4
 "ScrollHeight"="-225"
 "ScrollWidth"="-225"
 
+; as Windows 10: a window being moved or sized redraws its contents all the
+; way, not an outline that dwm would not even show
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"DragFullWindows"="1"
+
 ; Source Sans Pro, the font of the Mizu visual style (SIL Open Font License, runtime/fonts)
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Fonts]
 "Source Sans Pro (TrueType)"="SourceSansPro-Regular.ttf"

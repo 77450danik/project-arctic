@@ -9,7 +9,7 @@
     version 2.1 of the License, or (at your option) any later version.
   </copyright>
 
-  <interface name="arctic_shell_v1" version="1">
+  <interface name="arctic_shell_v1" version="2">
     <description summary="ties surfaces to Win32 windows">
       Offered by dwm.exe. A client only says which Win32 window a surface
       shows. Where windows are, which are visible and how they are stacked,
@@ -22,6 +22,20 @@
       <arg name="id" type="new_id" interface="arctic_window_v1"/>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="hwnd" type="uint" summary="window handle, as wineserver knows it"/>
+    </request>
+
+    <request name="set_cursor" since="2">
+      <description summary="the pointer over this client's windows">
+        Sent by the process whose window is under the pointer when its
+        cursor changes (WM_WINE_SETCURSOR). dwm.exe draws the standard
+        arrow itself at the monitor's scale; any other cursor comes as its
+        image, premultiplied ARGB, which dwm.exe copies at once. No buffer
+        and no arrow: the cursor is hidden.
+      </description>
+      <arg name="buffer" type="object" interface="wl_buffer" allow-null="true"/>
+      <arg name="hotspot_x" type="int"/>
+      <arg name="hotspot_y" type="int"/>
+      <arg name="arrow" type="uint" summary="1: the standard arrow"/>
     </request>
   </interface>
 
