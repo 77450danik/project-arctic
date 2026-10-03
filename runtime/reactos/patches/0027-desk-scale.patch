@@ -1,0 +1,316 @@
+diff --git a/dll/cpl/desk/lang/en-US.rc b/dll/cpl/desk/lang/en-US.rc
+index a96ebbfb..060e03bc 100644
+--- a/dll/cpl/desk/lang/en-US.rc
++++ b/dll/cpl/desk/lang/en-US.rc
+@@ -123,7 +123,7 @@ BEGIN
+     DEFPUSHBUTTON "OK", IDOK, 172, 165, 50, 14
+ END
+ 
+-IDD_SETTINGS DIALOGEX 0, 0, 246, 202
++IDD_SETTINGS DIALOGEX 0, 0, 246, 220
+ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Settings"
+ FONT 8, "MS Shell Dlg"
+@@ -144,8 +144,10 @@ BEGIN
+     GROUPBOX "&Color quality", 1817, 125, 119, 115, 63
+     COMBOBOX IDC_SETTINGS_BPP, 131, 129, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+     CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 148, 103, 9
+-    AUTOCHECKBOX "Varia&ble refresh rate", IDC_SETTINGS_VRR, 8, 187, 150, 10
+-    PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 185, 70, 15
++    LTEXT "Size of &text, apps and other items:", IDC_SETTINGS_SCALE_TEXT, 3, 187, 140, 9
++    COMBOBOX IDC_SETTINGS_SCALE, 145, 185, 95, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    AUTOCHECKBOX "Varia&ble refresh rate", IDC_SETTINGS_VRR, 8, 205, 150, 10
++    PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 203, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -211,6 +213,12 @@ BEGIN
+     END
+ END
+ 
++STRINGTABLE
++BEGIN
++    IDS_SCALE_PERCENT "%d%%"
++    IDS_SCALE_RECOMMENDED "%d%% (Recommended)"
++END
++
+ STRINGTABLE
+ BEGIN
+     IDS_SLIDEEFFECT "Slide effect"
+diff --git a/dll/cpl/desk/lang/ru-RU.rc b/dll/cpl/desk/lang/ru-RU.rc
+index 408cfbce..ba3bef32 100644
+--- a/dll/cpl/desk/lang/ru-RU.rc
++++ b/dll/cpl/desk/lang/ru-RU.rc
+@@ -123,7 +123,7 @@ BEGIN
+     DEFPUSHBUTTON "OK", IDOK, 172, 165, 50, 14
+ END
+ 
+-IDD_SETTINGS DIALOGEX 0, 0, 246, 202
++IDD_SETTINGS DIALOGEX 0, 0, 246, 214
+ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Параметры"
+ FONT 8, "MS Shell Dlg"
+@@ -142,7 +142,9 @@ BEGIN
+     GROUPBOX "&Качество цветопередачи", 1817, 125, 127, 115, 43
+     COMBOBOX IDC_SETTINGS_BPP, 131, 137, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+     CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 155, 103, 9
+-    PUSHBUTTON "До&полнительно", IDC_SETTINGS_ADVANCED, 170, 174, 70, 15
++    LTEXT "Размер &текста, приложений и других элементов:", IDC_SETTINGS_SCALE_TEXT, 3, 178, 140, 9
++    COMBOBOX IDC_SETTINGS_SCALE, 145, 176, 95, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    PUSHBUTTON "До&полнительно", IDC_SETTINGS_ADVANCED, 170, 195, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -208,6 +210,12 @@ BEGIN
+     END
+ END
+ 
++STRINGTABLE
++BEGIN
++    IDS_SCALE_PERCENT "%d%%"
++    IDS_SCALE_RECOMMENDED "%d%% (рекомендуется)"
++END
++
+ STRINGTABLE
+ BEGIN
+     IDS_SLIDEEFFECT "Развертывание"
+diff --git a/dll/cpl/desk/lang/uk-UA.rc b/dll/cpl/desk/lang/uk-UA.rc
+index b591d065..a135fd8f 100644
+--- a/dll/cpl/desk/lang/uk-UA.rc
++++ b/dll/cpl/desk/lang/uk-UA.rc
+@@ -133,7 +133,7 @@ BEGIN
+     DEFPUSHBUTTON "OK", IDOK, 172, 165, 50, 14
+ END
+ 
+-IDD_SETTINGS DIALOGEX 0, 0, 246, 202
++IDD_SETTINGS DIALOGEX 0, 0, 246, 220
+ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Параметри"
+ FONT 8, "MS Shell Dlg"
+@@ -154,8 +154,10 @@ BEGIN
+     GROUPBOX "&Якість кольоропередачі", 1817, 125, 119, 115, 63
+     COMBOBOX IDC_SETTINGS_BPP, 131, 129, 103, 80, CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+     CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 148, 103, 9
+-    AUTOCHECKBOX "&Змінна частота оновлення", IDC_SETTINGS_VRR, 8, 187, 150, 10
+-    PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 185, 70, 15
++    LTEXT "Розмір &тексту, програм та інших елементів:", IDC_SETTINGS_SCALE_TEXT, 3, 187, 140, 9
++    COMBOBOX IDC_SETTINGS_SCALE, 145, 185, 95, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    AUTOCHECKBOX "&Змінна частота оновлення", IDC_SETTINGS_VRR, 8, 205, 150, 10
++    PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 203, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -221,6 +223,12 @@ BEGIN
+     END
+ END
+ 
++STRINGTABLE
++BEGIN
++    IDS_SCALE_PERCENT "%d%%"
++    IDS_SCALE_RECOMMENDED "%d%% (рекомендовано)"
++END
++
+ STRINGTABLE
+ BEGIN
+     IDS_SLIDEEFFECT "Розгортання"
+diff --git a/dll/cpl/desk/resource.h b/dll/cpl/desk/resource.h
+index 8b935324..93908685 100644
+--- a/dll/cpl/desk/resource.h
++++ b/dll/cpl/desk/resource.h
+@@ -72,6 +72,8 @@
+ #define IDC_SETTINGS_REFRESH         212
+ #define IDC_SETTINGS_REFRESH_TEXT    213
+ #define IDC_SETTINGS_VRR             214
++#define IDC_SETTINGS_SCALE           215
++#define IDC_SETTINGS_SCALE_TEXT      216
+ 
+ #define IDB_SPECTRUM_4  209
+ #define IDB_SPECTRUM_8  210
+@@ -187,6 +189,10 @@
+ 
+ /* Desktop Items Dialog */
+ #define IDS_DESKTOP_ITEMS    3900
++
++/* Arctic: the scale of a monitor */
++#define IDS_SCALE_PERCENT        3950
++#define IDS_SCALE_RECOMMENDED    3951
+ #define IDC_ICONS_MYDOCS     3901
+ #define IDC_ICONS_MYNET      3902
+ #define IDC_ICONS_MYCOMP     3903
+diff --git a/dll/cpl/desk/settings.c b/dll/cpl/desk/settings.c
+index cbe7605e..b2246e40 100644
+--- a/dll/cpl/desk/settings.c
++++ b/dll/cpl/desk/settings.c
+@@ -464,6 +464,154 @@ ByeBye:
+     return FALSE;
+ }
+ 
++/* Arctic: the scale of the monitor, "the size of text, apps and other items"
++ * of Windows 10, read and set as Windows' Settings do it, with the types of
++ * DisplayConfigGet/SetDeviceInfo it does not document; a choice applies at
++ * once, without a restart. The functions come from user32 at run time. */
++static const INT ScaleSteps[] = { 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500 };
++
++/* the layouts of Windows 7's display configuration, which the headers here
++   keep for later versions */
++typedef struct
++{
++    INT32 type;
++    UINT32 size;
++    LUID adapterId;
++    UINT32 id;
++} DC_HEADER;
++
++typedef struct
++{
++    LUID adapterId;
++    UINT32 id;
++    UINT32 modeInfoIdx;
++    UINT32 statusFlags;
++} DC_PATH_SOURCE_INFO;
++
++typedef struct
++{
++    DC_PATH_SOURCE_INFO sourceInfo;
++    BYTE targetInfo[48];
++    UINT32 flags;
++} DC_PATH_INFO;
++
++typedef struct
++{
++    BYTE data[64];
++} DC_MODE_INFO;
++
++typedef struct
++{
++    DC_HEADER header;
++    WCHAR viewGdiDeviceName[32];
++} DC_SOURCE_NAME;
++
++#define DC_QDC_ONLY_ACTIVE_PATHS  2
++#define DC_GET_SOURCE_NAME        1
++#define DC_GET_SOURCE_DPI_SCALE   (-3)
++#define DC_SET_SOURCE_DPI_SCALE   (-4)
++
++typedef struct
++{
++    DC_HEADER header;
++    INT32 minRel, curRel, maxRel;
++} SCALE_GET;
++
++typedef struct
++{
++    DC_HEADER header;
++    INT32 rel;
++} SCALE_SET;
++
++typedef LONG (WINAPI *PFN_QUERYDISPLAYCONFIG)(UINT32, UINT32 *, DC_PATH_INFO *, UINT32 *, DC_MODE_INFO *, PVOID);
++typedef LONG (WINAPI *PFN_DISPLAYCONFIGDEVICEINFO)(DC_HEADER *);
++
++static FARPROC
++User32Proc(LPCSTR Name)
++{
++    return GetProcAddress(GetModuleHandleW(L"user32.dll"), Name);
++}
++
++/* the adapter and the source of a display as \\.\DISPLAYn */
++static BOOL
++FindDisplaySource(IN LPCWSTR DeviceName, OUT LUID *pAdapter, OUT UINT32 *pId)
++{
++    PFN_QUERYDISPLAYCONFIG pQuery = (PFN_QUERYDISPLAYCONFIG)User32Proc("QueryDisplayConfig");
++    PFN_DISPLAYCONFIGDEVICEINFO pGet = (PFN_DISPLAYCONFIGDEVICEINFO)User32Proc("DisplayConfigGetDeviceInfo");
++    DC_PATH_INFO paths[16];
++    DC_MODE_INFO modes[32];
++    UINT32 nPaths = _countof(paths), nModes = _countof(modes), i;
++
++    if (!pQuery || !pGet) return FALSE;
++    if (pQuery(DC_QDC_ONLY_ACTIVE_PATHS, &nPaths, paths, &nModes, modes, NULL) != ERROR_SUCCESS) return FALSE;
++    for (i = 0; i < nPaths; i++)
++    {
++        DC_SOURCE_NAME name;
++
++        ZeroMemory(&name, sizeof(name));
++        name.header.type = DC_GET_SOURCE_NAME;
++        name.header.size = sizeof(name);
++        name.header.adapterId = paths[i].sourceInfo.adapterId;
++        name.header.id = paths[i].sourceInfo.id;
++        if (pGet(&name.header) != ERROR_SUCCESS || _wcsicmp(name.viewGdiDeviceName, DeviceName)) continue;
++        *pAdapter = paths[i].sourceInfo.adapterId;
++        *pId = paths[i].sourceInfo.id;
++        return TRUE;
++    }
++    return FALSE;
++}
++
++static VOID
++FillScale(IN HWND hwndDlg, IN PDISPLAY_DEVICE_ENTRY pDeviceEntry)
++{
++    PFN_DISPLAYCONFIGDEVICEINFO pGet = (PFN_DISPLAYCONFIGDEVICEINFO)User32Proc("DisplayConfigGetDeviceInfo");
++    HWND hCombo = GetDlgItem(hwndDlg, IDC_SETTINGS_SCALE);
++    WCHAR szFormat[64], szText[64];
++    SCALE_GET get;
++    INT rec, rel;
++    LRESULT index;
++
++    if (!hCombo) return;
++    SendMessageW(hCombo, CB_RESETCONTENT, 0, 0);
++    ZeroMemory(&get, sizeof(get));
++    get.header.type = DC_GET_SOURCE_DPI_SCALE;
++    get.header.size = sizeof(get);
++    if (!pGet || !FindDisplaySource(pDeviceEntry->DeviceName, &get.header.adapterId, &get.header.id) ||
++        pGet(&get.header) != ERROR_SUCCESS)
++    {
++        EnableWindow(hCombo, FALSE);
++        return;
++    }
++    rec = -get.minRel;
++    for (rel = get.minRel; rel <= get.maxRel; rel++)
++    {
++        if (rec + rel < 0 || rec + rel >= (INT)_countof(ScaleSteps)) continue;
++        LoadStringW(hApplet, rel ? IDS_SCALE_PERCENT : IDS_SCALE_RECOMMENDED, szFormat, _countof(szFormat));
++        _snwprintf(szText, _countof(szText) - 1, szFormat, ScaleSteps[rec + rel]);
++        szText[_countof(szText) - 1] = 0;
++        index = SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)szText);
++        SendMessageW(hCombo, CB_SETITEMDATA, index, rel);
++        if (rel == get.curRel) SendMessageW(hCombo, CB_SETCURSEL, index, 0);
++    }
++    EnableWindow(hCombo, get.maxRel > get.minRel);
++}
++
++static VOID
++OnScaleChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData)
++{
++    PFN_DISPLAYCONFIGDEVICEINFO pSet = (PFN_DISPLAYCONFIGDEVICEINFO)User32Proc("DisplayConfigSetDeviceInfo");
++    LRESULT index = SendDlgItemMessageW(hwndDlg, IDC_SETTINGS_SCALE, CB_GETCURSEL, 0, 0);
++    SCALE_SET set;
++
++    if (!pSet || index == CB_ERR) return;
++    ZeroMemory(&set, sizeof(set));
++    set.header.type = DC_SET_SOURCE_DPI_SCALE;
++    set.header.size = sizeof(set);
++    if (!FindDisplaySource(pData->CurrentDisplayDevice->DeviceName, &set.header.adapterId, &set.header.id)) return;
++    set.rel = (INT32)SendDlgItemMessageW(hwndDlg, IDC_SETTINGS_SCALE, CB_GETITEMDATA, index, 0);
++    pSet(&set.header);
++}
++
+ static VOID
+ OnDisplayDeviceChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData, IN PDISPLAY_DEVICE_ENTRY pDeviceEntry)
+ {
+@@ -499,6 +647,8 @@ OnDisplayDeviceChanged(IN HWND hwndDlg, IN PSETTINGS_DATA pData, IN PDISPLAY_DEV
+     ShowWindow(GetDlgItem(hwndDlg, IDC_SETTINGS_VRR), pDeviceEntry->VrrCapable ? SW_SHOW : SW_HIDE);
+     CheckDlgButton(hwndDlg, IDC_SETTINGS_VRR, pDeviceEntry->VrrEnabled ? BST_CHECKED : BST_UNCHECKED);
+ 
++    FillScale(hwndDlg, pDeviceEntry);
++
+     UpdateDisplay(hwndDlg, pData, TRUE);
+ }
+ 
+@@ -1327,6 +1477,8 @@ SettingsPageProc(IN HWND hwndDlg, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lPar
+                 OnBPPChanged(hwndDlg, pData);
+             else if (controlId == IDC_SETTINGS_REFRESH && command == CBN_SELCHANGE)
+                 OnRefreshChanged(hwndDlg, pData);
++            else if (controlId == IDC_SETTINGS_SCALE && command == CBN_SELCHANGE)
++                OnScaleChanged(hwndDlg, pData);
+             else if (controlId == IDC_SETTINGS_VRR && command == BN_CLICKED)
+             {
+                 pData->CurrentDisplayDevice->VrrEnabled = IsDlgButtonChecked(hwndDlg, IDC_SETTINGS_VRR) == BST_CHECKED;

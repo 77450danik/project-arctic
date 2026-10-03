@@ -1,0 +1,48 @@
+# The scale chosen in the Display panel, as in Windows 10 (run with
+# --resolution 1920x1080 --disk out/test-local/tools.img on an image at the
+# recommended 100 %): "Size of text, apps and other items" on the Settings
+# page goes 100 -> 125 -> 150 -> 125 -> 100 %, each choice at once, without
+# a restart. The shell starts again at each new scale and is sharp, the
+# taskbar 50 px at 125 % and 60 px at 150 %; Notepad, started at 100 %, is
+# drawn larger; the panel itself (it knows nothing of DPI) too.
+sleep 10
+key meta_l-r
+sleep 3
+type notepad
+key ret
+sleep 4
+key meta_l-r
+sleep 3
+type control desk.cpl
+key ret
+sleep 6
+move 286 62
+click
+sleep 2
+move 333 384
+click
+sleep 1
+key esc
+sleep 1
+shot u0-100
+key down
+sleep 10
+shot u1-125
+move 125 37
+click
+sleep 1
+key down
+sleep 10
+shot u2-150
+move 150 45
+click
+sleep 1
+key up
+sleep 10
+shot u3-125
+move 125 37
+click
+sleep 1
+key up
+sleep 10
+shot u4-100
