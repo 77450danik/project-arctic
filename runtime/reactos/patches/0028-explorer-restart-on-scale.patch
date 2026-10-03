@@ -11,7 +11,7 @@ index e1616587..f14f31f5 100644
 +static inline int ArcticNewSystemDpi()
 +{
 +    DWORD dpi = 0, size = sizeof(dpi);
-+    if (::RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\Desktop", L"LogPixels", RRF_RT_REG_DWORD, NULL,
++    if (::RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"LogPixels", RRF_RT_REG_DWORD, NULL,
 +                       &dpi, &size) != ERROR_SUCCESS || !dpi)
 +        dpi = 96;
 +    return (int)dpi;

@@ -1,0 +1,23 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sat, 3 Oct 2026 23:40:00 +0200
+Subject: [PATCH] server: A new window is in no band and not composited as a
+ child.
+
+The two bits that Arctic added to struct window were never set when a
+window was made, and alloc_object does not clear its memory: once
+another bit moved them, a window could be born in the band over program
+windows and was made topmost. Every window ended up topmost, Progman too,
+so SetShellWindowEx refused it, GetShellWindow stayed NULL and
+"explorer C:\" started a second shell instead of opening a folder.
+---
+--- a/server/window.c
++++ b/server/window.c
+@@ -739,6 +739,8 @@
+     win->is_full_screen = 0;
+     win->is_orphan      = 0;
+     win->set_foreground = 0;
++    win->composited     = 0;
++    win->band           = 0;
+     win->text           = NULL;
+     win->text_len       = 0;
+     win->paint_flags    = 0;

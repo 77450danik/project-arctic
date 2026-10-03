@@ -1,0 +1,25 @@
+# "explorer C:\" with the shell running opens a folder window, as Windows
+# does, and does not start a second shell (a second taskbar and tray):
+# shellinfo.exe (--disk out/test-local/tools.img) shows what a new process
+# sees of the shell before and after.
+sleep 10
+key meta_l-r
+sleep 3
+type D:\shellinfo.exe
+key ret
+sleep 4
+shot e1-shellinfo
+key ret
+sleep 1
+key meta_l-r
+sleep 3
+type explorer C:\
+key ret
+sleep 8
+shot e2-folder
+key meta_l-r
+sleep 3
+type D:\shellinfo.exe
+key ret
+sleep 4
+shot e3-shellinfo-after
