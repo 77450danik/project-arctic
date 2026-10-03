@@ -4,19 +4,25 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-source "$ROOT/ci/arch-prep.sh"
 VER=$(cat "$ROOT/kernel/VERSION")
-OUT="$ROOT/out/kernel"
-WORK=/tmp/kbuild
+OUT=${KERNEL_OUT:-$ROOT/out/kernel}
+WORK=${KERNEL_WORK:-/tmp/kbuild}
+PACKAGES="base-devel bc cpio kmod libelf openssl pahole perl python tar xz zstd curl linux-headers ccache
+    python-pillow noto-fonts"
 
-pacman -Syu --noconfirm --needed base-devel bc cpio kmod libelf openssl pahole perl python tar xz zstd curl linux-headers ccache \
-    python-pillow noto-fonts
+if [ -z "${SKIP_DEPS:-}" ]; then
+    source "$ROOT/ci/arch-prep.sh"
+    pacman -Syu --noconfirm --needed $PACKAGES
+fi
 
+# the sources are fetched once per version where they are kept (KERNEL_DOWNLOADS, locally)
+DL=${KERNEL_DOWNLOADS:-$WORK}
 rm -rf "$OUT" "$WORK"
-mkdir -p "$OUT" "$WORK"
+mkdir -p "$OUT" "$WORK" "$DL"
 cd "$WORK"
-curl -fL --retry 5 -o linux.tar.xz "https://cdn.kernel.org/pub/linux/kernel/v${VER%%.*}.x/linux-$VER.tar.xz"
-tar xf linux.tar.xz
+[ -s "$DL/linux-$VER.tar.xz" ] ||
+    curl -fL --retry 5 -o "$DL/linux-$VER.tar.xz" "https://cdn.kernel.org/pub/linux/kernel/v${VER%%.*}.x/linux-$VER.tar.xz"
+tar xf "$DL/linux-$VER.tar.xz"
 cd "linux-$VER"
 
 # Arctic patches (kernel/patches) and the generated stop screen text for drm_panic
@@ -60,9 +66,9 @@ make INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
 # with its key like the modules above. Their user space must be the same
 # version: build-rootfs.sh takes it from the Arch archive by this number.
 NV=$(cat "$ROOT/kernel/NVIDIA_VERSION")
-curl -fL --retry 5 -o "$WORK/nvidia.tar.gz" \
+[ -s "$DL/nvidia-$NV.tar.gz" ] || curl -fL --retry 5 -o "$DL/nvidia-$NV.tar.gz" \
     "https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/$NV.tar.gz"
-tar xf "$WORK/nvidia.tar.gz" -C "$WORK"
+tar xf "$DL/nvidia-$NV.tar.gz" -C "$WORK"
 make -C "$WORK/open-gpu-kernel-modules-$NV" -j"$(nproc)" "${CC[@]}" SYSSRC="$PWD" SYSOUT="$PWD" modules
 make -C "$WORK/open-gpu-kernel-modules-$NV" SYSSRC="$PWD" SYSOUT="$PWD" \
     INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
