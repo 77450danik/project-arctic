@@ -41,6 +41,9 @@ parser.add_argument("--fresh", action="store_true", help="start from a freshly w
 parser.add_argument("--pull", action="store_true",
                     help="end by pulling the stick out (QEMU killed) instead of the power button (--usb)")
 parser.add_argument("--no-reboot", action="store_true", help="QEMU exits when the guest restarts")
+parser.add_argument("--initrd", help="with --append: this initrd instead of the image's (tools/wsl/make-dev-initrd.sh)")
+parser.add_argument("--film", type=float, default=0,
+                    help="seconds from power on to take a picture of every ~0.15 s (out/test-local/film)")
 parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
 parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
 parser.add_argument("--resolution", help="WxH: the mode the monitor prefers (its EDID), e.g. 1920x1080")
@@ -146,12 +149,73 @@ if args.append:
     else:
         subprocess.run(["C:/Program Files/7-Zip/7z.exe", "e", "-y", "-bso0", "-o" + kernel_dir, args.iso,
                         "arctic/vmlinuz", "arctic/initrd.img"], check=True)
-    cmd += ["-kernel", os.path.join(kernel_dir, "vmlinuz"), "-initrd", os.path.join(kernel_dir, "initrd.img"),
+    cmd += ["-kernel", os.path.join(kernel_dir, "vmlinuz"),
+            "-initrd", os.path.abspath(args.initrd) if args.initrd else os.path.join(kernel_dir, "initrd.img"),
             "-append", "console=ttyS0,115200 loglevel=6 arctic.dev=1 " + root + args.append]
 
 start = time.time()
 qemu_log = open(os.path.join(RES, "qemu.log"), "w")
 vm = subprocess.Popen(cmd, stdout=qemu_log, stderr=subprocess.STDOUT)
+
+
+def film(seconds):
+    """The screen from power on, a picture every ~0.15 s, into out/test-local/film:
+    to see the boot screen frame by frame (a logo that blinks, the spinner)."""
+    import json
+    import socket
+    folder = os.path.join(RES, "film")
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder)
+    # Screendumps from the first moment slow QEMU down while OVMF looks for
+    # the USB stick, and it then boots its shell instead: the film starts once
+    # the firmware has picked what to boot (direct kernel boot has no such line)
+    while not args.append and time.time() - start < 30 and vm.poll() is None:
+        try:
+            if "BdsDxe: starting" in open(serial, encoding="utf-8", errors="replace").read():
+                break
+        except OSError:
+            pass
+        time.sleep(0.1)
+    for _ in range(100):
+        try:
+            sock = socket.create_connection(("127.0.0.1", 4455))
+            break
+        except OSError:
+            time.sleep(0.1)
+    else:
+        return
+    stream = sock.makefile("rw")
+    stream.readline()
+
+    def call(command, arguments=None):
+        stream.write(json.dumps({"execute": command, **({"arguments": arguments} if arguments else {})}) + "\n")
+        stream.flush()
+        while "return" not in (reply := json.loads(stream.readline())) and "error" not in reply:
+            pass
+
+    call("qmp_capabilities")
+    shots = []
+    while time.time() - start < seconds and vm.poll() is None:
+        ppm = os.path.join(folder, "%05.1f.ppm" % (time.time() - start))
+        try:
+            call("screendump", {"filename": ppm})
+        except (OSError, ValueError):  # QEMU ended (--no-reboot)
+            break
+        shots.append(ppm)
+        time.sleep(0.15)
+    sock.close()
+    time.sleep(0.5)
+    for ppm in shots:
+        if os.path.exists(ppm):
+            subprocess.run([sys.executable, os.path.join(ROOT, "ci", "qmp-shot.py"), "--convert", ppm, ppm[:-4] + ".png"])
+            os.remove(ppm)
+    print("film: %d pictures in %s" % (len(shots), folder))
+
+
+if args.film:
+    import threading
+    filming = threading.Thread(target=film, args=(args.film,))
+    filming.start()
 seen = set()
 nt_up = 0
 try:
@@ -168,6 +232,8 @@ try:
                 if time.time() - nt_up > 30:  # an image without dwm.exe
                     break
     print(f"markers after {time.time() - start:.0f} s: {sorted(seen) or 'none'}")
+    if args.film:
+        filming.join()  # QMP takes one client at a time
     time.sleep(args.wait)
     if args.script and "dwm ready" in seen:
         sys.path.insert(0, os.path.join(ROOT, "tools"))

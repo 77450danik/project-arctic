@@ -39,7 +39,7 @@ mkdir -p "$RFS/mnt/c" "$RFS/usr/share/arctic"
 cp -a "$OUT/kernel/lib/modules" "$RFS/usr/lib/"
 cp -a "$OUT/wine/usr/." "$RFS/usr/"
 
-INIT_SRC=("$ROOT"/host/init/{splash,screen,stop}.c)
+INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop}.c)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"
@@ -61,6 +61,8 @@ mknod -m 600 "$OUT/initrd/dev/console" c 5 1
 python "$ROOT/ci/logo2raw.py" "$ROOT/ARCTIC.png" "$OUT/initrd/logo.bgra"
 cp "$OUT/initrd/logo.bgra" "$RFS/usr/share/arctic/logo.bgra"
 python "$ROOT/ci/mkfont.py" /usr/share/fonts/noto/NotoSans-Light.ttf "$OUT/initrd/bsod.font"
+# Windows 11's boot spinner, which the boot screen (bootanim.c) draws under the logo
+python "$ROOT/ci/mkspinner.py" "$ROOT/runtime/art/boot/segoe_slboot_ex.ttf" "$OUT/initrd/spinner.bin"
 cp "$OUT/initrd/bsod.font" "$RFS/usr/share/arctic/bsod.font"
 
 # NT prefix, created by the Wine that ships in this very image

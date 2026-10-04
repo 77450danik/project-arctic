@@ -33,7 +33,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "splash.h"
+#include "bootanim.h"
 #include "stop.h"
 
 #define NT_USER "nt"
@@ -42,14 +42,14 @@
 #define REG_DIR C_DRIVE "/Windows/System32/config"
 #define HOST_STATE REG_DIR "/Host" /* what the host itself keeps, on a C: that keeps what is written */
 #define LOG_DIR C_DRIVE "/Windows/Logs/Arctic"
-#define LOGO "/usr/share/arctic/logo.bgra"
 #define WAYLAND_SOCKET "arctic-0" /* served by dwmcore.dll */
 #define FONT "/usr/share/arctic/bsod.font"
 #define VOLUMES_DIR "/run/arctic/volumes" /* written by arctic-volume */
 #define EJECT_DIR "/run/arctic/eject"     /* requests from mountmgr.sys */
 
 static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
-static int dev_mode, splash = -1, stopped;
+static int dev_mode, anim = -1, stopped; /* anim: the boot screen's commands (bootanim.h) */
+static pid_t anim_pid;
 static int c_on_disk; /* C: is a partition that keeps what is written (ARCTIC_C=disk from the initrd) */
 static uid_t nt_uid;
 static gid_t nt_gid;
@@ -111,7 +111,8 @@ static void nt_stop(const char *code, const char *what)
         return;
     stopped = 1;
     announce("STOP %s (%s)", code, what);
-    stop_screen(splash, FONT, code, what, dev_mode);
+    bootanim_kill(&anim, &anim_pid); /* the stop screen needs the display */
+    stop_screen(-1, FONT, code, what, dev_mode);
 }
 
 static char winedebug[256] = "WINEDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
@@ -1050,27 +1051,6 @@ static void start_shell(void)
     shell_pid = pid;
 }
 
-/* A GPU driver loaded by udev takes the screen over from simpledrm */
-static int redraw_logo(int old_fd)
-{
-    char card[32];
-
-    for (int i = 0; i < 8; i++) {
-        snprintf(card, sizeof(card), "/dev/dri/card%d", i);
-        if (access(card, F_OK))
-            continue;
-        int fd = splash_show(card, LOGO);
-        if (fd >= 0) {
-            fcntl(fd, F_SETFD, FD_CLOEXEC);
-            say("logo on %s", card);
-            if (old_fd >= 0)
-                close(old_fd);
-            return fd;
-        }
-    }
-    return old_fd;
-}
-
 static char cmdline_buf[4096];
 
 static void read_cmdline(void)
@@ -1098,15 +1078,17 @@ static void read_cmdline(void)
 
 int main(void)
 {
-    const char *splash_env = getenv("ARCTIC_SPLASH_FD"), *c_env = getenv("ARCTIC_C");
+    const char *anim_env = getenv("ARCTIC_BOOTANIM"), *c_env = getenv("ARCTIC_C");
     struct passwd *pw;
 
-    splash = splash_env ? atoi(splash_env) : -1;
     c_on_disk = c_env && !strcmp(c_env, "disk");
-    /* The logo fd came from the initrd across exec on purpose, but no child may
-     * inherit it: while any process holds it, dwm.exe cannot become DRM master. */
-    if (splash >= 0)
-        fcntl(splash, F_SETFD, FD_CLOEXEC);
+    /* The boot screen's command pipe came from the initrd across exec on
+     * purpose, but no child may inherit it: the boot screen ends when the
+     * last writer closes it. */
+    if (anim_env && sscanf(anim_env, "%d:%d", &anim, &anim_pid) == 2 && anim >= 0)
+        fcntl(anim, F_SETFD, FD_CLOEXEC);
+    else
+        anim = -1;
 
     signal(SIGPIPE, SIG_IGN);
     mkdir("/dev/pts", 0755);
@@ -1156,7 +1138,6 @@ int main(void)
     run(trig_sub, 0, hostlog, 60);
     run(trig_dev, 0, hostlog, 60);
     run(settle, 0, hostlog, 90);
-    splash = redraw_logo(splash);
     start_network();
     setup_sound();
 
@@ -1188,13 +1169,13 @@ int main(void)
         nt_stop("MANUALLY_INITIATED_CRASH", "arctic.stoptest");
 
     /* The session: wininit.exe starts dwm.exe, csrss.exe and winlogon.exe.
-     * The display now belongs to dwm.exe: releasing the logo fd drops DRM
-     * master, and dwm becomes master by opening the card first. */
+     * The display now belongs to dwm.exe: the boot screen gives up DRM master
+     * but leaves its picture, and dwm becomes master by opening the card; the
+     * boot screen ends a little after the desktop is there (desktop_at). */
+    double desktop_at = 0;
     if (!stopped) {
         char *wininit[] = {"/usr/bin/wine", "wininit.exe", NULL};
-        if (splash >= 0)
-            close(splash);
-        splash = -1;
+        bootanim_send(anim, "release");
         wininit_pid = spawn(wininit, 1, ntlog);
         say("wininit.exe pid %d", wininit_pid);
 
@@ -1206,6 +1187,7 @@ int main(void)
             announce("dwm ready in %.1f s", uptime());
         else
             say("dwm.exe did not start serving");
+        desktop_at = uptime() + 5;
 
         /* a program named on the command line, for tests */
         if (served && dev_program[0]) {
@@ -1224,6 +1206,11 @@ int main(void)
             start_shell();
         mirror_ntlog();
         serve_ejects();
+        /* dwm.exe has had its first frames on the screen: the boot screen goes */
+        if (anim >= 0 && !stopped && desktop_at && uptime() > desktop_at) {
+            close(anim);
+            anim = -1;
+        }
         /* the first copy once the desktop had time to come, then every half minute */
         if (tick % 150 == 75)
             save_logs();

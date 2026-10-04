@@ -37,7 +37,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "splash.h"
+#include "bootanim.h"
 #include "stop.h"
 
 #define NEWROOT "/newroot"
@@ -49,12 +49,12 @@
 #define NTFSCK "/bin/ntfsck"
 #define NTFSRESIZE "/bin/ntfsresize"
 #define TOOL_LOG "/chkdsk.log" /* ends up in C:\Windows\Logs\Arctic */
-#define WAIT_TEXT "Не вимикайте комп’ютер. Це може тривати кілька хвилин."
 #define C_DEV "/dev/arctic-c"
 #define NT_OPTS "uid=1000,gid=1000,umask=022"
 #define FONT "/bsod.font"
 
-static int kmsg = -1, console = -1, splash = -1, dev_mode, live;
+static int kmsg = -1, console = -1, anim = -1, dev_mode, live; /* anim: the boot screen's commands */
+static pid_t anim_pid;
 static char cmdline[4096], root_partuuid[40];
 
 static void say(const char *fmt, ...)
@@ -90,7 +90,8 @@ static void fatal(const char *code, const char *what, const char *detail)
         snprintf(line, sizeof(line), "ARCTIC: STOP %s (%s)\n", code, what);
         write(console, line, strlen(line));
     }
-    stop_screen(splash, FONT, code, what, dev_mode);
+    bootanim_kill(&anim, &anim_pid); /* the stop screen needs the display */
+    stop_screen(-1, FONT, code, what, dev_mode);
     for (;;)
         pause();
 }
@@ -392,11 +393,44 @@ static void mount_c(const char *dev, unsigned long flags)
     say("C: mounted (ntfs3)");
 }
 
+/* How far ntfsck is, from what it has written since offset: it goes
+ * through 6 passes ("Parse #n"), each to "100.00 percent completed" */
+static int ntfsck_percent(off_t offset)
+{
+    char buf[8192], *p;
+    int fd = open(TOOL_LOG, O_RDONLY | O_CLOEXEC), pass = 1;
+    double percent = 0;
+    off_t size;
+    ssize_t n;
+
+    if (fd < 0)
+        return 0;
+    size = lseek(fd, 0, SEEK_END);
+    if (size - offset > (off_t)sizeof(buf) - 1) /* the last pass shows in what came last */
+        offset = size - (off_t)sizeof(buf) + 1;
+    n = pread(fd, buf, sizeof(buf) - 1, offset);
+    close(fd);
+    buf[n > 0 ? n : 0] = 0;
+    for (p = buf; (p = strstr(p, "Parse #")); p++)
+        pass = atoi(p + 7);
+    for (p = buf; (p = strstr(p, " percent completed")); p++) {
+        char *start = p;
+        while (start > buf && (start[-1] == '.' || (start[-1] >= '0' && start[-1] <= '9')))
+            start--;
+        percent = strtod(start, NULL);
+    }
+    if (pass < 1 || pass > 6)
+        pass = 6;
+    return (int)(((pass - 1) * 100 + percent) / 6);
+}
+
 /* Runs a tool of the initrd (ntfsprogs-plus) with its output in TOOL_LOG,
- * answer on its input. Returns its exit code, or -1. */
-static int run_tool(char *const argv[], const char *answer)
+ * answer on its input; while it runs, progress gets how far it is (for
+ * ntfsck). Returns its exit code, or -1. */
+static int run_tool(char *const argv[], const char *answer, void (*progress)(int percent))
 {
     int in[2], status, log = open(TOOL_LOG, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    off_t start = log >= 0 ? lseek(log, 0, SEEK_END) : 0;
     pid_t pid;
 
     if (pipe2(in, O_CLOEXEC))
@@ -425,17 +459,27 @@ static int run_tool(char *const argv[], const char *answer)
     close(in[1]);
     if (log >= 0)
         close(log);
-    if (pid < 0 || waitpid(pid, &status, 0) < 0)
+    if (pid < 0)
         return -1;
+    for (pid_t done = 0; !done;) {
+        if ((done = waitpid(pid, &status, progress ? WNOHANG : 0)) < 0)
+            return -1;
+        if (!done) {
+            progress(ntfsck_percent(start));
+            usleep(100000);
+        }
+    }
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-/* the logo again, after a notice took the screen */
-static void logo_back(void)
+/* What Windows says under the spinner while chkdsk runs at boot */
+static void check_progress(int percent)
 {
-    if (splash >= 0)
-        close(splash);
-    splash = splash_show("/dev/dri/card0", "/logo.bgra");
+    static int shown = -1;
+
+    if (percent != shown)
+        bootanim_send(anim, "status Сканування й відновлення диска (C:): виконано %d%%", percent);
+    shown = percent;
 }
 
 /* A stick pulled out leaves C: marked dirty (the ntfs driver marks it while
@@ -447,7 +491,7 @@ static void check_c(const char *dev)
     char *repair[] = {NTFSCK, "-a", (char *)dev, NULL};
     int rc;
 
-    rc = run_tool(dirty, NULL);
+    rc = run_tool(dirty, NULL, NULL);
     if (rc == 0)
         return;
     if (rc < 0 || rc == 127) {
@@ -455,11 +499,13 @@ static void check_c(const char *dev)
         return;
     }
     say("C: is marked dirty, checking it");
-    notice_screen(splash, FONT, "Перевірка диска C:", WAIT_TEXT);
-    rc = run_tool(repair, NULL);
+    check_progress(0);
+    rc = run_tool(repair, NULL, check_progress);
+    check_progress(100);
+    sleep(1); /* a check of a small C: takes a blink; the 100 % stays a moment, as in Windows */
     say("C: checked (ntfsck exit %d: %s)", rc,
         rc == 0 ? "no errors" : rc == 1 ? "errors fixed" : "errors left");
-    logo_back();
+    bootanim_send(anim, "boot");
 }
 
 static uint64_t sys_number(const char *path)
@@ -560,12 +606,12 @@ static int grow_c(const char *dev)
     char *check[] = {NTFSCK, "-a", (char *)dev, NULL};            /* ntfsresize leaves it marked for one */
     int rc;
 
-    notice_screen(splash, FONT, "Підготовка диска C:", WAIT_TEXT);
+    bootanim_send(anim, "status Підготовка пристрою"); /* what Windows' first start says */
     grow_partition(dev);
-    rc = run_tool(resize, "y\n");
-    run_tool(check, NULL);
+    rc = run_tool(resize, "y\n", NULL);
+    run_tool(check, NULL, NULL);
     say("C: volume over the partition (ntfsresize exit %d)", rc);
-    logo_back();
+    bootanim_send(anim, "boot");
     return rc ? -1 : 0;
 }
 
@@ -733,9 +779,19 @@ static void copy_kernel(void)
     copy_file(BOOT_SET "/EFI/Arctic/initrd.img", HOST_DIR "/initrd.img");
 }
 
+/* Windows' screen while it installs updates before it starts */
+static void update_screen(const char *what, int percent)
+{
+    bootanim_send(anim, "update %s, виконано %d%%\tНе вимикайте комп’ютер", what, percent);
+}
+
+#define INSTALLING "Робота з оновленнями"
+#define UNDOING "Скасування змін, внесених до комп’ютера"
+
 static void restart_now(void)
 {
     say("restarting into the version now on C:");
+    sleep(1); /* the 100 % stays a moment, as in Windows */
     mount(NULL, CDRIVE, NULL, MS_REMOUNT | MS_RDONLY, NULL);
     umount(CDRIVE);
     sync();
@@ -771,7 +827,7 @@ static void install_update(const char *dev)
         return;
     }
     say("update: installing");
-    notice_screen(splash, FONT, "Встановлення оновлення", WAIT_TEXT);
+    update_screen(INSTALLING, 0);
     remove_tree(PREVIOUS_DIR);
     mkdir(PREVIOUS_DIR, 0755);
     if (rename(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs") ||
@@ -780,13 +836,16 @@ static void install_update(const char *dev)
         say("update: %s; the version before stays", strerror(errno));
         rename(PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs");
         rename(PREVIOUS_DIR "/Boot", BOOT_SET);
-        logo_back();
+        bootanim_send(anim, "boot");
         return;
     }
+    update_screen(INSTALLING, 30);
     remove_tree(UPDATE_DIR);
     copy_kernel();
     sync();
+    update_screen(INSTALLING, 60);
     write_esp(dev);
+    update_screen(INSTALLING, 100);
     restart_now();
 }
 
@@ -797,21 +856,24 @@ static void undo_update(const char *dev)
         return;
     }
     say("rollback: going back to the version before");
-    notice_screen(splash, FONT, "Повернення до попередньої версії", WAIT_TEXT);
+    update_screen(UNDOING, 0);
     if (swap_paths(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs.swap")) {
         say("rollback: %s", strerror(errno));
-        logo_back();
+        bootanim_send(anim, "boot");
         return;
     }
     if (swap_paths(BOOT_SET, PREVIOUS_DIR "/Boot", CDRIVE "/Windows/Boot/Arctic.swap")) {
         say("rollback: %s", strerror(errno));
         swap_paths(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs.swap");
-        logo_back();
+        bootanim_send(anim, "boot");
         return;
     }
+    update_screen(UNDOING, 30);
     copy_kernel();
     sync();
+    update_screen(UNDOING, 60);
     write_esp(dev);
+    update_screen(UNDOING, 100);
     restart_now();
 }
 
@@ -889,7 +951,7 @@ static void move_into(const char *from, const char *to)
 int main(void)
 {
     char loop[64];
-    char fdenv[32];
+    char animenv[48];
 
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
     mount("proc", "/proc", "proc", 0, NULL);
@@ -899,12 +961,10 @@ int main(void)
     read_cmdline();
     say("start (dev=%d)", dev_mode);
 
-    for (int i = 0; i < 20 && splash < 0; i++) {
-        splash = splash_show("/dev/dri/card0", "/logo.bgra");
-        if (splash < 0)
-            usleep(100000);
-    }
-    say(splash >= 0 ? "logo on /dev/dri/card0" : "no framebuffer for the logo");
+    /* the boot screen, from now until the desktop */
+    anim = bootanim_start("/spinner.bin", "/logo.bgra", FONT, &anim_pid);
+    if (anim < 0)
+        say("no boot screen: %s", strerror(errno));
 
     if (strstr(cmdline, "arctic.stoptest=initrd")) {
         sleep(1);
@@ -948,10 +1008,13 @@ int main(void)
     if (chdir(NEWROOT) || mount(".", "/", NULL, MS_MOVE, NULL) || chroot(".") || chdir("/"))
         fatal("PHASE1_INITIALIZATION_FAILED", "initrd", "switch root");
 
-    snprintf(fdenv, sizeof(fdenv), "ARCTIC_SPLASH_FD=%d", splash);
+    /* arctic-init takes over the boot screen's commands and ends it */
+    if (anim >= 0)
+        fcntl(anim, F_SETFD, 0);
+    snprintf(animenv, sizeof(animenv), "ARCTIC_BOOTANIM=%d:%d", anim, (int)anim_pid);
     char *argv[] = {"/usr/bin/arctic-init", NULL};
     /* arctic-init keeps logs and shuts down by whether C: keeps what is written */
-    char *envp[] = {"PATH=/usr/bin", fdenv, root_partuuid[0] && !live ? "ARCTIC_C=disk" : "ARCTIC_C=memory", NULL};
+    char *envp[] = {"PATH=/usr/bin", animenv, root_partuuid[0] && !live ? "ARCTIC_C=disk" : "ARCTIC_C=memory", NULL};
     say("handing over to arctic-init");
     execve(argv[0], argv, envp);
     fatal("CRITICAL_PROCESS_DIED", "arctic-init", "exec arctic-init");

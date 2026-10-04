@@ -283,33 +283,32 @@ static double text_width(const struct fontset *fs, const char *text, double f)
     return w;
 }
 
-void notice_screen(int drm_fd, const char *font_path, const char *title, const char *detail)
+/* The boot screen's text (bootanim.c), in the stop screen's font */
+static struct font boot_font;
+static int boot_font_loaded;
+
+int boot_font_load(const char *path)
 {
-    static struct font font;
-    static int font_loaded;
-    struct screen s;
+    if (!boot_font_loaded)
+        boot_font_loaded = !load_font(path, &boot_font);
+    return boot_font_loaded ? 0 : -1;
+}
 
-    if (!font_loaded)
-        font_loaded = !load_font(font_path, &font);
-    if (!font_loaded || screen_open(&s, drm_fd))
+double boot_line_height(int big, double f)
+{
+    return boot_font_loaded ? boot_font.set[big ? SET_MAIN : SET_SMALL].line_height * f : 0;
+}
+
+void boot_text(struct screen *s, int big, const char *text, double baseline, double f, uint32_t bg)
+{
+    int set = big ? SET_MAIN : SET_SMALL;
+
+    if (!boot_font_loaded)
         return;
-
-    double wf = (double)s.width / 3840, hf = (double)s.height / 2160, f = wf < hf ? wf : hf;
-    if (f < 0.36)
-        f = 0.36;
-    text_bg = 0;
-    screen_fill(&s, 0, 0, (int)s.width, (int)s.height, 0);
-    double base = s.height * 0.5;
-    draw_text(&s, &font, SET_MAIN, title, strlen(title), (s.width - text_width(&font.set[SET_MAIN], title, f)) / 2,
-              base, f);
-    if (detail) {
-        base += font.set[SET_MAIN].line_height * f * 1.5;
-        draw_text(&s, &font, SET_SMALL, detail, strlen(detail),
-                  (s.width - text_width(&font.set[SET_SMALL], detail, f)) / 2, base, f);
-    }
+    text_bg = bg;
+    draw_text(s, &boot_font, set, text, strlen(text), (s->width - text_width(&boot_font.set[set], text, f)) / 2,
+              baseline, f);
     text_bg = BLUE;
-    screen_show(&s);
-    screen_flush(&s);
 }
 
 void stop_screen(int drm_fd, const char *font_path, const char *code, const char *what, int dev_mode)
