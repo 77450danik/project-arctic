@@ -24,10 +24,16 @@
 #include <sys/ioctl.h>
 #include <sys/klog.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
+#ifndef PR_SET_MEMORY_MERGE
+#define PR_SET_MEMORY_MERGE 67 /* Linux 6.4 */
+#endif
 #include <sys/reboot.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/swap.h>
+#include <sys/sysinfo.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -136,6 +142,8 @@ static char *const nt_env[] = {
     winedebug,
     lazy_flush,
     save_period,
+    /* images Wine cannot map from their file, shared by every process (Wine 0059) */
+    "WINE_IMAGE_CACHE=" PREFIX "/imagecache",
     "XDG_RUNTIME_DIR=" PREFIX "/xdg",
     "WAYLAND_DISPLAY=" WAYLAND_SOCKET,
     NULL,
@@ -143,6 +151,7 @@ static char *const nt_env[] = {
 static char *const host_env[] = {"PATH=/usr/bin", "LANG=C.UTF-8", NULL};
 
 static pid_t spawn(char *const argv[], int as_nt, int out);
+static int write_sysfs(const char *path, const char *value);
 
 /* Networking. Wired interfaces get an address by DHCP as they come, the way
  * Windows sets up an Ethernet port by itself: one busybox udhcpc each,
@@ -277,6 +286,11 @@ static pid_t spawn(char *const argv[], int as_nt, int out)
     dup2(out >= 0 ? out : null, 1);
     dup2(out >= 0 ? out : null, 2);
     if (as_nt) {
+        /* Wine reads a big DLL whose sections are not page aligned (chrome.dll,
+         * 250 MB) into each process as a copy of its own, where Windows maps it
+         * once for all of them: identical pages the kernel merges (KSM) for
+         * every NT process, which inherit this */
+        prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0);
         if (initgroups(NT_USER, nt_gid) || setgid(nt_gid) || setuid(nt_uid))
             _exit(126);
         if (chdir(PREFIX "/home"))
@@ -336,15 +350,19 @@ static void copy_tail(const char *from, const char *to, off_t max, off_t *copied
     close(fd);
 }
 
-static void write_kernel_log(void)
+static void write_kernel_log(const char *dir)
 {
     int size = klogctl(10 /* SYSLOG_ACTION_SIZE_BUFFER */, NULL, 0);
     char *data;
 
     if (size <= 0 || !(data = malloc((size_t)size)))
         return;
-    if ((size = klogctl(3 /* SYSLOG_ACTION_READ_ALL */, data, size)) > 0)
-        write_whole(MEDIUM_LOGS "/kernel.log", data, (size_t)size);
+    if ((size = klogctl(3 /* SYSLOG_ACTION_READ_ALL */, data, size)) > 0) {
+        char path[PATH_MAX];
+
+        snprintf(path, sizeof(path), "%s/kernel.log", dir);
+        write_whole(path, data, (size_t)size);
+    }
     free(data);
 }
 
@@ -395,7 +413,7 @@ static void link_name(const char *path, char *buf, size_t size)
 
 /* The PCI devices with their drivers, the display cards and their outputs:
  * what the PC has and what took it */
-static void write_hardware(void)
+static void write_hardware(const char *to)
 {
     char *text = NULL, a[256], b[256], c[256], d[256], e[64], path[PATH_MAX];
     size_t len = 0;
@@ -459,8 +477,10 @@ static void write_hardware(void)
         }
         closedir(dir);
     }
-    if (text)
-        write_whole(MEDIUM_LOGS "/hardware.txt", text, len);
+    if (text) {
+        snprintf(path, sizeof(path), "%s/hardware.txt", to);
+        write_whole(path, text, len);
+    }
     free(text);
 }
 
@@ -496,6 +516,142 @@ static void rotate_logs(void)
     }
 }
 
+/* Where the memory goes, every half minute in host.log: a session with 16 GB
+ * and two programs open ran out of it (programs killed one by one), so a
+ * leak is to be seen as a number that only grows. Shmem is tmpfs, shared
+ * sections and the GPU's buffers on Intel (i915 keeps them in shmem). */
+static void log_memory(void)
+{
+    struct { char name[20]; long rss; int pid; } top[5] = {{"", 0, 0}};
+    long total = 0, avail = 0, shmem = 0, slab = 0, swap_total = 0, swap_free = 0, value;
+    char line[256], key[64], text[512];
+    size_t len;
+    DIR *proc;
+    FILE *f;
+
+    if ((f = fopen("/proc/meminfo", "re"))) {
+        while (fgets(line, sizeof(line), f))
+            if (sscanf(line, "%63[^:]: %ld", key, &value) == 2) {
+                if (!strcmp(key, "MemTotal")) total = value;
+                else if (!strcmp(key, "MemAvailable")) avail = value;
+                else if (!strcmp(key, "Shmem")) shmem = value;
+                else if (!strcmp(key, "Slab")) slab = value;
+                else if (!strcmp(key, "SwapTotal")) swap_total = value;
+                else if (!strcmp(key, "SwapFree")) swap_free = value;
+            }
+        fclose(f);
+    }
+    if ((proc = opendir("/proc"))) {
+        for (struct dirent *de; (de = readdir(proc));) {
+            char name[20] = "", path[300];
+            long rss = 0;
+            int pid = atoi(de->d_name);
+
+            if (pid <= 0)
+                continue;
+            snprintf(path, sizeof(path), "/proc/%d/status", pid);
+            if (!(f = fopen(path, "re")))
+                continue;
+            while (fgets(line, sizeof(line), f))
+                if (!strncmp(line, "Name:", 5))
+                    sscanf(line + 5, " %19s", name);
+                else if (!strncmp(line, "VmRSS:", 6))
+                    sscanf(line + 6, " %ld", &rss);
+            fclose(f);
+            for (int i = 0; i < 5; i++)
+                if (rss > top[i].rss) {
+                    memmove(&top[i + 1], &top[i], sizeof(top[0]) * (size_t)(4 - i));
+                    snprintf(top[i].name, sizeof(top[i].name), "%s", name);
+                    top[i].rss = rss;
+                    top[i].pid = pid;
+                    break;
+                }
+        }
+        closedir(proc);
+    }
+    /* KSM: pages_sharing is how many pages point at a merged one, i.e. saved */
+    char ksm[32] = "";
+    if ((f = fopen("/sys/kernel/mm/ksm/pages_sharing", "re"))) {
+        if (!fgets(ksm, sizeof(ksm), f))
+            ksm[0] = 0;
+        fclose(f);
+    }
+    len = (size_t)snprintf(text, sizeof(text),
+                           "memory: %ld of %ld MB free, shmem %ld MB, slab %ld MB, compressed %ld MB, combined %ld MB;",
+                           avail >> 10, total >> 10, shmem >> 10, slab >> 10, (swap_total - swap_free) >> 10,
+                           atol(ksm) * 4 >> 10);
+    for (int i = 0; i < 5 && top[i].rss && len < sizeof(text); i++)
+        len += (size_t)snprintf(text + len, sizeof(text) - len, " %s(%d) %ld MB", top[i].name, top[i].pid,
+                                top[i].rss >> 10);
+    say("%s", text);
+}
+
+/* Memory compression, as Windows 10 has it: a swap on zram, which keeps
+ * what goes there compressed in RAM. Without any swap, when memory runs
+ * out the kernel kills the biggest program at once; with it, rarely used
+ * pages get squeezed first. */
+static void start_memory_compression(void)
+{
+    char id[16] = "", path[64], size[32];
+    unsigned char page[4096] = {0};
+    struct sysinfo si;
+    int fd, n;
+
+    if ((fd = open("/sys/class/zram-control/hot_add", O_RDONLY | O_CLOEXEC)) < 0)
+        return;
+    n = (int)read(fd, id, sizeof(id) - 1);
+    close(fd);
+    if (n <= 0)
+        return;
+    n = atoi(id);
+    sysinfo(&si);
+    snprintf(path, sizeof(path), "/sys/block/zram%d/comp_algorithm", n);
+    write_sysfs(path, "zstd");
+    snprintf(path, sizeof(path), "/sys/block/zram%d/disksize", n);
+    snprintf(size, sizeof(size), "%llu", (unsigned long long)si.totalram * si.mem_unit / 2);
+    if (write_sysfs(path, size)) {
+        say("memory compression: %s", strerror(errno));
+        return;
+    }
+    /* a swap signature, as mkswap writes it: version 1, the last page */
+    snprintf(path, sizeof(path), "/dev/zram%d", n);
+    for (int i = 0; i < 50 && access(path, F_OK); i++)
+        usleep(20000);
+    uint32_t version = 1, last = (uint32_t)(strtoull(size, NULL, 10) / sizeof(page) - 1);
+    memcpy(page + 1024, &version, 4);
+    memcpy(page + 1028, &last, 4);
+    memcpy(page + sizeof(page) - 10, "SWAPSPACE2", 10);
+    if ((fd = open(path, O_WRONLY | O_CLOEXEC)) < 0 || pwrite(fd, page, sizeof(page), 0) != (ssize_t)sizeof(page)) {
+        say("memory compression: %s: %s", path, strerror(errno));
+        if (fd >= 0)
+            close(fd);
+        return;
+    }
+    close(fd);
+    if (swapon(path, 0))
+        say("memory compression: swapon: %s", strerror(errno));
+    else
+        say("memory compression: up to %llu MB on %s", strtoull(size, NULL, 10) >> 20, path);
+}
+
+/* Memory combining, as Windows 8 and later do it: the kernel's KSM finds
+ * pages that are the same in different processes and keeps one copy. Here
+ * it is what keeps a browser from running out of memory: every Chromium
+ * process holds its own copy of chrome.dll (see spawn). The advisor sets
+ * how fast it scans, a pass in about 30 s, at most a quarter of a CPU. */
+static void start_memory_combining(void)
+{
+    if (write_sysfs("/sys/kernel/mm/ksm/advisor_mode", "scan-time")) {
+        write_sysfs("/sys/kernel/mm/ksm/pages_to_scan", "2000"); /* no advisor: a fixed pace */
+    } else {
+        write_sysfs("/sys/kernel/mm/ksm/advisor_target_scan_time", "30");
+        write_sysfs("/sys/kernel/mm/ksm/advisor_max_cpu", "25");
+        write_sysfs("/sys/kernel/mm/ksm/advisor_max_pages_to_scan", "30000");
+    }
+    if (write_sysfs("/sys/kernel/mm/ksm/run", "1"))
+        say("memory combining: %s", strerror(errno));
+}
+
 static void save_logs(void)
 {
     static off_t host_copied = -1, nt_copied = -1;
@@ -514,10 +670,10 @@ static void save_logs(void)
     if (!medium_writable)
         return;
     if (!hardware_written) {
-        write_hardware();
+        write_hardware(MEDIUM_LOGS);
         hardware_written = 1;
     }
-    write_kernel_log();
+    write_kernel_log(MEDIUM_LOGS);
     copy_tail(LOG_DIR "/host.log", MEDIUM_LOGS "/host.log", 4 << 20, &host_copied);
     copy_tail(LOG_DIR "/nt.log", MEDIUM_LOGS "/nt.log", 16 << 20, &nt_copied);
 }
@@ -587,6 +743,9 @@ static void power_off(int restart)
     /* C: cannot be unmounted, the host itself runs from it on a stick. Read
      * only, it is written out and marked clean; that needs no file left open
      * for writing, the logs included. */
+    log_memory();
+    if (c_on_disk)
+        write_kernel_log(LOG_DIR);
     say("C: goes read-only");
     close(hostlog);
     close(ntlog);
@@ -1165,6 +1324,8 @@ int main(void)
     nt_uid = pw->pw_uid;
     nt_gid = pw->pw_gid;
     keep_host_state();
+    start_memory_compression();
+    start_memory_combining();
 
     /* Hardware: modules and firmware for whatever is plugged in */
     char *udevd[] = {"/usr/lib/systemd/systemd-udevd", NULL};
@@ -1251,9 +1412,18 @@ int main(void)
             close(anim);
             anim = -1;
         }
-        /* the first copy once the desktop had time to come, then every half minute */
-        if (tick % 150 == 75)
+        /* the first copy once the desktop had time to come, then every half
+         * minute; on a C: that keeps them the kernel's log goes with the others */
+        if (tick % 150 == 75) {
             save_logs();
+            log_memory();
+            if (c_on_disk) {
+                static int hardware_written;
+                if (!hardware_written++)
+                    write_hardware(LOG_DIR);
+                write_kernel_log(LOG_DIR);
+            }
+        }
         /* a USB network adapter plugged in, a udhcpc that ended */
         if (tick % 10 == 0)
             serve_wired();

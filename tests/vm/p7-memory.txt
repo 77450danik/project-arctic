@@ -1,0 +1,25 @@
+# Memory over time with Chrome open (host.log / serial: "memory:" every 30 s):
+# two pages, then nothing touched for 5 minutes. A leak shows as a number
+# that only grows.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type https://www.youtube.com
+key ret
+sleep 60
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type https://uk.wikipedia.org
+key ret
+sleep 60
+shot p7-chrome
+sleep 240
+shot p7-later

@@ -1,0 +1,163 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 4 Oct 2026 21:00:00 +0200
+Subject: [PATCH] ntdll: Share images that cannot be mapped from their file (WINE_IMAGE_CACHE).
+
+An image whose sections are not page aligned in its file (chrome.dll, 290
+MB; Electron apps the same), or any image on removable media, was read
+into every process that loaded it: a private copy each. Chrome's dozen
+processes took 3 GB for one DLL, and with two programs open a 16 GB
+machine ran out of memory, the kernel killing them one by one. Windows
+maps an image section once for all processes.
+
+With WINE_IMAGE_CACHE naming a folder (arctic-init: /run/nt/imagecache),
+the first process to load such an image writes it there laid out as it is
+mapped, each section's data at its virtual address. Every process maps
+the sections from that copy MAP_PRIVATE: the pages are shared, and
+relocations copy only the pages they touch. The copy is named by the
+file's device, inode, size and time and appears whole by rename.
+---
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3036,6 +3036,80 @@
+ }
+ 
+ 
++/* Arctic: an image Wine cannot map from its own file (sections that are not
++ * page aligned in it, as in chrome.dll, or a file on removable media) used to
++ * be read into every process that loaded it, a private copy each: 290 MB for
++ * every Chromium process, where Windows maps an image section once for all
++ * of them. With WINE_IMAGE_CACHE naming a folder, the first process to load
++ * such an image writes it there laid out as it is mapped, each section's
++ * data at its virtual address; every process maps the sections from that
++ * copy, so the pages are shared, and relocations copy only what they touch.
++ * The copy is named by the file's device, inode, size and time, and appears
++ * whole (rename), whoever wrote it. Returns its fd, or -1. */
++static int open_image_cache( int fd, const struct stat *st, const IMAGE_SECTION_HEADER *sec, int count,
++                             SIZE_T total_size, SIZE_T align_mask )
++{
++    static const SIZE_T sector_align = 0x1ff;
++    static const char *dir;
++    static int checked;
++    static unsigned int written;
++    char path[PATH_MAX], tmp[PATH_MAX + 32];
++    struct stat cst;
++    char *buf = NULL;
++    int cache, i;
++
++    if (!checked)
++    {
++        dir = getenv( "WINE_IMAGE_CACHE" );
++        checked = 1;
++    }
++    if (!dir || !*dir) return -1;
++    snprintf( path, sizeof(path), "%s/%lx-%lx-%lx-%lx", dir, (unsigned long)st->st_dev,
++              (unsigned long)st->st_ino, (unsigned long)st->st_size, (unsigned long)st->st_mtime );
++    if ((cache = open( path, O_RDONLY | O_CLOEXEC )) != -1)
++    {
++        if (!fstat( cache, &cst ) && cst.st_size == total_size) return cache;
++        close( cache );
++    }
++
++    mkdir( dir, 0700 );
++    snprintf( tmp, sizeof(tmp), "%s.%d.%u", path, (int)getpid(), ++written );  /* under virtual_mutex */
++    if ((cache = open( tmp, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600 )) == -1) return -1;
++    if (ftruncate( cache, total_size ) || !(buf = malloc( 1 << 20 ))) goto failed;
++    for (i = 0; i < count; i++)
++    {
++        SIZE_T map_size, file_start, file_size, done;
++
++        if (!sec[i].PointerToRawData || !sec[i].SizeOfRawData) continue;
++        if ((sec[i].Characteristics & IMAGE_SCN_MEM_SHARED) && (sec[i].Characteristics & IMAGE_SCN_MEM_WRITE))
++            continue;  /* mapped from the shared mapping, as before */
++        if (!sec[i].Misc.VirtualSize) map_size = ROUND_SIZE( 0, sec[i].SizeOfRawData, align_mask );
++        else map_size = ROUND_SIZE( 0, sec[i].Misc.VirtualSize, align_mask );
++        file_start = sec[i].PointerToRawData & ~sector_align;
++        file_size = ROUND_SIZE( sec[i].PointerToRawData, sec[i].SizeOfRawData, sector_align );
++        if (file_size > map_size) file_size = map_size;
++        if (sec[i].VirtualAddress + file_size > total_size) goto failed;
++        for (done = 0; done < file_size;)
++        {
++            ssize_t n = pread( fd, buf, min( file_size - done, 1 << 20 ), file_start + done );
++            if (n <= 0) break;  /* a short file: the rest stays zero */
++            if (pwrite( cache, buf, n, sec[i].VirtualAddress + done ) != n) goto failed;
++            done += n;
++        }
++    }
++    free( buf );
++    if (rename( tmp, path )) goto failed_renamed;
++    return cache;
++
++failed:
++    free( buf );
++failed_renamed:
++    unlink( tmp );
++    close( cache );
++    return -1;
++}
++
++
+ /***********************************************************************
+  *           map_image_into_view
+  *
+@@ -3059,6 +3133,7 @@
+     SIZE_T header_size, header_map_size, total_size = view->size;
+     SIZE_T align_mask = max( image_info->alignment - 1, page_mask );
+     INT_PTR delta;
++    int cache_fd = -1;
+ 
+     TRACE_(module)( "mapping PE file %s at %p-%p\n", debugstr_us(nt_name), ptr, ptr + total_size );
+ 
+@@ -3116,6 +3191,20 @@
+     }
+ 
+ 
++    /* Arctic: sections that would be read into this process, from a copy
++     * shared by every process instead (open_image_cache) */
++    for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
++    {
++        if (!sec[i].PointerToRawData || !sec[i].SizeOfRawData) continue;
++        if ((sec[i].Characteristics & IMAGE_SCN_MEM_SHARED) && (sec[i].Characteristics & IMAGE_SCN_MEM_WRITE))
++            continue;
++        if (removable || ((sec[i].PointerToRawData & ~0x1ff) & page_mask) || (sec[i].VirtualAddress & page_mask))
++        {
++            cache_fd = open_image_cache( fd, &st, sec, nt->FileHeader.NumberOfSections, total_size, align_mask );
++            break;
++        }
++    }
++
+     /* map all the sections */
+ 
+     for (i = pos = 0; i < nt->FileHeader.NumberOfSections; i++)
+@@ -3186,16 +3275,20 @@
+         if (sec[i].PointerToRawData >= st.st_size ||
+             end > ((st.st_size + sector_align) & ~sector_align) ||
+             end < file_start ||
+-            map_file_into_view( view, fd, sec[i].VirtualAddress, file_size, file_start,
+-                                VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY,
+-                                removable ) != STATUS_SUCCESS)
++            (cache_fd != -1 ?
++             map_file_into_view( view, cache_fd, sec[i].VirtualAddress, file_size, sec[i].VirtualAddress,
++                                 VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY, FALSE ) :
++             map_file_into_view( view, fd, sec[i].VirtualAddress, file_size, file_start,
++                                 VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY,
++                                 removable )) != STATUS_SUCCESS)
+         {
+             ERR_(module)( "Could not map %s section %.8s, file probably truncated\n",
+                           debugstr_us(nt_name), sec[i].Name );
+             goto done;
+         }
+ 
+-        if (file_size & align_mask)
++        /* the copy is zero past the data already; writing would unshare the page */
++        if ((file_size & align_mask) && cache_fd == -1)
+         {
+             end = ROUND_SIZE( 0, file_size, align_mask );
+             if (end > map_size) end = map_size;
+@@ -3278,6 +3371,7 @@
+     status = STATUS_SUCCESS;
+ 
+ done:
++    if (cache_fd != -1) close( cache_fd );
+     free( sections );
+     return status;
+ }
