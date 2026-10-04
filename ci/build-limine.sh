@@ -16,8 +16,8 @@ CACHE=${LIMINE_CACHE:-$HOME/.cache/arctic-limine}/$VER-$PATCHES
 mkdir -p "$DEST"
 
 if [ ! -f "$CACHE/BOOTX64.EFI" ]; then
-    command -v clang >/dev/null && command -v ld.lld >/dev/null && command -v nasm >/dev/null ||
-        pacman -S --noconfirm --needed clang lld llvm nasm >/dev/null
+    command -v clang >/dev/null && command -v ld.lld >/dev/null && command -v nasm >/dev/null &&
+        command -v make >/dev/null || pacman -S --noconfirm --needed clang lld llvm nasm make >/dev/null
     WORK=$(mktemp -d)
     trap 'rm -rf "$WORK"' EXIT
     curl -fsSL --retry 5 -o "$WORK/limine.tar.gz" \
