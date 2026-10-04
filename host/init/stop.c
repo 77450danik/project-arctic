@@ -132,6 +132,8 @@ static int ifloor(double v)
     return v < i ? i - 1 : i;
 }
 
+static uint32_t text_bg = BLUE; /* what glyph edges blend into */
+
 static uint32_t blend(uint32_t bg, uint32_t fg, unsigned a)
 {
     uint32_t out = 0;
@@ -174,7 +176,7 @@ static void draw_glyph(struct screen *s, const struct font *font, const struct g
                         sum += src[(int)v * g->w + (int)u];
                 }
             if (sum)
-                row[px] = blend(BLUE, WHITE, sum / (unsigned)(n * n));
+                row[px] = blend(text_bg, WHITE, sum / (unsigned)(n * n));
         }
     }
 }
@@ -269,6 +271,46 @@ static void stop_draw_progress(struct screen *s, const struct font *font, const 
 #ifndef STOP_PREVIEW
 #include <sys/reboot.h>
 #include <unistd.h>
+
+static double text_width(const struct fontset *fs, const char *text, double f)
+{
+    double w = 0;
+
+    while (*text) {
+        const struct glyph *g = find_glyph(fs, utf8_next(&text));
+        w += g ? g->adv * f : 0;
+    }
+    return w;
+}
+
+void notice_screen(int drm_fd, const char *font_path, const char *title, const char *detail)
+{
+    static struct font font;
+    static int font_loaded;
+    struct screen s;
+
+    if (!font_loaded)
+        font_loaded = !load_font(font_path, &font);
+    if (!font_loaded || screen_open(&s, drm_fd))
+        return;
+
+    double wf = (double)s.width / 3840, hf = (double)s.height / 2160, f = wf < hf ? wf : hf;
+    if (f < 0.36)
+        f = 0.36;
+    text_bg = 0;
+    screen_fill(&s, 0, 0, (int)s.width, (int)s.height, 0);
+    double base = s.height * 0.5;
+    draw_text(&s, &font, SET_MAIN, title, strlen(title), (s.width - text_width(&font.set[SET_MAIN], title, f)) / 2,
+              base, f);
+    if (detail) {
+        base += font.set[SET_MAIN].line_height * f * 1.5;
+        draw_text(&s, &font, SET_SMALL, detail, strlen(detail),
+                  (s.width - text_width(&font.set[SET_SMALL], detail, f)) / 2, base, f);
+    }
+    text_bg = BLUE;
+    screen_show(&s);
+    screen_flush(&s);
+}
 
 void stop_screen(int drm_fd, const char *font_path, const char *code, const char *what, int dev_mode)
 {

@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/blkpg.h>
 #include <linux/dm-ioctl.h>
 #include <linux/fs.h>
 #include <linux/loop.h>
@@ -29,9 +30,11 @@
 #include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <sys/sysmacros.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "splash.h"
@@ -42,6 +45,11 @@
 #define WINDOWS "/windows" /* windows.sqfs of the ISO */
 #define CDRIVE "/c"        /* C: until it moves into the new root */
 #define HOST_SQFS "/Windows/System32/Host/host.sqfs"
+#define FIRST_START "/Windows/System32/Host/firststart" /* left by make-usb-img.sh: C: grows */
+#define NTFSCK "/bin/ntfsck"
+#define NTFSRESIZE "/bin/ntfsresize"
+#define TOOL_LOG "/chkdsk.log" /* ends up in C:\Windows\Logs\Arctic */
+#define WAIT_TEXT "Не вимикайте комп’ютер. Це може тривати кілька хвилин."
 #define C_DEV "/dev/arctic-c"
 #define NT_OPTS "uid=1000,gid=1000,umask=022"
 #define FONT "/bsod.font"
@@ -157,20 +165,44 @@ static int mbr_partuuid(const char *name, char *out, size_t len)
     return 0;
 }
 
-/* The partition that is C:. USB sticks can take several seconds to appear. */
+/* An NTFS partition with the host in its Windows folder */
+static int holds_host(const char *dev)
+{
+    int found;
+
+    if (mount(dev, CDRIVE, "ntfs", MS_RDONLY, "nocase"))
+        return 0;
+    found = !access(CDRIVE HOST_SQFS, R_OK);
+    umount(CDRIVE);
+    return found;
+}
+
+/* The partition that is C:: the one with the PARTUUID the boot entry names.
+ * Should there be none after a few seconds (Windows gives a disk a new
+ * signature when two of them have the same), then the NTFS partition that
+ * holds the host. USB sticks can take several seconds to appear. */
 static void find_root(char *dev, size_t len)
 {
     for (int attempt = 0; attempt < 150; attempt++) {
+        int by_contents = attempt >= 25 && attempt % 5 == 0;
         DIR *dir = opendir("/sys/class/block");
         struct dirent *de;
-        char uuid[40];
+        char uuid[40], path[300];
 
         while (dir && (de = readdir(dir))) {
-            if (skip_block_device(de->d_name) || mbr_partuuid(de->d_name, uuid, sizeof(uuid)) ||
-                strcasecmp(uuid, root_partuuid))
+            if (skip_block_device(de->d_name))
                 continue;
-            snprintf(dev, len, "/dev/%s", de->d_name);
-            say("C: is %s (PARTUUID %s)", dev, uuid);
+            snprintf(path, sizeof(path), "/sys/class/block/%s/partition", de->d_name);
+            if (access(path, F_OK))
+                continue;
+            snprintf(path, sizeof(path), "/dev/%s", de->d_name);
+            if (!mbr_partuuid(de->d_name, uuid, sizeof(uuid)) && !strcasecmp(uuid, root_partuuid))
+                say("C: is %s (PARTUUID %s)", path, uuid);
+            else if (by_contents && holds_host(path))
+                say("C: is %s (no PARTUUID %s, but it holds the host)", path, root_partuuid);
+            else
+                continue;
+            snprintf(dev, len, "%s", path);
             closedir(dir);
             return;
         }
@@ -360,6 +392,449 @@ static void mount_c(const char *dev, unsigned long flags)
     say("C: mounted (ntfs3)");
 }
 
+/* Runs a tool of the initrd (ntfsprogs-plus) with its output in TOOL_LOG,
+ * answer on its input. Returns its exit code, or -1. */
+static int run_tool(char *const argv[], const char *answer)
+{
+    int in[2], status, log = open(TOOL_LOG, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    pid_t pid;
+
+    if (pipe2(in, O_CLOEXEC))
+        return -1;
+    if (log >= 0) {
+        dprintf(log, "\n[%s]", argv[0]);
+        for (int i = 1; argv[i]; i++)
+            dprintf(log, " %s", argv[i]);
+        dprintf(log, "\n");
+    }
+    pid = fork();
+    if (pid == 0) {
+        char *envp[] = {"PATH=/bin", NULL};
+
+        dup2(in[0], 0);
+        if (log >= 0) {
+            dup2(log, 1);
+            dup2(log, 2);
+        }
+        execve(argv[0], argv, envp);
+        _exit(127);
+    }
+    close(in[0]);
+    if (answer && write(in[1], answer, strlen(answer)) < 0)
+        say("%s: no answer: %s", argv[0], strerror(errno));
+    close(in[1]);
+    if (log >= 0)
+        close(log);
+    if (pid < 0 || waitpid(pid, &status, 0) < 0)
+        return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/* the logo again, after a notice took the screen */
+static void logo_back(void)
+{
+    if (splash >= 0)
+        close(splash);
+    splash = splash_show("/dev/dri/card0", "/logo.bgra");
+}
+
+/* A stick pulled out leaves C: marked dirty (the ntfs driver marks it while
+ * mounted for writing). It is checked and repaired before it is mounted, as
+ * chkdsk does at boot. */
+static void check_c(const char *dev)
+{
+    char *dirty[] = {NTFSCK, "-C", (char *)dev, NULL};
+    char *repair[] = {NTFSCK, "-a", (char *)dev, NULL};
+    int rc;
+
+    rc = run_tool(dirty, NULL);
+    if (rc == 0)
+        return;
+    if (rc < 0 || rc == 127) {
+        say("C: cannot be checked: no ntfsck");
+        return;
+    }
+    say("C: is marked dirty, checking it");
+    notice_screen(splash, FONT, "Перевірка диска C:", WAIT_TEXT);
+    rc = run_tool(repair, NULL);
+    say("C: checked (ntfsck exit %d: %s)", rc,
+        rc == 0 ? "no errors" : rc == 1 ? "errors fixed" : "errors left");
+    logo_back();
+}
+
+static uint64_t sys_number(const char *path)
+{
+    char text[32] = "";
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+
+    if (fd >= 0) {
+        if (read(fd, text, sizeof(text) - 1) < 0)
+            text[0] = 0;
+        close(fd);
+    }
+    return strtoull(text, NULL, 10);
+}
+
+static uint32_t get_le32(const unsigned char *p)
+{
+    return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+/* The partition of C: over the rest of the disk: its entry in the MBR, then
+ * the kernel's view of it. Nothing when it is already as big as it can be. */
+static void grow_partition(const char *dev)
+{
+    const char *name = strrchr(dev, '/') + 1;
+    char path[PATH_MAX], disk[PATH_MAX];
+    unsigned char mbr[512], *entry;
+    uint64_t start, size, end;
+    int num, fd;
+
+    snprintf(path, sizeof(path), "/sys/class/block/%s/partition", name);
+    num = (int)sys_number(path);
+    snprintf(path, sizeof(path), "/sys/class/block/%s/start", name);
+    start = sys_number(path);
+    snprintf(path, sizeof(path), "/sys/class/block/%s/size", name);
+    size = sys_number(path);
+    snprintf(path, sizeof(path), "/sys/class/block/%s", name);
+    if (num < 1 || num > 4 || !realpath(path, disk) || !strrchr(disk, '/'))
+        return;
+    *strrchr(disk, '/') = 0;
+    snprintf(path, sizeof(path), "%s/size", disk);
+    end = sys_number(path) & ~2047ull; /* whole MiB */
+    if (end > 0xffffffffull)           /* as far as MBR reaches: 2 TiB */
+        end = 0xffffffffull & ~2047ull;
+
+    snprintf(path, sizeof(path), "/dev/%s", strrchr(disk, '/') + 1);
+    if ((fd = open(path, O_RDWR | O_CLOEXEC)) < 0 || pread(fd, mbr, sizeof(mbr), 0) != (ssize_t)sizeof(mbr) ||
+        mbr[510] != 0x55 || mbr[511] != 0xaa || mbr[446 + 4] == 0xee) {
+        say("C: not grown: no MBR on %s", path);
+        if (fd >= 0)
+            close(fd);
+        return;
+    }
+    entry = mbr + 446 + 16 * (num - 1);
+    if (get_le32(entry + 8) != start || get_le32(entry + 12) != size) {
+        say("C: not grown: the MBR does not describe it as the kernel does");
+        close(fd);
+        return;
+    }
+    for (int i = 0; i < 4; i++) {
+        const unsigned char *other = mbr + 446 + 16 * i;
+        if (i != num - 1 && get_le32(other + 12) && get_le32(other + 8) >= start + size) {
+            say("C: not grown: partition %d follows it", i + 1);
+            close(fd);
+            return;
+        }
+    }
+    if (end < start + size + 64 * 2048) { /* it fills the disk already */
+        close(fd);
+        return;
+    }
+
+    uint32_t sectors = (uint32_t)(end - start);
+    memcpy(entry + 12, (unsigned char[]){sectors, sectors >> 8, sectors >> 16, sectors >> 24}, 4);
+    entry[5] = 0xfe; /* CHS of the end: past what CHS can say, as for every partition today */
+    entry[6] = 0xff;
+    entry[7] = 0xff;
+    struct blkpg_partition part = {.start = (long long)(start * 512), .length = (long long)(end - start) * 512,
+                                   .pno = num};
+    struct blkpg_ioctl_arg arg = {.op = BLKPG_RESIZE_PARTITION, .datalen = sizeof(part), .data = &part};
+    if (pwrite(fd, mbr, sizeof(mbr), 0) != (ssize_t)sizeof(mbr) || fsync(fd) || ioctl(fd, BLKPG, &arg)) {
+        say("C: not grown: %s", strerror(errno));
+        close(fd);
+        return;
+    }
+    close(fd);
+    say("C: partition grew from %llu to %llu MB", (unsigned long long)(size >> 11),
+        (unsigned long long)((end - start) >> 11));
+}
+
+/* The first start of a stick written from the image: C: is as small as the
+ * image was and grows over the whole stick, the partition first, then the
+ * NTFS volume to the partition's size. Returns 0 once that is done, -1 to
+ * try again on the next start. */
+static int grow_c(const char *dev)
+{
+    char *resize[] = {NTFSRESIZE, "-f", "-P", (char *)dev, NULL}; /* no size: as big as the partition */
+    char *check[] = {NTFSCK, "-a", (char *)dev, NULL};            /* ntfsresize leaves it marked for one */
+    int rc;
+
+    notice_screen(splash, FONT, "Підготовка диска C:", WAIT_TEXT);
+    grow_partition(dev);
+    rc = run_tool(resize, "y\n");
+    run_tool(check, NULL);
+    say("C: volume over the partition (ntfsresize exit %d)", rc);
+    logo_back();
+    return rc ? -1 : 0;
+}
+
+/* Updates. An update lies in Host\Update: host.sqfs, Boot (the files of the
+ * EFI system partition: shim, Limine, its config, the kernel and the initrd,
+ * signed together) and "ready", which names the size host.sqfs must have,
+ * written last. The initrd installs it before anything runs from C:: the
+ * running version goes to Host\Previous, the new one takes its place, the
+ * EFI system partition is written from C:\Windows\Boot\Arctic as bcdboot
+ * writes it from C:\Windows\Boot, and the machine restarts into the new
+ * kernel. "Undo the last update" (arctic.rollback=1) swaps the two. */
+#define HOST_DIR CDRIVE "/Windows/System32/Host"
+#define UPDATE_DIR HOST_DIR "/Update"
+#define PREVIOUS_DIR HOST_DIR "/Previous"
+#define BOOT_SET CDRIVE "/Windows/Boot/Arctic"
+#define ESP "/esp"
+
+static int copy_file(const char *from, const char *to)
+{
+    char buf[1 << 16];
+    ssize_t n = 0;
+    int in = open(from, O_RDONLY | O_CLOEXEC), out = -1, ok = 0;
+
+    if (in >= 0 && (out = open(to, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) >= 0) {
+        while ((n = read(in, buf, sizeof(buf))) > 0)
+            if (write(out, buf, (size_t)n) != n)
+                break;
+        ok = n == 0 && !fsync(out);
+    }
+    if (out >= 0)
+        close(out);
+    if (in >= 0)
+        close(in);
+    return ok ? 0 : -1;
+}
+
+static int copy_tree(const char *from, const char *to)
+{
+    char a[PATH_MAX], b[PATH_MAX];
+    struct dirent *de;
+    struct stat st;
+    DIR *dir;
+    int rc = 0;
+
+    if (stat(from, &st))
+        return -1;
+    if (!S_ISDIR(st.st_mode))
+        return copy_file(from, to);
+    if ((mkdir(to, 0755) && errno != EEXIST) || !(dir = opendir(from)))
+        return -1;
+    while (!rc && (de = readdir(dir))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+        snprintf(a, sizeof(a), "%s/%s", from, de->d_name);
+        snprintf(b, sizeof(b), "%s/%s", to, de->d_name);
+        rc = copy_tree(a, b);
+    }
+    closedir(dir);
+    return rc;
+}
+
+static void remove_tree(const char *path)
+{
+    char sub[PATH_MAX];
+    struct dirent *de;
+    DIR *dir;
+
+    if (!unlink(path) || !(dir = opendir(path)))
+        return;
+    while ((de = readdir(dir))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+        snprintf(sub, sizeof(sub), "%s/%s", path, de->d_name);
+        remove_tree(sub);
+    }
+    closedir(dir);
+    rmdir(path);
+}
+
+/* The EFI system partition on C:'s disk: the MBR entry of type 0xEF */
+static int find_esp(const char *c_dev, char *esp, size_t len)
+{
+    char path[PATH_MAX], disk[PATH_MAX];
+    unsigned char mbr[512];
+    struct dirent *de;
+    int fd, num = 0;
+    DIR *dir;
+
+    snprintf(path, sizeof(path), "/sys/class/block/%s", strrchr(c_dev, '/') + 1);
+    if (!realpath(path, disk) || !strrchr(disk, '/'))
+        return -1;
+    *strrchr(disk, '/') = 0;
+    snprintf(path, sizeof(path), "/dev/%s", strrchr(disk, '/') + 1);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0)
+        return -1;
+    if (pread(fd, mbr, sizeof(mbr), 0) == (ssize_t)sizeof(mbr) && mbr[510] == 0x55 && mbr[511] == 0xaa)
+        for (int i = 0; i < 4 && !num; i++)
+            if (mbr[446 + 16 * i + 4] == 0xef)
+                num = i + 1;
+    close(fd);
+    if (!num || !(dir = opendir(disk)))
+        return -1;
+    while ((de = readdir(dir))) {
+        snprintf(path, sizeof(path), "%s/%s/partition", disk, de->d_name);
+        if (de->d_name[0] != '.' && (int)sys_number(path) == num) {
+            snprintf(esp, len, "/dev/%s", de->d_name);
+            closedir(dir);
+            return 0;
+        }
+    }
+    closedir(dir);
+    return -1;
+}
+
+/* Arctic's bcdboot: the EFI system partition gets the boot files of the
+ * version on C:. They are copied in beside the old ones first and then
+ * renamed into place, a directory at a time: Limine, its config and the
+ * kernel only work as one signed set. */
+static int write_esp(const char *c_dev)
+{
+    static const char *const items[] = {"EFI", "boot", "ARCTIC.cer"};
+    char esp[300], a[PATH_MAX], b[PATH_MAX];
+    int rc = -1;
+
+    if (find_esp(c_dev, esp, sizeof(esp))) {
+        say("bcdboot: no EFI system partition next to C:");
+        return -1;
+    }
+    mkdir(ESP, 0755);
+    if (mount(esp, ESP, "vfat", MS_NOATIME, NULL)) {
+        say("bcdboot: mount %s: %s", esp, strerror(errno));
+        return -1;
+    }
+    remove_tree(ESP "/staging");
+    remove_tree(ESP "/old");
+    if (copy_tree(BOOT_SET, ESP "/staging")) {
+        say("bcdboot: copying the boot files: %s", strerror(errno));
+        goto done;
+    }
+    sync();
+    mkdir(ESP "/old", 0755);
+    for (size_t i = 0; i < sizeof(items) / sizeof(items[0]); i++) {
+        snprintf(a, sizeof(a), ESP "/%s", items[i]);
+        snprintf(b, sizeof(b), ESP "/old/%s", items[i]);
+        rename(a, b);
+        snprintf(b, sizeof(b), ESP "/staging/%s", items[i]);
+        if (rename(b, a))
+            say("bcdboot: %s: %s", items[i], strerror(errno));
+    }
+    sync();
+    remove_tree(ESP "/old");
+    remove_tree(ESP "/staging");
+    rc = 0;
+    say("bcdboot: %s has the boot files of C:", esp);
+done:
+    umount(ESP);
+    sync();
+    return rc;
+}
+
+/* the kernel and the initrd also lie by the host, as Windows keeps its own */
+static void copy_kernel(void)
+{
+    copy_file(BOOT_SET "/EFI/Arctic/vmlinuz", HOST_DIR "/vmlinuz");
+    copy_file(BOOT_SET "/EFI/Arctic/initrd.img", HOST_DIR "/initrd.img");
+}
+
+static void restart_now(void)
+{
+    say("restarting into the version now on C:");
+    mount(NULL, CDRIVE, NULL, MS_REMOUNT | MS_RDONLY, NULL);
+    umount(CDRIVE);
+    sync();
+    reboot(RB_AUTOBOOT);
+}
+
+/* a rename that swaps two paths through a third */
+static int swap_paths(const char *a, const char *b, const char *via)
+{
+    if (rename(a, via))
+        return -1;
+    if (rename(b, a)) {
+        rename(via, a);
+        return -1;
+    }
+    return rename(via, b);
+}
+
+static void install_update(const char *dev)
+{
+    char ready[64] = "";
+    struct stat st;
+    int fd;
+
+    if ((fd = open(UPDATE_DIR "/ready", O_RDONLY | O_CLOEXEC)) < 0)
+        return;
+    if (read(fd, ready, sizeof(ready) - 1) < 0)
+        ready[0] = 0;
+    close(fd);
+    if (stat(UPDATE_DIR "/host.sqfs", &st) || (unsigned long long)st.st_size != strtoull(ready, NULL, 10) ||
+        access(UPDATE_DIR "/Boot/EFI/Arctic/vmlinuz", R_OK) || access(UPDATE_DIR "/Boot/boot/limine/limine.conf", R_OK)) {
+        say("update: incomplete, left as it is");
+        return;
+    }
+    say("update: installing");
+    notice_screen(splash, FONT, "Встановлення оновлення", WAIT_TEXT);
+    remove_tree(PREVIOUS_DIR);
+    mkdir(PREVIOUS_DIR, 0755);
+    if (rename(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs") ||
+        (rename(BOOT_SET, PREVIOUS_DIR "/Boot") && errno != ENOENT) ||
+        rename(UPDATE_DIR "/host.sqfs", HOST_DIR "/host.sqfs") || rename(UPDATE_DIR "/Boot", BOOT_SET)) {
+        say("update: %s; the version before stays", strerror(errno));
+        rename(PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs");
+        rename(PREVIOUS_DIR "/Boot", BOOT_SET);
+        logo_back();
+        return;
+    }
+    remove_tree(UPDATE_DIR);
+    copy_kernel();
+    sync();
+    write_esp(dev);
+    restart_now();
+}
+
+static void undo_update(const char *dev)
+{
+    if (access(PREVIOUS_DIR "/host.sqfs", R_OK) || access(PREVIOUS_DIR "/Boot/EFI/Arctic/vmlinuz", R_OK)) {
+        say("rollback: there is no version before this one");
+        return;
+    }
+    say("rollback: going back to the version before");
+    notice_screen(splash, FONT, "Повернення до попередньої версії", WAIT_TEXT);
+    if (swap_paths(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs.swap")) {
+        say("rollback: %s", strerror(errno));
+        logo_back();
+        return;
+    }
+    if (swap_paths(BOOT_SET, PREVIOUS_DIR "/Boot", CDRIVE "/Windows/Boot/Arctic.swap")) {
+        say("rollback: %s", strerror(errno));
+        swap_paths(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs.swap");
+        logo_back();
+        return;
+    }
+    copy_kernel();
+    sync();
+    write_esp(dev);
+    restart_now();
+}
+
+/* what the tools said goes with the other logs on C: */
+static void keep_tool_log(void)
+{
+    char buf[4096];
+    ssize_t n;
+    int in = open(TOOL_LOG, O_RDONLY | O_CLOEXEC), out;
+
+    if (in < 0)
+        return;
+    mkdir(CDRIVE "/Windows/Logs", 0755);
+    mkdir(CDRIVE "/Windows/Logs/Arctic", 0755);
+    out = open(CDRIVE "/Windows/Logs/Arctic/chkdsk.log", O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    while (out >= 0 && (n = read(in, buf, sizeof(buf))) > 0)
+        if (write(out, buf, (size_t)n) != n)
+            break;
+    if (out >= 0)
+        close(out);
+    close(in);
+}
+
 /* A stick or a disk: C: is the partition */
 static void partition_c_drive(void)
 {
@@ -376,7 +851,19 @@ static void partition_c_drive(void)
      * a stick pulled out loses little, and the kernel's NTFS has no journal */
     write_file("/proc/sys/vm/dirty_expire_centisecs", "300");
     write_file("/proc/sys/vm/dirty_writeback_centisecs", "100");
+    check_c(dev);
     mount_c(dev, MS_NOATIME);
+    if (!access(CDRIVE FIRST_START, F_OK) && !umount(CDRIVE)) {
+        int grown = grow_c(dev);
+        mount_c(dev, MS_NOATIME);
+        if (!grown)
+            unlink(CDRIVE FIRST_START);
+    }
+    rmdir(CDRIVE "/lost+found"); /* ntfsck makes one; Windows has none, so it goes while empty */
+    keep_tool_log();
+    if (strstr(cmdline, "arctic.rollback=1"))
+        undo_update(dev);
+    install_update(dev);
 }
 
 /* The ISO: C: is windows.img in windows.sqfs, under a snapshot */

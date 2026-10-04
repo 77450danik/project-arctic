@@ -38,6 +38,9 @@ parser.add_argument("--usb", action="store_true",
                     help="the image is a USB stick, not a CD; what it writes stays for the next start")
 parser.add_argument("--stick-size", default="8G", help="how big the stick is (--usb)")
 parser.add_argument("--fresh", action="store_true", help="start from a freshly written stick (--usb)")
+parser.add_argument("--pull", action="store_true",
+                    help="end by pulling the stick out (QEMU killed) instead of the power button (--usb)")
+parser.add_argument("--no-reboot", action="store_true", help="QEMU exits when the guest restarts")
 parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
 parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
 parser.add_argument("--resolution", help="WxH: the mode the monitor prefers (its EDID), e.g. 1920x1080")
@@ -65,6 +68,8 @@ cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096",
        "-name", "Arctic", "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet", "-device", "usb-kbd", "-device", "usb-mouse",  # a USB keyboard, as real PCs have: the kernel repeats its keys
       
        "-serial", "file:" + serial, "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]
+if args.no_reboot:
+    cmd += ["-no-reboot"]
 if args.usb:
     if args.iso.endswith(".iso") and os.path.exists(os.path.join(ROOT, "out", "arctic-usb.img")):
         args.iso = os.path.join(ROOT, "out", "arctic-usb.img")
@@ -171,8 +176,30 @@ try:
         vmscript.run(vmscript.Qmp(heads=args.monitors, size=size), open(args.script, encoding="utf-8").read().splitlines())
     subprocess.run([sys.executable, os.path.join(ROOT, "ci", "qmp-shot.py"), "tcp:127.0.0.1:4455",
                     os.path.join(RES, "screen.ppm"), shot], check=False)
+    # A stick is left the way a person leaves it: the power button, then
+    # the machine shuts down by itself. Killing QEMU is pulling it out. A
+    # press in the first seconds of the desktop gets lost (below csrss, it
+    # never sees it), so it is pressed again, as a person would.
+    if args.usb and not args.keep and not args.pull and vm.poll() is None and "dwm ready" in seen:
+        import json
+        import socket
+        for press in range(1, 5):
+            try:
+                with socket.create_connection(("127.0.0.1", 4455), timeout=5) as qmp:
+                    stream = qmp.makefile("rw")
+                    stream.readline()
+                    for command in ("qmp_capabilities", "system_powerdown"):
+                        stream.write(json.dumps({"execute": command}) + "\n")
+                        stream.flush()
+                        stream.readline()
+                vm.wait(timeout=15 if press < 4 else 60)
+                print("shut down by the power button (press %d)" % press)
+                break
+            except (OSError, subprocess.TimeoutExpired) as e:
+                if press == 4:
+                    print("did not shut down by the power button:", type(e).__name__)
 finally:
-    if not args.keep:
+    if not args.keep and vm.poll() is None:
         vm.kill()
     ppm = os.path.join(RES, "screen.ppm")
     if os.path.exists(ppm):

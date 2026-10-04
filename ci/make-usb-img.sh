@@ -9,7 +9,7 @@
 #   2  C:, NTFS: windows.img with the host in Windows\System32\Host. It is
 #      written small and grows over the whole stick on its first start.
 #
-# The initrd finds C: by its PARTUUID, the disk signature (new for each
+# The initrd finds C: by its PARTUUID, the disk signature (the same in every
 # build) and the partition number, which the stick's own limine.conf names.
 # Runs after ci/make-windows-img.sh and ci/build-image.sh, which leaves the
 # files in out/iso. ntfsresize makes room on C:, ntfs-3g (FUSE: the container
@@ -36,8 +36,9 @@ fi
 rm -rf "$WORK" "$IMG"
 mkdir -p "$WORK/esp/EFI/Arctic" "$WORK/esp/boot/limine"
 
-SIG=$(od -An -N4 -tx4 /dev/urandom | tr -d ' \n')
-[ "$SIG" != 00000000 ] || SIG=a3c71c01
+# The same disk signature in every build ("ARCT"): the boot entry of a newer
+# build, which an update writes, must still name this stick's C:
+SIG=41524354
 PARTUUID=$SIG-02
 
 # Partition 1. Limine reads its config and the kernel from here on both
@@ -56,7 +57,7 @@ mcopy -s -Q -i "$WORK/esp.img" "$WORK/esp"/* ::
 cp --sparse=always "$OUT/windows.img" "$WORK/c.img"
 min=$(ntfsresize --info --force --no-progress-bar "$WORK/c.img" | awk '/You might resize at/ {print $5}')
 [ -n "$min" ] || { echo "ntfsresize did not say how small C: can be"; exit 1; }
-host=$(du -cb --apparent-size "${HOST_FILES[@]}" | tail -n1 | cut -f1)
+host=$(du -cb --apparent-size "${HOST_FILES[@]}" "$WORK/esp" | tail -n1 | cut -f1)
 size=$(( (min + host + C_FREE_MB * 1048576 + 1048575) / 1048576 * 1048576 ))
 now=$(stat -c %s "$WORK/c.img")
 [ "$size" -le "$now" ] || truncate -s "$size" "$WORK/c.img"
@@ -66,9 +67,23 @@ ntfsresize --force --no-progress-bar --size "$size" "$WORK/c.img" <<< y >/dev/nu
 ntfsfix --clear-dirty "$WORK/c.img" >/dev/null
 mkdir -p "$WORK/c"
 ntfs-3g "$WORK/c.img" "$WORK/c"
-mkdir -p "$WORK/c/Windows/System32/Host"
+mkdir -p "$WORK/c/Windows/System32/Host" "$WORK/c/Windows/Boot"
 cp "${HOST_FILES[@]}" "$WORK/c/Windows/System32/Host/"
+# the initrd grows C: over the whole stick when it finds this, then deletes it
+touch "$WORK/c/Windows/System32/Host/firststart"
+# what partition 1 holds, as C:\Windows\Boot holds it for Windows' bcdboot:
+# an update brings a new set, and partition 1 is written from here
+cp -r "$WORK/esp" "$WORK/c/Windows/Boot/Arctic"
 umount "$WORK/c"
+
+# The same version as an update (docs/persistence.md): what goes into
+# C:\Windows\System32\Host\Update of a stick to install this build on it
+UPDATE="$OUT/arctic-update/Update"
+rm -rf "$OUT/arctic-update"
+mkdir -p "$UPDATE"
+ln "$ISO/arctic/host.sqfs" "$UPDATE/host.sqfs" 2>/dev/null || cp "$ISO/arctic/host.sqfs" "$UPDATE/"
+cp -r "$WORK/esp" "$UPDATE/Boot"
+stat -c %s "$UPDATE/host.sqfs" > "$UPDATE/ready"
 
 # An NTFS boot sector, and its copy in the partition's last sector, record
 # where the partition starts ("hidden sectors"); mkntfs wrote 0 for a file

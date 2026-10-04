@@ -1,6 +1,16 @@
 # Persistence, the start after p1-write.txt (vm-test.py --usb, no --fresh):
-# the file written then opens in Notepad
+# the file written then opens in Notepad, and the registry value set then is
+# still there (reg query writes it into a second file)
 sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd /c reg query HKCU\Software\ArcticTest /v Kept >> C:\Users\Public\persist.txt
+key ret
+sleep 5
 move 27 789
 click
 sleep 2

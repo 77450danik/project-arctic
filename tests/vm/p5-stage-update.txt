@@ -1,0 +1,14 @@
+# An update put on the stick (vm-test.py --usb --disk <tools/wsl/make-update-disk.sh>):
+# Update\ from the disk (D:) copied into C:\Windows\System32\Host. The next
+# start installs it and restarts by itself.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type xcopy D:\Update C:\Windows\System32\Host\Update\ /E /I /Y /Q
+key ret
+sleep 120
+shot p5-staged

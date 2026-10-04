@@ -231,7 +231,7 @@ jobs:
           done
           notes="Commit ${GITHUB_SHA::7}. Kernel $(cat out/kernel/release), $(cat out/wine/version).
 
-          arctic-usb.img.xz goes to a stick as it is (Rufus, balenaEtcher, or xzcat | dd) and boots both from UEFI and from BIOS/CSM. The stick keeps what is written to it: C: is a partition on it. Hold a key during the first second for the start that saves nothing. arctic.iso is for discs and virtual machines and saves nothing.
+          arctic-usb.img.xz goes to a stick as it is (Rufus, balenaEtcher, or xzcat | dd) and boots both from UEFI and from BIOS/CSM. The stick keeps what is written to it: C: is a partition on it, and on the first start it grows over the whole stick. Hold a key during the first second for the start that saves nothing. arctic.iso is for discs and virtual machines and saves nothing.
 
           Secure Boot may stay on. The first time on each PC, shim opens MokManager: Enroll key from disk, ARCTIC.cer, Continue, Yes, Reboot (docs/boot.md)."
           gh release delete dev --cleanup-tag --yes || true

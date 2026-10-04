@@ -333,6 +333,17 @@ static BOOL language_chord( UINT key, BOOL pressed )
     return TRUE;
 }
 
+/* The power button shuts the computer down, Windows' default for it ("When I
+ * press the power button: Shut down"): the session ends through winlogon as
+ * from Start, so programs are asked and C: is left clean. On its own thread:
+ * ExitWindowsEx waits for the session, the keys must not. */
+static DWORD WINAPI power_button_thread( void *arg )
+{
+    MESSAGE( "csrss: power button, shutting down\n" );
+    if (!ExitWindowsEx( EWX_SHUTDOWN | EWX_POWEROFF, 0 )) ERR( "ExitWindowsEx: %lu\n", GetLastError() );
+    return 0;
+}
+
 static DWORD WINAPI raw_input_thread( void *arg )
 {
     struct rit_event events[64];
@@ -380,7 +391,13 @@ static DWORD WINAPI raw_input_thread( void *arg )
                 if (event->value) follow_input_language();
                 send_key( event->code, event->value );
                 if (language_chord( event->code, event->value )) next_input_language();
-                if (event->value)
+                if (event->code == KEY_POWER)
+                {
+                    HANDLE thread;
+                    if (event->value == 1 && (thread = CreateThread( NULL, 0, power_button_thread, NULL, 0, NULL )))
+                        CloseHandle( thread );
+                }
+                else if (event->value)
                 {
                     repeat_key = event->code;
                     repeat_at = GetTickCount() + repeat_delay();

@@ -14,6 +14,15 @@ sleep 4
 move 27 789
 click
 sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type reg add HKCU\Software\ArcticTest /v Kept /d "the registry stays" /f
+key ret
+sleep 4
+move 27 789
+click
+sleep 2
 move 120 757
 click                         # Завершення роботи...
 sleep 3

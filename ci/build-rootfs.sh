@@ -55,6 +55,8 @@ mkdir -p "$RFS/var/lib/iwd"
 tr -d '-' < /proc/sys/kernel/random/uuid > "$RFS/etc/machine-id"
 mkdir -p "$OUT/initrd/dev" "$OUT/initrd/proc" "$OUT/initrd/sys"
 gcc -static -Os -Wall -o "$OUT/initrd/init" "$ROOT/host/init/initrd-init.c" "${INIT_SRC[@]}"
+# checking C: after the stick was pulled out, growing it on the first start
+bash "$ROOT/ci/build-ntfsprogs.sh" "$OUT/initrd/bin"
 mknod -m 600 "$OUT/initrd/dev/console" c 5 1
 python "$ROOT/ci/logo2raw.py" "$ROOT/ARCTIC.png" "$OUT/initrd/logo.bgra"
 cp "$OUT/initrd/logo.bgra" "$RFS/usr/share/arctic/logo.bgra"

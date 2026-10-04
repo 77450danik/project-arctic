@@ -40,6 +40,7 @@
 #define PREFIX "/run/nt"
 #define C_DRIVE "/mnt/c"
 #define REG_DIR C_DRIVE "/Windows/System32/config"
+#define HOST_STATE REG_DIR "/Host" /* what the host itself keeps, on a C: that keeps what is written */
 #define LOG_DIR C_DRIVE "/Windows/Logs/Arctic"
 #define LOGO "/usr/share/arctic/logo.bgra"
 #define WAYLAND_SOCKET "arctic-0" /* served by dwmcore.dll */
@@ -236,12 +237,14 @@ static void start_network(void)
     loopback_up();
     mkdir("/run/dbus", 0755);
     mkdir("/run/arctic/resolv.d", 0755);
-    /* the networks iwd knows live as long as the session; Windows keeps the profiles */
-    mkdir("/run/arctic/iwd", 0700);
-    /* wlanapi.dll hands iwd the key of a network as a file there */
-    if (chown("/run/arctic/iwd", nt_uid, nt_gid))
+    /* The networks iwd knows: on a C: that keeps what is written they stay,
+     * with the rest of the host's state; otherwise they live as long as the
+     * session. wlanapi.dll hands iwd the key of a network as a file there. */
+    const char *iwd_state = c_on_disk ? HOST_STATE "/iwd" : "/run/arctic/iwd";
+    mkdir(iwd_state, 0700);
+    if (!c_on_disk && chown(iwd_state, nt_uid, nt_gid)) /* on C: everything is nt's already */
         say("iwd state folder: %s", strerror(errno));
-    if (mount("/run/arctic/iwd", "/var/lib/iwd", NULL, MS_BIND, NULL))
+    if (mount(iwd_state, "/var/lib/iwd", NULL, MS_BIND, NULL))
         say("no state folder for iwd: %s", strerror(errno));
     dbus_pid = spawn(dbus, 0, hostlog);
     for (int i = 0; i < 100 && access("/run/dbus/system_bus_socket", F_OK); i++)
@@ -516,7 +519,21 @@ static void power_off(int restart)
 {
     announce("%s", restart ? "restart" : "shut down");
     kill(-1, SIGTERM);
-    sleep(2);
+    /* wineserver saves the registry as it goes, onto C: through fsync, which
+     * a slow stick takes its time over: it is waited for, the rest is not */
+    for (int i = 0; i < 150; i++) {
+        pid_t pid;
+        int status;
+
+        while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+            if (pid == wineserver_pid)
+                wineserver_pid = 0;
+        if (!wineserver_pid && i >= 20)
+            break;
+        usleep(100000);
+    }
+    if (wineserver_pid)
+        say("wineserver did not end in 15 s");
     kill(-1, SIGKILL);
     sync();
     save_logs();
@@ -769,10 +786,12 @@ static void make_dir(const char *path, mode_t mode, int nt_owned)
 }
 
 /* The prefix directory holds only what Wine needs outside C:. Registry
- * hives live on C: like in Windows; there is no Z: drive. */
+ * hives live on C: like in Windows, and wineserver writes them there: the
+ * prefix only links to them (a hive is replaced whole, next to its target).
+ * There is no Z: drive. */
 static void prepare_nt(void)
 {
-    static const char *hives[] = {"system.reg", "user.reg", "userdef.reg", ".update-timestamp"};
+    static const char *hives[] = {"system.reg", "user.reg", "userdef.reg"};
     char from[256], to[256];
 
     make_dir(PREFIX, 0700, 1);
@@ -786,7 +805,36 @@ static void prepare_nt(void)
     for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
         snprintf(from, sizeof(from), "%s/%s", REG_DIR, hives[i]);
         snprintf(to, sizeof(to), "%s/%s", PREFIX, hives[i]);
-        copy_file(from, to);
+        if (symlink(from, to) && errno != EEXIST)
+            say("%s: %s", to, strerror(errno));
+        lchown(to, nt_uid, nt_gid);
+    }
+    copy_file(REG_DIR "/.update-timestamp", PREFIX "/.update-timestamp");
+}
+
+/* The host's own state that a C: keeping what is written keeps too, in
+ * C:\Windows\System32\config\Host: the networks iwd knows (start_network)
+ * and the machine's id, made once for each stick rather than for each build */
+static void keep_host_state(void)
+{
+    char id[64] = "";
+    int fd;
+
+    if (!c_on_disk)
+        return;
+    mkdir(HOST_STATE, 0755);
+    if (access(HOST_STATE "/machine-id", F_OK)) {
+        read_line("/proc/sys/kernel/random/uuid", id, sizeof(id));
+        for (char *from = id, *to = id;; from++)
+            if (*from != '-' && !(*to++ = *from))
+                break;
+        strcat(id, "\n");
+        write_whole(HOST_STATE "/machine-id", id, strlen(id));
+    }
+    if ((fd = open(HOST_STATE "/machine-id", O_RDONLY | O_CLOEXEC)) >= 0) {
+        close(fd);
+        if (mount(HOST_STATE "/machine-id", "/etc/machine-id", NULL, MS_BIND, NULL))
+            say("machine-id: %s", strerror(errno));
     }
 }
 
@@ -1094,6 +1142,7 @@ int main(void)
     }
     nt_uid = pw->pw_uid;
     nt_gid = pw->pw_gid;
+    keep_host_state();
 
     /* Hardware: modules and firmware for whatever is plugged in */
     char *udevd[] = {"/usr/lib/systemd/systemd-udevd", NULL};

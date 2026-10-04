@@ -12,4 +12,8 @@
  * the machine once the progress reaches 100%, as Windows does. */
 void stop_screen(int drm_fd, const char *font_path, const char *code, const char *what, int dev_mode);
 
+/* White text centred on black, for work done before the system starts
+ * ("Перевірка диска C:"); the picture stays until something draws over it */
+void notice_screen(int drm_fd, const char *font_path, const char *title, const char *detail);
+
 #endif
