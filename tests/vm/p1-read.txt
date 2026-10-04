@@ -1,0 +1,13 @@
+# Persistence, the start after p1-write.txt (vm-test.py --usb, no --fresh):
+# the file written then opens in Notepad
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type notepad C:\Users\Public\persist.txt
+key ret
+sleep 5
+shot p1-file-kept

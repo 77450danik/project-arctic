@@ -49,6 +49,7 @@
 
 static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
 static int dev_mode, splash = -1, stopped;
+static int c_on_disk; /* C: is a partition that keeps what is written (ARCTIC_C=disk from the initrd) */
 static uid_t nt_uid;
 static gid_t nt_gid;
 static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid;
@@ -276,11 +277,11 @@ static pid_t spawn(char *const argv[], int as_nt, int out)
     _exit(127);
 }
 
-/* Logs on the boot stick. A live system keeps C: in memory, so what went
+/* Logs on the boot medium. A live system keeps C: in memory, so what went
  * wrong on a PC is also kept where it can be read afterwards on any
- * computer: arctic\logs on the stick, rewritten every half minute and
+ * computer: arctic\logs on the medium, rewritten every half minute and
  * before the power goes. A medium that cannot be written (a disc) keeps
- * none. */
+ * none, and a C: on a partition needs none: its own logs stay. */
 #define MEDIUM "/run/arctic/media"
 #define MEDIUM_LOGS MEDIUM "/arctic/logs"
 
@@ -489,6 +490,8 @@ static void save_logs(void)
     static off_t host_copied = -1, nt_copied = -1;
     static int hardware_written;
 
+    if (c_on_disk)
+        return;
     if (medium_writable < 0) {
         medium_writable = !mount(NULL, MEDIUM, NULL, MS_REMOUNT | MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
         if (medium_writable)
@@ -532,7 +535,20 @@ static void power_off(int restart)
     }
     if (drives)
         closedir(drives);
-    umount2(C_DRIVE, MNT_DETACH);
+    /* C: cannot be unmounted, the host itself runs from it on a stick. Read
+     * only, it is written out and marked clean; that needs no file left open
+     * for writing, the logs included. */
+    say("C: goes read-only");
+    close(hostlog);
+    close(ntlog);
+    hostlog = ntlog = -1;
+    sync();
+    if (mount(NULL, C_DRIVE, NULL, MS_REMOUNT | MS_RDONLY, NULL))
+        say("C: stays writable: %s", strerror(errno));
+    else
+        say("C: read-only");
+    if (!c_on_disk)
+        umount2(C_DRIVE, MNT_DETACH);
     sync();
     reboot(restart ? RB_AUTOBOOT : RB_POWER_OFF);
 }
@@ -919,10 +935,30 @@ static void serve_ejects(void)
     closedir(dir);
 }
 
+/* A C: that keeps what is written keeps the logs of the last few starts:
+ * host.log is this one, host.1.log the one before, up to host.4.log */
+static void rotate_c_logs(void)
+{
+    static const char *const logs[] = {"host", "nt"};
+    char from[PATH_MAX], to[PATH_MAX];
+
+    for (size_t i = 0; i < sizeof(logs) / sizeof(logs[0]); i++)
+        for (int n = KEPT_LOGS - 1; n >= 0; n--) {
+            if (n)
+                snprintf(from, sizeof(from), LOG_DIR "/%s.%d.log", logs[i], n);
+            else
+                snprintf(from, sizeof(from), LOG_DIR "/%s.log", logs[i]);
+            snprintf(to, sizeof(to), LOG_DIR "/%s.%d.log", logs[i], n + 1);
+            rename(from, to);
+        }
+}
+
 static void open_logs(void)
 {
     mkdir(C_DRIVE "/Windows/Logs", 0755);
     mkdir(LOG_DIR, 0755);
+    if (c_on_disk)
+        rotate_c_logs();
     hostlog = open(LOG_DIR "/host.log", O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
     ntlog = open(LOG_DIR "/nt.log", O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
 }
@@ -1014,10 +1050,11 @@ static void read_cmdline(void)
 
 int main(void)
 {
-    const char *splash_env = getenv("ARCTIC_SPLASH_FD");
+    const char *splash_env = getenv("ARCTIC_SPLASH_FD"), *c_env = getenv("ARCTIC_C");
     struct passwd *pw;
 
     splash = splash_env ? atoi(splash_env) : -1;
+    c_on_disk = c_env && !strcmp(c_env, "disk");
     /* The logo fd came from the initrd across exec on purpose, but no child may
      * inherit it: while any process holds it, dwm.exe cannot become DRM master. */
     if (splash >= 0)
@@ -1039,7 +1076,7 @@ int main(void)
     kmsg = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
     read_cmdline();
     open_logs();
-    say("start (dev=%d)", dev_mode);
+    say("start (dev=%d, C: %s)", dev_mode, c_on_disk ? "keeps what is written" : "changes stay in memory");
     /* Every NT handle to a file, event or section is a descriptor in
      * wineserver and often in the process too: Steam's browser alone runs
      * past the kernel's 4096. Everything started from here inherits this. */

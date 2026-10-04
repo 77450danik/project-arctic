@@ -1,0 +1,13 @@
+# The normal start after p1-live-write.txt: live.txt must be gone (Notepad
+# asks to create it), persist.txt from p1-write.txt still there
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type notepad C:\Users\Public\live.txt
+key ret
+sleep 5
+shot p1-live-gone

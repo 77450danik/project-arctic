@@ -4,8 +4,20 @@
 
 | Файл | Для чого |
 |---|---|
-| `arctic-usb.img` | флешка: пишеться посекторно (`dd`, Rufus у режимі DD), MBR + активний FAT32, вантажиться і з UEFI (з Secure Boot теж), і з BIOS/CSM |
-| `arctic.iso` | диски й віртуальні машини |
+| `arctic-usb.img` (у релізі `arctic-usb.img.xz`) | флешка: пишеться посекторно (Rufus, balenaEtcher, `xzcat \| dd`), вантажиться і з UEFI (з Secure Boot теж), і з BIOS/CSM. Зберігає все, що на неї записано: C: — розділ на ній ([persistence.md](persistence.md)) |
+| `arctic.iso` | диски й віртуальні машини, нічого не зберігає |
+
+Флешка — MBR із двома розділами:
+
+| # | Тип | Розмір | Вміст |
+|---|---|---|---|
+| 1 | EFI (0xEF), активний, FAT32 `ARCTIC` | 500 МБ | `EFI\BOOT` (shim, Limine, MokManager), `EFI\Arctic` (ядро, initrd), `boot\limine`, `ARCTIC.cer` |
+| 2 | NTFS (0x07), `ARCTIC` | решта | C:; Linux-хост у `C:\Windows\System32\Host` |
+
+initrd знаходить C: за PARTUUID (підпис диска + номер розділу), який
+вписаний у `limine.conf` флешки; підпис диска новий у кожній збірці. Меню
+Limine приховане: клавіша, натиснута в першу секунду, показує його з пунктом
+**Arctic, nothing saved** (зміни йдуть у пам'ять, як з ISO).
 
 ## Чому флешка не вантажилася (21.09.2026)
 
@@ -30,7 +42,13 @@
 ```
 python tools/vm-test.py out/arctic-usb.img --usb            # BIOS/CSM
 python tools/vm-test.py out/arctic-usb.img --usb --uefi     # UEFI (OVMF)
+python tools/vm-test.py --usb --fresh                       # щойно записана флешка
 ```
+
+`--usb` вантажить не сам образ, а qcow2-шар над ним (`out/test-local/stick.qcow2`,
+розміром `--stick-size`, типово 8G): записане в одному запуску лишається для
+наступного, а зібраний образ не змінюється. Новий образ або `--fresh` —
+це знову щойно записана флешка.
 
 Локальна VM запускається без Secure Boot; з ним образ перевіряє CI (див. «Secure Boot»).
 
@@ -46,8 +64,8 @@ Secure Boot можна не вимикати. Раніше прошивка са
 | `EFI\BOOT\grubx64.efi` | Limine (shim вантажить друге завантаження саме під цим ім'ям) | ключ Arctic; shim перевіряє підпис за MokList |
 | `EFI\BOOT\mmx64.efi` | MokManager: екран, де ПК реєструє ключ | Debian; shim знає цей ключ |
 | `ARCTIC.cer` | сертифікат Arctic, який реєструють у MokManager | — |
-| `boot/limine/limine.conf` | конфіг Limine | BLAKE2b конфігу вшито в підписаний Limine |
-| `arctic/vmlinuz`, `arctic/initrd.img` | ядро та initrd | BLAKE2b кожного файла записано в `limine.conf` |
+| `boot/limine/limine.conf` | конфіг Limine; в ISO і на флешці свій, тож і Limine підписується для кожного окремо | BLAKE2b конфігу вшито в підписаний Limine |
+| `arctic/vmlinuz`, `arctic/initrd.img` (на флешці `EFI/Arctic/…`) | ядро та initrd | BLAKE2b кожного файла записано в `limine.conf` |
 
 З вимкненим Secure Boot або в BIOS/CSM усе працює, як і раніше: shim без
 Secure Boot нічого не перевіряє, а BIOS-стадія Limine та сама.
@@ -60,7 +78,7 @@ Secure Boot нічого не перевіряє, а BIOS-стадія Limine т
    (Enter).
 2. Відкривається синій екран **Perform MOK management**. Протягом 10 секунд натиснути будь-яку клавішу, інакше
    ПК просто перезавантажиться.
-3. **Enroll key from disk** → вибрати флешку (`ARCTIC` / `ARCTICEFI`) → **ARCTIC.cer**.
+3. **Enroll key from disk** → вибрати флешку (`ARCTIC`; з диска ISO — `ARCTICEFI`) → **ARCTIC.cer**.
 4. **Continue** → **Yes** → **Reboot**.
 5. Після перезавантаження знову вибрати флешку: тепер Arctic вантажиться одразу.
 
@@ -97,7 +115,8 @@ Secure Boot нічого не перевіряє, а BIOS-стадія Limine т
   2. Додає в Limine секцію `.sbat`: у збірці Arch її немає, а без неї shim 15.3+ нічого не вантажить.
   3. Вшиває хеш `limine.conf` (`limine enroll-config`).
   4. Підписує Limine (`sbsign`) і перевіряє, що підпис відповідає сертифікату.
-  5. Збирає `efiboot.img` — FAT-образ для El Torito в ISO.
+  5. Для ISO збирає `efiboot.img` — FAT-образ для El Torito.
+  `ci/make-usb-img.sh` викликає його вдруге, для розділу EFI флешки з її власним `limine.conf`.
 - Локальна збірка (WSL):
   `ARCTIC_SB_KEY_FILE=/шлях/до/arctic-sb.key bash tools/wsl/build-image.sh`.
   Без ключа образ підписується тимчасовим ключем розробника з `out/secureboot-dev/`. Такий образ теж
@@ -124,5 +143,5 @@ Secure Boot нічого не перевіряє, а BIOS-стадія Limine т
 Secure Boot тут потрібен для того, щоб Arctic вантажився, не вимикаючи його. Захистом
 від чужого коду в системі він поки не є:
 
-- `host.sqfs` і `windows.img` не перевіряються (далі — dm-verity);
+- `host.sqfs` і C: не перевіряються (далі — dm-verity);
 - ядро не вмикає lockdown, тож модулі без підпису (nvidia) вантажаться.

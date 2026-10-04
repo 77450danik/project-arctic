@@ -1,0 +1,22 @@
+# Persistence, first start (vm-test.py --usb --fresh): a file written to C:,
+# then Start -> Завершення роботи..., so C: is left clean. p1-read.txt finds
+# the file on the next start.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd /c echo Arctic keeps this file> C:\Users\Public\persist.txt
+key ret
+sleep 4
+move 27 789
+click
+sleep 2
+move 120 757
+click                         # Завершення роботи...
+sleep 3
+shot p1-shutdown-dialog
+key ret
+sleep 15

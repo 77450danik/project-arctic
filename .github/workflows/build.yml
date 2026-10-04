@@ -198,13 +198,15 @@ jobs:
               archlinux:latest bash /work/ci/build-rootfs.sh
       - name: "C: image (NTFS)"
         run: bash ci/make-windows-img.sh
-      # Limine is signed with the Arctic Secure Boot key (ci/sign-efi.sh)
-      - name: ISO
+      # Limine is signed with the Arctic Secure Boot key (ci/sign-efi.sh), once
+      # for the ISO and once for the stick, each with its own config. Privileged:
+      # ntfs-3g (FUSE) puts the host on the stick's C:
+      - name: ISO and USB image
         env:
           ARCTIC_SB_KEY: ${{ secrets.ARCTIC_SB_KEY }}
-        run: docker run --rm -e ARCTIC_SB_KEY -e GITHUB_ACTIONS -v "$PWD:/work" archlinux:latest bash /work/ci/build-image.sh
-      - name: USB image
-        run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/make-usb-img.sh
+        run: |
+          docker run --rm --privileged -e ARCTIC_SB_KEY -e GITHUB_ACTIONS -v "$PWD:/work" archlinux:latest \
+              bash -c 'bash /work/ci/build-image.sh && bash /work/ci/make-usb-img.sh'
       - run: sudo chown "$(id -u):$(id -g)" out out/arctic.iso out/arctic-usb.img
 
       - name: Boot test
@@ -222,16 +224,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for f in out/arctic.iso out/arctic-usb.img; do
+          # the stick's image is bigger than GitHub takes; Rufus and Etcher write the .xz as it is
+          xz -T0 -6 -k -f out/arctic-usb.img
+          for f in out/arctic.iso out/arctic-usb.img.xz; do
             [ "$(stat -c %s "$f")" -lt 2147483648 ] || { echo "$f is over the 2 GiB release asset limit"; exit 1; }
           done
           notes="Commit ${GITHUB_SHA::7}. Kernel $(cat out/kernel/release), $(cat out/wine/version).
 
-          arctic-usb.img goes to a stick as it is (dd, or Rufus in DD mode) and boots both from UEFI and from BIOS/CSM. arctic.iso is for discs and virtual machines.
+          arctic-usb.img.xz goes to a stick as it is (Rufus, balenaEtcher, or xzcat | dd) and boots both from UEFI and from BIOS/CSM. The stick keeps what is written to it: C: is a partition on it. Hold a key during the first second for the start that saves nothing. arctic.iso is for discs and virtual machines and saves nothing.
 
           Secure Boot may stay on. The first time on each PC, shim opens MokManager: Enroll key from disk, ARCTIC.cer, Continue, Yes, Reboot (docs/boot.md)."
           gh release delete dev --cleanup-tag --yes || true
-          gh release create dev out/arctic.iso out/arctic-usb.img --prerelease --target "$GITHUB_SHA" \
+          gh release create dev out/arctic.iso out/arctic-usb.img.xz --prerelease --target "$GITHUB_SHA" \
             --title "Arctic dev ${GITHUB_SHA::7}" --notes "$notes"
 
   # Old caches go, so that the compiler caches do not push the builds out of

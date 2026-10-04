@@ -19,7 +19,10 @@ used=$($SUDO du -sm "$DRIVE_C" | cut -f1)
 size=$((used * 13 / 10 + 3072))
 $SUDO rm -f "$IMG"
 $SUDO truncate -s "${size}M" "$IMG"
-$SUDO mkntfs -F -Q -q -L ARCTIC -s 4096 -c 4096 "$IMG"
+# 512-byte sectors, as sticks and disks have them: Windows does not mount an
+# NTFS whose sector size differs from the disk's, and on a stick this image
+# is C:. The initrd gives the live-mode snapshot 512-byte blocks to match.
+$SUDO mkntfs -F -Q -q -L ARCTIC -s 512 -c 4096 "$IMG"
 
 MNT=$(mktemp -d)
 $SUDO ntfs-3g "$IMG" "$MNT"

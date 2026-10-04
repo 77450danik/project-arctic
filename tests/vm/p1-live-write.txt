@@ -1,0 +1,33 @@
+# "Arctic, nothing saved" (vm-test.py --usb --append arctic.live=1): a file
+# written to C: and Start -> Завершення роботи...; p1-live-gone.txt then finds
+# no such file on a normal start
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd /c echo this must not stay> C:\Users\Public\live.txt
+key ret
+sleep 3
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type notepad C:\Users\Public\live.txt
+key ret
+sleep 4
+shot p1-live-written
+key alt-f4
+sleep 2
+move 27 789
+click
+sleep 2
+move 120 757
+click                         # Завершення роботи...
+sleep 3
+key ret
+sleep 15

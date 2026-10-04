@@ -1,0 +1,7 @@
+# Booted from the stick (vm-test.py --usb): "Цей ПК" shows C: and no other
+# drive; the stick's EFI partition and C:'s partition get no letter
+sleep 6
+move 38 100
+dblclick                      # Цей ПК
+sleep 5
+shot p1-this-pc

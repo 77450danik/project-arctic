@@ -2,10 +2,12 @@
 # Puts the UEFI boot chain into a file tree (out/iso): Microsoft-signed shim as
 # EFI\BOOT\BOOTX64.EFI, Limine signed with the Arctic key as grubx64.efi next
 # to it, MokManager, and ARCTIC.cer, the certificate a PC enrolls once.
-# Leaves out/efiboot.img, the same EFI\BOOT as a FAT image for the ISO's
-# El Torito entry. Called by build-image.sh once limine.conf carries the
-# hashes of the kernel and the initrd: the config's own hash is enrolled into
-# Limine, so the config must not change after this.
+# Given a second path, also writes there the same EFI\BOOT as a FAT image,
+# for the ISO's El Torito entry. Called by build-image.sh and make-usb-img.sh
+# once limine.conf carries the hashes of the kernel and the initrd: the
+# config's own hash is enrolled into Limine, so the config must not change
+# after this. The ISO and the stick have configs of their own, so each tree
+# gets its own Limine.
 #
 # The key: ARCTIC_SB_KEY (the PEM itself, a CI secret) or ARCTIC_SB_KEY_FILE.
 # Without either, a local build signs with a development key of its own, and
@@ -14,7 +16,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${ARCTIC_OUT:-$ROOT/out}
-TREE=${1:?usage: sign-efi.sh <tree with boot/limine/limine.conf>}
+TREE=${1:?usage: sign-efi.sh <tree with boot/limine/limine.conf> [efiboot.img]}
+EFIBOOT=${2:-}
 CERT="$ROOT/image/secureboot/arctic-sb.crt"
 LIMINE_EFI=/usr/share/limine
 
@@ -104,9 +107,11 @@ cp -r "$ESP/." "$TREE/"
 
 # the ISO's EFI system partition; MokManager finds ARCTIC.cer there, since
 # firmware reads no ISO 9660
-rm -f "$OUT/efiboot.img"
-mkfs.fat -C -n ARCTICEFI "$OUT/efiboot.img" $(( $(du -sk --apparent-size "$ESP" | cut -f1) + 1024 )) >/dev/null
-mcopy -s -Q -i "$OUT/efiboot.img" "$ESP"/* ::
+if [ -n "$EFIBOOT" ]; then
+    rm -f "$EFIBOOT"
+    mkfs.fat -C -n ARCTICEFI "$EFIBOOT" $(( $(du -sk --apparent-size "$ESP" | cut -f1) + 1024 )) >/dev/null
+    mcopy -s -Q -i "$EFIBOOT" "$ESP"/* ::
+fi
 
 shim_ver=${SHIM_DEBS[0]%%_amd64*}
 echo "UEFI chain: shim-signed ${shim_ver##*_}, Limine $LIMINE_VER"

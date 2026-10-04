@@ -4,8 +4,10 @@ the NT world, and saves the serial log and a screenshot.
 usage: python tools/vm-test.py [image] [--wait SECONDS] [--append "kernel params"] [--script FILE]
                                [--usb] [--uefi] [--headless] [--keep] [--disk IMAGE] [--sound]
 
---usb boots out/arctic-usb.img as a USB disk and --uefi boots through OVMF, which
-is how the image is tried the way real machines boot it.
+--usb boots out/arctic-usb.img as a USB stick and --uefi boots through OVMF, which
+is how the image is tried the way real machines boot it. The stick is a qcow2
+layer over the image (out/test-local/stick.qcow2): what one start writes, the
+next one finds, until the image is rebuilt or --fresh is given.
 --append boots the kernel directly (taken from the ISO) with extra parameters,
 e.g. --append arctic.stoptest=nt. --script runs input steps (tools/vmscript.py)
 once the desktop is up. --disk adds an internal disk
@@ -32,7 +34,10 @@ parser.add_argument("--timeout", type=int, default=240)
 parser.add_argument("--headless", action="store_true", help="no window (the screenshot is still taken)")
 parser.add_argument("--keep", action="store_true", help="leave the VM running after the test")
 parser.add_argument("--script", help="input steps to run once the desktop is up (tools/vmscript.py)")
-parser.add_argument("--usb", action="store_true", help="the image is a USB disk, not a CD")
+parser.add_argument("--usb", action="store_true",
+                    help="the image is a USB stick, not a CD; what it writes stays for the next start")
+parser.add_argument("--stick-size", default="8G", help="how big the stick is (--usb)")
+parser.add_argument("--fresh", action="store_true", help="start from a freshly written stick (--usb)")
 parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
 parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
 parser.add_argument("--resolution", help="WxH: the mode the monitor prefers (its EDID), e.g. 1920x1080")
@@ -63,8 +68,25 @@ cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096",
 if args.usb:
     if args.iso.endswith(".iso") and os.path.exists(os.path.join(ROOT, "out", "arctic-usb.img")):
         args.iso = os.path.join(ROOT, "out", "arctic-usb.img")
-    cmd += ["-drive", "if=none,id=usbdisk,format=raw,file=" + args.iso,
-            "-device", "usb-storage,drive=usbdisk,bus=xhci.0,bootindex=0"]
+    # The stick is a qcow2 layer over the image, as big as --stick-size: what
+    # a start writes stays for the next one, the image stays as it was built.
+    # A new image, or --fresh, starts from a freshly written stick.
+    stick = os.path.join(RES, "stick.qcow2")
+    built = "%s %d" % (os.path.abspath(args.iso), os.path.getmtime(args.iso))
+    try:
+        same = open(stick + ".src").read() == built
+    except OSError:
+        same = False
+    if args.fresh or not same or not os.path.exists(stick):
+        if os.path.exists(stick):
+            os.remove(stick)
+        subprocess.run([os.path.join(ROOT, "tools", "qemu", "qemu-img.exe"), "create", "-q", "-f", "qcow2",
+                        "-b", os.path.abspath(args.iso), "-F", "raw", stick, args.stick_size], check=True)
+        open(stick + ".src", "w").write(built)
+        print("a freshly written %s stick" % args.stick_size)
+    # --append boots the kernel directly, which takes boot index 0 itself
+    cmd += ["-drive", "if=none,id=usbdisk,format=qcow2,file=" + stick,
+            "-device", "usb-storage,drive=usbdisk,bus=xhci.0" + ("" if args.append else ",bootindex=0")]
 else:
     # the CD boots first even with other disks attached (--disk)
     cmd += ["-drive", "if=none,id=cd,media=cdrom,format=raw,readonly=on,file=" + args.iso,
@@ -99,20 +121,28 @@ if args.uefi:
 if args.append:
     kernel_dir = os.path.join(RES, "kernel")
     os.makedirs(kernel_dir, exist_ok=True)
-    if not os.path.exists("C:/Program Files/7-Zip/7z.exe"):
-        # without 7-Zip on Windows: mtools in the build distro, from the image's first partition
-        wsl = lambda p: "/mnt/" + p[0].lower() + p[2:].replace("\\", "/")
-        src = wsl(os.path.abspath(args.iso))
-        part = src + "@@1M" if src.endswith(".img") else None
-        get = (["mcopy", "-o", "-i", part] if part else ["7z", "e", "-y", "-bso0", "-o" + wsl(kernel_dir), src])
+    wsl = lambda p: "/mnt/" + p[0].lower() + p[2:].replace("\\", "/")
+    root = ""
+    if args.iso.endswith(".img"):
+        # the stick: its EFI system partition, with mtools in the build distro;
+        # C: is the partition its limine.conf names
+        part = wsl(os.path.abspath(args.iso)) + "@@1M"
+        for src, name in (("EFI/Arctic/vmlinuz", "vmlinuz"), ("EFI/Arctic/initrd.img", "initrd.img"),
+                          ("boot/limine/limine.conf", "limine.conf")):
+            # -n: no question before overwriting the copy from the last run
+            subprocess.run(["wsl.exe", "-d", "arctic-build", "--", "mcopy", "-n", "-o", "-i", part, "::" + src,
+                            wsl(os.path.join(kernel_dir, name))], check=True, stdin=subprocess.DEVNULL)
+        found = re.search(r"arctic\.root=\S+", open(os.path.join(kernel_dir, "limine.conf")).read())
+        root = found.group(0) + " " if found else ""
+    elif not os.path.exists("C:/Program Files/7-Zip/7z.exe"):
         for name in ("vmlinuz", "initrd.img"):
-            item = ["::arctic/" + name, wsl(os.path.join(kernel_dir, name))] if part else ["arctic/" + name]
-            subprocess.run(["wsl.exe", "-d", "arctic-build", "--"] + get + item, check=True)
+            subprocess.run(["wsl.exe", "-d", "arctic-build", "--", "7z", "e", "-y", "-bso0", "-o" + wsl(kernel_dir),
+                            wsl(os.path.abspath(args.iso)), "arctic/" + name], check=True)
     else:
         subprocess.run(["C:/Program Files/7-Zip/7z.exe", "e", "-y", "-bso0", "-o" + kernel_dir, args.iso,
                         "arctic/vmlinuz", "arctic/initrd.img"], check=True)
     cmd += ["-kernel", os.path.join(kernel_dir, "vmlinuz"), "-initrd", os.path.join(kernel_dir, "initrd.img"),
-            "-append", "console=ttyS0,115200 loglevel=6 arctic.dev=1 " + args.append]
+            "-append", "console=ttyS0,115200 loglevel=6 arctic.dev=1 " + root + args.append]
 
 start = time.time()
 qemu_log = open(os.path.join(RES, "qemu.log"), "w")
