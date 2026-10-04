@@ -1574,7 +1574,10 @@ int main(void)
         bootanim_send(anim, "status Підготовка системи");
         updating = 1;
     }
-    snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=mscoree,mshtml=");
+    /* Only then: wineboot also starts the Run keys' programs, which keep
+     * the variable, and a .NET program without mscoree loads no assembly */
+    if (updating)
+        snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=mscoree,mshtml=");
     int rc = run(wineboot, 1, ntlog, 300);
     if (updating)
         reapply_registry();
