@@ -14,8 +14,10 @@ CACHE=${NTFSPROGS_CACHE:-$HOME/.cache/arctic-ntfsprogs}/$VER
 mkdir -p "$DEST"
 
 if [ ! -x "$CACHE/ntfsck" ] || [ ! -x "$CACHE/ntfsresize" ]; then
-    command -v autoreconf >/dev/null && command -v libtoolize >/dev/null ||
-        pacman -S --noconfirm --needed autoconf automake libtool pkgconf >/dev/null
+    # make too: the CI container has none, and configure needs it for its
+    # dependency fragments ("Something went wrong bootstrapping makefile fragments")
+    command -v autoreconf >/dev/null && command -v libtoolize >/dev/null && command -v make >/dev/null ||
+        pacman -S --noconfirm --needed autoconf automake libtool pkgconf make >/dev/null
     WORK=$(mktemp -d)
     trap 'rm -rf "$WORK"' EXIT
     curl -fsSL --retry 5 -o "$WORK/src.tar.gz" \
