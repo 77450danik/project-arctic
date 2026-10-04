@@ -32,7 +32,9 @@ struct image {
 static struct {
     int devfd;                   /* /dev, which the initrd moves under the new root */
     const char *spinner_path;
-    struct image logo;           /* Arctic's */
+    struct image logo;           /* the PC maker's (BGRT) or Arctic's */
+    int bgrt, bgrt_x, bgrt_y;    /* the firmware's logo, and where the firmware put it */
+    uint32_t fw_w, fw_h;         /* the firmware framebuffer's size, which those offsets are for */
     struct screen s;
     int attached, simple;        /* on a card; that card is simpledrm (the firmware framebuffer) */
     int show_error;              /* why the picture could not go on screen, said once */
@@ -108,6 +110,61 @@ static int load_logo(const char *path)
     return 0;
 }
 
+static long read_number(const char *path)
+{
+    char text[32] = "";
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+
+    if (fd >= 0) {
+        if (read(fd, text, sizeof(text) - 1) < 0)
+            text[0] = 0;
+        close(fd);
+    }
+    return strtol(text, NULL, 10);
+}
+
+/* The PC maker's logo, as the firmware shows it from power on and Windows
+ * keeps it on the screen while it starts: ACPI's BGRT, a BMP of 24 or 32
+ * bits, with where the firmware put it. Windows draws its own logo only
+ * where there is none. */
+static int load_bgrt(void)
+{
+    size_t size = 0;
+    uint8_t *bmp;
+
+    if (!(read_number("/sys/firmware/acpi/bgrt/status") & 1)) /* bit 0: valid, on the screen */
+        return -1;
+    if (!(bmp = read_all("/sys/firmware/acpi/bgrt/image", &size)))
+        return -1;
+    if (size < 54 || bmp[0] != 'B' || bmp[1] != 'M') {
+        free(bmp);
+        return -1;
+    }
+    uint32_t off, w, compression, bpp = bmp[28] | bmp[29] << 8;
+    int32_t h;
+    memcpy(&off, bmp + 10, 4);
+    memcpy(&w, bmp + 18, 4);
+    memcpy(&h, bmp + 22, 4);
+    memcpy(&compression, bmp + 30, 4);
+    uint32_t rows = (uint32_t)(h < 0 ? -h : h), stride = (w * bpp + 31) / 32 * 4;
+    if ((bpp != 24 && bpp != 32) || (compression != 0 && compression != 3) || !w || !rows || w > 4096 ||
+        rows > 4096 || off + (size_t)stride * rows > size || !(a.logo.px = malloc((size_t)w * rows * 4))) {
+        free(bmp);
+        return -1;
+    }
+    for (uint32_t y = 0; y < rows; y++) {
+        const uint8_t *src = bmp + off + (size_t)stride * (h > 0 ? rows - 1 - y : y); /* bottom-up unless h < 0 */
+        for (uint32_t x = 0; x < w; x++, src += bpp / 8)
+            a.logo.px[(size_t)y * w + x] = (uint32_t)src[2] << 16 | (uint32_t)src[1] << 8 | src[0];
+    }
+    free(bmp);
+    a.logo.w = w;
+    a.logo.h = rows;
+    a.bgrt_x = (int)read_number("/sys/firmware/acpi/bgrt/xoffset");
+    a.bgrt_y = (int)read_number("/sys/firmware/acpi/bgrt/yoffset");
+    return 0;
+}
+
 /* The frames for a spinner about want pixels across, from the file
  * ci/mkspinner.py makes: "ARSP", frames, sizes; per size: side, then each
  * frame's side * side alpha bytes */
@@ -169,12 +226,19 @@ static void draw_logo(void)
 
     if (!a.logo.px)
         return;
-    /* it grows with the screen, as Windows' does */
-    scale = a.s.height >= 2000 ? 3 : a.s.height >= 1400 ? 2 : 1;
-    while (scale > 1 && (a.logo.w * scale > a.s.width || a.logo.h * scale > a.s.height))
-        scale--;
-    x0 = ((int)a.s.width - (int)(a.logo.w * scale)) / 2;
-    y0 = (int)(a.s.height * GOLDEN) - (int)(a.logo.h * scale) / 2;
+    if (a.bgrt && a.s.width == a.fw_w && a.s.height == a.fw_h) {
+        x0 = a.bgrt_x; /* the PC maker's logo where the firmware put it: nothing moves */
+        y0 = a.bgrt_y;
+    } else {
+        /* Arctic's grows with the screen, as Windows' does; the maker's keeps
+         * its size, where the BGRT rules put it when the mode changed */
+        if (!a.bgrt)
+            scale = a.s.height >= 2000 ? 3 : a.s.height >= 1400 ? 2 : 1;
+        while (scale > 1 && (a.logo.w * scale > a.s.width || a.logo.h * scale > a.s.height))
+            scale--;
+        x0 = ((int)a.s.width - (int)(a.logo.w * scale)) / 2;
+        y0 = (int)(a.s.height * GOLDEN) - (int)(a.logo.h * scale) / 2;
+    }
     for (uint32_t y = 0; y < a.logo.h * scale; y++) {
         int py = y0 + (int)y;
         if (py < 0 || py >= (int)a.s.height)
@@ -265,6 +329,10 @@ static void attach(void)
             if ((!pass && simple) || screen_init(&a.s, fd)) {
                 close(fd);
                 continue;
+            }
+            if (simple && !a.fw_w) { /* the firmware's own mode, which the BGRT offsets are for */
+                a.fw_w = a.s.width;
+                a.fw_h = a.s.height;
             }
             a.simple = simple;
             a.attached = 1;
@@ -419,8 +487,10 @@ int bootanim_start(const char *spinner, const char *logo, const char *font, pid_
     signal(SIGPIPE, SIG_IGN);
     a.devfd = open("/dev", O_PATH | O_DIRECTORY | O_CLOEXEC);
     a.spinner_path = spinner;
-    if (load_logo(logo))
+    a.bgrt = !load_bgrt();
+    if (!a.bgrt && load_logo(logo))
         say("no logo in %s", logo);
+    say("%s logo", a.bgrt ? "the PC maker's (BGRT)" : "Arctic's");
     boot_font_load(font);
     run(p[0]);
     return -1;

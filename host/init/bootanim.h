@@ -3,10 +3,10 @@
 
 #include <sys/types.h>
 
-/* The boot screen, as Windows 11 draws it: Arctic's logo and Windows 11's
- * spinner below, from the first moment of the initrd until the desktop. (Not
- * the PC maker's logo from the firmware's BGRT, which Windows keeps: Arctic
- * shows its own.) A process of its own draws it, 60 frames a second, and
+/* The boot screen, as Windows 11 draws it: the PC maker's logo where the
+ * firmware left it (ACPI BGRT), or Arctic's where there is none, and Windows
+ * 11's spinner below, from the first moment of the initrd until the desktop.
+ * A process of its own draws it, 60 frames a second, and
  * draws it again at once on the card a GPU driver brings when it takes the
  * screen from the firmware framebuffer.
  *

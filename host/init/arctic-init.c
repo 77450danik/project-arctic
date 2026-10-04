@@ -127,6 +127,7 @@ static char dev_program[128];                        /* arctic.run= */
  * (docs/persistence.md, "Повільна флешка"). A flush returns at once (Wine
  * 0058) and the registry is saved every 4 minutes (0057), in a child. */
 static char lazy_flush[] = "WINE_LAZY_FLUSH=0";
+static char dll_overrides[64] = "WINEDLLOVERRIDES="; /* for wineboot: no Mono or Gecko installers */
 static char save_period[] = "WINE_REGISTRY_SAVE_PERIOD=30 ";
 
 static char *const nt_env[] = {
@@ -142,6 +143,7 @@ static char *const nt_env[] = {
     winedebug,
     lazy_flush,
     save_period,
+    dll_overrides,
     /* images Wine cannot map from their file, shared by every process (Wine 0059) */
     "WINE_IMAGE_CACHE=" PREFIX "/imagecache",
     "XDG_RUNTIME_DIR=" PREFIX "/xdg",
@@ -846,24 +848,46 @@ static char *capture(char *const argv[], int timeout_s)
     return buf;
 }
 
-static void copy_file(const char *from, const char *to)
+/* After wineboot brought C:'s registry up to a newer Wine from wine.inf,
+ * Arctic's own settings go over it again, as the image was made with them
+ * (ci/build-rootfs.sh): Windows 11 as the version, and the .reg files in
+ * /usr/share/arctic/registry, the build number among them. There is no Z:,
+ * so they go through C:\Windows\Temp. */
+static void reapply_registry(void)
 {
-    char buf[65536];
-    int in = open(from, O_RDONLY | O_CLOEXEC), out;
-    ssize_t n;
+    char *winecfg[] = {"/usr/bin/wine", "winecfg.exe", "-v", "win11", NULL};
+    char from[PATH_MAX], to[PATH_MAX], winpath[PATH_MAX], buf[65536];
+    struct dirent *de;
+    DIR *dir;
 
-    if (in < 0) {
-        say("missing %s", from);
+    run(winecfg, 1, ntlog, 120);
+    mkdir(C_DRIVE "/Windows/Temp/Arctic", 0755);
+    if (!(dir = opendir("/usr/share/arctic/registry")))
         return;
+    while ((de = readdir(dir))) {
+        int in, out;
+        ssize_t n;
+
+        if (!strstr(de->d_name, ".reg"))
+            continue;
+        snprintf(from, sizeof(from), "/usr/share/arctic/registry/%s", de->d_name);
+        snprintf(to, sizeof(to), C_DRIVE "/Windows/Temp/Arctic/%s", de->d_name);
+        if ((in = open(from, O_RDONLY | O_CLOEXEC)) < 0)
+            continue;
+        if ((out = open(to, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) >= 0) {
+            while ((n = read(in, buf, sizeof(buf))) > 0)
+                if (write(out, buf, (size_t)n) != n)
+                    break;
+            close(out);
+            snprintf(winpath, sizeof(winpath), "C:\\Windows\\Temp\\Arctic\\%s", de->d_name);
+            char *import[] = {"/usr/bin/wine", "reg.exe", "import", winpath, NULL};
+            run(import, 1, ntlog, 60);
+            unlink(to);
+        }
+        close(in);
     }
-    out = open(to, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    while (out >= 0 && (n = read(in, buf, sizeof(buf))) > 0)
-        write(out, buf, (size_t)n);
-    if (out >= 0) {
-        fchown(out, nt_uid, nt_gid);
-        close(out);
-    }
-    close(in);
+    closedir(dir);
+    rmdir(C_DRIVE "/Windows/Temp/Arctic");
 }
 
 /* How good a card is as the default output, and which of its devices: an
@@ -1003,7 +1027,11 @@ static void prepare_nt(void)
             say("%s: %s", to, strerror(errno));
         lchown(to, nt_uid, nt_gid);
     }
-    copy_file(REG_DIR "/.update-timestamp", PREFIX "/.update-timestamp");
+    /* the prefix's version on C: too: wineboot brings the registry up to a
+     * new Wine once (an update brings one), not at every start after it */
+    if (symlink(REG_DIR "/.update-timestamp", PREFIX "/.update-timestamp") && errno != EEXIST)
+        say(".update-timestamp: %s", strerror(errno));
+    lchown(PREFIX "/.update-timestamp", nt_uid, nt_gid);
 }
 
 /* The host's own state that a C: keeping what is written keeps too, in
@@ -1348,8 +1376,27 @@ int main(void)
     wineserver_pid = spawn(wineserver, 1, ntlog);
     say("wineserver pid %d", wineserver_pid);
 
+    /* A Wine newer than what C:'s registry was made with (an update) makes
+     * wineboot bring it up to date: Windows' "getting ready" after updates.
+     * Without Mono and Gecko it must not offer to download them: that dialog
+     * has no screen yet and waited for ever (the start hung). */
     char *wineboot[] = {"/usr/bin/wine", "wineboot.exe", NULL};
+    char stamp[32] = "";
+    struct stat inf;
+    int updating = 0;
+    read_line(REG_DIR "/.update-timestamp", stamp, sizeof(stamp));
+    if (!stat("/usr/share/wine/wine.inf", &inf) && strtoull(stamp, NULL, 10) != (unsigned long long)inf.st_mtime &&
+        strncmp(stamp, "disable", 7)) {
+        say("the registry is brought up to this Wine (%s -> %llu)", stamp, (unsigned long long)inf.st_mtime);
+        bootanim_send(anim, "status Підготовка системи");
+        updating = 1;
+    }
+    snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=mscoree,mshtml=");
     int rc = run(wineboot, 1, ntlog, 300);
+    if (updating)
+        reapply_registry();
+    snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=");
+    bootanim_send(anim, "boot");
     mirror_ntlog();
     if (rc == 126 || rc == 127)
         nt_stop("SESSION3_INITIALIZATION_FAILED", "wineboot");

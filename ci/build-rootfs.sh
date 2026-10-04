@@ -77,18 +77,21 @@ wine wineboot.exe --init
 wine winecfg.exe -v win11
 wine reg.exe add 'HKCU\Control Panel\Desktop' /v Wallpaper /d 'C:\Windows\Web\Wallpaper\Arctic\img0.jpg' /f
 wine reg.exe add 'HKCU\Control Panel\Desktop' /v WallpaperStyle /d 10 /f
-for reg in /var/tmp/registry/*.reg; do wine reg.exe import "Z:$reg"; done
+for reg in /usr/share/arctic/registry/*.reg; do wine reg.exe import "Z:$reg"; done
 wineserver -w
 EOF
-mkdir -p "$RFS/var/tmp/registry"
-cp "$ROOT"/runtime/registry/*.reg "$RFS/var/tmp/registry/"
+# Arctic's registry settings stay in the image: when an update brings a newer
+# Wine, wineboot brings C:'s registry up to it from wine.inf, and arctic-init
+# applies these again over it
+mkdir -p "$RFS/usr/share/arctic/registry"
+cp "$ROOT"/runtime/registry/*.reg "$RFS/usr/share/arctic/registry/"
 # Arctic's version, which the About dialog (ShellAbout, winver) shows: the
 # build is the number of commits, the date the day the image was built. CI
 # passes them in (its container has no git); a local build counts them itself.
 BUILD=${ARCTIC_BUILD:-$(git -c safe.directory='*' -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 0)}
 COMMIT=${ARCTIC_COMMIT:-$(git -c safe.directory='*' -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)}
 BUILD_DATE=${ARCTIC_BUILD_DATE:-$(date -u +%Y-%m-%d)}
-cat > "$RFS/var/tmp/registry/zz-build.reg" <<EOF
+cat > "$RFS/usr/share/arctic/registry/zz-build.reg" <<EOF
 REGEDIT4
 
 [HKEY_LOCAL_MACHINE\\Software\\Arctic]
