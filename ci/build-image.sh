@@ -14,7 +14,7 @@ if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
     pacman -Syu --noconfirm --needed squashfs-tools xorriso limine cpio zstd \
         sbsigntools binutils openssl dosfstools mtools libarchive \
-        clang lld llvm nasm patch
+        clang lld llvm nasm patch make
 fi
 
 # C: is not part of the host: on a stick it is the partition the host lies
