@@ -1,0 +1,12 @@
+# PowerShell output variants (C:\v.cmd)
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click
+sleep 3
+type C:\v.cmd
+key ret
+sleep 150
+shot w7

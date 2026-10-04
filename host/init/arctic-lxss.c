@@ -263,9 +263,34 @@ static int attach(const char *name, const char *vhdx_win, char *err, size_t err_
         snprintf(err, err_len, "%s: no such disk", vhdx_win);
         return -1;
     }
+    /* one disk, one distribution: ext4 mounted twice is ext4 lost */
+    DIR *d = opendir(ROOTS);
+    for (struct dirent *de; d && (de = readdir(d));) {
+        char used[PATH_MAX] = "";
+        size_t len = strlen(de->d_name);
+        if (len < 6 || strcmp(de->d_name + len - 5, ".vhdx"))
+            continue;
+        snprintf(path, sizeof(path), ROOTS "/%s", de->d_name);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        ssize_t n = fd >= 0 ? read(fd, used, sizeof(used) - 1) : -1;
+        if (fd >= 0)
+            close(fd);
+        used[n > 0 ? n : 0] = 0;
+        if (!strcmp(used, vhdx)) {
+            snprintf(err, err_len, "%s is in use by %.*s", vhdx_win, (int)(len - 5), de->d_name);
+            closedir(d);
+            return -1;
+        }
+    }
+    if (d)
+        closedir(d);
     if (access("/sys/module/nbd", F_OK)) {
         char *modprobe[] = {"/usr/bin/modprobe", "nbd", "nbds_max=16", "max_part=0", NULL};
         run(modprobe);
+        /* what the builds in there use (losetup, ntfs-3g): modprobe in the
+         * distribution finds no modules of this kernel */
+        char *more[] = {"/usr/bin/modprobe", "-a", "loop", "fuse", NULL};
+        run(more);
     }
     if ((nbd = free_nbd()) < 0) {
         snprintf(err, err_len, "no free NBD device");
@@ -287,6 +312,8 @@ static int attach(const char *name, const char *vhdx_win, char *err, size_t err_
         usleep(100000);
     snprintf(path, sizeof(path), ROOTS "/%s.nbd", name);
     write_text(path, dev);
+    snprintf(path, sizeof(path), ROOTS "/%s.vhdx", name);
+    write_text(path, vhdx);
 
     make_dirs(root);
     if (mount(dev, root, "ext4", MS_NOATIME, NULL)) {
@@ -456,6 +483,8 @@ static void detach(const char *name)
         say("%s: qemu-nbd did not end", name);
     unlink(path);
     snprintf(path, sizeof(path), ROOTS "/%s.sock", name);
+    unlink(path);
+    snprintf(path, sizeof(path), ROOTS "/%s.vhdx", name);
     unlink(path);
     rmdir(root);
     say("%s: detached", name);

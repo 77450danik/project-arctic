@@ -1,0 +1,23 @@
+# WSL in Arctic, the rest (after w1): Claude Code's variable is there,
+# tools/arctic/wsl.py (put at C:\wsl.py) runs a command in a distribution
+# from Linux, and a second name for the same VHDX is refused.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd
+key ret
+sleep 4
+type echo %CLAUDE_CODE_GIT_BASH_PATH% %CLAUDE_CODE_USE_POWERSHELL_TOOL%
+key ret
+sleep 1
+type bash -c "python3 /c/wsl.py -u nobody -- sh -c 'id -un; pwd'; echo rc=$?"
+key ret
+sleep 40
+type wsl -d ros-on-d -e true
+key ret
+sleep 5
+shot w4-wsl-claude

@@ -2,6 +2,8 @@ REGEDIT4
 
 ; WSL in Arctic (docs/updates.md): System32\bash.exe runs bash in the default
 ; WSL distribution with the drives as Git Bash names them, so Claude Code
-; takes it for its Bash tool; it looks for Git Bash elsewhere otherwise
+; takes it for its Bash tool; it looks for Git Bash elsewhere otherwise.
+; Its PowerShell tool takes C:\Program Files\PowerShell\7\pwsh.exe first,
+; which runs in Arctic (Wine's own powershell.exe is a stub that runs nothing)
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment]
 "CLAUDE_CODE_GIT_BASH_PATH"="C:\\Windows\\System32\\bash.exe"

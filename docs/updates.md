@@ -81,6 +81,22 @@ ReactOS). Одна збірка, той самий кеш ccache, де б не �
   у системному оточенні (`runtime/registry/wsl.reg`). Claude Code сам
   перетворює шляхи на `/c/…` і назад, `pwd -P` дає `/c/…`, бо диски — bind,
   а не посилання.
+- **PowerShell:** powershell.exe в Arctic — заглушка Wine, яка нічого не
+  виконує. Справжній PowerShell 7 (zip win-x64 від Microsoft, .NET 8) під
+  Arctic працює: `tools/arctic/install-pwsh.sh [C:]` ставить його в
+  `C:\Program Files\PowerShell\7`, де інструмент PowerShell у Claude Code
+  шукає першим. Перевірено (`tests/vm/w5-pwsh.txt`, `w6`, `w7`): версія
+  7.6.6, `Get-ChildItem`, `Get-Process`, `Get-Content`, конвеєри,
+  `Format-Table`/`Format-List`, `$env:`, виклик `cmd /c ver`, Write-Host,
+  коди виходу (`exit 3` → 3). Відоме: таблиця, за якою в тій самій команді
+  одразу йде `exit`, губиться; без `exit` — є. У перенаправлений вивід
+  PowerShell пише кольори ANSI. В образ поки не входить (~100 МБ).
+- **З Linux в інший дистрибутив:** Linux не запускає wsl.exe, тож
+  `tools/arctic/wsl.py` говорить з arctic-lxss сам (127.0.0.1, той самий
+  протокол і токен): `python3 tools/arctic/wsl.py -d arctic-ros -u root --
+  bash tools/wsl/build-reactos.sh` з bash Claude Code (arctic-build).
+- Один VHDX — один дистрибутив: друге ім'я для того самого диска служба
+  відмовляє («in use by …»), бо ext4, змонтований двічі, — зіпсований ext4.
 - **Вимкнення:** arctic-init спершу шле arctic-lxss SIGTERM і чекає до 60 с:
   процеси дистрибутивів завершуються, монтування знімаються, `qemu-nbd -d`
   дописує VHDX. Лише потім усе інше. arctic-lxss — subreaper для qemu-nbd
@@ -126,7 +142,9 @@ wsl -d arctic-build -- bash "/mnt/d/WORK_YT/project arctic/tools/wsl/build-image
 wsl -d arctic-build -- bash "/mnt/d/WORK_YT/project arctic/tools/arctic/make-update.sh" --windows --host --boot
 ```
 
-потім перезавантаження.
+потім перезавантаження. Із bash Claude Code (він уже в arctic-build) — ті
+самі скрипти напряму, ReactOS — через `python3 tools/arctic/wsl.py -d
+arctic-ros -u root -- bash tools/wsl/build-reactos.sh`.
 
 ### Реєстр після обриву живлення (RegBack)
 
@@ -149,8 +167,8 @@ vm-test тепер вимикає й встановлений диск кноп�
 
 - У меню живлення «Оновити та перезавантажити» / «Оновити та завершити
   роботу», коли пакет готовий.
-- PowerShell для Claude Code: справжній PowerShell 7 замість заглушки Wine
-  (або вимкнути інструмент PowerShell, коли є bash).
+- PowerShell 7 в образі (поки — `install-pwsh.sh`), powershell.exe → pwsh
+  замість заглушки Wine; таблиця перед `exit` (див. вище).
 
 ## Порядок
 

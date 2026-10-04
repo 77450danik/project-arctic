@@ -1,0 +1,20 @@
+# PowerShell 7 (the win-x64 zip, in C:\Program Files\PowerShell\7) under
+# Arctic: what Claude Code's PowerShell tool runs - a command line, a
+# pipeline, a file listing, the exit code. Output also goes to C:\pwsh-test.txt.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd
+key ret
+sleep 4
+type "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -Command "$PSVersionTable.PSVersion.ToString(); Get-ChildItem C:\ | Select-Object -First 3 Name; (1..5 | Measure-Object -Sum).Sum; Get-Process | Measure-Object | ForEach-Object Count; exit 7" > C:\pwsh-test.txt 2>&1
+key ret
+sleep 90
+type echo exit=%errorlevel% & type C:\pwsh-test.txt
+key ret
+sleep 3
+shot w5-pwsh

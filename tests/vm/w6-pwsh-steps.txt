@@ -1,0 +1,18 @@
+# PowerShell 7 under Arctic, step by step (C:\t.ps1 writes C:\pwsh-steps.txt)
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd
+key ret
+sleep 4
+type "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -File C:\t.ps1 > C:\pwsh-out.txt 2> C:\pwsh-err.txt
+key ret
+sleep 100
+type echo exit=%errorlevel%
+key ret
+sleep 2
+shot w6-pwsh
