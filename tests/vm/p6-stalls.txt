@@ -1,0 +1,22 @@
+# Stalls on a slow stick (vm-test.py --usb --stick-write 2.3 --disk out/test-local/tools.img):
+# tests/tools/reglat.exe from the tools disk (D:) for 120 s, its result in Notepad.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type D:\reglat.exe 120
+key ret
+sleep 130
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type notepad C:\Users\Public\reglat.txt
+key ret
+sleep 5
+shot p6-stalls

@@ -1,0 +1,115 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 4 Oct 2026 17:30:00 +0200
+Subject: [PATCH] server: Save the registry in a child, every WINE_REGISTRY_SAVE_PERIOD seconds.
+
+On a stick that keeps what is written the hives live on C: and are
+replaced through fsync (0056). A cheap stick writes 2-3 MB/s and takes
+seconds over a synced write, and wineserver, which serves every NT call,
+waited for each periodic save of system.reg (3 MB): the whole desktop
+froze every 30 s. The periodic save now runs in a forked child, on the
+registry as it is at that moment; what changes afterwards is dirty
+again for the next save. Only one child at a time. Shutting down
+(flush_registry) waits for a running child before its own save, which
+stays synchronous.
+
+WINE_REGISTRY_SAVE_PERIOD sets how often, in seconds: on a slow stick
+seldom (what a stick pulled out loses), 30 s otherwise.
+---
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -34,8 +34,10 @@
+ #include <stdarg.h>
+ #include <string.h>
+ #include <stdlib.h>
++#include <signal.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
++#include <sys/wait.h>
+ #include <unistd.h>
+ #ifdef HAVE_SYS_PERSONALITY_H
+ #include <sys/personality.h>
+@@ -125,7 +127,8 @@
+ static struct key *root_key;
+
+ static const timeout_t ticks_1601_to_1970 = (timeout_t)86400 * (369 * 365 + 89) * TICKS_PER_SEC;
+-static const timeout_t save_period = 30 * -TICKS_PER_SEC;  /* delay between periodic saves */
++static timeout_t save_period = 30 * -TICKS_PER_SEC;  /* delay between periodic saves */
++static pid_t save_child;  /* Arctic: the periodic save running in a child */
+ static struct timeout_user *save_timeout_user;  /* saving timer */
+ static enum prefix_type { PREFIX_UNKNOWN, PREFIX_32BIT, PREFIX_64BIT } prefix_type;
+
+@@ -1865,6 +1868,11 @@
+                                     .attr = OBJ_PERMANENT, .init_data = &data };
+
+
++    /* Arctic: how often the registry is saved, WINE_REGISTRY_SAVE_PERIOD
++     * seconds; on a slow stick, seldom (what a pulled stick loses) */
++    if ((p = getenv( "WINE_REGISTRY_SAVE_PERIOD" )) && atoi( p ) > 0)
++        save_period = (timeout_t)atoi( p ) * -TICKS_PER_SEC;
++
+     /* switch to the config dir */
+
+     if (fchdir( config_dir_fd ) == -1) fatal_error( "chdir to config dir: %s\n", strerror( errno ));
+@@ -2094,13 +2102,50 @@
+     return ret;
+ }
+
++/* Arctic: is a save in a child still running? */
++static int save_child_running(void)
++{
++    if (save_child && waitpid( save_child, NULL, WNOHANG ) == 0) return 1;
++    save_child = 0;  /* done, or already reaped by the SIGCHLD handler */
++    return 0;
++}
++
+ /* periodic saving of the registry */
+ static void periodic_save( void *arg )
+ {
+     int i;
++    pid_t pid;
+
+-    if (fchdir( config_dir_fd ) == -1) return;
+     save_timeout_user = NULL;
++    /* Arctic: the periodic save runs in a child, on a copy of the registry
++     * as it is at this moment. wineserver serves every NT call, and a save
++     * that waits for a slow stick (3 MB through fsync, seconds) froze the
++     * whole desktop meanwhile. What changes from now on is dirty again and
++     * goes in the next save. */
++    if (save_child_running())
++    {
++        set_periodic_save_timer();
++        return;
++    }
++    if ((pid = fork()) == 0)
++    {
++        signal( SIGTERM, SIG_IGN );  /* the save ends what it began; shutting down waits for it */
++        signal( SIGINT, SIG_IGN );
++        signal( SIGHUP, SIG_IGN );
++        if (fchdir( config_dir_fd ) == -1) _exit( 1 );
++        for (i = 0; i < save_branch_count; i++)
++            save_branch( save_branch_info[i].key, save_branch_info[i].filename );
++        _exit( 0 );
++    }
++    if (pid > 0)
++    {
++        save_child = pid;
++        for (i = 0; i < save_branch_count; i++) make_clean( save_branch_info[i].key );
++        set_periodic_save_timer();
++        return;
++    }
++    /* no child: saved here, as before */
++    if (fchdir( config_dir_fd ) == -1) return;
+     for (i = 0; i < save_branch_count; i++)
+         save_branch( save_branch_info[i].key, save_branch_info[i].filename );
+     if (fchdir( server_dir_fd ) == -1) fatal_error( "chdir to server dir: %s\n", strerror( errno ));
+@@ -2119,6 +2164,10 @@
+ {
+     int i;
+
++    /* Arctic: a save still running in a child finishes first, or it could
++     * put its older copy over this one */
++    if (save_child_running()) waitpid( save_child, NULL, 0 );
++    save_child = 0;
+     if (fchdir( config_dir_fd ) == -1) return;
+     for (i = 0; i < save_branch_count; i++)
+     {

@@ -1,0 +1,32 @@
+# A slow stick (vm-test.py --usb --stick-write 2.3): a file and a registry
+# value written, then Start -> Завершення роботи... at once. The changes are
+# still in memory; shutting down shows Windows' "Завершення роботи" while it
+# writes them out. p1-read.txt then finds them.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd /c echo Arctic keeps this file> C:\Users\Public\persist.txt
+key ret
+sleep 3
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type reg add HKCU\Software\ArcticTest /v Kept /d "the registry stays" /f
+key ret
+sleep 3
+move 27 789
+click
+sleep 2
+move 120 757
+click                         # Завершення роботи...
+sleep 3
+key ret
+burst p6-shutting-down 12 400
+sleep 60

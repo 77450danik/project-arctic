@@ -38,6 +38,8 @@ parser.add_argument("--usb", action="store_true",
                     help="the image is a USB stick, not a CD; what it writes stays for the next start")
 parser.add_argument("--stick-size", default="8G", help="how big the stick is (--usb)")
 parser.add_argument("--fresh", action="store_true", help="start from a freshly written stick (--usb)")
+parser.add_argument("--stick-write", type=float, default=0,
+                    help="MB/s the stick writes at, for a slow one (--usb); 20 writes a second at most")
 parser.add_argument("--pull", action="store_true",
                     help="end by pulling the stick out (QEMU killed) instead of the power button (--usb)")
 parser.add_argument("--no-reboot", action="store_true", help="QEMU exits when the guest restarts")
@@ -92,8 +94,13 @@ if args.usb:
                         "-b", os.path.abspath(args.iso), "-F", "raw", stick, args.stick_size], check=True)
         open(stick + ".src", "w").write(built)
         print("a freshly written %s stick" % args.stick_size)
+    # --stick-write: a stick as slow to write as a cheap one (the ADATA that
+    # froze: 2.3 MB/s, and few writes a second)
+    slow = ""
+    if args.stick_write:
+        slow = ",throttling.bps-write=%d,throttling.iops-write=20" % (args.stick_write * 1000000)
     # --append boots the kernel directly, which takes boot index 0 itself
-    cmd += ["-drive", "if=none,id=usbdisk,format=qcow2,file=" + stick,
+    cmd += ["-drive", "if=none,id=usbdisk,format=qcow2,file=" + stick + slow,
             "-device", "usb-storage,drive=usbdisk,bus=xhci.0" + ("" if args.append else ",bootindex=0")]
 else:
     # the CD boots first even with other disks attached (--disk)

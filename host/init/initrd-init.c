@@ -46,6 +46,7 @@
 #define CDRIVE "/c"        /* C: until it moves into the new root */
 #define HOST_SQFS "/Windows/System32/Host/host.sqfs"
 #define FIRST_START "/Windows/System32/Host/firststart" /* left by make-usb-img.sh: C: grows */
+#define SESSION_MARK "/Windows/System32/config/Host/session" /* there while a session runs */
 #define NTFSCK "/bin/ntfsck"
 #define NTFSRESIZE "/bin/ntfsresize"
 #define TOOL_LOG "/chkdsk.log" /* ends up in C:\Windows\Logs\Arctic */
@@ -485,20 +486,11 @@ static void check_progress(int percent)
 /* A stick pulled out leaves C: marked dirty (the ntfs driver marks it while
  * mounted for writing). It is checked and repaired before it is mounted, as
  * chkdsk does at boot. */
-static void check_c(const char *dev)
+static void check_c_now(const char *dev)
 {
-    char *dirty[] = {NTFSCK, "-C", (char *)dev, NULL};
     char *repair[] = {NTFSCK, "-a", (char *)dev, NULL};
     int rc;
 
-    rc = run_tool(dirty, NULL, NULL);
-    if (rc == 0)
-        return;
-    if (rc < 0 || rc == 127) {
-        say("C: cannot be checked: no ntfsck");
-        return;
-    }
-    say("C: is marked dirty, checking it");
     check_progress(0);
     rc = run_tool(repair, NULL, check_progress);
     check_progress(100);
@@ -506,6 +498,21 @@ static void check_c(const char *dev)
     say("C: checked (ntfsck exit %d: %s)", rc,
         rc == 0 ? "no errors" : rc == 1 ? "errors fixed" : "errors left");
     bootanim_send(anim, "boot");
+}
+
+static void check_c(const char *dev)
+{
+    char *dirty[] = {NTFSCK, "-C", (char *)dev, NULL};
+    int rc = run_tool(dirty, NULL, NULL);
+
+    if (rc == 0)
+        return;
+    if (rc < 0 || rc == 127) {
+        say("C: cannot be checked: no ntfsck");
+        return;
+    }
+    say("C: is marked dirty, checking it");
+    check_c_now(dev);
 }
 
 static uint64_t sys_number(const char *path)
@@ -792,6 +799,8 @@ static void restart_now(void)
 {
     say("restarting into the version now on C:");
     sleep(1); /* the 100 % stays a moment, as in Windows */
+    sync();
+    unlink(CDRIVE SESSION_MARK);
     mount(NULL, CDRIVE, NULL, MS_REMOUNT | MS_RDONLY, NULL);
     umount(CDRIVE);
     sync();
@@ -909,12 +918,25 @@ static void partition_c_drive(void)
         mount_c(C_DEV, 0);
         return;
     }
-    /* Written-to data reaches the stick within seconds, not half a minute:
-     * a stick pulled out loses little, and the kernel's NTFS has no journal */
-    write_file("/proc/sys/vm/dirty_expire_centisecs", "300");
-    write_file("/proc/sys/vm/dirty_writeback_centisecs", "100");
+    /* What is written stays in memory and goes to the stick in the
+     * background, once it is 4 minutes old (checked every 30 s): a cheap
+     * stick writes 2 MB/s and takes seconds over each synced write, and
+     * nothing may wait for it (docs/persistence.md, "Повільна флешка"). A
+     * stick pulled out loses at most the last ~5 minutes; shutting down
+     * writes everything. */
+    write_file("/proc/sys/vm/dirty_expire_centisecs", "24000");
+    write_file("/proc/sys/vm/dirty_writeback_centisecs", "3000");
     check_c(dev);
     mount_c(dev, MS_NOATIME);
+    /* The ntfs driver marks C: dirty only with its first change, and that
+     * mark too waits minutes in memory now: a stick pulled out in that
+     * time looks clean to ntfsck -C. A session mark of our own, written
+     * through at once, tells instead. */
+    if (!access(CDRIVE SESSION_MARK, F_OK) && !umount(CDRIVE)) {
+        say("the last session did not end cleanly");
+        check_c_now(dev);
+        mount_c(dev, MS_NOATIME);
+    }
     if (!access(CDRIVE FIRST_START, F_OK) && !umount(CDRIVE)) {
         int grown = grow_c(dev);
         mount_c(dev, MS_NOATIME);
@@ -923,6 +945,16 @@ static void partition_c_drive(void)
     }
     rmdir(CDRIVE "/lost+found"); /* ntfsck makes one; Windows has none, so it goes while empty */
     keep_tool_log();
+    /* A session that ends cleanly removes this mark (arctic-init) */
+    mkdir(CDRIVE "/Windows/System32/config/Host", 0755);
+    int mark = open(CDRIVE SESSION_MARK, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (mark >= 0) {
+        if (write(mark, "running\n", 8) != 8)
+            say("session mark: %s", strerror(errno));
+        fsync(mark);
+        syncfs(mark);
+        close(mark);
+    }
     if (strstr(cmdline, "arctic.rollback=1"))
         undo_update(dev);
     install_update(dev);

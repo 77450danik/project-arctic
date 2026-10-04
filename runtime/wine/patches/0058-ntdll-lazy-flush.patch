@@ -1,0 +1,29 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Sun, 4 Oct 2026 17:30:00 +0200
+Subject: [PATCH] ntdll: A flush does not wait for a slow stick (WINE_LAZY_FLUSH=1).
+
+With C: on a cheap stick every FlushFileBuffers was an fsync that took
+seconds: browsers flush their profiles all the time, and froze. With
+WINE_LAZY_FLUSH=1 (arctic-init sets it when C: is on a stick) a flush
+returns at once, as with Windows' device policy "Turn off Windows
+write-cache buffer flushing on the device". The kernel writes the data
+out in the background; shutting down writes everything.
+---
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -6893,7 +6893,14 @@
+
+     if (!ret && (type == FD_TYPE_FILE || type == FD_TYPE_DIR || type == FD_TYPE_CHAR))
+     {
+-        if (fsync(fd)) ret = errno_to_status( errno );
++        /* Arctic: on a slow stick (WINE_LAZY_FLUSH) a flush does not wait for
++         * the medium, as with Windows' "Turn off Windows write-cache buffer
++         * flushing on the device": a browser flushing its profile otherwise
++         * waits seconds each time. The kernel writes it out shortly after,
++         * and shutting down writes everything. */
++        static int lazy = -1;
++        if (lazy < 0) lazy = getenv( "WINE_LAZY_FLUSH" ) && *getenv( "WINE_LAZY_FLUSH" ) == '1';
++        if (!lazy && fsync(fd)) ret = errno_to_status( errno );
+         io->Status      = ret;
+         io->Information = 0;
+     }

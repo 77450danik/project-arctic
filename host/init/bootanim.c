@@ -35,6 +35,7 @@ static struct {
     struct image logo;           /* Arctic's */
     struct screen s;
     int attached, simple;        /* on a card; that card is simpledrm (the firmware framebuffer) */
+    int show_error;              /* why the picture could not go on screen, said once */
     uint32_t frames, dim;        /* the spinner: frame count, the side of a frame */
     uint8_t *alpha;              /* frames * dim * dim */
     int cx, cy;                  /* the spinner's middle */
@@ -269,8 +270,16 @@ static void attach(void)
             a.attached = 1;
             draw_background();
             draw_spinner(0);
-            if (screen_show(&a.s))
-                say("card%d: no picture (%s)", i, strerror(errno));
+            /* Someone else still has the display (dwm.exe going away as the
+             * machine shuts down): tried again on the next check */
+            if (screen_show(&a.s)) {
+                if (errno != a.show_error)
+                    say("card%d: no picture yet (%s)", i, strerror(errno));
+                a.show_error = errno;
+                detach();
+                return;
+            }
+            a.show_error = 0;
             say("card%d %ux%u%s", i, a.s.width, a.s.height, simple ? " (firmware framebuffer)" : "");
             return;
         }

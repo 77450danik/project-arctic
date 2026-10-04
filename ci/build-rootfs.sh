@@ -63,6 +63,8 @@ cp "$OUT/initrd/logo.bgra" "$RFS/usr/share/arctic/logo.bgra"
 python "$ROOT/ci/mkfont.py" /usr/share/fonts/noto/NotoSans-Light.ttf "$OUT/initrd/bsod.font"
 # Windows 11's boot spinner, which the boot screen (bootanim.c) draws under the logo
 python "$ROOT/ci/mkspinner.py" "$ROOT/runtime/art/boot/segoe_slboot_ex.ttf" "$OUT/initrd/spinner.bin"
+# and arctic-init's "Завершення роботи" screen
+cp "$OUT/initrd/spinner.bin" "$RFS/usr/share/arctic/spinner.bin"
 cp "$OUT/initrd/bsod.font" "$RFS/usr/share/arctic/bsod.font"
 
 # NT prefix, created by the Wine that ships in this very image

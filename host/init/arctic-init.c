@@ -117,6 +117,11 @@ static void nt_stop(const char *code, const char *what)
 
 static char winedebug[256] = "WINEDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
 static char dev_program[128];                        /* arctic.run= */
+/* C: on a stick: writes go to it in the background, nobody waits for it
+ * (docs/persistence.md, "Повільна флешка"). A flush returns at once (Wine
+ * 0058) and the registry is saved every 4 minutes (0057), in a child. */
+static char lazy_flush[] = "WINE_LAZY_FLUSH=0";
+static char save_period[] = "WINE_REGISTRY_SAVE_PERIOD=30 ";
 
 static char *const nt_env[] = {
     "WINEPREFIX=" PREFIX,
@@ -129,6 +134,8 @@ static char *const nt_env[] = {
      * DXVK would otherwise make of it */
     "DXVK_ENABLE_NVAPI=1",
     winedebug,
+    lazy_flush,
+    save_period,
     "XDG_RUNTIME_DIR=" PREFIX "/xdg",
     "WAYLAND_DISPLAY=" WAYLAND_SOCKET,
     NULL,
@@ -516,13 +523,37 @@ static void save_logs(void)
 }
 
 /* The session asked for it (winlogon.exe): every process goes, then the machine */
+/* every process but this one and the shutdown screen */
+static void kill_all_but(pid_t keep, int signal)
+{
+    DIR *proc = opendir("/proc");
+
+    for (struct dirent *de; proc && (de = readdir(proc));) {
+        pid_t pid = (pid_t)atoi(de->d_name);
+        if (pid > 1 && pid != keep)
+            kill(pid, signal);
+    }
+    if (proc)
+        closedir(proc);
+}
+
 static void power_off(int restart)
 {
+    /* wineserver saves the registry as it goes (its last save waits for any
+     * save still running in a child): on a slow stick that takes its time */
+    double wait_s = c_on_disk ? 120 : 15;
+    pid_t screen = 0;
+
     announce("%s", restart ? "restart" : "shut down");
     kill(-1, SIGTERM);
-    /* wineserver saves the registry as it goes, onto C: through fsync, which
-     * a slow stick takes its time over: it is waited for, the rest is not */
-    for (int i = 0; i < 150; i++) {
+    /* Windows' "Завершення роботи" while everything is written out: on a
+     * slow stick the minutes of changes kept in memory take their time.
+     * dwm.exe has just been told to go and gives the display up. */
+    if (anim >= 0)
+        close(anim);
+    anim = bootanim_start("/usr/share/arctic/spinner.bin", "/usr/share/arctic/logo.bgra", FONT, &screen);
+    bootanim_send(anim, "update %s\t", restart ? "Перезавантаження" : "Завершення роботи");
+    for (int i = 0; i < wait_s * 10; i++) {
         pid_t pid;
         int status;
 
@@ -534,8 +565,8 @@ static void power_off(int restart)
         usleep(100000);
     }
     if (wineserver_pid)
-        say("wineserver did not end in 15 s");
-    kill(-1, SIGKILL);
+        say("wineserver did not end in %.0f s", wait_s);
+    kill_all_but(screen, SIGKILL);
     sync();
     save_logs();
     if (medium_writable > 0)
@@ -560,6 +591,9 @@ static void power_off(int restart)
     close(hostlog);
     close(ntlog);
     hostlog = ntlog = -1;
+    sync();
+    /* the session ended cleanly: the next start needs no check (initrd) */
+    unlink(HOST_STATE "/session");
     sync();
     if (mount(NULL, C_DRIVE, NULL, MS_REMOUNT | MS_RDONLY, NULL))
         say("C: stays writable: %s", strerror(errno));
@@ -1082,6 +1116,10 @@ int main(void)
     struct passwd *pw;
 
     c_on_disk = c_env && !strcmp(c_env, "disk");
+    if (c_on_disk) {
+        lazy_flush[sizeof(lazy_flush) - 2] = '1';
+        snprintf(save_period, sizeof(save_period), "WINE_REGISTRY_SAVE_PERIOD=240");
+    }
     /* The boot screen's command pipe came from the initrd across exec on
      * purpose, but no child may inherit it: the boot screen ends when the
      * last writer closes it. */
