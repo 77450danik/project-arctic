@@ -301,6 +301,7 @@ NTSTATUS WINAPI UserServerDllInitialization( void *server_dll )
     if ((thread = CreateThread( NULL, 0, display_settings_restorer_thread, NULL, 0, NULL ))) CloseHandle( thread );
 
     start_raw_input_thread();
+    start_hung_app_thread();
     SetEvent( ready );
     MESSAGE( "csrss: desktop %ux%u\n", GetSystemMetrics( SM_CXVIRTUALSCREEN ), GetSystemMetrics( SM_CYVIRTUALSCREEN ) );
     return STATUS_SUCCESS;

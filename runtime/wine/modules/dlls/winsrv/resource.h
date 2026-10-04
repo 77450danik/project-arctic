@@ -1,5 +1,5 @@
 /*
- * Arctic window server
+ * Arctic window server resources
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -7,12 +7,8 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
-#ifndef __WINE_WINSRV_PRIVATE_H
-#define __WINE_WINSRV_PRIVATE_H
-
-void start_raw_input_thread(void);
-void start_hung_app_thread(void);
-void set_input_language( HKL layout );
-HKL get_input_language(void);
-
-#endif
+#define IDS_NOT_RESPONDING      1
+#define IDS_HUNG_INSTRUCTION    2
+#define IDS_HUNG_CONTENT        3
+#define IDS_HUNG_CLOSE          4
+#define IDS_HUNG_WAIT           5

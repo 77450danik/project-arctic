@@ -1,6 +1,6 @@
 MODULE    = winsrv.dll
 UNIXLIB   = winsrv.so
-IMPORTS   = rpcrt4 user32 advapi32 win32u
+IMPORTS   = rpcrt4 user32 gdi32 shcore advapi32 win32u
 UNIX_CFLAGS = $(LIBINPUT_CFLAGS) $(UDEV_CFLAGS)
 UNIX_LIBS   = $(LIBINPUT_LIBS) $(UDEV_LIBS)
 
@@ -8,5 +8,7 @@ VER_FILEDESCRIPTION_STR = "Arctic window server"
 
 SOURCES = \
 	desktop.c \
+	hung.c \
 	libinput.c \
-	rit.c
+	rit.c \
+	winsrv.rc

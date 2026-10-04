@@ -1,0 +1,48 @@
+/*
+ * Arctic window server resources
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winnls.h"
+#include "resource.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_NOT_RESPONDING   "%s (Not Responding)"
+    IDS_HUNG_INSTRUCTION "%s is not responding"
+    IDS_HUNG_CONTENT     "If you close the program, you might lose information."
+    IDS_HUNG_CLOSE       "Close the program"
+    IDS_HUNG_WAIT        "Wait for the program to respond"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_NOT_RESPONDING   "%s (Не відповідає)"
+    IDS_HUNG_INSTRUCTION "%s не відповідає"
+    IDS_HUNG_CONTENT     "Якщо закрити програму, незбережені дані може бути втрачено."
+    IDS_HUNG_CLOSE       "Закрити програму"
+    IDS_HUNG_WAIT        "Дочекатися відповіді програми"
+}
+
+LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_NOT_RESPONDING   "%s (Не отвечает)"
+    IDS_HUNG_INSTRUCTION "%s не отвечает"
+    IDS_HUNG_CONTENT     "При закрытии программы возможна потеря данных."
+    IDS_HUNG_CLOSE       "Закрыть программу"
+    IDS_HUNG_WAIT        "Дождаться отклика программы"
+}

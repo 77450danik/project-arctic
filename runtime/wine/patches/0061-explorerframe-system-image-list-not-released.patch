@@ -1,0 +1,33 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 5 Oct 2026 12:00:00 +0200
+Subject: [PATCH] explorerframe: The system image list is not released.
+
+The navigation pane of the file dialogs showed one item, Favorites: the
+tree stopped drawing at the first icon. get_icon() took what
+SHGetFileInfoW(SHGFI_SYSICONINDEX) returns for an IImageList it holds a
+reference to and released it, as Wine's shell32 has it. ReactOS's shell32,
+Arctic's, returns the system image list as Windows does, a plain
+HIMAGELIST: its first field is no vtable, and the release called through
+a NULL entry; win32u swallowed the exception in the tree's paint.
+---
+diff --git a/dlls/explorerframe/nstc.c b/dlls/explorerframe/nstc.c
+index ffc512d..1ef5888 100644
+--- a/dlls/explorerframe/nstc.c
++++ b/dlls/explorerframe/nstc.c
+@@ -318,10 +318,13 @@ static int get_icon(LPCITEMIDLIST lpi, UINT extra_flags)
+ {
+     SHFILEINFOW sfi;
+     UINT flags = SHGFI_PIDL | SHGFI_SYSICONINDEX | SHGFI_SMALLICON;
+-    IImageList *list;
+ 
+-    list = (IImageList *)SHGetFileInfoW((LPCWSTR)lpi, 0 ,&sfi, sizeof(SHFILEINFOW), flags | extra_flags);
+-    if (list) IImageList_Release(list);
++    /* The system image list comes back, as in Windows, not a reference to
++     * it: ReactOS's shell32 hands out a plain HIMAGELIST, which is no
++     * IImageList, and releasing it called through a NULL vtable entry on
++     * every item the tree drew. */
++    sfi.iIcon = 0;
++    SHGetFileInfoW((LPCWSTR)lpi, 0 ,&sfi, sizeof(SHFILEINFOW), flags | extra_flags);
+     return sfi.iIcon;
+ }
+ 

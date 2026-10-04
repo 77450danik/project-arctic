@@ -1562,8 +1562,12 @@ int main(void)
     /* A Wine newer than what C:'s registry was made with (an update) makes
      * wineboot bring it up to date: Windows' "getting ready" after updates.
      * Without Mono and Gecko it must not offer to download them: that dialog
-     * has no screen yet and waited for ever (the start hung). */
-    char *wineboot[] = {"/usr/bin/wine", "wineboot.exe", NULL};
+     * has no screen yet and waited for ever (the start hung).
+     * -r: the Run keys and the Startup folder are explorer's, at logon, as in
+     * Windows; wineboot started them too, before the session, and each program
+     * ran twice (two Antigravity IDEs on one profile: its webviews found the
+     * Service Worker store taken and could not register theirs). */
+    char *wineboot[] = {"/usr/bin/wine", "wineboot.exe", "-r", NULL};
     char stamp[32] = "";
     struct stat inf;
     int updating = 0;
@@ -1574,8 +1578,8 @@ int main(void)
         bootanim_send(anim, "status Підготовка системи");
         updating = 1;
     }
-    /* Only then: wineboot also starts the Run keys' programs, which keep
-     * the variable, and a .NET program without mscoree loads no assembly */
+    /* Only then: the programs of HKLM\RunOnce, which wineboot still starts,
+     * keep the variable, and a .NET program without mscoree loads no assembly */
     if (updating)
         snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=mscoree,mshtml=");
     int rc = run(wineboot, 1, ntlog, 300);

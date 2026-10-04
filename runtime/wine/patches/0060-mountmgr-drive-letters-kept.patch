@@ -1,0 +1,100 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 5 Oct 2026 10:00:00 +0200
+Subject: [PATCH] mountmgr.sys: A volume keeps its drive letter from one start to the next.
+
+The letters went to the volumes in the order the host found them, which
+changes from start to start: the project folder, the WSL disk and the
+programs registered at their paths (HKCU Run) moved between D:, E: and F:.
+Windows keeps every volume's letter in MountedDevices; Wine's id there is
+the host's mount point (/run/arctic/drives/sdb2), and the host's names for
+disks change too. So a volume the host names by its partition GUID keeps
+its letter in HKLM\System\Arctic\DriveLetters, "{guid}" = "D:", and gets
+it back when nothing else has taken it.
+---diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
+index 51e3cb1..5b7d817 100644
+--- a/dlls/mountmgr.sys/device.c
++++ b/dlls/mountmgr.sys/device.c
+@@ -1272,6 +1272,62 @@ NTSTATUS remove_volume( const char *udi )
+ }
+ 
+ 
++/* Arctic: a volume keeps its letter from one start to the next, as Windows
++ * keeps it in MountedDevices. The host names disks (sdb2) in the order it
++ * finds them, which changes from start to start, so the volume is known by
++ * the GUID of its partition here. */
++static const WCHAR drive_letters_keyW[] = L"System\\Arctic\\DriveLetters";
++
++static void drive_letter_name( const GUID *guid, WCHAR *name, unsigned int size )
++{
++    swprintf( name, size, L"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", (unsigned int)guid->Data1,
++              guid->Data2, guid->Data3, guid->Data4[0], guid->Data4[1], guid->Data4[2], guid->Data4[3],
++              guid->Data4[4], guid->Data4[5], guid->Data4[6], guid->Data4[7] );
++}
++
++/* the letter the volume had, unless another volume has it by now */
++static int remembered_drive_letter( const GUID *guid, const char *udi )
++{
++    struct dos_drive *drive;
++    WCHAR name[40], value[4];
++    DWORD size = sizeof(value) - sizeof(WCHAR), type;
++    HKEY key;
++    int letter = -1;
++
++    if (!guid) return -1;
++    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, KEY_QUERY_VALUE, &key )) return -1;
++    drive_letter_name( guid, name, ARRAY_SIZE(name) );
++    if (!RegQueryValueExW( key, name, NULL, &type, (BYTE *)value, &size ) && type == REG_SZ && size)
++    {
++        if (value[0] >= 'a' && value[0] <= 'z') letter = value[0] - 'a';
++        else if (value[0] >= 'A' && value[0] <= 'Z') letter = value[0] - 'A';
++    }
++    RegCloseKey( key );
++    /* A: and B: are floppies, C: is the system's own */
++    if (letter < 3) return -1;
++
++    LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
++    {
++        if (udi && drive->volume->udi && !strcmp( udi, drive->volume->udi )) return -1;
++        if (drive->drive == letter) return -1;
++    }
++    return letter;
++}
++
++static void remember_drive_letter( const GUID *guid, int letter )
++{
++    WCHAR name[40], value[] = L"A:";
++    HKEY key;
++
++    if (!guid || RegCreateKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, NULL, 0, KEY_SET_VALUE, NULL,
++                                  &key, NULL ))
++        return;
++    value[0] += letter;
++    drive_letter_name( guid, name, ARRAY_SIZE(name) );
++    RegSetValueExW( key, name, 0, REG_SZ, (const BYTE *)value, sizeof(value) );
++    RegCloseKey( key );
++}
++
+ /* create a new dos drive */
+ NTSTATUS add_dos_device( int letter, const char *udi, const char *unix_device,
+                          const char *mount_point, enum device_type type, const GUID *guid,
+@@ -1283,10 +1339,12 @@ NTSTATUS add_dos_device( int letter, const char *udi, const char *unix_device,
+     struct volume *volume;
+     int notify = -1;
+     char dosdev[] = "a::";
++    const GUID *partition = guid; /* what the host named the volume by, if anything */
+ 
+     EnterCriticalSection( &device_section );
+     volume = find_matching_volume( udi, unix_device, mount_point, type );
+ 
++    if (letter == -1) letter = remembered_drive_letter( partition, udi );
+     if (letter == -1)  /* auto-assign a letter */
+     {
+         struct add_drive_params params = { unix_device, type, &letter };
+@@ -1333,6 +1391,7 @@ found:
+         MOUNTMGR_CALL( set_dosdev_symlink, &params );
+     }
+     set_volume_info( volume, drive, unix_device, mount_point, type, guid, label, NULL );
++    remember_drive_letter( partition, drive->drive );
+ 
+     TRACE( "added device %c: udi %s for %s on %s type %u\n",
+            'a' + drive->drive, debugstr_a(udi), debugstr_a(unix_device),

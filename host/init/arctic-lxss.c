@@ -52,6 +52,7 @@
 #define LOCK ROOTS "/.lock"
 #define NT_USER "nt"
 #define MAX_NBD 16
+#define ATTACH_SECONDS 120 /* a VHDX log to replay on a slow disk takes a while */
 
 /* the protocol, shared with programs/wsl/main.c */
 #define MAGIC "ARCTLXS1"
@@ -93,6 +94,80 @@ static int run(char *const argv[])
     if (pid < 0 || waitpid(pid, &status, 0) < 0)
         return -1;
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+static int running(pid_t pid);
+
+/* run(), for so many seconds at most: -2 when it took longer and was ended */
+static int run_for(char *const argv[], int seconds)
+{
+    int status;
+    pid_t pid = fork();
+
+    if (!pid) {
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, 0);
+        execv(argv[0], argv);
+        _exit(127);
+    }
+    if (pid < 0)
+        return -1;
+    for (int i = 0; i < seconds * 10; i++) {
+        pid_t done = waitpid(pid, &status, WNOHANG);
+        if (done == pid)
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        if (done < 0)
+            return -1;
+        usleep(100000);
+    }
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    return -2;
+}
+
+/* the processes started with this argument, signalled when sig is not 0 */
+static int signal_by_argument(const char *arg, int sig)
+{
+    char path[64], cmdline[4096];
+    DIR *proc = opendir("/proc");
+    int found = 0;
+
+    for (struct dirent *de; proc && (de = readdir(proc));) {
+        if (!isdigit((unsigned char)de->d_name[0]))
+            continue;
+        snprintf(path, sizeof(path), "/proc/%s/cmdline", de->d_name);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        ssize_t n = fd >= 0 ? read(fd, cmdline, sizeof(cmdline) - 1) : -1;
+        if (fd >= 0)
+            close(fd);
+        if (n <= 0 || !running((pid_t)atoi(de->d_name)))
+            continue;
+        cmdline[n] = 0;
+        for (char *p = cmdline; p < cmdline + n; p += strlen(p) + 1)
+            if (!strcmp(p, arg)) {
+                if (sig)
+                    kill((pid_t)atoi(de->d_name), sig);
+                found++;
+                break;
+            }
+    }
+    if (proc)
+        closedir(proc);
+    return found;
+}
+
+/* qemu-nbd --fork serves from a daemon that is not our child, and its pid
+ * file comes only once the disk is attached: its own socket names it.
+ * SIGTERM first, so that it closes the VHDX as it should. */
+static void end_by_argument(const char *arg)
+{
+    for (int sig = SIGTERM; sig; sig = sig == SIGTERM ? SIGKILL : 0) {
+        if (!signal_by_argument(arg, sig))
+            return;
+        /* 10 s to write it out; the main process reaps it, a zombie has ended */
+        for (int i = 0; i < 100 && signal_by_argument(arg, 0); i++)
+            usleep(100000);
+    }
 }
 
 static void make_dirs(const char *path)
@@ -249,6 +324,252 @@ static void write_text(const char *path, const char *text)
     }
 }
 
+/* ---- the log of a VHDX ----
+ *
+ * qemu's search of the log (block/vhdx-log.c, vhdx_log_search) never ends
+ * when the active sequence wraps round the end of the circular log and ends
+ * right before its own start: the scan starts there again and again, and
+ * qemu-nbd spins for ever. Windows leaves such logs. So a log that is not
+ * empty is replayed here first, as the VHDX specification has it: from the
+ * tail the head entry names up to the head, then a header with an empty log
+ * in the other slot. Everything is checked before anything is written. */
+
+#define VHDX_SECTOR 4096
+#define VHDX_MAX_LOG (64u << 20)
+
+static uint64_t get64le(const unsigned char *p)
+{
+    uint64_t v = 0;
+
+    for (int i = 7; i >= 0; i--)
+        v = v << 8 | p[i];
+    return v;
+}
+
+static uint32_t get32le(const unsigned char *p)
+{
+    return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static void put64le(unsigned char *p, uint64_t v)
+{
+    for (int i = 0; i < 8; i++, v >>= 8)
+        p[i] = (unsigned char)v;
+}
+
+/* CRC-32C, with the checksum field at zero_at counted as 0 */
+static uint32_t crc32c(const unsigned char *buf, size_t len, size_t zero_at)
+{
+    static uint32_t table[256];
+    uint32_t c = 0xffffffff;
+
+    if (!table[1])
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t t = i;
+            for (int k = 0; k < 8; k++)
+                t = t & 1 ? 0x82f63b78 ^ (t >> 1) : t >> 1;
+            table[i] = t;
+        }
+    for (size_t i = 0; i < len; i++)
+        c = table[(c ^ (i >= zero_at && i < zero_at + 4 ? 0 : buf[i])) & 0xff] ^ (c >> 8);
+    return ~c;
+}
+
+static int pread_all(int fd, void *buf, size_t len, off_t off)
+{
+    for (size_t done = 0; done < len;) {
+        ssize_t n = pread(fd, (char *)buf + done, len - done, off + (off_t)done);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR)
+                continue;
+            return -1;
+        }
+        done += (size_t)n;
+    }
+    return 0;
+}
+
+static int pwrite_all(int fd, const void *buf, size_t len, off_t off)
+{
+    for (size_t done = 0; done < len;) {
+        ssize_t n = pwrite(fd, (const char *)buf + done, len - done, off + (off_t)done);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR)
+                continue;
+            return -1;
+        }
+        done += (size_t)n;
+    }
+    return 0;
+}
+
+/* The entry at byte at of the log, read round the circular buffer, when it
+ * is a whole and valid one of this log: its length, else 0 */
+static uint32_t log_entry(const unsigned char *log, uint32_t log_len, uint32_t at, const unsigned char *guid,
+                          unsigned char **entry)
+{
+    uint32_t len = get32le(log + at + 8);
+    unsigned char *e;
+
+    if (memcmp(log + at, "loge", 4) || !len || len > log_len || len % VHDX_SECTOR)
+        return 0;
+    if (!(e = malloc(len)))
+        return 0;
+    for (uint32_t i = 0; i < len; i += VHDX_SECTOR)
+        memcpy(e + i, log + (at + i) % log_len, VHDX_SECTOR);
+    if (memcmp(e + 32, guid, 16) || get32le(e + 4) != crc32c(e, len, 4) ||
+        64 + 32 * (uint64_t)get32le(e + 24) > len) {
+        free(e);
+        return 0;
+    }
+    *entry = e;
+    return len;
+}
+
+/* The writes of one entry: checked only, or done */
+static int replay_entry(int fd, const unsigned char *e, uint32_t len, int apply)
+{
+    static const unsigned char zeros[65536];
+    uint64_t seq = get64le(e + 16);
+    uint32_t count = get32le(e + 24);
+    uint32_t data_at = (64 + 32 * count + VHDX_SECTOR - 1) / VHDX_SECTOR * VHDX_SECTOR;
+    unsigned char sector[VHDX_SECTOR];
+    struct stat st;
+
+    for (uint32_t i = 0; i < count; i++) {
+        const unsigned char *d = e + 64 + 32 * i;
+        uint64_t offset = get64le(d + 16);
+
+        if (get64le(d + 24) != seq || offset % VHDX_SECTOR)
+            return -1;
+        if (!memcmp(d, "desc", 4)) {
+            const unsigned char *data = e + data_at;
+            if (data_at + VHDX_SECTOR > len || memcmp(data, "data", 4) ||
+                ((uint64_t)get32le(data + 4) << 32 | get32le(data + 4092)) != seq)
+                return -1;
+            memcpy(sector, d + 8, 8);               /* the leading bytes */
+            memcpy(sector + 8, data + 8, 4084);
+            memcpy(sector + 4092, d + 4, 4);        /* the trailing bytes */
+            if (apply && pwrite_all(fd, sector, VHDX_SECTOR, (off_t)offset))
+                return -1;
+            data_at += VHDX_SECTOR;
+        } else if (!memcmp(d, "zero", 4)) {
+            uint64_t length = get64le(d + 8);
+            if (length % VHDX_SECTOR)
+                return -1;
+            for (uint64_t done = 0; apply && done < length; done += sizeof(zeros))
+                if (pwrite_all(fd, zeros, (size_t)(length - done < sizeof(zeros) ? length - done : sizeof(zeros)),
+                               (off_t)(offset + done)))
+                    return -1;
+        } else
+            return -1;
+    }
+    /* the file is as long as the entry says, at least */
+    uint64_t last = get64le(e + 56);
+    if (apply && !fstat(fd, &st) && (uint64_t)st.st_size < last &&
+        ftruncate(fd, (off_t)((last + (1u << 20) - 1) & ~(uint64_t)((1u << 20) - 1))))
+        return -1;
+    return 0;
+}
+
+/* 0 when the log is empty or has been replayed (or is qemu's to judge),
+ * -1 when the disk is better left alone */
+static int replay_vhdx_log(const char *path, const char *name, char *err, size_t err_len)
+{
+    static const unsigned char no_guid[16];
+    unsigned char header[2][VHDX_SECTOR], *log = NULL, *head = NULL, *e;
+    uint32_t log_len, at, len, starts[VHDX_MAX_LOG / VHDX_SECTOR / 2], count = 0, head_at = 0;
+    uint64_t head_seq = 0;
+    int fd, cur = -1, ret = -1;
+
+    if ((fd = open(path, O_RDWR | O_CLOEXEC)) < 0)
+        return 0;
+    for (int i = 0; i < 2; i++) {
+        if (pread_all(fd, header[i], VHDX_SECTOR, 0x10000 * (i + 1)) || memcmp(header[i], "head", 4) ||
+            get32le(header[i] + 4) != crc32c(header[i], VHDX_SECTOR, 4))
+            continue;
+        if (cur < 0 || get64le(header[i] + 8) > get64le(header[cur] + 8))
+            cur = i;
+    }
+    log_len = cur < 0 ? 0 : get32le(header[cur] + 68);
+    if (cur < 0 || !memcmp(header[cur] + 48, no_guid, 16) || !log_len || log_len % VHDX_SECTOR ||
+        log_len > VHDX_MAX_LOG || !(log = malloc(log_len)) ||
+        pread_all(fd, log, log_len, (off_t)get64le(header[cur] + 72))) {
+        ret = 0;
+        goto done;
+    }
+
+    /* the head: the valid entry with the highest sequence number */
+    for (at = 0; at < log_len; at += VHDX_SECTOR) {
+        if (!log_entry(log, log_len, at, header[cur] + 48, &e))
+            continue;
+        if (!head || get64le(e + 16) > head_seq) {
+            free(head);
+            head = e;
+            head_seq = get64le(e + 16);
+            head_at = at;
+        } else
+            free(e);
+    }
+    if (!head) { /* nothing to replay: qemu's search ends on a log like that */
+        ret = 0;
+        goto done;
+    }
+
+    /* the active sequence, from the tail the head names up to the head */
+    at = get32le(head + 12);
+    for (uint64_t seq = 0; at % VHDX_SECTOR == 0 && at < log_len && count < sizeof(starts) / sizeof(*starts);) {
+        if (!(len = log_entry(log, log_len, at, header[cur] + 48, &e)))
+            break;
+        uint64_t s = get64le(e + 16);
+        int fits = (!count || s == seq + 1) && !replay_entry(fd, e, len, 0);
+        free(e);
+        if (!fits)
+            break;
+        starts[count++] = at;
+        seq = s;
+        if (at == head_at && s == head_seq)
+            goto replay;
+        at = (at + len) % log_len;
+    }
+    snprintf(err, err_len, "%s: the log of its disk is damaged", name);
+    goto done;
+
+replay:
+    for (uint32_t i = 0; i < count; i++) {
+        len = log_entry(log, log_len, starts[i], header[cur] + 48, &e);
+        int failed = !len || replay_entry(fd, e, len, 1);
+        free(e);
+        if (failed) {
+            snprintf(err, err_len, "%s: replaying the log of its disk: %s", name, strerror(errno));
+            goto done;
+        }
+    }
+    if (fsync(fd)) {
+        snprintf(err, err_len, "%s: replaying the log of its disk: %s", name, strerror(errno));
+        goto done;
+    }
+    /* the other slot gets the next header, with an empty log */
+    put64le(header[cur] + 8, get64le(header[cur] + 8) + 1);
+    memset(header[cur] + 48, 0, 16);
+    memset(header[cur] + 4, 0, 4);
+    uint32_t crc = crc32c(header[cur], VHDX_SECTOR, 4);
+    for (int i = 0; i < 4; i++)
+        header[cur][4 + i] = (unsigned char)(crc >> 8 * i);
+    if (pwrite_all(fd, header[cur], VHDX_SECTOR, 0x10000 * (2 - cur)) || fsync(fd)) {
+        snprintf(err, err_len, "%s: a header for its disk: %s", name, strerror(errno));
+        goto done;
+    }
+    say("%s: replayed %u entries of the log of %s", name, count, path);
+    ret = 0;
+
+done:
+    free(head);
+    free(log);
+    close(fd);
+    return ret;
+}
+
 /* The VHDX on /dev/nbdN, its ext4 under /run/lxss/<name> with /proc, /sys,
  * /dev, the drives and the host's DNS servers */
 static int attach(const char *name, const char *vhdx_win, char *err, size_t err_len)
@@ -284,6 +605,8 @@ static int attach(const char *name, const char *vhdx_win, char *err, size_t err_
     }
     if (d)
         closedir(d);
+    if (replay_vhdx_log(vhdx, name, err, err_len))
+        return -1;
     if (access("/sys/module/nbd", F_OK)) {
         char *modprobe[] = {"/usr/bin/modprobe", "nbd", "nbds_max=16", "max_part=0", NULL};
         run(modprobe);
@@ -303,8 +626,17 @@ static int attach(const char *name, const char *vhdx_win, char *err, size_t err_
     snprintf(arg_sock, sizeof(arg_sock), "--socket=" ROOTS "/%s.sock", name);
     char *qemu_nbd[] = {"/usr/bin/qemu-nbd", arg_dev, "--format=vhdx", "--cache=writeback", "--discard=unmap",
                         "--fork",            arg_pid, arg_sock,        vhdx,                NULL};
-    if (run(qemu_nbd)) {
-        snprintf(err, err_len, "qemu-nbd could not attach %s", vhdx_win);
+    /* it holds the lock of every distribution meanwhile: a qemu-nbd that
+     * never gets the disk attached must not hang every wsl.exe after it */
+    int attached = run_for(qemu_nbd, ATTACH_SECONDS);
+    if (attached) {
+        if (attached == -2) {
+            end_by_argument(arg_sock);
+            snprintf(err, err_len, "qemu-nbd did not attach %s in %d s", vhdx_win, ATTACH_SECONDS);
+        } else
+            snprintf(err, err_len, "qemu-nbd could not attach %s", vhdx_win);
+        snprintf(path, sizeof(path), ROOTS "/%s.sock", name);
+        unlink(path);
         return -1;
     }
     snprintf(path, sizeof(path), "/sys/block/nbd%d/size", nbd);
