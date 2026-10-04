@@ -80,15 +80,24 @@ if [ "$WINDOWS" = 1 ]; then
     printf '  %s\n' "${changed[@]}"
     if [ ${#changed[@]} -gt 0 ] && [ "$LIVE" = 1 ]; then
         # Linux replaces a file a process has open: the process keeps the old
-        # one, the next one to start takes the new
+        # one, the next one to start takes the new. Not so the KnownDLLs: Wine
+        # maps them once at the start (\KnownDlls) and every process takes
+        # that copy, so they stay in the package for the restart
         B="$C/Windows/System32/Host/Live/$(date +%Y%m%d-%H%M%S)"
+        known=0
         for dest in "${changed[@]}"; do
+            case ${dest,,} in
+            system32/shell32.dll|system32/shlwapi.dll)
+                echo "  $dest: a KnownDLL, installed at the restart"
+                known=1
+                continue ;;
+            esac
             mkdir -p "$(dirname "$B/$dest")" "$(dirname "$C/Windows/$dest")"
             [ -e "$C/Windows/$dest" ] && cp -p "$C/Windows/$dest" "$B/$dest"
             mv -f "$U/Windows/$dest" "$C/Windows/$dest.new"
             mv -f "$C/Windows/$dest.new" "$C/Windows/$dest"
         done
-        rm -rf "$U/Windows"
+        [ "$known" = 1 ] && add_part Windows || rm -rf "$U/Windows"
         # arctic-init starts the shell again when it ends
         pkill -x explorer.exe && echo "explorer.exe restarted" || true
         echo "in place now; the files before are in ${B#"$C"}"

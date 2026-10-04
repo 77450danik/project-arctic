@@ -1,0 +1,107 @@
+--- a/base/shell/explorer/lang/en-US.rc
++++ b/base/shell/explorer/lang/en-US.rc
+@@ -62,6 +62,7 @@
+         MENUITEM "&Log Off %s...", IDM_LOGOFF, MFT_STRING, MFS_ENABLED
+         MENUITEM "D&isconnect...", IDM_DISCONNECT, MFT_STRING, MFS_ENABLED
+         MENUITEM "Undock Comput&er", IDM_UNDOCKCOMPUTER, MFT_STRING, MFS_ENABLED
++        MENUITEM "&Restart", IDM_RESTART, MFT_STRING, MFS_ENABLED
+         MENUITEM "Sh&ut Down...", IDM_SHUTDOWN, MFT_STRING, MFS_ENABLED
+     END
+ END
+@@ -232,4 +233,5 @@
+     IDS_INPUT_KEYBOARD "%s keyboard"
+     IDS_INPUT_TOOLTIP "%s\n%s\n\nTo switch input methods, press\nWindows key+Space."
+     IDS_INPUT_SETTINGS "Language preferences"
++    IDS_UPDATE_AND_RESTART "Update and &restart"
+ END
+--- a/base/shell/explorer/lang/ru-RU.rc
++++ b/base/shell/explorer/lang/ru-RU.rc
+@@ -66,6 +66,7 @@
+         MENUITEM "Завер&шение сеанса %s...", IDM_LOGOFF, MFT_STRING, MFS_ENABLED
+         MENUITEM "Отклю&чение...", IDM_DISCONNECT, MFT_STRING, MFS_ENABLED
+         MENUITEM "Блокировать комп&ьютер", IDM_UNDOCKCOMPUTER, MFT_STRING, MFS_ENABLED
++        MENUITEM "&Перезагрузка", IDM_RESTART, MFT_STRING, MFS_ENABLED
+         MENUITEM "В&ыключить компьютер...", IDM_SHUTDOWN, MFT_STRING, MFS_ENABLED
+     END
+ END
+@@ -236,4 +237,5 @@
+     IDS_INPUT_KEYBOARD "%s клавиатура"
+     IDS_INPUT_TOOLTIP "%s\n%s\n\nДля переключения методов ввода нажмите клавиши\nWINDOWS+ПРОБЕЛ."
+     IDS_INPUT_SETTINGS "Настройки языка"
++    IDS_UPDATE_AND_RESTART "Обновить и &перезагрузить"
+ END
+--- a/base/shell/explorer/lang/uk-UA.rc
++++ b/base/shell/explorer/lang/uk-UA.rc
+@@ -66,6 +66,7 @@
+         MENUITEM "Завер&шення сеансу %s...", IDM_LOGOFF, MFT_STRING, MFS_ENABLED
+         MENUITEM "В&имкнення...", IDM_DISCONNECT, MFT_STRING, MFS_ENABLED
+         MENUITEM "Заблокування комп'&ютера", IDM_UNDOCKCOMPUTER, MFT_STRING, MFS_ENABLED
++        MENUITEM "&Перезавантаження", IDM_RESTART, MFT_STRING, MFS_ENABLED
+         MENUITEM "&Завершення роботи...", IDM_SHUTDOWN, MFT_STRING, MFS_ENABLED
+     END
+ END
+@@ -236,4 +237,5 @@
+     IDS_INPUT_KEYBOARD "Клавіатура %s"
+     IDS_INPUT_TOOLTIP "%s\n%s\n\nЩоб змінити метод вводу, натисніть\nсполучення клавіш Windows+ПРОБІЛ."
+     IDS_INPUT_SETTINGS "Мовні параметри"
++    IDS_UPDATE_AND_RESTART "Оновити та &перезавантажити"
+ END
+--- a/base/shell/explorer/resource.h
++++ b/base/shell/explorer/resource.h
+@@ -82,6 +82,8 @@
+ #define IDM_DISCONNECT              5000
+ #define IDM_UNDOCKCOMPUTER          410
+ #define IDM_SHUTDOWN                506
++/* Arctic: restart straight from the menu; an update waiting is installed on the way */
++#define IDM_RESTART                 5030
+ #define IDM_LASTSTARTMENU_SEPARATOR 450
+ 
+ /*******************************************************************************\
+@@ -107,6 +109,7 @@
+ #define IDS_INPUT_KEYBOARD                 597
+ #define IDS_INPUT_TOOLTIP                  598
+ #define IDS_INPUT_SETTINGS                 599
++#define IDS_UPDATE_AND_RESTART             600
+ #define IDS_OPEN_ALL_USERS                 718
+ #define IDS_EXPLORE_ALL_USERS              719
+ #define IDS_PROPERTIES                     720
+--- a/base/shell/explorer/startmnusite.cpp
++++ b/base/shell/explorer/startmnusite.cpp
+@@ -272,8 +272,23 @@
+         if (SHRestricted(REST_NOCLOSE))
+         {
+             DeleteMenu(hMenu, IDM_SHUTDOWN, MF_BYCOMMAND);
++            DeleteMenu(hMenu, IDM_RESTART, MF_BYCOMMAND);
+             uLastItemsCount--;
+         }
++        else
++        {
++            /* Arctic: an update package waits in Host\Update ("ready" is
++             * written last), the next start installs it, as Windows'
++             * "Update and restart" */
++            WCHAR szReady[MAX_PATH], szText[128];
++            GetSystemDirectoryW(szReady, _countof(szReady));
++            StringCchCatW(szReady, _countof(szReady), L"\\Host\\Update\\ready");
++            if (GetFileAttributesW(szReady) != INVALID_FILE_ATTRIBUTES &&
++                LoadStringW(hExplorerInstance, IDS_UPDATE_AND_RESTART, szText, _countof(szText)))
++            {
++                ModifyMenuW(hMenu, IDM_RESTART, MF_BYCOMMAND | MF_STRING, IDM_RESTART, szText);
++            }
++        }
+ 
+         if (uLastItemsCount == 0)
+         {
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -888,6 +888,11 @@
+             case TRAYCMD_SHUTDOWN_DIALOG:
+                 DoExitWindows();
+                 break;
++            case IDM_RESTART:
++                /* winlogon ends the session, arctic-init restarts and the
++                 * next start installs a waiting update */
++                ExitWindowsEx(EWX_REBOOT, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED);
++                break;
+             case TRAYCMD_PRINTERS_AND_FAXES:
+                 if (!SHRestricted(REST_NOSETFOLDERS))
+                     ShowFolder(CSIDL_PRINTERS, FALSE);

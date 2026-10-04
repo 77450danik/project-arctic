@@ -1,0 +1,36 @@
+--- a/dll/win32/shell32/CMakeLists.txt
++++ b/dll/win32/shell32/CMakeLists.txt
+@@ -105,7 +105,10 @@
+     wine/shellreg.c
+     wine/shellstring.c
+     wine/shlmenu.c
+-    wine/shpolicy.c)
++    wine/shpolicy.c
++    wine/arctic_classes.c
++    wine/ebrowser.c
++    wine/fileoperation.c)
+ 
+ set_source_files_properties(${WINE_SOURCE} PROPERTIES COMPILE_DEFINITIONS _CRT_NON_CONFORMING_SWPRINTFS)
+ 
+--- a/dll/win32/shell32/shell32.cpp
++++ b/dll/win32/shell32/shell32.cpp
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "precomp.h"
++#include "wine/arctic_classes.h"
+ 
+ #include "shell32_version.h"
+ 
+@@ -469,7 +470,10 @@
+ 
+     TRACE("CLSID:%s,IID:%s\n", shdebugstr_guid(&rclsid), shdebugstr_guid(&riid));
+ 
+-    hResult = gModule.DllGetClassObject(rclsid, riid, ppv);
++    /* Arctic: ExplorerBrowser and FileOperation, taken from Wine */
++    hResult = Arctic_DllGetClassObject(rclsid, riid, ppv);
++    if (hResult == CLASS_E_CLASSNOTAVAILABLE)
++        hResult = gModule.DllGetClassObject(rclsid, riid, ppv);
+     TRACE("-- pointer to class factory: %p\n", *ppv);
+     return hResult;
+ }
