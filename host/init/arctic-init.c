@@ -50,7 +50,7 @@
 static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
 static int dev_mode, anim = -1, stopped; /* anim: the boot screen's commands (bootanim.h) */
 static pid_t anim_pid;
-static int c_on_disk; /* C: is a partition that keeps what is written (ARCTIC_C=disk from the initrd) */
+static int c_on_disk; /* C: is a partition that keeps what is written (ARCTIC_C=disk or stick, initrd) */
 static uid_t nt_uid;
 static gid_t nt_gid;
 static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid;
@@ -1115,8 +1115,10 @@ int main(void)
     const char *anim_env = getenv("ARCTIC_BOOTANIM"), *c_env = getenv("ARCTIC_C");
     struct passwd *pw;
 
-    c_on_disk = c_env && !strcmp(c_env, "disk");
-    if (c_on_disk) {
+    /* "stick": C: on a USB stick, written in the background; "disk": on an
+     * internal disk (installed), written as any system writes */
+    c_on_disk = c_env && (!strcmp(c_env, "disk") || !strcmp(c_env, "stick"));
+    if (c_env && !strcmp(c_env, "stick")) {
         lazy_flush[sizeof(lazy_flush) - 2] = '1';
         snprintf(save_period, sizeof(save_period), "WINE_REGISTRY_SAVE_PERIOD=240");
     }

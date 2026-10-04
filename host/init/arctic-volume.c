@@ -122,17 +122,17 @@ static int has_holders(const char *dir)
     return held;
 }
 
-/* the host's own devices: loop, device-mapper and zram, and every volume of a
- * disk the host uses: a device-mapper table holds it (C:'s origin) or it is
- * mounted outside DRIVES_DIR (the boot medium, which on a stick written from
- * the ISO is the whole disk and two partitions at once) */
+/* the host's own devices: loop, device-mapper and zram, and what the host
+ * uses: a device-mapper table holds it (C:'s origin) or it is mounted
+ * outside DRIVES_DIR. When that is a whole disk (an ISO written to a stick:
+ * the whole disk and two partitions at once) all of the disk goes; when it
+ * is a partition (C:), that partition, and the rest of the disk keeps its
+ * letters (installed next to D:, D: stays) */
 static int host_device(const char *name)
 {
     char disk[PATH_MAX], part[PATH_MAX + 512], line[1024];
-    dev_t devs[64];
+    dev_t devs[2];
     int n = 0, used = 0;
-    struct dirent *de;
-    DIR *d;
     FILE *f;
 
     if (!strncmp(name, "loop", 4) || !strncmp(name, "dm-", 3) || !strncmp(name, "zram", 4) ||
@@ -144,17 +144,12 @@ static int host_device(const char *name)
     if (read_dev(disk, &devs[n]))
         n++;
     used = has_holders(disk);
-    if ((d = opendir(disk))) {
-        while (!used && n < 64 && (de = readdir(d))) {
-            snprintf(part, sizeof(part), "%s/%s/partition", disk, de->d_name);
-            if (de->d_name[0] == '.' || access(part, F_OK))
-                continue;
-            *strrchr(part, '/') = 0;
-            used = has_holders(part);
-            if (read_dev(part, &devs[n]))
-                n++;
-        }
-        closedir(d);
+    snprintf(part, sizeof(part), "%s/%s/partition", disk, name);
+    if (!access(part, F_OK)) {
+        *strrchr(part, '/') = 0;
+        used |= has_holders(part);
+        if (read_dev(part, &devs[n]))
+            n++;
     }
 
     if ((f = fopen("/proc/self/mountinfo", "re"))) {

@@ -56,6 +56,7 @@
 
 static int kmsg = -1, console = -1, anim = -1, dev_mode, live; /* anim: the boot screen's commands */
 static pid_t anim_pid;
+static int on_stick; /* C: is a partition of a USB disk */
 static char cmdline[4096], root_partuuid[40];
 
 static void say(const char *fmt, ...)
@@ -132,8 +133,33 @@ static int skip_block_device(const char *name)
            !strncmp(name, "dm-", 3);
 }
 
-/* The PARTUUID Linux gives a partition of an MBR disk: the disk signature
- * and the partition number, "1a2b3c4d-02" */
+/* The PARTUUID of a partition of a GPT disk: its unique GUID in the
+ * partition table, as Linux and Windows write it */
+static int gpt_partuuid(int fd, int num, char *out, size_t len)
+{
+    unsigned char hdr[92], e[32];
+    int sector = 512;
+    uint64_t entries;
+    uint32_t count, size;
+
+    ioctl(fd, BLKSSZGET, &sector); /* the table is in logical sectors: 4096 on some disks */
+    if (pread(fd, hdr, sizeof(hdr), sector) != (ssize_t)sizeof(hdr) || memcmp(hdr, "EFI PART", 8))
+        return -1;
+    memcpy(&entries, hdr + 72, 8);
+    memcpy(&count, hdr + 80, 4);
+    memcpy(&size, hdr + 84, 4);
+    if (num < 1 || (uint32_t)num > count || size < 32 ||
+        pread(fd, e, sizeof(e), (off_t)(entries * (uint64_t)sector + (uint64_t)(num - 1) * size)) != (ssize_t)sizeof(e))
+        return -1;
+    /* the first three fields little-endian, the rest as stored */
+    snprintf(out, len, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", e[19], e[18], e[17],
+             e[16], e[21], e[20], e[23], e[22], e[24], e[25], e[26], e[27], e[28], e[29], e[30], e[31]);
+    return 0;
+}
+
+/* The PARTUUID Linux gives a partition: on an MBR disk the disk signature
+ * and the partition number, "1a2b3c4d-02"; on a GPT disk the partition's
+ * GUID (an installed Arctic) */
 static int mbr_partuuid(const char *name, char *out, size_t len)
 {
     char path[PATH_MAX], disk[PATH_MAX], num[16];
@@ -159,9 +185,13 @@ static int mbr_partuuid(const char *name, char *out, size_t len)
     if ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0)
         return -1;
     n = read(fd, mbr, sizeof(mbr));
+    if (n == (ssize_t)sizeof(mbr) && mbr[510] == 0x55 && mbr[511] == 0xaa && mbr[446 + 4] == 0xee) {
+        int rc = gpt_partuuid(fd, atoi(num), out, len); /* the protective MBR of a GPT disk */
+        close(fd);
+        return rc;
+    }
     close(fd);
-    /* no MBR, or the protective one of a GPT disk */
-    if (n != (ssize_t)sizeof(mbr) || mbr[510] != 0x55 || mbr[511] != 0xaa || mbr[446 + 4] == 0xee)
+    if (n != (ssize_t)sizeof(mbr) || mbr[510] != 0x55 || mbr[511] != 0xaa)
         return -1;
     snprintf(out, len, "%08x-%02x", mbr[440] | mbr[441] << 8 | mbr[442] << 16 | (unsigned)mbr[443] << 24, atoi(num));
     return 0;
@@ -918,14 +948,21 @@ static void partition_c_drive(void)
         mount_c(C_DEV, 0);
         return;
     }
-    /* What is written stays in memory and goes to the stick in the
+    /* On a stick what is written stays in memory and goes to it in the
      * background, once it is 4 minutes old (checked every 30 s): a cheap
      * stick writes 2 MB/s and takes seconds over each synced write, and
      * nothing may wait for it (docs/persistence.md, "Повільна флешка"). A
      * stick pulled out loses at most the last ~5 minutes; shutting down
-     * writes everything. */
-    write_file("/proc/sys/vm/dirty_expire_centisecs", "24000");
-    write_file("/proc/sys/vm/dirty_writeback_centisecs", "3000");
+     * writes everything. Installed on an internal disk, Arctic writes as any
+     * system does. */
+    char sys[PATH_MAX], link[PATH_MAX];
+    snprintf(link, sizeof(link), "/sys/class/block/%s", strrchr(dev, '/') + 1);
+    on_stick = realpath(link, sys) && strstr(sys, "/usb");
+    say("C: is on %s", on_stick ? "a USB stick: written in the background" : "an internal disk");
+    if (on_stick) {
+        write_file("/proc/sys/vm/dirty_expire_centisecs", "24000");
+        write_file("/proc/sys/vm/dirty_writeback_centisecs", "3000");
+    }
     check_c(dev);
     mount_c(dev, MS_NOATIME);
     /* The ntfs driver marks C: dirty only with its first change, and that
@@ -1046,7 +1083,7 @@ int main(void)
     snprintf(animenv, sizeof(animenv), "ARCTIC_BOOTANIM=%d:%d", anim, (int)anim_pid);
     char *argv[] = {"/usr/bin/arctic-init", NULL};
     /* arctic-init keeps logs and shuts down by whether C: keeps what is written */
-    char *envp[] = {"PATH=/usr/bin", animenv, root_partuuid[0] && !live ? "ARCTIC_C=disk" : "ARCTIC_C=memory", NULL};
+    char *envp[] = {"PATH=/usr/bin", animenv, !root_partuuid[0] || live ? "ARCTIC_C=memory" : on_stick ? "ARCTIC_C=stick" : "ARCTIC_C=disk", NULL};
     say("handing over to arctic-init");
     execve(argv[0], argv, envp);
     fatal("CRITICAL_PROCESS_DIED", "arctic-init", "exec arctic-init");

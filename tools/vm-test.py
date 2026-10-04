@@ -37,6 +37,7 @@ parser.add_argument("--script", help="input steps to run once the desktop is up 
 parser.add_argument("--usb", action="store_true",
                     help="the image is a USB stick, not a CD; what it writes stays for the next start")
 parser.add_argument("--stick-size", default="8G", help="how big the stick is (--usb)")
+parser.add_argument("--boot-disk", help="boot from this raw disk image as an internal disk, no CD (an installed Arctic)")
 parser.add_argument("--fresh", action="store_true", help="start from a freshly written stick (--usb)")
 parser.add_argument("--stick-write", type=float, default=0,
                     help="MB/s the stick writes at, for a slow one (--usb); 20 writes a second at most")
@@ -75,7 +76,11 @@ cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096",
        "-serial", "file:" + serial, "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]
 if args.no_reboot:
     cmd += ["-no-reboot"]
-if args.usb:
+if args.boot_disk:
+    # an internal disk with Arctic installed (GPT, its own EFI partition)
+    cmd += ["-drive", "if=none,id=bootdisk,format=raw,file=" + os.path.abspath(args.boot_disk),
+            "-device", "virtio-blk-pci,drive=bootdisk,bootindex=0"]
+elif args.usb:
     if args.iso.endswith(".iso") and os.path.exists(os.path.join(ROOT, "out", "arctic-usb.img")):
         args.iso = os.path.join(ROOT, "out", "arctic-usb.img")
     # The stick is a qcow2 layer over the image, as big as --stick-size: what
