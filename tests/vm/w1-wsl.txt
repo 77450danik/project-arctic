@@ -1,0 +1,41 @@
+# WSL in Arctic (docs/updates.md): a copy of arctic-ros' ext4.vhdx on its own
+# NTFS disk, named in C:\ProgramData\Arctic\Lxss\distros.
+#   vm-test.py --boot-disk <install test disk> --uefi --disk <wsl disk> --script tests/vm/w1-wsl.txt
+# wsl.exe lists it and runs a command there, bash.exe works as Git Bash
+# (C:\Users is /c/Users, the exit code comes back), git.exe answers.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd
+key ret
+sleep 4
+type vol D: & vol E: & wsl -l
+key ret
+sleep 3
+type wsl -e uname -sr
+key ret
+sleep 40
+type cd /d C:\Users
+key ret
+sleep 1
+type bash -c "pwd -P; ls /e/WSL /d/WSL; exit 3"
+key ret
+sleep 5
+type echo exit=%errorlevel%
+key ret
+sleep 1
+type git --version
+key ret
+sleep 5
+type wsl -u nobody -e id
+key ret
+sleep 5
+shot w1-wsl
+type wsl --shutdown
+key ret
+sleep 10
+shot w1-shutdown

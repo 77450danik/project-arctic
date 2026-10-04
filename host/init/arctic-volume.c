@@ -122,7 +122,8 @@ static int has_holders(const char *dir)
     return held;
 }
 
-/* the host's own devices: loop, device-mapper and zram, and what the host
+/* the host's own devices: loop, device-mapper, zram and NBD (the WSL disks
+ * arctic-lxss attaches), and what the host
  * uses: a device-mapper table holds it (C:'s origin) or it is mounted
  * outside DRIVES_DIR. When that is a whole disk (an ISO written to a stick:
  * the whole disk and two partitions at once) all of the disk goes; when it
@@ -136,7 +137,7 @@ static int host_device(const char *name)
     FILE *f;
 
     if (!strncmp(name, "loop", 4) || !strncmp(name, "dm-", 3) || !strncmp(name, "zram", 4) ||
-        !strncmp(name, "ram", 3))
+        !strncmp(name, "ram", 3) || !strncmp(name, "nbd", 3))
         return 1;
     if (disk_dir(name, disk))
         return 0;

@@ -50,3 +50,4 @@ pe programs/winlogon main.c security.c
 pe programs/userinit main.c
 pe programs/vktest main.c
 pe programs/dispmode main.c
+pe programs/wsl main.c

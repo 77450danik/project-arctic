@@ -1,0 +1,25 @@
+# WSL in Arctic: a distribution in use when Arctic shuts down
+# (vm-test.py --boot-disk ... --disk <wsl disk> --no-reboot). A file is
+# written into it and a command keeps running there; "Завершення роботи"
+# must end it, unmount the ext4 and let qemu-nbd write the VHDX out first
+# (host.log: "arctic-ros: detached", "arctic-lxss stopped"). The next start
+# finds the file (w3-wsl-read.txt).
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type wsl -e sh -c "date > /root/arctic-was-here; sync; sleep 600"
+key ret
+sleep 40
+move 27 789
+click
+sleep 2
+move 120 757
+click                         # Завершення роботи...
+sleep 3
+key ret
+burst w2-shutting-down 8 500
+sleep 60

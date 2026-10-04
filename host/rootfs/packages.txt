@@ -17,6 +17,9 @@ hwdata
 # Serial shell in development builds; its udhcpc and ip configure wired networks
 busybox
 
+# WSL in Arctic: qemu-nbd attaches the distributions' ext4.vhdx (arctic-lxss)
+qemu-img
+
 # Networking: Wi-Fi association and WPA (iwd, driven over the system bus by
 # the Windows side), the regulatory database, root certificates for TLS
 iwd

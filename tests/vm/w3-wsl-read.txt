@@ -1,0 +1,13 @@
+# After w2-wsl-shutdown.txt: the distribution comes up again and the file
+# written before shutting down is there.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd /k wsl -e cat /root/arctic-was-here
+key ret
+sleep 40
+shot w3-wsl-read

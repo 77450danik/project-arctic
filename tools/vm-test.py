@@ -256,11 +256,11 @@ try:
         vmscript.run(vmscript.Qmp(heads=args.monitors, size=size), open(args.script, encoding="utf-8").read().splitlines())
     subprocess.run([sys.executable, os.path.join(ROOT, "ci", "qmp-shot.py"), "tcp:127.0.0.1:4455",
                     os.path.join(RES, "screen.ppm"), shot], check=False)
-    # A stick is left the way a person leaves it: the power button, then
-    # the machine shuts down by itself. Killing QEMU is pulling it out. A
-    # press in the first seconds of the desktop gets lost (below csrss, it
-    # never sees it), so it is pressed again, as a person would.
-    if args.usb and not args.keep and not args.pull and vm.poll() is None and "dwm ready" in seen:
+    # A stick or an installed disk is left the way a person leaves it: the
+    # power button, then the machine shuts down by itself. Killing QEMU is
+    # pulling the plug. A press in the first seconds of the desktop gets lost
+    # (below csrss, it never sees it), so it is pressed again, as a person would.
+    if (args.usb or args.boot_disk) and not args.keep and not args.pull and vm.poll() is None and "dwm ready" in seen:
         import json
         import socket
         for press in range(1, 5):

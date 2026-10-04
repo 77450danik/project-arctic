@@ -1,0 +1,8 @@
+MODULE    = wsl.exe
+IMPORTS   = ws2_32
+EXTRADLLFLAGS = -mconsole -municode
+
+VER_FILEDESCRIPTION_STR = "Windows Subsystem for Linux"
+
+SOURCES = \
+	main.c

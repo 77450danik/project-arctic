@@ -1,0 +1,9 @@
+MODULE    = git.exe
+IMPORTS   = ws2_32
+EXTRADLLFLAGS = -mconsole -municode
+PARENTSRC = ../wsl
+
+VER_FILEDESCRIPTION_STR = "Git in the Windows Subsystem for Linux"
+
+SOURCES = \
+	main.c

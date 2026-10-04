@@ -1,0 +1,9 @@
+MODULE    = bash.exe
+IMPORTS   = ws2_32
+EXTRADLLFLAGS = -mconsole -municode
+PARENTSRC = ../wsl
+
+VER_FILEDESCRIPTION_STR = "Bash in the Windows Subsystem for Linux"
+
+SOURCES = \
+	main.c

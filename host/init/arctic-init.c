@@ -62,7 +62,7 @@ static pid_t anim_pid;
 static int c_on_disk; /* C: is a partition that keeps what is written (ARCTIC_C=disk or stick, initrd) */
 static uid_t nt_uid;
 static gid_t nt_gid;
-static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid;
+static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid, lxss_pid;
 
 static double uptime(void)
 {
@@ -719,6 +719,15 @@ static void power_off(int restart)
     pid_t screen = 0;
 
     announce("%s", restart ? "restart" : "shut down");
+    /* The WSL distributions go first: their disks are VHDX files on D:,
+     * which qemu-nbd must write out before anything else ends */
+    if (lxss_pid > 0) {
+        kill(lxss_pid, SIGTERM);
+        for (int i = 0; i < 600 && waitpid(lxss_pid, NULL, WNOHANG) == 0; i++)
+            usleep(100000);
+        say("arctic-lxss %s", waitpid(lxss_pid, NULL, WNOHANG) < 0 ? "stopped" : "did not stop in 60 s");
+        lxss_pid = 0;
+    }
     kill(-1, SIGTERM);
     /* Windows' "Завершення роботи" while everything is written out: on a
      * slow stick the minutes of changes kept in memory take their time.
@@ -784,7 +793,10 @@ static void power_off(int restart)
 
 static void child_exited(pid_t pid, int status)
 {
-    if (pid == wineserver_pid) {
+    if (pid == lxss_pid) {
+        say("arctic-lxss exited (status %d)", status);
+        lxss_pid = 0;
+    } else if (pid == wineserver_pid) {
         say("wineserver exited (status %d)", status);
         wineserver_pid = 0;
         nt_stop("CRITICAL_PROCESS_DIED", "wineserver");
@@ -1019,13 +1031,78 @@ static void make_dir(const char *path, mode_t mode, int nt_owned)
         chown(path, nt_uid, nt_gid);
 }
 
+/* RegBack, as Windows keeps one in config\RegBack: the hives of the last
+ * start that came up. wineserver replaces a hive by renaming a new file over
+ * it; when the power goes before that reaches the disk, the check of C:
+ * at the next start can drop both names, and Wine would start with an empty
+ * registry: Windows 10's defaults, Wine's own shell32 in place of
+ * ReactOS', no explorer. */
+#define REG_BACK REG_DIR "/RegBack"
+static const char *const hives[] = {"system.reg", "user.reg", "userdef.reg"};
+static int arctic_registry; /* the registry this start came up with is Arctic's */
+
+static int copy_whole(const char *from, const char *to)
+{
+    char buf[65536];
+    ssize_t n = 0;
+    int in = open(from, O_RDONLY | O_CLOEXEC), out = -1, ok = 0;
+
+    if (in >= 0 && (out = open(to, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) >= 0) {
+        while ((n = read(in, buf, sizeof(buf))) > 0)
+            if (write(out, buf, (size_t)n) != n)
+                break;
+        ok = n == 0 && !fsync(out);
+    }
+    if (out >= 0)
+        close(out);
+    if (in >= 0)
+        close(in);
+    return ok ? 0 : -1;
+}
+
+static void restore_hives(void)
+{
+    char path[256], back[256];
+    struct stat st;
+
+    for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
+        snprintf(path, sizeof(path), "%s/%s", REG_DIR, hives[i]);
+        snprintf(back, sizeof(back), "%s/%s", REG_BACK, hives[i]);
+        if ((!stat(path, &st) && st.st_size > 0) || stat(back, &st) || !st.st_size)
+            continue;
+        if (copy_whole(back, path))
+            say("registry: %s could not come back from RegBack: %s", hives[i], strerror(errno));
+        else {
+            chown(path, nt_uid, nt_gid);
+            say("registry: %s was lost, it came back from RegBack", hives[i]);
+        }
+    }
+}
+
+/* once the desktop is up: these hives work */
+static void back_up_hives(void)
+{
+    char path[256], back[256], next[264];
+
+    make_dir(REG_BACK, 0755, 1);
+    for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
+        snprintf(path, sizeof(path), "%s/%s", REG_DIR, hives[i]);
+        snprintf(back, sizeof(back), "%s/%s", REG_BACK, hives[i]);
+        snprintf(next, sizeof(next), "%s.new", back);
+        if (!copy_whole(path, next) && !rename(next, back))
+            chown(back, nt_uid, nt_gid);
+        else
+            unlink(next);
+    }
+    say("registry: backed up to RegBack");
+}
+
 /* The prefix directory holds only what Wine needs outside C:. Registry
  * hives live on C: like in Windows, and wineserver writes them there: the
  * prefix only links to them (a hive is replaced whole, next to its target).
  * There is no Z: drive. */
 static void prepare_nt(void)
 {
-    static const char *hives[] = {"system.reg", "user.reg", "userdef.reg"};
     char from[256], to[256];
 
     make_dir(PREFIX, 0700, 1);
@@ -1036,6 +1113,7 @@ static void prepare_nt(void)
     if (symlink(C_DRIVE, PREFIX "/dosdevices/c:") && errno != EEXIST)
         say("dosdevices/c: %s", strerror(errno));
     lchown(PREFIX "/dosdevices/c:", nt_uid, nt_gid);
+    restore_hives();
     for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
         snprintf(from, sizeof(from), "%s/%s", REG_DIR, hives[i]);
         snprintf(to, sizeof(to), "%s/%s", PREFIX, hives[i]);
@@ -1475,6 +1553,12 @@ int main(void)
     wineserver_pid = spawn(wineserver, 1, ntlog);
     say("wineserver pid %d", wineserver_pid);
 
+    /* WSL: wsl.exe and bash.exe run commands in the distributions of
+     * C:\ProgramData\Arctic\Lxss\distros through it (docs/updates.md) */
+    char *lxss[] = {"/usr/bin/arctic-lxss", NULL};
+    if (!access(lxss[0], X_OK))
+        lxss_pid = spawn(lxss, 0, hostlog);
+
     /* A Wine newer than what C:'s registry was made with (an update) makes
      * wineboot bring it up to date: Windows' "getting ready" after updates.
      * Without Mono and Gecko it must not offer to download them: that dialog
@@ -1506,6 +1590,8 @@ int main(void)
         if (*p == '\r' || *p == '\n')
             *p = ' ';
     announce("NT ready in %.1f s: %s", uptime(), out);
+    /* Arctic's registry says Windows 11; an empty one, Wine's Windows 10 */
+    arctic_registry = strstr(out, "10.0.22") != NULL;
 
     char *tasklist[] = {"/usr/bin/wine", "tasklist.exe", NULL};
     out = capture(tasklist, 120);
@@ -1564,10 +1650,16 @@ int main(void)
             save_logs();
             log_memory();
             if (c_on_disk) {
-                static int hardware_written;
+                static int hardware_written, hives_backed_up;
                 if (!hardware_written++)
                     write_hardware(LOG_DIR);
                 write_kernel_log(LOG_DIR);
+                /* a desktop up for a minute with its shell: the registry works */
+                if (!hives_backed_up && arctic_registry && !stopped && desktop_at && uptime() > desktop_at + 60 &&
+                    shell_pid) {
+                    back_up_hives();
+                    hives_backed_up = 1;
+                }
             }
         }
         /* a USB network adapter plugged in, a udhcpc that ended */
