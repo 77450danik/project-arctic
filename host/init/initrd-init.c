@@ -133,11 +133,10 @@ static int skip_block_device(const char *name)
            !strncmp(name, "dm-", 3);
 }
 
-/* The PARTUUID of a partition of a GPT disk: its unique GUID in the
- * partition table, as Linux and Windows write it */
-static int gpt_partuuid(int fd, int num, char *out, size_t len)
+/* The type and unique GUIDs of a partition of a GPT disk, as stored */
+static int gpt_entry(int fd, int num, unsigned char e[32])
 {
-    unsigned char hdr[92], e[32];
+    unsigned char hdr[92];
     int sector = 512;
     uint64_t entries;
     uint32_t count, size;
@@ -149,7 +148,18 @@ static int gpt_partuuid(int fd, int num, char *out, size_t len)
     memcpy(&count, hdr + 80, 4);
     memcpy(&size, hdr + 84, 4);
     if (num < 1 || (uint32_t)num > count || size < 32 ||
-        pread(fd, e, sizeof(e), (off_t)(entries * (uint64_t)sector + (uint64_t)(num - 1) * size)) != (ssize_t)sizeof(e))
+        pread(fd, e, 32, (off_t)(entries * (uint64_t)sector + (uint64_t)(num - 1) * size)) != 32)
+        return -1;
+    return 0;
+}
+
+/* The PARTUUID of a partition of a GPT disk: its unique GUID in the
+ * partition table, as Linux and Windows write it */
+static int gpt_partuuid(int fd, int num, char *out, size_t len)
+{
+    unsigned char e[32];
+
+    if (gpt_entry(fd, num, e))
         return -1;
     /* the first three fields little-endian, the rest as stored */
     snprintf(out, len, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", e[19], e[18], e[17],
@@ -652,18 +662,28 @@ static int grow_c(const char *dev)
     return rc ? -1 : 0;
 }
 
-/* Updates. An update lies in Host\Update: host.sqfs, Boot (the files of the
- * EFI system partition: shim, Limine, its config, the kernel and the initrd,
- * signed together) and "ready", which names the size host.sqfs must have,
- * written last. The initrd installs it before anything runs from C:: the
- * running version goes to Host\Previous, the new one takes its place, the
- * EFI system partition is written from C:\Windows\Boot\Arctic as bcdboot
- * writes it from C:\Windows\Boot, and the machine restarts into the new
- * kernel. "Undo the last update" (arctic.rollback=1) swaps the two. */
+/* Updates. An update lies in Host\Update and holds any of: host.sqfs, Boot
+ * (the files of the EFI system partition: shim, Limine, its config, the
+ * kernel and the initrd, signed together) and Windows (files that go over
+ * C:\Windows, as Windows' pending file renames do: ReactOS' shell32,
+ * explorer.exe...). "ready", written last, names what is there, a line each:
+ * "host.sqfs <size>", "Boot", "Windows"; a lone number is the older form,
+ * host.sqfs of that size and Boot. The initrd installs it before anything
+ * runs from C:: what it replaces goes to Host\Previous, the new parts take
+ * its place. With Boot, the EFI system partition is written from
+ * C:\Windows\Boot\Arctic as bcdboot writes it from C:\Windows\Boot, and the
+ * machine restarts into the new kernel; without, the start just goes on.
+ * "Undo the last update" (arctic.rollback=1) swaps the two. */
 #define HOST_DIR CDRIVE "/Windows/System32/Host"
 #define UPDATE_DIR HOST_DIR "/Update"
 #define PREVIOUS_DIR HOST_DIR "/Previous"
+#define WINDOWS_DIR CDRIVE "/Windows"
+/* the files of C:\Windows an update added, which the version in Previous lacks */
+#define ABSENT_LIST PREVIOUS_DIR "/Windows.absent"
 #define BOOT_SET CDRIVE "/Windows/Boot/Arctic"
+/* the boot files of Arctic installed next to Windows: \EFI\Arctic alone on
+ * Windows' EFI system partition (tools/wsl/make-install-set.sh) */
+#define INSTALLED_SHIM "/EFI/Arctic/shimx64.efi"
 #define ESP "/esp"
 
 static int copy_file(const char *from, const char *to)
@@ -763,6 +783,92 @@ static int find_esp(const char *c_dev, char *esp, size_t len)
     return -1;
 }
 
+/* Whether a partition is an EFI system partition of a GPT disk */
+static int is_gpt_esp(const char *name)
+{
+    static const unsigned char esp_type[16] = {0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
+                                               0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b};
+    char path[PATH_MAX], disk[PATH_MAX];
+    unsigned char e[32];
+    int fd, num, rc;
+
+    snprintf(path, sizeof(path), "/sys/class/block/%s/partition", name);
+    if (!(num = (int)sys_number(path)))
+        return 0;
+    snprintf(path, sizeof(path), "/sys/class/block/%s", name);
+    if (!realpath(path, disk) || !strrchr(disk, '/'))
+        return 0;
+    *strrchr(disk, '/') = 0;
+    snprintf(path, sizeof(path), "/dev/%s", strrchr(disk, '/') + 1);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0)
+        return 0;
+    rc = !gpt_entry(fd, num, e) && !memcmp(e, esp_type, sizeof(esp_type));
+    close(fd);
+    return rc;
+}
+
+/* The EFI system partition that holds \EFI\Arctic, on whichever disk:
+ * Windows' own, next to Windows Boot Manager. Left mounted on ESP. */
+static int mount_installed_esp(char *esp, size_t len)
+{
+    DIR *dir = opendir("/sys/class/block");
+    struct dirent *de;
+
+    mkdir(ESP, 0755);
+    while (dir && (de = readdir(dir))) {
+        if (skip_block_device(de->d_name) || !is_gpt_esp(de->d_name))
+            continue;
+        snprintf(esp, len, "/dev/%s", de->d_name);
+        if (mount(esp, ESP, "vfat", MS_NOATIME, NULL))
+            continue;
+        if (!access(ESP INSTALLED_SHIM, F_OK)) {
+            closedir(dir);
+            return 0;
+        }
+        umount(ESP);
+    }
+    if (dir)
+        closedir(dir);
+    return -1;
+}
+
+/* bcdboot of Arctic installed next to Windows: \EFI\Arctic is copied in
+ * beside the old one, then the two folders are swapped by renaming. Windows'
+ * EFI system partition is small (100 MB as Windows makes it): when both do
+ * not fit, the files are copied over the old ones. */
+static int write_installed_esp(void)
+{
+    char esp[300];
+    int rc = 0;
+
+    if (mount_installed_esp(esp, sizeof(esp))) {
+        say("bcdboot: no EFI system partition with \\EFI\\Arctic");
+        return -1;
+    }
+    remove_tree(ESP "/EFI/Arctic.new");
+    remove_tree(ESP "/EFI/Arctic.old");
+    if (copy_tree(BOOT_SET "/EFI/Arctic", ESP "/EFI/Arctic.new")) {
+        say("bcdboot: no room for both sets (%s), copying over the old one", strerror(errno));
+        remove_tree(ESP "/EFI/Arctic.new");
+        sync();
+        rc = copy_tree(BOOT_SET "/EFI/Arctic", ESP "/EFI/Arctic");
+    } else {
+        sync();
+        if (rename(ESP "/EFI/Arctic", ESP "/EFI/Arctic.old") || rename(ESP "/EFI/Arctic.new", ESP "/EFI/Arctic")) {
+            say("bcdboot: %s", strerror(errno));
+            rename(ESP "/EFI/Arctic.old", ESP "/EFI/Arctic");
+            rc = -1;
+        }
+        sync();
+        remove_tree(ESP "/EFI/Arctic.old");
+    }
+    say(rc ? "bcdboot: %s\\EFI\\Arctic: %s" : "bcdboot: %s\\EFI\\Arctic has the boot files of C:%s", esp,
+        rc ? strerror(errno) : "");
+    umount(ESP);
+    sync();
+    return rc;
+}
+
 /* Arctic's bcdboot: the EFI system partition gets the boot files of the
  * version on C:. They are copied in beside the old ones first and then
  * renamed into place, a directory at a time: Limine, its config and the
@@ -773,6 +879,8 @@ static int write_esp(const char *c_dev)
     char esp[300], a[PATH_MAX], b[PATH_MAX];
     int rc = -1;
 
+    if (!access(BOOT_SET INSTALLED_SHIM, F_OK))
+        return write_installed_esp();
     if (find_esp(c_dev, esp, sizeof(esp))) {
         say("bcdboot: no EFI system partition next to C:");
         return -1;
@@ -849,40 +957,266 @@ static int swap_paths(const char *a, const char *b, const char *via)
     return rename(via, b);
 }
 
+/* the folders a path needs, made */
+static int make_parents(const char *path)
+{
+    char p[PATH_MAX];
+
+    snprintf(p, sizeof(p), "%s", path);
+    for (char *s = strchr(p + 1, '/'); s; s = strchr(s + 1, '/')) {
+        *s = 0;
+        if (mkdir(p, 0755) && errno != EEXIST)
+            return -1;
+        *s = '/';
+    }
+    return 0;
+}
+
+struct file_list {
+    char **names;
+    size_t count, size;
+};
+
+static void list_add(struct file_list *list, const char *name)
+{
+    if (list->count == list->size) {
+        list->size = list->size ? list->size * 2 : 64;
+        list->names = realloc(list->names, list->size * sizeof(*list->names));
+        if (!list->names)
+            fatal("INSTALL_MORE_MEMORY", "update", "file list");
+    }
+    list->names[list->count++] = strdup(name);
+}
+
+static void list_free(struct file_list *list)
+{
+    for (size_t i = 0; i < list->count; i++)
+        free(list->names[i]);
+    free(list->names);
+    memset(list, 0, sizeof(*list));
+}
+
+/* the files under base, by their path from it */
+static void list_files(const char *base, const char *rel, struct file_list *list)
+{
+    char path[PATH_MAX], sub[PATH_MAX];
+    struct dirent *de;
+    struct stat st;
+    DIR *dir;
+
+    snprintf(path, sizeof(path), "%s%s%s", base, *rel ? "/" : "", rel);
+    if (!(dir = opendir(path)))
+        return;
+    while ((de = readdir(dir))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+        snprintf(sub, sizeof(sub), "%s%s%s", rel, *rel ? "/" : "", de->d_name);
+        snprintf(path, sizeof(path), "%s/%s", base, sub);
+        if (lstat(path, &st))
+            continue;
+        if (S_ISDIR(st.st_mode))
+            list_files(base, sub, list);
+        else
+            list_add(list, sub);
+    }
+    closedir(dir);
+}
+
+static void read_list(const char *file, struct file_list *list)
+{
+    char line[PATH_MAX];
+    FILE *f = fopen(file, "re");
+
+    while (f && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\n")] = 0;
+        if (*line)
+            list_add(list, line);
+    }
+    if (f)
+        fclose(f);
+}
+
+/* The files of C:\Windows an update brings: each one there goes to
+ * Previous\Windows, the new one takes its place. A file C:\Windows did not
+ * have is named in Windows.absent instead. */
+static void install_windows(void)
+{
+    char c[PATH_MAX], u[PATH_MAX], p[PATH_MAX];
+    struct file_list list = {0};
+    size_t done = 0;
+    FILE *absent;
+
+    list_files(UPDATE_DIR "/Windows", "", &list);
+    absent = fopen(ABSENT_LIST, "we");
+    for (size_t i = 0; i < list.count; i++) {
+        const char *rel = list.names[i];
+        snprintf(c, sizeof(c), WINDOWS_DIR "/%s", rel);
+        snprintf(u, sizeof(u), UPDATE_DIR "/Windows/%s", rel);
+        snprintf(p, sizeof(p), PREVIOUS_DIR "/Windows/%s", rel);
+        make_parents(c);
+        make_parents(p);
+        int had = !access(c, F_OK);
+        if (had && rename(c, p)) {
+            say("update: C:\\Windows\\%s stays as it is: %s", rel, strerror(errno));
+            continue;
+        }
+        if (rename(u, c)) {
+            say("update: C:\\Windows\\%s: %s", rel, strerror(errno));
+            if (had)
+                rename(p, c);
+            continue;
+        }
+        if (!had && absent)
+            fprintf(absent, "%s\n", rel);
+        done++;
+    }
+    if (absent) {
+        fflush(absent);
+        fsync(fileno(absent));
+        fclose(absent);
+    }
+    say("update: %zu of %zu files of C:\\Windows replaced", done, list.count);
+    list_free(&list);
+}
+
+/* Undo for the files of C:\Windows: the ones in Previous\Windows and C:\Windows
+ * change places, the ones the update added go to Previous. Done again, it
+ * brings the update back. */
+static int undo_windows(void)
+{
+    char c[PATH_MAX], p[PATH_MAX], via[PATH_MAX + 8];
+    struct file_list list = {0}, added = {0};
+    FILE *absent;
+
+    list_files(PREVIOUS_DIR "/Windows", "", &list);
+    read_list(ABSENT_LIST, &added);
+    if (!list.count && !added.count)
+        return 0;
+    absent = fopen(ABSENT_LIST ".new", "we");
+    for (size_t i = 0; i < list.count; i++) {
+        snprintf(c, sizeof(c), WINDOWS_DIR "/%s", list.names[i]);
+        snprintf(p, sizeof(p), PREVIOUS_DIR "/Windows/%s", list.names[i]);
+        snprintf(via, sizeof(via), "%s.swap", c);
+        if (!access(c, F_OK)) {
+            if (swap_paths(c, p, via))
+                say("rollback: C:\\Windows\\%s: %s", list.names[i], strerror(errno));
+        } else if (make_parents(c) || rename(p, c))
+            say("rollback: C:\\Windows\\%s: %s", list.names[i], strerror(errno));
+        else if (absent)
+            fprintf(absent, "%s\n", list.names[i]);
+    }
+    for (size_t i = 0; i < added.count; i++) {
+        snprintf(c, sizeof(c), WINDOWS_DIR "/%s", added.names[i]);
+        snprintf(p, sizeof(p), PREVIOUS_DIR "/Windows/%s", added.names[i]);
+        if (make_parents(p) || rename(c, p))
+            say("rollback: C:\\Windows\\%s: %s", added.names[i], strerror(errno));
+    }
+    if (absent) {
+        fflush(absent);
+        fsync(fileno(absent));
+        fclose(absent);
+    }
+    rename(ABSENT_LIST ".new", ABSENT_LIST);
+    say("rollback: %zu files of C:\\Windows back, %zu taken away", list.count, added.count);
+    list_free(&list);
+    list_free(&added);
+    return 1;
+}
+
+/* What Host\Update holds, from "ready" */
+struct update {
+    unsigned long long host_size;
+    int host, boot, windows;
+};
+
+static int read_ready(struct update *up)
+{
+    char text[256] = "", *line, *save = NULL;
+    int fd = open(UPDATE_DIR "/ready", O_RDONLY | O_CLOEXEC);
+
+    memset(up, 0, sizeof(*up));
+    if (fd < 0)
+        return -1;
+    if (read(fd, text, sizeof(text) - 1) < 0)
+        text[0] = 0;
+    close(fd);
+    if (text[0] >= '0' && text[0] <= '9') { /* the older form */
+        up->host = up->boot = 1;
+        up->host_size = strtoull(text, NULL, 10);
+        return 0;
+    }
+    for (line = strtok_r(text, "\r\n", &save); line; line = strtok_r(NULL, "\r\n", &save)) {
+        if (!strncmp(line, "host.sqfs ", 10)) {
+            up->host = 1;
+            up->host_size = strtoull(line + 10, NULL, 10);
+        } else if (!strcmp(line, "Boot"))
+            up->boot = 1;
+        else if (!strcmp(line, "Windows"))
+            up->windows = 1;
+    }
+    return up->host || up->boot || up->windows ? 0 : -1;
+}
+
+static int update_complete(const struct update *up)
+{
+    struct stat st;
+
+    if (up->host && (stat(UPDATE_DIR "/host.sqfs", &st) || (unsigned long long)st.st_size != up->host_size))
+        return 0;
+    if (up->boot && (access(UPDATE_DIR "/Boot/EFI/Arctic/vmlinuz", R_OK) ||
+                     (access(UPDATE_DIR "/Boot/boot/limine/limine.conf", R_OK) &&
+                      access(UPDATE_DIR "/Boot/EFI/Arctic/limine.conf", R_OK))))
+        return 0;
+    if (up->windows && access(UPDATE_DIR "/Windows", F_OK))
+        return 0;
+    return 1;
+}
+
 static void install_update(const char *dev)
 {
-    char ready[64] = "";
-    struct stat st;
-    int fd;
+    struct update up;
 
-    if ((fd = open(UPDATE_DIR "/ready", O_RDONLY | O_CLOEXEC)) < 0)
+    if (read_ready(&up))
         return;
-    if (read(fd, ready, sizeof(ready) - 1) < 0)
-        ready[0] = 0;
-    close(fd);
-    if (stat(UPDATE_DIR "/host.sqfs", &st) || (unsigned long long)st.st_size != strtoull(ready, NULL, 10) ||
-        access(UPDATE_DIR "/Boot/EFI/Arctic/vmlinuz", R_OK) || access(UPDATE_DIR "/Boot/boot/limine/limine.conf", R_OK)) {
+    if (!update_complete(&up)) {
         say("update: incomplete, left as it is");
         return;
     }
-    say("update: installing");
+    say("update: installing%s%s%s", up.host ? " host.sqfs" : "", up.boot ? " Boot" : "",
+        up.windows ? " Windows" : "");
     update_screen(INSTALLING, 0);
     remove_tree(PREVIOUS_DIR);
     mkdir(PREVIOUS_DIR, 0755);
-    if (rename(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs") ||
-        (rename(BOOT_SET, PREVIOUS_DIR "/Boot") && errno != ENOENT) ||
-        rename(UPDATE_DIR "/host.sqfs", HOST_DIR "/host.sqfs") || rename(UPDATE_DIR "/Boot", BOOT_SET)) {
+    if ((up.host && (rename(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs") ||
+                     rename(UPDATE_DIR "/host.sqfs", HOST_DIR "/host.sqfs"))) ||
+        (up.boot && ((rename(BOOT_SET, PREVIOUS_DIR "/Boot") && errno != ENOENT) ||
+                     rename(UPDATE_DIR "/Boot", BOOT_SET)))) {
         say("update: %s; the version before stays", strerror(errno));
-        rename(PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs");
-        rename(PREVIOUS_DIR "/Boot", BOOT_SET);
+        if (!access(PREVIOUS_DIR "/host.sqfs", F_OK)) {
+            rename(HOST_DIR "/host.sqfs", UPDATE_DIR "/host.sqfs");
+            rename(PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs");
+        }
+        if (!access(PREVIOUS_DIR "/Boot", F_OK)) {
+            rename(BOOT_SET, UPDATE_DIR "/Boot");
+            rename(PREVIOUS_DIR "/Boot", BOOT_SET);
+        }
         bootanim_send(anim, "boot");
         return;
     }
     update_screen(INSTALLING, 30);
+    if (up.windows)
+        install_windows();
     remove_tree(UPDATE_DIR);
-    copy_kernel();
     sync();
     update_screen(INSTALLING, 60);
+    if (!up.boot) { /* the kernel stays: the start goes on with the new files */
+        update_screen(INSTALLING, 100);
+        sleep(1);
+        bootanim_send(anim, "boot");
+        return;
+    }
+    copy_kernel();
+    sync();
     write_esp(dev);
     update_screen(INSTALLING, 100);
     restart_now();
@@ -890,27 +1224,40 @@ static void install_update(const char *dev)
 
 static void undo_update(const char *dev)
 {
-    if (access(PREVIOUS_DIR "/host.sqfs", R_OK) || access(PREVIOUS_DIR "/Boot/EFI/Arctic/vmlinuz", R_OK)) {
+    int host = !access(PREVIOUS_DIR "/host.sqfs", R_OK), boot = !access(PREVIOUS_DIR "/Boot/EFI/Arctic/vmlinuz", R_OK);
+    int windows = !access(PREVIOUS_DIR "/Windows", F_OK) || !access(ABSENT_LIST, F_OK);
+
+    if (!host && !boot && !windows) {
         say("rollback: there is no version before this one");
         return;
     }
     say("rollback: going back to the version before");
     update_screen(UNDOING, 0);
-    if (swap_paths(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs.swap")) {
+    if (host && swap_paths(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs.swap")) {
         say("rollback: %s", strerror(errno));
         bootanim_send(anim, "boot");
         return;
     }
-    if (swap_paths(BOOT_SET, PREVIOUS_DIR "/Boot", CDRIVE "/Windows/Boot/Arctic.swap")) {
+    if (boot && swap_paths(BOOT_SET, PREVIOUS_DIR "/Boot", CDRIVE "/Windows/Boot/Arctic.swap")) {
         say("rollback: %s", strerror(errno));
-        swap_paths(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs.swap");
+        if (host)
+            swap_paths(HOST_DIR "/host.sqfs", PREVIOUS_DIR "/host.sqfs", HOST_DIR "/host.sqfs.swap");
         bootanim_send(anim, "boot");
         return;
     }
     update_screen(UNDOING, 30);
-    copy_kernel();
+    if (windows)
+        undo_windows();
     sync();
     update_screen(UNDOING, 60);
+    if (!boot) {
+        update_screen(UNDOING, 100);
+        sleep(1);
+        bootanim_send(anim, "boot");
+        return;
+    }
+    copy_kernel();
+    sync();
     write_esp(dev);
     update_screen(UNDOING, 100);
     restart_now();

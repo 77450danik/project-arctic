@@ -72,6 +72,16 @@ try {
     $v = Get-Volume -DriveLetter $letter
     Say "Arctic's C: is $letter`: in Windows ($($v.FileSystem), $($v.FileSystemLabel))"
 
+    # C:\Windows\Boot\Arctic holds the boot files of the version on C:, as
+    # C:\Windows\Boot does in Windows: the image brings the stick's, an
+    # installed Arctic has \EFI\Arctic. Updates and their undo write the EFI
+    # system partition from there.
+    $set = "$letter`:\Windows\Boot\Arctic"
+    if (Test-Path $set) { Remove-Item -Recurse -Force $set }
+    New-Item -ItemType Directory -Force "$set\EFI\Arctic" | Out-Null
+    Copy-Item "$BootSet\EFI\Arctic\*" "$set\EFI\Arctic\" -Force
+    Say "$set`: $((Get-ChildItem "$set\EFI\Arctic").Name -join ', ')"
+
     # the boot files, next to Windows Boot Manager
     $esp = Get-Partition | Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -and (Get-Disk -Number $_.DiskNumber).IsBoot }
     if (-not $esp) { $esp = Get-Partition | Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } | Select-Object -First 1 }

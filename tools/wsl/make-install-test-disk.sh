@@ -37,6 +37,18 @@ dest=$(sfdisk -d "$IMG" | awk -F'[=,]' '/img2/ {gsub(" ","",$2); print $2}')
 dd if="$USB" of="$IMG" bs=4M iflag=skip_bytes,count_bytes oflag=seek_bytes skip=$((start * 512)) \
     count=$((size * 512)) seek=$((dest * 512)) conv=notrunc,sparse status=none
 
+# C:\Windows\Boot\Arctic holds the installed set, as install-2-write.ps1 leaves it
+off=$(sfdisk -d "$IMG" | awk -F'[=,]' '/img2/ {gsub(" ","",$2); print $2}')
+L=$(losetup -f --show -o $((off * 512)) "$IMG")
+mkdir -p "$W/c"
+ntfs-3g "$L" "$W/c"
+B=$(find "$W/c" -maxdepth 1 -iname windows)/Boot/Arctic
+rm -rf "$B"
+mkdir -p "$B/EFI/Arctic"
+cp "$SET"/EFI/Arctic/* "$B/EFI/Arctic/"
+umount "$W/c"
+losetup -d "$L"
+
 # "D:", an NTFS volume of its own
 off=$(sfdisk -d "$IMG" | awk -F'[=,]' '/img3/ {gsub(" ","",$2); print $2}')
 L=$(losetup -f --show -o $((off * 512)) "$IMG")

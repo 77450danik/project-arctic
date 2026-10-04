@@ -4,7 +4,7 @@
 # which the firmware entry "ARCTIC" starts), Limine signed with this
 # install's own config, MokManager, the kernel and the initrd of the last
 # image build. C: is named by its GPT partition GUID.
-# usage: make-install-set.sh <PARTUUID of C:> <out dir>   (as root in arctic-build)
+# usage: [INITRD=<initrd>] make-install-set.sh <PARTUUID of C:> <out dir>   (as root in arctic-build)
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -16,7 +16,8 @@ export ARCTIC_OUT=$OUT SKIP_DEPS=1
 TREE=$(mktemp -d)
 trap 'rm -rf "$TREE"' EXIT
 mkdir -p "$TREE/EFI/Arctic" "$TREE/boot/limine"
-cp "$OUT/iso/arctic/vmlinuz" "$OUT/iso/arctic/initrd.img" "$TREE/EFI/Arctic/"
+cp "$OUT/iso/arctic/vmlinuz" "$TREE/EFI/Arctic/"
+cp "${INITRD:-$OUT/iso/arctic/initrd.img}" "$TREE/EFI/Arctic/initrd.img" # INITRD: a dev initrd to try
 bash "$ROOT/ci/limine-conf.sh" "$ROOT/image/limine-disk.conf" "$TREE" "$TREE/boot/limine/limine.conf" \
     PARTUUID="${PARTUUID,,}"
 bash "$ROOT/ci/sign-efi.sh" "$TREE" # puts shim, Limine and MokManager in EFI/BOOT

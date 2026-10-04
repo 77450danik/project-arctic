@@ -80,7 +80,7 @@ if args.no_reboot:
 if args.boot_disk:
     # an internal disk with Arctic installed (GPT, its own EFI partition)
     cmd += ["-drive", "if=none,id=bootdisk,format=raw,file=" + os.path.abspath(args.boot_disk),
-            "-device", "virtio-blk-pci,drive=bootdisk,bootindex=0"]
+            "-device", "virtio-blk-pci,drive=bootdisk" + ("" if args.append else ",bootindex=0")]
 elif args.usb:
     if args.iso.endswith(".iso") and os.path.exists(os.path.join(ROOT, "out", "arctic-usb.img")):
         args.iso = os.path.join(ROOT, "out", "arctic-usb.img")
@@ -144,12 +144,13 @@ if args.append:
     os.makedirs(kernel_dir, exist_ok=True)
     wsl = lambda p: "/mnt/" + p[0].lower() + p[2:].replace("\\", "/")
     root = ""
-    if args.iso.endswith(".img"):
-        # the stick: its EFI system partition, with mtools in the build distro;
-        # C: is the partition its limine.conf names
-        part = wsl(os.path.abspath(args.iso)) + "@@1M"
+    if args.iso.endswith(".img") or args.boot_disk:
+        # the stick or the installed disk: its EFI system partition, with
+        # mtools in the build distro; C: is the partition its limine.conf names
+        part = wsl(os.path.abspath(args.boot_disk or args.iso)) + "@@1M"
+        conf = "EFI/Arctic/limine.conf" if args.boot_disk else "boot/limine/limine.conf"
         for src, name in (("EFI/Arctic/vmlinuz", "vmlinuz"), ("EFI/Arctic/initrd.img", "initrd.img"),
-                          ("boot/limine/limine.conf", "limine.conf")):
+                          (conf, "limine.conf")):
             # -n: no question before overwriting the copy from the last run
             subprocess.run(["wsl.exe", "-d", "arctic-build", "--", "mcopy", "-n", "-o", "-i", part, "::" + src,
                             wsl(os.path.join(kernel_dir, name))], check=True, stdin=subprocess.DEVNULL)
