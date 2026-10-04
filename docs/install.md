@@ -78,7 +78,24 @@ Killed process … (CrRendererMain) anon-rss:696968kB`).
 VM, 4 ГБ, Chrome з YouTube і Вікіпедією (`tests/vm/p7-memory.txt`): було 3–4
 вбиті процеси за 5 хв і 0–1,5 ГБ вільних, стало — жодного, 2,7 ГБ вільних.
 
+## Годинник (4.10.2026)
+
+Вхід у Claude Code (і браузером, і з розширення VS Code) давав «400». Windows
+тримає в годиннику ПК (RTC) **місцевий** час, а ядро читало його як UTC: час
+в Arctic відставав на дві години (Варшава, UTC+2), і сервер відкидав вхід.
+
+- arctic-init (`set_clock`) читає RTC як місцевий час у поясі з
+  `C:\Windows\System32\config\Host\timezone` (на SSD — `Europe/Warsaw`, без
+  файла — Київ) і дає цей пояс усім програмам (`TZ`).
+- Потім, у фоні, бере час із `time.windows.com` (SNTP), як служба часу
+  Windows; `host.log`: `clock from time.windows.com, +N s`. Сам RTC не
+  змінює — його веде Windows поряд.
+- `vm-test.py` дає VM годинник у місцевому часі (`-rtc base=localtime`), як
+  на ПК з Windows.
+
 ## Ще не зроблено
+
+- Пояс береться з файла; налаштування «Дата й час» його поки не змінює.
 
 - Оновлення встановленої системи: «bcdboot» (`write_esp`) уміє лише MBR
   флешки; на GPT воно поки не пише `\EFI\Arctic`.

@@ -23,6 +23,8 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/klog.h>
+#include <linux/rtc.h>
+#include <netdb.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #ifndef PR_SET_MEMORY_MERGE
@@ -36,6 +38,7 @@
 #include <sys/sysinfo.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -122,6 +125,7 @@ static void nt_stop(const char *code, const char *what)
 }
 
 static char winedebug[256] = "WINEDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
+static char tz_env[128] = "TZ=:/usr/share/zoneinfo/Europe/Kyiv"; /* set_clock: the system's time zone */
 static char dev_program[128];                        /* arctic.run= */
 /* C: on a stick: writes go to it in the background, nobody waits for it
  * (docs/persistence.md, "Повільна флешка"). A flush returns at once (Wine
@@ -136,6 +140,7 @@ static char *const nt_env[] = {
     "USER=User",
     "LOGNAME=User",
     "LANG=uk_UA.UTF-8",
+    tz_env,
     "PATH=/usr/bin",
     /* games see an NVIDIA card as one (NVAPI, DLSS), not as the AMD card
      * DXVK would otherwise make of it */
@@ -150,7 +155,7 @@ static char *const nt_env[] = {
     "WAYLAND_DISPLAY=" WAYLAND_SOCKET,
     NULL,
 };
-static char *const host_env[] = {"PATH=/usr/bin", "LANG=C.UTF-8", NULL};
+static char *const host_env[] = {"PATH=/usr/bin", "LANG=C.UTF-8", tz_env, NULL};
 
 static pid_t spawn(char *const argv[], int as_nt, int out);
 static int write_sysfs(const char *path, const char *value);
@@ -468,6 +473,17 @@ static void write_hardware(const char *to)
             append(&text, &len, "%s %s %s\n", de->d_name, a, b[0] ? b : "-");
         }
         closedir(dir);
+    }
+
+    /* the PC maker's boot logo (ACPI BGRT), which the boot screen keeps */
+    if (!access("/sys/firmware/acpi/bgrt", F_OK)) {
+        read_line("/sys/firmware/acpi/bgrt/status", a, sizeof(a));
+        read_line("/sys/firmware/acpi/bgrt/xoffset", b, sizeof(b));
+        read_line("/sys/firmware/acpi/bgrt/yoffset", c, sizeof(c));
+        read_line("/sys/firmware/acpi/bgrt/type", d, sizeof(d));
+        append(&text, &len, "\nBGRT status %s type %s at %s,%s\n", a, d, b, c);
+    } else {
+        append(&text, &len, "\nBGRT none\n");
     }
 
     append(&text, &len, "\nModules\n");
@@ -1034,6 +1050,87 @@ static void prepare_nt(void)
     lchown(PREFIX "/.update-timestamp", nt_uid, nt_gid);
 }
 
+/* The clock, as Windows keeps it. The PC's real-time clock holds local time
+ * (Windows writes it so; the kernel read it as UTC, and the time was hours
+ * off: the browser's sign-in to a site failed with "400"). It is read in
+ * the system's time zone, C:\Windows\System32\config\Host\timezone ("Europe/
+ * Warsaw"; Kyiv when there is none), which every program gets as TZ. */
+static void set_clock(void)
+{
+    char zone[96] = "", path[160];
+    struct rtc_time rtc;
+    struct tm tm = {0};
+    int fd;
+
+    read_line(HOST_STATE "/timezone", zone, sizeof(zone));
+    if (zone[0] && strspn(zone, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_/+-0123456789") == strlen(zone) &&
+        !strstr(zone, "..")) {
+        snprintf(path, sizeof(path), "/usr/share/zoneinfo/%s", zone);
+        if (!access(path, R_OK))
+            snprintf(tz_env, sizeof(tz_env), "TZ=:%s", path);
+        else
+            say("time zone %s: no such zone", zone);
+    }
+    putenv(tz_env);
+    tzset();
+
+    if ((fd = open("/dev/rtc0", O_RDONLY | O_CLOEXEC)) < 0)
+        return;
+    if (!ioctl(fd, RTC_RD_TIME, &rtc)) {
+        tm.tm_sec = rtc.tm_sec;
+        tm.tm_min = rtc.tm_min;
+        tm.tm_hour = rtc.tm_hour;
+        tm.tm_mday = rtc.tm_mday;
+        tm.tm_mon = rtc.tm_mon;
+        tm.tm_year = rtc.tm_year;
+        tm.tm_isdst = -1;
+        struct timeval tv = {.tv_sec = mktime(&tm)};
+        if (tv.tv_sec > 0 && !settimeofday(&tv, NULL))
+            say("clock from the real-time clock as local time (%s)", tz_env + 4);
+    }
+    close(fd);
+}
+
+/* Then the time from the network, as Windows' time service takes it from
+ * time.windows.com (SNTP). The real-time clock is left as it is: Windows,
+ * next to Arctic, keeps it. In the background, while the network comes. */
+static void sync_time(void)
+{
+    if (fork())
+        return;
+    for (int attempt = 0; attempt < 24; attempt++) {
+        struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_DGRAM}, *ai = NULL;
+        unsigned char packet[48] = {0x1b}; /* client, version 3 */
+        struct timeval wait = {3, 0};
+        int s;
+
+        if (attempt)
+            sleep(5);
+        if (getaddrinfo("time.windows.com", "123", &hints, &ai) || !ai)
+            continue;
+        s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait));
+        if (s >= 0 && sendto(s, packet, sizeof(packet), 0, ai->ai_addr, ai->ai_addrlen) == sizeof(packet) &&
+            recv(s, packet, sizeof(packet), 0) == sizeof(packet)) {
+            /* the transmit time: seconds since 1900, then a binary fraction */
+            uint32_t sec = (uint32_t)packet[40] << 24 | packet[41] << 16 | packet[42] << 8 | packet[43];
+            uint32_t frac = (uint32_t)packet[44] << 24 | packet[45] << 16 | packet[46] << 8 | packet[47];
+            struct timeval now, tv = {.tv_sec = (time_t)sec - 2208988800u, .tv_usec = (suseconds_t)((uint64_t)frac * 1000000 >> 32)};
+            gettimeofday(&now, NULL);
+            if (sec && !settimeofday(&tv, NULL))
+                say("clock from time.windows.com, %+ld s", (long)(tv.tv_sec - now.tv_sec));
+            close(s);
+            freeaddrinfo(ai);
+            _exit(0);
+        }
+        if (s >= 0)
+            close(s);
+        freeaddrinfo(ai);
+    }
+    say("no time from time.windows.com");
+    _exit(1);
+}
+
 /* The host's own state that a C: keeping what is written keeps too, in
  * C:\Windows\System32\config\Host: the networks iwd knows (start_network)
  * and the machine's id, made once for each stick rather than for each build */
@@ -1352,6 +1449,7 @@ int main(void)
     nt_uid = pw->pw_uid;
     nt_gid = pw->pw_gid;
     keep_host_state();
+    set_clock();
     start_memory_compression();
     start_memory_combining();
 
@@ -1368,6 +1466,7 @@ int main(void)
     run(trig_dev, 0, hostlog, 60);
     run(settle, 0, hostlog, 90);
     start_network();
+    sync_time();
     setup_sound();
 
     /* The NT world */

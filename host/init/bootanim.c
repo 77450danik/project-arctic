@@ -132,10 +132,17 @@ static int load_bgrt(void)
     size_t size = 0;
     uint8_t *bmp;
 
-    if (!(read_number("/sys/firmware/acpi/bgrt/status") & 1)) /* bit 0: valid, on the screen */
+    /* Status bit 0 says the logo is on the screen now; Windows draws the
+     * image whether or not, and so does this (a loader before it may have
+     * set another mode, as Limine does) */
+    if (access("/sys/firmware/acpi/bgrt", F_OK)) {
+        say("no BGRT (the kernel found none, or found it broken)");
         return -1;
-    if (!(bmp = read_all("/sys/firmware/acpi/bgrt/image", &size)))
+    }
+    if (!(bmp = read_all("/sys/firmware/acpi/bgrt/image", &size))) {
+        say("BGRT: no image");
         return -1;
+    }
     if (size < 54 || bmp[0] != 'B' || bmp[1] != 'M') {
         free(bmp);
         return -1;
@@ -162,6 +169,8 @@ static int load_bgrt(void)
     a.logo.h = rows;
     a.bgrt_x = (int)read_number("/sys/firmware/acpi/bgrt/xoffset");
     a.bgrt_y = (int)read_number("/sys/firmware/acpi/bgrt/yoffset");
+    say("BGRT: %ux%u, %u bits, at %d,%d, status %ld", w, rows, bpp, a.bgrt_x, a.bgrt_y,
+        read_number("/sys/firmware/acpi/bgrt/status"));
     return 0;
 }
 

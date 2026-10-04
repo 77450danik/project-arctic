@@ -71,6 +71,7 @@ for path in (serial, shot):
 cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
        "-display", "egl-headless" if args.headless and args.gpu else "none" if args.headless
        else "sdl,gl=on" if args.gpu else "gtk",
+       "-rtc", "base=localtime",  # as a PC that Windows runs on keeps its clock
        "-name", "Arctic", "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet", "-device", "usb-kbd", "-device", "usb-mouse",  # a USB keyboard, as real PCs have: the kernel repeats its keys
       
        "-serial", "file:" + serial, "-qmp", "tcp:127.0.0.1:4455,server=on,wait=off"]
