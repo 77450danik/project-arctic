@@ -1,0 +1,69 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 5 Oct 2026 14:00:00 +0200
+Subject: [PATCH] user32: Log the stack of every asynchronous minimize.
+
+Opening the Control Panel from Start minimized a maximized Chrome and every
+other window: explorer's tray thread called ShowWindowAsync(SW_SHOWMINNOACTIVE)
+for each, its "minimize all", with nothing in the menu meaning that. The
+stack of each such call now goes to the log as module+offset ("arctic-minimize:
+ShowWindowAsync"), to be read against the symbols of the build.
+---
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 0f25812..57fd092 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -1134,7 +1134,7 @@
+ @ stub ShowStartGlass
+ # @ stub ShowSystemCursor
+ @ stdcall ShowWindow(long long) NtUserShowWindow
+-@ stdcall ShowWindowAsync(long long) NtUserShowWindowAsync
++@ stdcall ShowWindowAsync(long long)
+ @ stdcall ShutdownBlockReasonCreate(long wstr)
+ @ stdcall ShutdownBlockReasonDestroy(long)
+ # @ stub ShutdownBlockReasonQuery
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index 8ca4247..fb9a5ea 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -1868,3 +1868,41 @@ WORD WINAPI TileChildWindows( HWND parent, UINT flags )
+ {
+     return TileWindows( parent, flags, NULL, 0, NULL );
+ }
++
++/***********************************************************************
++ *		ShowWindowAsync (USER32.@)
++ *
++ * Arctic: windows of other programs minimized by nobody's hand (explorer's
++ * "minimize all" when the Control Panel is opened from Start): the stack of
++ * every asynchronous minimize goes to the log with "arctic-minimize", as
++ * module+offset, to be read against the symbols of the build.
++ */
++BOOL WINAPI ShowWindowAsync( HWND hwnd, INT cmd )
++{
++    if (cmd == SW_MINIMIZE || cmd == SW_SHOWMINNOACTIVE || cmd == SW_SHOWMINIMIZED || cmd == SW_FORCEMINIMIZE)
++    {
++        void *frames[24];
++        USHORT count = RtlCaptureStackBackTrace( 1, ARRAY_SIZE(frames), frames, NULL );
++        char line[2048];
++        int len = snprintf( line, sizeof(line), "arctic-minimize: ShowWindowAsync %p SW %d from", hwnd, cmd );
++
++        for (USHORT i = 0; i < count && len < (int)sizeof(line) - 80; i++)
++        {
++            WCHAR path[MAX_PATH], *name;
++            char ascii[64];
++            HMODULE module;
++
++            if (GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                                    frames[i], &module ) && GetModuleFileNameW( module, path, MAX_PATH ))
++            {
++                name = wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path;
++                WideCharToMultiByte( CP_ACP, 0, name, -1, ascii, sizeof(ascii), NULL, NULL );
++                len += snprintf( line + len, sizeof(line) - len, " %s+%#lx", ascii,
++                                 (unsigned long)((char *)frames[i] - (char *)module) );
++            }
++            else len += snprintf( line + len, sizeof(line) - len, " %p", frames[i] );
++        }
++        MESSAGE( "%s\n", line );
++    }
++    return NtUserShowWindowAsync( hwnd, cmd );
++}
