@@ -1,0 +1,48 @@
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+index bb89fcf..4fe601b 100644
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -2041,6 +2041,31 @@ public:
+         return TRUE;
+     }
+ 
++    /* Arctic: the button of the window in front minimizes it, that of any
++       other brings it up, as Windows decides it: by what is on the screen.
++       m_ActiveTaskItem, kept from the shell hook, could still name a window
++       that another had covered or taken the foreground from (Chrome, once
++       the Control Panel or Antigravity came up), and the click meant to
++       bring it back minimized it instead. In front: it, or a window it owns,
++       has the foreground, and its middle shows it, not one laid over it. */
++    static BOOL IsWindowInFront(HWND hwnd)
++    {
++        HWND foreground = ::GetForegroundWindow(), top;
++        POINT middle;
++        RECT rc;
++
++        if (!foreground || (foreground != hwnd && ::GetAncestor(foreground, GA_ROOTOWNER) != hwnd))
++            return FALSE;
++        if (!::GetWindowRect(hwnd, &rc))
++            return TRUE;
++        middle.x = (rc.left + rc.right) / 2;
++        middle.y = (rc.top + rc.bottom) / 2;
++        if (!(top = ::WindowFromPoint(middle)))
++            return TRUE;
++        top = ::GetAncestor(top, GA_ROOT);
++        return top == hwnd || ::GetAncestor(top, GA_ROOTOWNER) == hwnd;
++    }
++
+     VOID HandleTaskItemClick(IN OUT PTASK_ITEM TaskItem)
+     {
+         BOOL bIsMinimized;
+@@ -2049,7 +2074,10 @@ public:
+         if (::IsWindow(TaskItem->hWnd))
+         {
+             bIsMinimized = ::IsIconic(TaskItem->hWnd);
+-            bIsActive = (TaskItem == m_ActiveTaskItem);
++            bIsActive = IsWindowInFront(TaskItem->hWnd);
++            if (!bIsMinimized && !bIsActive && TaskItem == m_ActiveTaskItem)
++                ArcticLog("arctic-taskbar: button %p brings its window up: the taskbar took it for the active one, "
++                          "the foreground is %p\n", TaskItem->hWnd, ::GetForegroundWindow());
+ 
+             TRACE("Active TaskItem %p, selected TaskItem %p\n", m_ActiveTaskItem, TaskItem);
+             if (m_ActiveTaskItem)
