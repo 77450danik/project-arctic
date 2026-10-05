@@ -1,0 +1,42 @@
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -2556,7 +2556,17 @@
+ 
+         /* Arctic: the acrylic of Windows 10 behind the taskbar, which lies in
+          * its band over program windows, and Alt+Tab */
+-        ArcticSetAcrylic(m_hWnd, 0xBF101010);
++        /* Arctic: the look chosen on the page Оформлення (startui.dll),
++         * the acrylic of Windows 10 by default */
++        {
++            typedef VOID (WINAPI *PFN_LOOK)(HWND);
++            PFN_LOOK pLook = (PFN_LOOK)ArcticStartUiProc("ArcticApplyTaskbarLook");
++
++            if (pLook)
++                pLook(m_hWnd);
++            else
++                ArcticSetAcrylic(m_hWnd, 0xBF101010);
++        }
+         ArcticSetTrayBand(m_hWnd, TRUE);
+         ArcticStartTaskSwitcher();
+ 
+diff --git a/base/shell/explorer/trayprop.cpp b/base/shell/explorer/trayprop.cpp
+--- a/base/shell/explorer/trayprop.cpp
++++ b/base/shell/explorer/trayprop.cpp
+@@ -412,6 +412,16 @@
+     caption.LoadStringW(IDS_TASKBAR_STARTMENU_PROP_CAPTION);
+ 
+     hpsp.Add(tbSettingsPage.Create());
++    /* Arctic: the taskbar's colour, transparency and blur (startui.dll) */
++    {
++        typedef HPROPSHEETPAGE (WINAPI *PFN_LOOKPAGE)(HWND);
++        HMODULE hStartUi = LoadLibraryW(L"startui.dll");
++        PFN_LOOKPAGE pLookPage = hStartUi ? (PFN_LOOKPAGE)GetProcAddress(hStartUi, "ArcticTaskbarLookPage") : NULL;
++        HPROPSHEETPAGE hLookPage = pLookPage ? pLookPage(hwndTaskbar) : NULL;
++
++        if (hLookPage)
++            hpsp.Add(hLookPage);
++    }
+     hpsp.Add(smSettingsPage.Create());
+     hpsp.Add(naSettingsPage.Create());
+ 

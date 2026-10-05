@@ -2,3 +2,5 @@
 @ stdcall ArcticStartMenuHide()
 @ stdcall ArcticStartMenuVisible()
 @ stdcall ArcticStartMenuCustomize(long)
+@ stdcall ArcticApplyTaskbarLook(long)
+@ stdcall ArcticTaskbarLookPage(long)

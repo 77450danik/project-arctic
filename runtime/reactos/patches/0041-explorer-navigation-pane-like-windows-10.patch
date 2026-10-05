@@ -1,0 +1,70 @@
+diff --git a/dll/win32/browseui/toolsband.cpp b/dll/win32/browseui/toolsband.cpp
+--- a/dll/win32/browseui/toolsband.cpp
++++ b/dll/win32/browseui/toolsband.cpp
+@@ -224,8 +224,8 @@
+ 
+ // The buttons Windows shows, each with its label. The rest wait in the
+ // customize dialog.
+-const int numShownButtons = 8;
+-const int numHiddenButtons = 17;
++const int numShownButtons = 7;
++const int numHiddenButtons = 18;
+ TBBUTTON tbButtonsAdd[numShownButtons + numHiddenButtons] =
+ {
+     { backImageIndex, IDM_GOTO_BACK, TBSTATE_ENABLED, BTNS_DROPDOWN | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Back },
+@@ -233,10 +233,13 @@
+     { upImageIndex, IDM_GOTO_UPONELEVEL, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0,  BtnIdx_Up },
+     { 6, -1, TBSTATE_ENABLED, BTNS_SEP },
+     { searchImageIndex, gSearchCommandID, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Search },
+-    { foldersImageIndex, gFoldersCommandID, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Folders },
+     { 6, -1, TBSTATE_ENABLED, BTNS_SEP },
+     { viewsImageIndex, gViewsCommandID, TBSTATE_ENABLED, BTNS_WHOLEDROPDOWN | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Views },
+ 
++    /* Arctic: the navigation pane is View > Explorer bar > Folders, as in
++       Windows 10, not a button of its own; it waits here */
++    { foldersImageIndex, gFoldersCommandID, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Folders },
++
+     { moveToImageIndex, gMoveToCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_MoveTo },
+     { copyToImageIndex, gCopyToCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_CopyTo },
+     { deleteImageIndex, gDeleteCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Delete },
+diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBand.cpp
+--- a/dll/win32/shdocvw/CExplorerBand.cpp
++++ b/dll/win32/shdocvw/CExplorerBand.cpp
+@@ -395,10 +395,35 @@
+         }
+     }
+ 
+-    // Find PIDL into our explorer
++    // Arctic: as Windows 10, the pane expands to the open folder only when
++    // "Expand to open folder" is on (NavPaneExpandToCurrentFolder); else the
++    // folder is selected where the tree shows it already, and nothing is
++    // selected when it is inside a collapsed folder
++    DWORD dwExpand = 0, cbExpand = sizeof(dwExpand);
++    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                L"NavPaneExpandToCurrentFolder", NULL, &dwExpand, &cbExpand);
++
+     ++m_mtxBlockNavigate;
+     HTREEITEM hItem;
+-    BOOL result = _NavigateToPIDL(pidl, &hItem, TRUE, FALSE, TRUE);
++    BOOL result;
++    if (dwExpand)
++    {
++        result = _NavigateToPIDL(pidl, &hItem, TRUE, FALSE, TRUE);
++    }
++    else
++    {
++        result = _NavigateToPIDL(pidl, &hItem, FALSE, FALSE, FALSE);
++        for (HTREEITEM hParent = result ? TreeView_GetParent(m_hwndTreeView, hItem) : NULL; hParent;
++             hParent = TreeView_GetParent(m_hwndTreeView, hParent))
++        {
++            if (!(TreeView_GetItemState(m_hwndTreeView, hParent, TVIS_EXPANDED) & TVIS_EXPANDED))
++            {
++                result = FALSE;
++                break;
++            }
++        }
++        TreeView_SelectItem(m_hwndTreeView, result ? hItem : NULL);
++    }
+     --m_mtxBlockNavigate;
+ 
+     return result;

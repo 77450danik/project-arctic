@@ -72,6 +72,24 @@
 #define IDS_CANCEL              152
 #define IDS_USER_FOLDER         153
 #define IDS_EMPTY               154
+#define IDS_LOOK_TITLE          160
+#define IDS_LOOK_INTRO          161
+#define IDS_LOOK_PRESET         162
+#define IDS_LOOK_EFFECT         163
+#define IDS_LOOK_COLOR          164
+#define IDS_LOOK_OPACITY        165
+#define IDS_LOOK_NOTE           166
+#define IDS_LOOK_WIN10          167
+#define IDS_LOOK_WIN11          168
+#define IDS_LOOK_ACCENT         169
+#define IDS_LOOK_BLUR           170
+#define IDS_LOOK_CLEAR          171
+#define IDS_LOOK_SOLID          172
+#define IDS_LOOK_CUSTOM         173
+#define IDS_EFFECT_ACRYLIC      174
+#define IDS_EFFECT_BLUR         175
+#define IDS_EFFECT_CLEAR        176
+#define IDS_EFFECT_SOLID        177
 
 /* the shell's colours in Windows 10, dark */
 #define ACRYLIC_TINT  0xcc202020   /* 0xAABBGGRR */

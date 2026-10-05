@@ -1,0 +1,26 @@
+diff --git a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+--- a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
++++ b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+@@ -215,9 +215,19 @@
+     }
+ 
+ #else
+-     SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcNewSize, 0);
+-    ::MoveWindow(m_hWnd, rcNewSize.left, rcNewSize.top, rcNewSize.right - rcNewSize.left, rcNewSize.bottom - rcNewSize.top, TRUE);
+-    ::MoveWindow(m_hWndShellView, 0, 0, rcNewSize.right - rcNewSize.left, rcNewSize.bottom - rcNewSize.top, TRUE);
++    /* Arctic: as in Windows, the desktop covers the whole screen, the
++     * taskbar's part too, whose acrylic shows the wallpaper through instead
++     * of the bare background; its icons stay in the work area */
++    RECT rcScreen;
++    SetRect(&rcScreen, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
++            GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),
++            GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN));
++    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcNewSize, 0);
++    if (IsRectEmpty(&rcScreen))
++        rcScreen = rcNewSize;
++    ::MoveWindow(m_hWnd, rcScreen.left, rcScreen.top, rcScreen.right - rcScreen.left, rcScreen.bottom - rcScreen.top, TRUE);
++    ::MoveWindow(m_hWndShellView, rcNewSize.left - rcScreen.left, rcNewSize.top - rcScreen.top,
++                 rcNewSize.right - rcNewSize.left, rcNewSize.bottom - rcNewSize.top, TRUE);
+ 
+ #endif
+     return S_OK;
