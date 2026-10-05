@@ -27,7 +27,7 @@ HOST_FILES=("$ISO/arctic/host.sqfs" "$ISO/arctic/vmlinuz" "$ISO/arctic/initrd.im
 
 if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
-    pacman -Syu --noconfirm --needed dosfstools mtools limine util-linux ntfs-3g \
+    pacman -Syu --noconfirm --needed dosfstools mtools limine util-linux ntfs-3g ntfsprogs \
         sbsigntools binutils openssl libarchive
 fi
 
