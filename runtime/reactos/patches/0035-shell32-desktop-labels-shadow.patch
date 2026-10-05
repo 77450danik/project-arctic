@@ -1,0 +1,16 @@
+diff --git a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
+--- a/dll/win32/shell32/CDefView.cpp
++++ b/dll/win32/shell32/CDefView.cpp
+@@ -935,8 +935,10 @@
+ {
+     if (m_FolderSettings.fFlags & FWF_DESKTOP)
+     {
+-        /* Check if drop shadows option is enabled */
+-        BOOL bDropShadow = FALSE;
++        /* Check if drop shadows option is enabled; Arctic: on unless turned
++         * off, as in Windows 10, where the labels on the desktop have no
++         * background of their own but a shadow over the wallpaper */
++        BOOL bDropShadow = TRUE;
+         DWORD cbDropShadow = sizeof(bDropShadow);
+ 
+         /*

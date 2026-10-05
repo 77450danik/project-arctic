@@ -1,0 +1,85 @@
+diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
+--- a/base/shell/explorer/trayntfy.cpp
++++ b/base/shell/explorer/trayntfy.cpp
+@@ -435,31 +435,44 @@
+             DeleteObject(m_hfAbbr);
+     }
+ 
+-    /* shown while there is more than one input language, as in Windows 10 */
+-    static BOOL Wanted()
+-    {
+-        return GetKeyboardLayoutList(0, NULL) > 1;
+-    }
+-
+-    /* the taskbar's font, the clock's: a visual style with a larger one makes
+-     * the abbreviation larger in Windows 10 too */
++    /* the clock's font, as in Windows 10, where the abbreviation is as large
++     * as the time beside it: the taskbar gives the clock the caption font of
++     * the system's DPI (WM_SETFONT, see SetClockFont); the theme's Clock font
++     * is smaller and not scaled */
+     void UpdateFont()
+     {
+-        LOGFONTW lf;
++        NONCLIENTMETRICSW ncm;
+         HFONT hFont = NULL;
+-        HTHEME hTheme = OpenThemeData(m_hWnd, L"Clock");
+ 
+-        if (hTheme)
++        ZeroMemory(&ncm, sizeof(ncm));
++        ncm.cbSize = sizeof(ncm);
++        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
+         {
+-            if (SUCCEEDED(GetThemeFont(hTheme, NULL, CLP_TIME, 0, TMT_FONT, &lf)))
+-                hFont = CreateFontIndirectW(&lf);
+-            CloseThemeData(hTheme);
++            ncm.lfCaptionFont.lfWeight = FW_NORMAL;
++            hFont = CreateFontIndirectW(&ncm.lfCaptionFont);
+         }
+         if (!hFont)
+-            hFont = CreateInputFont(12, FW_NORMAL);
++            hFont = CreateInputFont(ArcticDpiScale(12), FW_NORMAL);
++        if (m_hfAbbr)
++            DeleteObject(m_hfAbbr);
++        m_hfAbbr = hFont;
++    }
++
++    /* the font the taskbar has just given the clock */
++    void SetClockFont(HFONT hFont)
++    {
++        LOGFONTW lf;
++
++        if (!hFont || !GetObjectW(hFont, sizeof(lf), &lf))
++            return;
++        hFont = CreateFontIndirectW(&lf);
++        if (!hFont)
++            return;
+         if (m_hfAbbr)
+             DeleteObject(m_hfAbbr);
+         m_hfAbbr = hFont;
++        if (m_hWnd)
++            Invalidate();
+     }
+ 
+     HWND DoCreate(HWND hwndParent)
+@@ -707,8 +720,9 @@
+             return FALSE;
+ 
+         /* the input indicator, beside the clock */
+-        if (CInputIndicator::Wanted())
+-            m_hwndInput = m_InputIndicator.DoCreate(m_hWnd);
++        /* Arctic: always there, left of the clock, whatever the languages
++         * loaded when the shell starts: they may come later */
++        m_hwndInput = m_InputIndicator.DoCreate(m_hWnd);
+ 
+         /* Create the 'Show Desktop' button */
+         m_ShowDesktopButton.DoCreate(m_hWnd);
+@@ -1070,6 +1084,9 @@
+ 
+     LRESULT OnClockMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
++        /* the input indicator writes in the clock's font */
++        if (uMsg == WM_SETFONT && m_hwndInput)
++            m_InputIndicator.SetClockFont((HFONT)wParam);
+         return SendMessageW(m_hwndClock, uMsg, wParam, lParam);
+     }
+ 

@@ -1,0 +1,93 @@
+diff --git a/dll/cpl/desk/desk.c b/dll/cpl/desk/desk.c
+--- a/dll/cpl/desk/desk.c
++++ b/dll/cpl/desk/desk.c
+@@ -248,6 +248,18 @@
+     if (nPage != 0 && psh.nStartPage == 0)
+         psh.nStartPage = nPage;
+ 
++    /* Arctic: the panel draws itself at the system's DPI, sharp, as the
++     * settings of Windows 10 do; rundll32 itself does not know about DPI,
++     * so dwm would stretch it blurred. The thread's context, since the
++     * process's one does not take in Wine once windows exist. */
++    {
++        typedef HANDLE (WINAPI *PFN_SetThreadDpiAwarenessContext)(HANDLE);
++        PFN_SetThreadDpiAwarenessContext pfn = (PFN_SetThreadDpiAwarenessContext)
++            GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
++        if (pfn)
++            pfn((HANDLE)(LONG_PTR)-2 /* DPI_AWARENESS_CONTEXT_SYSTEM_AWARE */);
++    }
++
+     PropertySheet(&psh);
+ 
+ cleanup:
+diff --git a/dll/cpl/desk/settings.c b/dll/cpl/desk/settings.c
+--- a/dll/cpl/desk/settings.c
++++ b/dll/cpl/desk/settings.c
+@@ -118,6 +118,17 @@
+ 
+     curDispFreq = devmode.dmDisplayFrequency;
+ 
++    /* Arctic: the mode on the screen is the one the display reports, in
++     * pixels of the monitor; HORZRES of a program that does not know about
++     * DPI is scaled (1536 on a 1920 screen at 125%) and matches no mode */
++    if (devmode.dmPelsWidth && devmode.dmPelsHeight)
++    {
++        xres = devmode.dmPelsWidth;
++        yres = devmode.dmPelsHeight;
++        if (devmode.dmBitsPerPel)
++            bpp = devmode.dmBitsPerPel;
++    }
++
+     while (EnumDisplaySettingsEx(DeviceName, iMode, &devmode, dwFlags))
+     {
+         iMode++;
+@@ -184,6 +195,15 @@
+         }
+     }
+ 
++    /* Arctic: a mode the list does not have (a colour depth it skips) must
++     * not leave the page without a current one: the largest stands for it */
++    if (*CurrentSettings == NULL && Settings != NULL)
++    {
++        for (Current = Settings; Current->Flink != NULL; Current = Current->Flink)
++            ;
++        *CurrentSettings = Current;
++    }
++
+     /* the mode on the screen right now runs at its own refresh rate */
+     if (*CurrentSettings != NULL)
+         (*CurrentSettings)->dmDisplayFrequency = curDispFreq;
+diff --git a/dll/cpl/desk/appearance.c b/dll/cpl/desk/appearance.c
+--- a/dll/cpl/desk/appearance.c
++++ b/dll/cpl/desk/appearance.c
+@@ -84,8 +84,8 @@
+ 
+     if (g->ActiveTheme.Theme->SizesList)
+         pSizes = g->ActiveTheme.Theme->SizesList;
+-    else
+-        pSizes = g->ActiveTheme.Color->ChildStyle;
++    else /* Arctic: a classic theme without colour schemes in the registry has none */
++        pSizes = g->ActiveTheme.Color ? g->ActiveTheme.Color->ChildStyle : NULL;
+ 
+     AppearancePage_ShowStyles(hwndDlg,
+                               IDC_APPEARANCE_SIZE,
+@@ -155,7 +155,9 @@
+         {
+             g->ClassicTheme.Theme = g->pThemes;
+             g->ClassicTheme.Color = g->pThemes->ColoursList;
+-            g->ClassicTheme.Size = g->ClassicTheme.Color->ChildStyle;
++            /* Arctic: no "New Schemes" in HKCU leaves the classic theme
++             * without colour schemes, and the page crashed on it */
++            g->ClassicTheme.Size = g->ClassicTheme.Color ? g->ClassicTheme.Color->ChildStyle : NULL;
+         }
+ 
+         if (g->ActiveTheme.ThemeActive == FALSE)
+@@ -264,7 +266,7 @@
+                     if (HIWORD(wParam) == CBN_SELCHANGE)
+                     {
+                         g->ActiveTheme.Color = (PTHEME_STYLE)GetSelectedData(hwndDlg, IDC_APPEARANCE_COLORSCHEME);
+-                        if (g->ActiveTheme.Color->ChildStyle != NULL)
++                        if (g->ActiveTheme.Color && g->ActiveTheme.Color->ChildStyle != NULL)
+                             g->ActiveTheme.Size = g->ActiveTheme.Color->ChildStyle;
+ 
+                         g->bSchemeChanged = TRUE;

@@ -1,0 +1,13 @@
+MODULE    = startui.dll
+IMPORTS   = uuid dwmapi shell32 user32 gdi32 advapi32 ole32
+
+VER_FILEDESCRIPTION_STR = "Start menu"
+
+SOURCES = \
+	avatar.c \
+	glyph.c \
+	items.c \
+	main.c \
+	menu.c \
+	settings.c \
+	startui.rc

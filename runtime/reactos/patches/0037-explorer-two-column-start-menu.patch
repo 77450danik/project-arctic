@@ -1,0 +1,190 @@
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -375,6 +375,9 @@
+  */
+ VOID
+ ShowCustomizeClassic(HINSTANCE, HWND);
++
++/* Arctic: Start opens the menu of startui.dll, not the classic one (traywnd.cpp) */
++BOOL ArcticStartPanelOn();
+ VOID
+ ClearRecentAndMru();
+ 
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -32,6 +32,45 @@
+ #define AUTOHIDE_SHOWN 2
+ #define AUTOHIDE_HIDING 3
+ 
++/* Arctic: the two-column Start menu of startui.dll (docs/start-menu.md),
++ * unless "Classic Start menu" is chosen in the taskbar's properties
++ * (HKCU\Software\Arctic\StartMenu, Classic). It says when it closed. */
++static const UINT g_uArcticStartMenuClosed = RegisterWindowMessageW(L"ArcticStartMenuClosed");
++
++static FARPROC ArcticStartUiProc(LPCSTR pszName)
++{
++    HMODULE hModule = GetModuleHandleW(L"startui.dll");
++
++    if (!hModule)
++        hModule = LoadLibraryW(L"startui.dll");
++    return hModule ? GetProcAddress(hModule, pszName) : NULL;
++}
++
++BOOL ArcticStartPanelOn()
++{
++    DWORD dwClassic = 0, cbData = sizeof(dwClassic);
++
++    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Arctic\\StartMenu", L"Classic", NULL, &dwClassic, &cbData);
++    return !dwClassic && ArcticStartUiProc("ArcticStartMenuToggle") != NULL;
++}
++
++static BOOL ArcticStartMenuVisible()
++{
++    typedef BOOL (WINAPI *PFN_VISIBLE)(VOID);
++    PFN_VISIBLE pVisible = (PFN_VISIBLE)ArcticStartUiProc("ArcticStartMenuVisible");
++
++    return pVisible && pVisible();
++}
++
++static VOID ArcticStartMenuHide()
++{
++    typedef VOID (WINAPI *PFN_HIDE)(VOID);
++    PFN_HIDE pHide = (PFN_HIDE)ArcticStartUiProc("ArcticStartMenuHide");
++
++    if (pHide)
++        pHide();
++}
++
+ #define IDHK_RUN 0x1f4
+ #define IDHK_MINIMIZE_ALL 0x1f5
+ #define IDHK_RESTORE_ALL 0x1f6
+@@ -301,7 +340,8 @@
+         if (uMsg == WM_KEYUP && wParam != VK_SPACE)
+             return 0;
+ 
+-        GetParent().PostMessage(TWM_OPENSTARTMENU);
++        /* Arctic: 1, a click, which may be the one that just closed the menu */
++        GetParent().PostMessage(TWM_OPENSTARTMENU, uMsg == WM_LBUTTONDOWN);
+         return 0;
+     }
+ 
+@@ -749,6 +789,7 @@
+ 
+     VOID HideStartMenu()
+     {
++        ArcticStartMenuHide();
+         m_StartMenuPopup->OnSelect(MPOS_CANCELLEVEL);
+     }
+ 
+@@ -1948,8 +1989,32 @@
+         CalculateValidSize(m_Position, pRect);
+     }
+ 
++    /* Arctic: the menu of startui.dll opens, or closes when it is open */
++    BOOL ArcticToggleStartMenu(BOOL bClick)
++    {
++        typedef VOID (WINAPI *PFN_TOGGLE)(HWND, const RECT *, BOOL);
++        PFN_TOGGLE pToggle;
++        RECT rcButton;
++
++        if (!ArcticStartPanelOn() || !(pToggle = (PFN_TOGGLE)ArcticStartUiProc("ArcticStartMenuToggle")))
++            return FALSE;
++        m_StartButton.GetWindowRect(&rcButton);
++        pToggle(m_hWnd, &rcButton, bClick);
++        m_StartButton.SendMessageW(BM_SETSTATE, ArcticStartMenuVisible(), 0);
++        return TRUE;
++    }
++
++    LRESULT OnArcticStartMenuClosed(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        RaiseStartButton();
++        return 0;
++    }
++
+     void PopupStartMenu()
+     {
++        if (ArcticToggleStartMenu(TRUE))
++            return;
++
+         if (m_StartMenuPopup != NULL)
+         {
+             POINTL pt;
+@@ -3117,6 +3182,9 @@
+ 
+     LRESULT OnOpenStartMenu(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
++        if (ArcticToggleStartMenu(wParam == TRUE))
++            return TRUE;
++
+         HWND hwndStartMenu;
+         HRESULT hr = IUnknown_GetWindow(m_StartMenuPopup, &hwndStartMenu);
+         if (FAILED_UNEXPECTEDLY(hr))
+@@ -3548,6 +3616,7 @@
+         MESSAGE_HANDLER(m_WinMMDevChgMsg, OnWinMMDeviceChange)
+         MESSAGE_HANDLER(TWM_SETTINGSCHANGED, OnTaskbarSettingsChanged)
+         MESSAGE_HANDLER(TWM_OPENSTARTMENU, OnOpenStartMenu)
++        MESSAGE_HANDLER(g_uArcticStartMenuClosed, OnArcticStartMenuClosed)
+         MESSAGE_HANDLER(TWM_DOEXITWINDOWS, OnDoExitWindows)
+         MESSAGE_HANDLER(TWM_GETTASKSWITCH, OnGetTaskSwitch)
+         MESSAGE_HANDLER(TWM_SETZORDER, OnSetZOrder)
+diff --git a/base/shell/explorer/trayprop.cpp b/base/shell/explorer/trayprop.cpp
+--- a/base/shell/explorer/trayprop.cpp
++++ b/base/shell/explorer/trayprop.cpp
+@@ -201,6 +201,9 @@
+     BEGIN_MSG_MAP(CTaskBarSettingsPage)
+         MESSAGE_HANDLER(WM_INITDIALOG, OnInitDialog)
+         COMMAND_ID_HANDLER(IDC_TASKBARPROP_STARTMENUCLASSICCUST, OnStartMenuCustomize)
++        COMMAND_ID_HANDLER(IDC_TASKBARPROP_STARTMENUCUST, OnStartMenuCustomizeModern)
++        COMMAND_ID_HANDLER(IDC_TASKBARPROP_STARTMENU, OnStyleChosen)
++        COMMAND_ID_HANDLER(IDC_TASKBARPROP_STARTMENUCLASSIC, OnStyleChosen)
+         CHAIN_MSG_MAP(CPropertyPageImpl<CStartMenuSettingsPage>)
+     END_MSG_MAP()
+ 
+@@ -217,7 +220,8 @@
+ 
+     LRESULT OnInitDialog(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+     {
+-        BOOL modern = SHELL_GetSetting(SSF_STARTPANELON, fStartPanelOn);
++        /* Arctic: the two-column menu of startui.dll unless Classic is chosen */
++        BOOL modern = ArcticStartPanelOn();
+         CheckDlgButton(modern ? IDC_TASKBARPROP_STARTMENU : IDC_TASKBARPROP_STARTMENUCLASSIC, BST_CHECKED);
+         _UpdateDialog();
+         return TRUE;
+@@ -229,11 +233,34 @@
+         return 0;
+     }
+ 
++    /* Arctic: what the two-column menu shows, startui.dll's dialog */
++    LRESULT OnStartMenuCustomizeModern(WORD wNotifyCode, WORD wID, HWND hWndCtl, BOOL &bHandled)
++    {
++        typedef VOID (WINAPI *PFN_CUSTOMIZE)(HWND);
++        HMODULE hModule = LoadLibraryW(L"startui.dll");
++        PFN_CUSTOMIZE pCustomize = hModule ? (PFN_CUSTOMIZE)GetProcAddress(hModule, "ArcticStartMenuCustomize") : NULL;
++
++        if (pCustomize)
++            pCustomize(m_hWnd);
++        return 0;
++    }
++
++    LRESULT OnStyleChosen(WORD wNotifyCode, WORD wID, HWND hWndCtl, BOOL &bHandled)
++    {
++        _UpdateDialog();
++        SetModified(TRUE);
++        return 0;
++    }
++
+     int OnApply()
+     {
+         SHELLSTATE ss;
+-        ss.fStartPanelOn = !IsDlgButtonChecked(IDC_TASKBARPROP_STARTMENUCLASSIC);
++        DWORD dwClassic = IsDlgButtonChecked(IDC_TASKBARPROP_STARTMENUCLASSIC) ? 1 : 0;
++
++        ss.fStartPanelOn = !dwClassic;
+         SHGetSetSettings(&ss, SSF_STARTPANELON, TRUE);
++        /* Arctic: which menu Start opens from now on */
++        SHSetValueW(HKEY_CURRENT_USER, L"Software\\Arctic\\StartMenu", L"Classic", REG_DWORD, &dwClassic, sizeof(dwClassic));
+         return PSNRET_NOERROR;
+     }
+ };
