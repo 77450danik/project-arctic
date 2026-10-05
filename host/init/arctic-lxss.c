@@ -1224,6 +1224,17 @@ int main(void)
     struct sigaction sa = {.sa_handler = on_term};
 
     sigaction(SIGTERM, &sa, NULL);
+    /* the distributions bind the host's /dev, whose devtmpfs has no links to
+     * the open files: bash's <(...) needs /dev/fd */
+    static const char *const fd_links[][2] = {
+        {"/proc/self/fd", "/dev/fd"},
+        {"/proc/self/fd/0", "/dev/stdin"},
+        {"/proc/self/fd/1", "/dev/stdout"},
+        {"/proc/self/fd/2", "/dev/stderr"},
+    };
+    for (size_t i = 0; i < sizeof(fd_links) / sizeof(*fd_links); i++)
+        if (symlink(fd_links[i][0], fd_links[i][1]) && errno != EEXIST)
+            say("%s: %s", fd_links[i][1], strerror(errno));
     /* qemu-nbd --fork leaves its server as an orphan: it is ours to reap */
     prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
     signal(SIGPIPE, SIG_IGN);

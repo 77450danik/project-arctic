@@ -273,9 +273,9 @@ static void draw_background(void)
     a.cy = (int)(a.s.height * (a.update ? 0.43 : 0.75));
     screen_fill(&a.s, 0, 0, (int)a.s.width, (int)a.s.height, 0);
     if (a.update) {
-        double base = a.cy + a.dim * 0.5 + boot_line_height(1, f * 0.8) * 1.6;
-        boot_text(&a.s, 1, a.line1, base, f * 0.8, 0);
-        boot_text(&a.s, 1, a.line2, base + boot_line_height(1, f * 0.8) * 1.25, f * 0.8, 0);
+        double base = a.cy + a.dim * 0.5 + boot_line_height(1, f) * 1.6;
+        boot_text(&a.s, 1, a.line1, base, f, 0);
+        boot_text(&a.s, 1, a.line2, base + boot_line_height(1, f) * 1.25, f, 0);
     } else {
         draw_logo();
         if (a.status[0])

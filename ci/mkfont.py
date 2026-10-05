@@ -1,6 +1,10 @@
 """Renders the glyph atlas the stop screen (host/init/stop.c) draws text with.
 
-usage: mkfont.py <font.ttf> <out.font>
+usage: mkfont.py <font.ttf> <out.font> [<regular.ttf>]
+
+The stop screen is in the light face, as Windows' is; the boot screen's
+status and the update screen's lines in the regular one, a little bigger,
+as Windows has them under its spinner.
 
 Sizes are for a 3840x2160 screen; smaller screens scale them down.
 File layout (little endian):
@@ -17,15 +21,18 @@ from PIL import Image, ImageDraw, ImageFont
 UKRAINIAN = "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюя"
 TEXT = "".join(chr(c) for c in range(32, 127)) + UKRAINIAN + "’ʼ«»–—№"
 SETS = [
-    (0, 400, ":("),   # the sad face
-    (1, 60, TEXT),    # main message and progress
-    (2, 34, TEXT),    # stop code lines
+    (0, 400, ":(", 0),   # the sad face
+    (1, 60, TEXT, 0),    # main message and progress
+    (2, 34, TEXT, 0),    # stop code lines
+    (3, 44, TEXT, 1),    # the boot screen's status: "Перезавантаження"
+    (4, 54, TEXT, 1),    # the update screen's lines
 ]
 
-font_path, out_path = sys.argv[1], sys.argv[2]
+font_paths = [sys.argv[1], sys.argv[3] if len(sys.argv) > 3 else sys.argv[1]]
+out_path = sys.argv[2]
 tables, bitmaps = [], bytearray()
-for set_id, size, chars in SETS:
-    font = ImageFont.truetype(font_path, size)
+for set_id, size, chars, face in SETS:
+    font = ImageFont.truetype(font_paths[face], size)
     ascent, descent = font.getmetrics()
     glyphs = []
     for ch in sorted(set(chars)):

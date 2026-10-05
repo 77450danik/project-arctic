@@ -17,7 +17,7 @@ static const char CODE_LABEL[] = "Код зупинки: ";
 static const char WHAT_LABEL[] = "Що спричинило збій: ";
 
 /* Glyph atlas written by ci/mkfont.py */
-enum { SET_FACE, SET_MAIN, SET_SMALL, SET_COUNT };
+enum { SET_FACE, SET_MAIN, SET_SMALL, SET_BOOT, SET_UPDATE, SET_COUNT };
 
 struct __attribute__((packed)) glyph {
     uint32_t cp;
@@ -294,14 +294,25 @@ int boot_font_load(const char *path)
     return boot_font_loaded ? 0 : -1;
 }
 
+/* the boot screen's sets, in the regular face; an older atlas has only the
+ * stop screen's light ones */
+static int boot_set(int big)
+{
+    int set = big ? SET_UPDATE : SET_BOOT;
+
+    if (!boot_font.set[set].line_height)
+        set = big ? SET_MAIN : SET_SMALL;
+    return set;
+}
+
 double boot_line_height(int big, double f)
 {
-    return boot_font_loaded ? boot_font.set[big ? SET_MAIN : SET_SMALL].line_height * f : 0;
+    return boot_font_loaded ? boot_font.set[boot_set(big)].line_height * f : 0;
 }
 
 void boot_text(struct screen *s, int big, const char *text, double baseline, double f, uint32_t bg)
 {
-    int set = big ? SET_MAIN : SET_SMALL;
+    int set = boot_set(big);
 
     if (!boot_font_loaded)
         return;

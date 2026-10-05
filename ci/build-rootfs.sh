@@ -62,7 +62,8 @@ bash "$ROOT/ci/build-ntfsprogs.sh" "$OUT/initrd/bin"
 mknod -m 600 "$OUT/initrd/dev/console" c 5 1
 python "$ROOT/ci/logo2raw.py" "$ROOT/ARCTIC.png" "$OUT/initrd/logo.bgra"
 cp "$OUT/initrd/logo.bgra" "$RFS/usr/share/arctic/logo.bgra"
-python "$ROOT/ci/mkfont.py" /usr/share/fonts/noto/NotoSans-Light.ttf "$OUT/initrd/bsod.font"
+python "$ROOT/ci/mkfont.py" /usr/share/fonts/noto/NotoSans-Light.ttf "$OUT/initrd/bsod.font" \
+    /usr/share/fonts/noto/NotoSans-Regular.ttf
 # Windows 11's boot spinner, which the boot screen (bootanim.c) draws under the logo
 python "$ROOT/ci/mkspinner.py" "$ROOT/runtime/art/boot/segoe_slboot_ex.ttf" "$OUT/initrd/spinner.bin"
 # and arctic-init's "Завершення роботи" screen

@@ -1,0 +1,85 @@
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+index dfbea78..bb89fcf 100644
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -420,6 +420,25 @@ public:
+     }
+ };
+ 
++/* Arctic: into the system's log (Wine's debug output), which ReactOS's
++   ERR does not reach */
++static void ArcticLog(const char *format, ...)
++{
++    static int (__cdecl *output)(const char *);
++    char buffer[512];
++    va_list args;
++
++    if (!output)
++        output = (int (__cdecl *)(const char *))GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "__wine_dbg_output");
++    if (!output)
++        return;
++    va_start(args, format);
++    _vsnprintf(buffer, sizeof(buffer) - 1, format, args);
++    va_end(args);
++    buffer[sizeof(buffer) - 1] = 0;
++    output(buffer);
++}
++
+ class CTaskSwitchWnd :
+     public CComCoClass<CTaskSwitchWnd>,
+     public CComObjectRootEx<CComMultiThreadModelNoCS>,
+@@ -2041,6 +2060,12 @@ public:
+ 
+             if (!bIsMinimized && bIsActive)
+             {
++                DWORD pos = GetMessagePos();
++                POINT cursor;
++                GetCursorPos(&cursor);
++                ArcticLog("arctic-taskbar: button %p minimizes its active window, message at %d,%d, "
++                          "pointer at %ld,%ld\n", TaskItem->hWnd, (SHORT)LOWORD(pos), (SHORT)HIWORD(pos),
++                          cursor.x, cursor.y);
+                 if (!::IsHungAppWindow(TaskItem->hWnd))
+                     ::ShowWindowAsync(TaskItem->hWnd, SW_MINIMIZE);
+                 TRACE("Valid button clicked. App window Minimized.\n");
+@@ -2059,11 +2084,41 @@ public:
+         /* TODO: Show task group menu */
+     }
+ 
++    /* Arctic: the task toolbar now and then reported a click on the active
++       window's button with the pointer nowhere near it (the Control Panel
++       opened from Start): the window minimized by itself, at once. A click
++       counts only when the mouse message it came from was on the button, as
++       one does in Windows; Enter and Space on a focused button still count. */
++    BOOL IsRealButtonClick(IN WORD wCommand)
++    {
++        DWORD pos = GetMessagePos();
++        POINT pt = { (SHORT)LOWORD(pos), (SHORT)HIWORD(pos) }, cursor;
++        INT index = (INT)m_TaskBar.SendMessageW(TB_COMMANDTOINDEX, wCommand, 0);
++        RECT rc;
++
++        if (GetKeyState(VK_RETURN) < 0 || GetKeyState(VK_SPACE) < 0)
++            return TRUE;
++        if (index < 0 || !m_TaskBar.SendMessageW(TB_GETITEMRECT, index, (LPARAM)&rc))
++            return TRUE;
++        m_TaskBar.MapWindowPoints(NULL, (LPPOINT)&rc, 2);
++        if (PtInRect(&rc, pt))
++            return TRUE;
++        GetCursorPos(&cursor);
++        ArcticLog("arctic-taskbar: a click on button %u (%ld,%ld-%ld,%ld) ignored: its message was at %ld,%ld, "
++                  "the pointer is at %ld,%ld, buttons %s%s\n", wCommand, rc.left, rc.top, rc.right, rc.bottom,
++                  pt.x, pt.y, cursor.x, cursor.y, GetKeyState(VK_LBUTTON) < 0 ? "L" : "",
++                  GetKeyState(VK_RBUTTON) < 0 ? "R" : "");
++        return FALSE;
++    }
++
+     BOOL HandleButtonClick(IN WORD wIndex)
+     {
+         PTASK_ITEM TaskItem;
+         PTASK_GROUP TaskGroup;
+ 
++        if (!IsRealButtonClick(wIndex))
++            return TRUE;
++
+         if (m_IsGroupingEnabled)
+         {
+             TaskGroup = FindTaskGroupByIndex((INT) wIndex);
