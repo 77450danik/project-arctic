@@ -1,5 +1,5 @@
 MODULE    = winlogon.exe
-IMPORTS   = user32 gdi32 advapi32
+IMPORTS   = dbghelp user32 gdi32 advapi32
 EXTRADLLFLAGS = -mwindows -municode
 
 VER_FILEDESCRIPTION_STR = "Windows Logon Application"
@@ -7,4 +7,5 @@ VER_FILEDESCRIPTION_STR = "Windows Logon Application"
 SOURCES = \
 	main.c \
 	security.c \
+	watchdog.c \
 	winlogon.rc

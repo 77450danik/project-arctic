@@ -12,3 +12,4 @@
 #define IDS_HUNG_CONTENT        3
 #define IDS_HUNG_CLOSE          4
 #define IDS_HUNG_WAIT           5
+#define IDS_SCREENSHOT_NAME     6

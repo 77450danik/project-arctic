@@ -196,6 +196,7 @@ void gl_surface_gone( struct surface *s );
 void gl_dmabuf_gone( struct dmabuf *buffer );
 void gl_image_free( struct window_image *image );
 bool gl_snapshot( struct window_state *ws, const struct dwm_window *w );
+bool gl_capture( int x, int y, int width, int height, uint32_t *pixels );  /* a screenshot, without the pointer */
 
 /* compositor.c, for gl.c: how each window is drawn this frame */
 struct window_draw

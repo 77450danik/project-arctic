@@ -123,6 +123,13 @@ struct dwm_set_attributes_params
     const struct arctic_dwm_entry *entries;  /* the rows in use */
 };
 
+/* a screenshot: what the monitors show of that part of the virtual screen */
+struct dwm_capture_params
+{
+    INT32   x, y, width, height;
+    UINT32 *pixels;  /* width * height, BGRA, top row first */
+};
+
 enum dwm_funcs
 {
     unix_dwm_start,        /* take the display, start serving buffers */
@@ -133,6 +140,7 @@ enum dwm_funcs
     unix_dwm_set_config,   /* modes and positions of the monitors */
     unix_dwm_set_options,  /* Windows settings the compositor follows */
     unix_dwm_set_attributes, /* window attributes and thumbnails from dwmapi */
+    unix_dwm_capture,      /* a screenshot (PrintScreen, BitBlt from the screen) */
     unix_funcs_count
 };
 

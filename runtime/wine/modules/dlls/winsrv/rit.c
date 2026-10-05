@@ -391,6 +391,7 @@ static DWORD WINAPI raw_input_thread( void *arg )
                 if (event->value) follow_input_language();
                 send_key( event->code, event->value );
                 if (language_chord( event->code, event->value )) next_input_language();
+                if (event->code == KEY_SYSRQ && event->value == 1) print_screen();
                 if (event->code == KEY_POWER)
                 {
                     HANDLE thread;

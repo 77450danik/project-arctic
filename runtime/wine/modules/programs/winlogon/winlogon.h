@@ -27,6 +27,8 @@ void run( WCHAR *cmdline );
 void run_userinit(void);
 void end_session( int exit_code );
 void show_security_options(void);
+void shell_restarted(void);
+BOOL check_shell_answers(void);
 #endif
 
 #endif

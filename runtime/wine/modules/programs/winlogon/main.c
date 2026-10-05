@@ -55,9 +55,16 @@ void run( WCHAR *cmdline )
 
 /* Winlogon\AutoRestartShell: when the shell ends, whether it is started
  * again, as Windows does unless the value is 0 */
+static BOOL had_shell;
+
+/* the watchdog started the shell again: it is not one that ended */
+void shell_restarted(void)
+{
+    had_shell = FALSE;
+}
+
 static void check_shell(void)
 {
-    static BOOL had_shell;
     WCHAR shell[MAX_PATH] = L"explorer.exe";
     DWORD restart = 1, size = sizeof(restart);
 
@@ -108,7 +115,8 @@ static LRESULT WINAPI sas_window_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     }
     if (msg == WM_TIMER && wp == TIMER_SHELL)
     {
-        check_shell();
+        if (check_shell_answers()) shell_restarted();
+        else check_shell();
         return 0;
     }
     if (msg != WM_HOTKEY) return DefWindowProcW( hwnd, msg, wp, lp );

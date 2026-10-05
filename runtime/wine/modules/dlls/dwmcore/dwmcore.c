@@ -17,6 +17,7 @@
  */
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -669,6 +670,51 @@ static void update_attributes(void)
     WINE_UNIX_CALL( unix_dwm_set_attributes, &params );
 }
 
+/**********************************************************************
+ *          Screenshots
+ *
+ * A client (csrss.exe on PrintScreen) puts its request and room for the
+ * pixels in a section (wine/arctic_dwm.h); the compositor draws them on the
+ * thread it composes on, this one.
+ */
+
+static HANDLE capture_request, capture_done;
+
+static void serve_capture(void)
+{
+    struct dwm_capture_params params;
+    struct arctic_capture *capture;
+    MEMORY_BASIC_INFORMATION info;
+    HANDLE section;
+    SIZE_T needed;
+
+    if (!(section = OpenFileMappingW( FILE_MAP_READ | FILE_MAP_WRITE, FALSE, ARCTIC_CAPTURE_SECTION )))
+    {
+        SetEvent( capture_done );
+        return;
+    }
+    if ((capture = MapViewOfFile( section, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0 )))
+    {
+        needed = offsetof( struct arctic_capture, pixels[0] ) +
+                 (SIZE_T)max( capture->width, 0 ) * max( capture->height, 0 ) * sizeof(UINT32);
+        capture->status = STATUS_INVALID_PARAMETER;
+        if (VirtualQuery( capture, &info, sizeof(info) ) && info.RegionSize >= needed)
+        {
+            params.x = capture->x;
+            params.y = capture->y;
+            params.width = capture->width;
+            params.height = capture->height;
+            params.pixels = capture->pixels;
+            capture->status = WINE_UNIX_CALL( unix_dwm_capture, &params );
+        }
+        if (capture->status) WARN( "screenshot %ldx%ld: %#lx\n", capture->width, capture->height, capture->status );
+        UnmapViewOfFile( capture );
+    }
+    /* closed before the client hears: its next request makes a new section */
+    CloseHandle( section );
+    SetEvent( capture_done );
+}
+
 /* Takes the display and composes the desktop; returns only on failure. */
 DWORD WINAPI DwmCoreRun(void)
 {
@@ -693,6 +739,8 @@ DWORD WINAPI DwmCoreRun(void)
     publish_vrr_capability();
     update_options();
     create_shared();
+    capture_request = CreateEventW( NULL, FALSE, FALSE, ARCTIC_CAPTURE_REQUEST );
+    capture_done = CreateEventW( NULL, FALSE, FALSE, ARCTIC_CAPTURE_DONE );
 
     /* wininit.exe starts csrss.exe on this: the display driver connects as it loads */
     SetEvent( CreateEventW( NULL, TRUE, FALSE, L"__arctic_dwm_ready" ) );
@@ -708,6 +756,7 @@ DWORD WINAPI DwmCoreRun(void)
         }
         if (dispatch.events & DWM_EVENT_SAVE) save_monitors();
         if (!WaitForSingleObject( options_changed, 0 )) update_options();
+        if (capture_request && !WaitForSingleObject( capture_request, 0 )) serve_capture();
         /* attributes first: a window shown cloaked is never drawn */
         update_attributes();
         update_windows();

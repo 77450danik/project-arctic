@@ -1200,16 +1200,18 @@ static enum layer_mode plain_mode( const struct surface *s, const struct window_
     return s->alpha ? LAYER_PREMULTIPLIED : LAYER_OPAQUE;
 }
 
-static void draw_scene( int ox, int oy, int width, int height )
+/* the desktop from ox,oy on, into a monitor's surface (framebuffer 0,
+ * bottom row first) or an image (top row first) */
+static void draw_scene( GLuint framebuffer, int ox, int oy, int width, int height )
 {
     static struct window_draw draws[512];
-    struct target target = { 0, width, height };
+    struct target target = { framebuffer, width, height };
     struct window_draw plain;
     struct xform identity = { 1, 1, 0, 0 };
     struct layer_ctx ctx = { &plain, &identity, NULL, 1 };
     uint32_t count;
 
-    set_projection( ox, oy, width, height, false );
+    set_projection( ox, oy, width, height, framebuffer != 0 );
     memcpy( target.proj, proj, sizeof(proj) );
     set_target( &target );
     glClearColor( ((background >> 16) & 0xff) / 255.0f, ((background >> 8) & 0xff) / 255.0f,
@@ -1386,7 +1388,7 @@ bool gl_render( struct output *output, bool vrr )
         return false;
     }
 
-    draw_scene( o->x, o->y, width, height );
+    draw_scene( 0, o->x, o->y, width, height );
     if (!eglSwapBuffers( display, out->egl ))
     {
         ERR( "cannot finish a frame of %s: %#x\n", o->name, eglGetError() );
@@ -1412,6 +1414,62 @@ bool gl_render( struct output *output, bool vrr )
     gl_frame_released( frame );
     if (o->no_flip) give_up( "the driver cannot flip" );
     return false;
+}
+
+/**********************************************************************
+ *          Screenshots
+ *
+ * The desktop as it is composed, without the pointer, as Windows has it on
+ * PrintScreen and in BitBlt from the screen: drawn again into an image of
+ * its own and read back, BGRA, top row first, opaque.
+ */
+bool gl_capture( int x, int y, int width, int height, uint32_t *pixels )
+{
+    static GLuint texture, framebuffer;
+    static int texture_width, texture_height;
+    struct target saved = current_target;
+    bool hidden = cursor_hidden, ok;
+    size_t count = (size_t)width * height;
+
+    if (!compositing || !make_current()) return false;
+    if (!texture)
+    {
+        glGenTextures( 1, &texture );
+        glGenFramebuffers( 1, &framebuffer );
+    }
+    if (texture_width != width || texture_height != height)
+    {
+        glBindTexture( GL_TEXTURE_2D, texture );
+        glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL );
+        texture_parameters( GL_TEXTURE_2D, GL_NEAREST );
+        texture_width = width;
+        texture_height = height;
+    }
+    glBindFramebuffer( GL_FRAMEBUFFER, framebuffer );
+    glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0 );
+    if (glCheckFramebufferStatus( GL_FRAMEBUFFER ) != GL_FRAMEBUFFER_COMPLETE)
+    {
+        ERR( "cannot draw a %dx%d screenshot\n", width, height );
+        glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+        return false;
+    }
+
+    cursor_hidden = true;
+    draw_scene( framebuffer, x, y, width, height );
+    cursor_hidden = hidden;
+
+    /* RGBA is what every GLES reads back */
+    glPixelStorei( GL_PACK_ALIGNMENT, 4 );
+    glReadPixels( 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels );
+    ok = glGetError() == GL_NO_ERROR;
+    for (size_t i = 0; ok && i < count; i++)
+    {
+        uint32_t p = pixels[i];
+        pixels[i] = 0xff000000 | (p & 0x0000ff) << 16 | (p & 0x00ff00) | (p & 0xff0000) >> 16;
+    }
+    glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+    set_target( &saved );
+    return ok;
 }
 
 /**********************************************************************

@@ -3084,6 +3084,39 @@ static NTSTATUS dwm_set_attributes( void *args )
     return STATUS_SUCCESS;
 }
 
+/* A screenshot, without the pointer: drawn again on the GPU, or composed
+ * in RAM. Outside the monitors it is black, as BitBlt from the screen has it. */
+static NTSTATUS dwm_capture( void *args )
+{
+    const struct dwm_capture_params *params = args;
+    int width = params->width, height = params->height;
+    int screen_width = screen.right - screen.left;
+    bool hidden = cursor_hidden;
+
+    if (width <= 0 || height <= 0 || width > 32768 || height > 32768) return STATUS_INVALID_PARAMETER;
+    if (gl_active() && gl_capture( params->x, params->y, width, height, params->pixels )) return STATUS_SUCCESS;
+    if (!shadow) return STATUS_NOT_SUPPORTED;
+
+    cursor_hidden = true;
+    compose();
+    cursor_hidden = hidden;
+    dirty = true;  /* the next frame has the pointer again */
+    for (int y = 0; y < height; y++)
+    {
+        UINT32 *row = params->pixels + (size_t)y * width;
+        int sy = params->y + y;
+
+        for (int x = 0; x < width; x++)
+        {
+            int sx = params->x + x;
+
+            if (sx < screen.left || sx >= screen.right || sy < screen.top || sy >= screen.bottom) row[x] = 0xff000000;
+            else row[x] = 0xff000000 | shadow[(size_t)(sy - screen.top) * screen_width + (sx - screen.left)];
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS dwm_set_cursor( void *args )
 {
     const struct dwm_set_cursor_params *params = args;
@@ -3178,6 +3211,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     dwm_set_config,
     dwm_set_options,
     dwm_set_attributes,
+    dwm_capture,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
