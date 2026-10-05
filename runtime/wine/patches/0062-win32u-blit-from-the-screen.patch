@@ -1,0 +1,210 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 5 Oct 2026 13:00:00 +0200
+Subject: [PATCH] win32u: A blit from the screen takes what dwm.exe composed.
+
+BitBlt from GetDC(0) or a display DC failed: the desktop window has no
+surface, and dwm.exe composes the screen out of the windows' buffers, so
+nothing in the process held its pixels (.NET's CopyFromScreen, screenshot
+tools, the colour pickers). Now the part of the screen asked for comes from
+dwm.exe (wine/arctic_dwm.h) in the pixels of the monitors and is stretched
+to what the program sees: a program that knows nothing of DPI gets it
+scaled down, as in Windows.
+---
+diff --git a/dlls/win32u/bitblt.c b/dlls/win32u/bitblt.c
+index c6021dd..852f1c8 100644
+--- a/dlls/win32u/bitblt.c
++++ b/dlls/win32u/bitblt.c
+@@ -23,6 +23,10 @@
+ #endif
+ 
+ #include <stdarg.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ #include <limits.h>
+ #include <math.h>
+ #include <float.h>
+@@ -31,6 +35,7 @@
+ #include "winbase.h"
+ #include "wingdi.h"
+ #include "ntgdi_private.h"
++#include "wine/arctic_dwm.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(bitblt);
+@@ -581,6 +586,163 @@ BOOL WINAPI NtGdiBitBlt( HDC hdc_dst, INT x_dst, INT y_dst, INT width, INT heigh
+ }
+ 
+ 
++/* Arctic: dwm.exe composes the screen, and nothing else holds its pixels:
++ * the desktop window has no surface. A blit from the screen (GetDC(0), a
++ * display DC) takes what the monitors show from dwm.exe (wine/arctic_dwm.h),
++ * as BitBlt from the screen does in Windows. */
++
++static HANDLE open_named( const char *name, int kind, SIZE_T size )
++{
++    WCHAR buffer[128];
++    UNICODE_STRING str;
++    OBJECT_ATTRIBUTES attr;
++    LARGE_INTEGER section_size;
++    HANDLE handle = 0;
++    char path[96];
++
++    snprintf( path, sizeof(path), "\\BaseNamedObjects\\%s", name );
++    str.Buffer = buffer;
++    str.MaximumLength = asciiz_to_unicode( buffer, path );
++    str.Length = str.MaximumLength - sizeof(WCHAR);
++    InitializeObjectAttributes( &attr, &str, OBJ_OPENIF, 0, NULL );
++    switch (kind)
++    {
++    case 0: if (NtCreateMutant( &handle, MUTANT_ALL_ACCESS, &attr, FALSE ) < 0) handle = 0; break;
++    case 1: if (NtOpenEvent( &handle, EVENT_ALL_ACCESS, &attr )) handle = 0; break;
++    default:
++        section_size.QuadPart = size;
++        if (NtCreateSection( &handle, SECTION_ALL_ACCESS, &attr, &section_size, PAGE_READWRITE, SEC_COMMIT, 0 ) < 0)
++            handle = 0;
++        break;
++    }
++    return handle;
++}
++
++/* what the monitors show of rect, BGRA, top row first; free() it */
++static UINT32 *capture_screen( const RECT *rect )
++{
++    int width = rect->right - rect->left, height = rect->bottom - rect->top;
++    SIZE_T size = offsetof( struct arctic_capture, pixels[0] ) + (SIZE_T)width * height * sizeof(UINT32);
++    SIZE_T view_size = 0;
++    HANDLE lock, request = 0, done = 0, section = 0;
++    struct arctic_capture *capture = NULL;
++    LARGE_INTEGER timeout = { .QuadPart = -5 * (LONGLONG)10000000 };
++    UINT32 *pixels = NULL;
++
++    if (width <= 0 || height <= 0) return NULL;
++    if (!(lock = open_named( "__arctic_dwm_capture_lock", 0, 0 ))) return NULL;
++    if (NtWaitForSingleObject( lock, FALSE, &timeout ))
++    {
++        NtClose( lock );
++        return NULL;
++    }
++    if (!(request = open_named( "__arctic_dwm_capture_request", 1, 0 )) ||
++        !(done = open_named( "__arctic_dwm_capture_done", 1, 0 )) ||
++        !(section = open_named( "__arctic_dwm_capture", 2, size )) ||
++        NtMapViewOfSection( section, NtCurrentProcess(), (void **)&capture, 0, 0, NULL, &view_size, ViewShare, 0,
++                            PAGE_READWRITE ))
++    {
++        capture = NULL;
++        goto done;
++    }
++    capture->x = rect->left;
++    capture->y = rect->top;
++    capture->width = width;
++    capture->height = height;
++    capture->status = -1;
++    NtResetEvent( done, NULL );
++    NtSetEvent( request, NULL );
++    if (!NtWaitForSingleObject( done, FALSE, &timeout ) && !capture->status &&
++        (pixels = malloc( (SIZE_T)width * height * sizeof(UINT32) )))
++        memcpy( pixels, capture->pixels, (SIZE_T)width * height * sizeof(UINT32) );
++    else WARN( "no screenshot of %s from dwm.exe (%#x)\n", wine_dbgstr_rect( rect ), (int)capture->status );
++
++done:
++    if (capture) NtUnmapViewOfSection( NtCurrentProcess(), capture );
++    if (section) NtClose( section );
++    if (request) NtClose( request );
++    if (done) NtClose( done );
++    NtReleaseMutant( lock, NULL );
++    NtClose( lock );
++    return pixels;
++}
++
++/* the desktop window's DC, or a display DC that belongs to no window */
++static BOOL is_screen_dc( HDC hdc )
++{
++    HWND hwnd = NtUserWindowFromDC( hdc );
++    BOOL ret = FALSE;
++    DC *dc;
++
++    if (hwnd) return hwnd == get_desktop_window();
++    if ((dc = get_dc_ptr( hdc )))
++    {
++        ret = dc->is_display && !dc->dce;
++        release_dc_ptr( dc );
++    }
++    return ret;
++}
++
++/* TRUE when the blit was done from what dwm.exe drew; *ret has its result */
++static BOOL stretch_blt_from_screen( HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, INT height_dst,
++                                     HDC hdc_src, INT x_src, INT y_src, INT width_src, INT height_src,
++                                     DWORD rop, COLORREF bk_color, BOOL *ret )
++{
++    struct ratio raw_dpi = { 0 };
++    POINT pts[2] = { { x_src, y_src }, { x_src + width_src, y_src + height_src } };
++    BITMAPINFO info = { .bmiHeader = { sizeof(BITMAPINFOHEADER), 0, 0, 1, 32, BI_RGB } };
++    RECT desktop, raw, rect;
++    HBITMAP bitmap;
++    HGDIOBJ old;
++    UINT32 *pixels;
++    void *bits;
++    HDC hdc_mem;
++    int width, height;
++    DC *dc;
++
++    if (!is_screen_dc( hdc_src ) || !(dc = get_dc_ptr( hdc_src ))) return FALSE;
++    update_dc( dc );
++    lp_to_dp( dc, pts, 2 );
++    /* the whole desktop, in the coordinates of the DC (its DPI) */
++    desktop = dc->attr->vis_rect;
++    if (IsRectEmpty( &desktop )) desktop = dc->device_rect;
++    release_dc_ptr( dc );
++    raw = get_virtual_screen_rect( raw_dpi, MDT_RAW_DPI );
++    if (IsRectEmpty( &desktop ) || IsRectEmpty( &raw )) return FALSE;
++
++    /* in the pixels of the monitors (fewer for a program that sees 96 DPI):
++     * device 0,0 of the screen is the corner of the desktop */
++    rect.left   = raw.left + muldiv( min( pts[0].x, pts[1].x ), raw.right - raw.left, desktop.right - desktop.left );
++    rect.right  = raw.left + muldiv( max( pts[0].x, pts[1].x ), raw.right - raw.left, desktop.right - desktop.left );
++    rect.top    = raw.top + muldiv( min( pts[0].y, pts[1].y ), raw.bottom - raw.top, desktop.bottom - desktop.top );
++    rect.bottom = raw.top + muldiv( max( pts[0].y, pts[1].y ), raw.bottom - raw.top, desktop.bottom - desktop.top );
++    width = rect.right - rect.left;
++    height = rect.bottom - rect.top;
++    if (!(pixels = capture_screen( &rect ))) return FALSE;
++
++    info.bmiHeader.biWidth = width;
++    info.bmiHeader.biHeight = -height;
++    *ret = FALSE;
++    if ((hdc_mem = NtGdiCreateCompatibleDC( 0 )))
++    {
++        if ((bitmap = NtGdiCreateDIBSection( hdc_mem, NULL, 0, &info, DIB_RGB_COLORS, 0, 0, 0, &bits )))
++        {
++            memcpy( bits, pixels, (SIZE_T)width * height * sizeof(UINT32) );
++            old = NtGdiSelectBitmap( hdc_mem, bitmap );
++            /* a source that runs backwards mirrors, as it would have from the screen */
++            *ret = NtGdiStretchBlt( hdc_dst, x_dst, y_dst, width_dst, height_dst, hdc_mem,
++                                    pts[1].x < pts[0].x ? width : 0, pts[1].y < pts[0].y ? height : 0,
++                                    pts[1].x < pts[0].x ? -width : width, pts[1].y < pts[0].y ? -height : height,
++                                    rop, bk_color );
++            NtGdiSelectBitmap( hdc_mem, old );
++            NtGdiDeleteObjectApp( bitmap );
++        }
++        NtGdiDeleteObjectApp( hdc_mem );
++    }
++    free( pixels );
++    return TRUE;
++}
++
+ /***********************************************************************
+  *           NtGdiStretchBlt    (win32u.@)
+  */
+@@ -593,6 +755,10 @@ BOOL WINAPI NtGdiStretchBlt( HDC hdcDst, INT xDst, INT yDst, INT widthDst, INT h
+ 
+     if (!rop_uses_src( rop )) return NtGdiPatBlt( hdcDst, xDst, yDst, widthDst, heightDst, rop );
+ 
++    if (stretch_blt_from_screen( hdcDst, xDst, yDst, widthDst, heightDst, hdcSrc, xSrc, ySrc, widthSrc,
++                                 heightSrc, rop, bk_color, &ret ))
++        return ret;
++
+     if (!(dcDst = get_dc_ptr( hdcDst ))) return FALSE;
+ 
+     if ((dcSrc = get_dc_ptr( hdcSrc )))
