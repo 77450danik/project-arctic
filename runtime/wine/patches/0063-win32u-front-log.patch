@@ -1,0 +1,127 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 5 Oct 2026 13:30:00 +0200
+Subject: [PATCH] win32u: Log what takes a maximized window from the top.
+
+Now and then a maximized or full screen window (Chrome) went behind another
+one with nobody touching anything, which looked like it minimized itself;
+nothing minimized it (arctic-minimize was silent). Whatever takes such a
+window from the top is written to the log as "arctic-front": the foreground
+going to another window (and whether by a click), another program's window
+of half its size or more raised over it, the window put at the bottom or
+hidden, each with the process and thread doing it.
+---
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 2a26c88..69d821c 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2690,6 +2690,9 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse, BOOL internal )
+ 
+     TRACE( "hwnd %p, mouse %u, internal %u -> ret %u, previous %p\n", hwnd, mouse, internal, ret, previous );
+ 
++    if (ret && previous != hwnd && arctic_is_big( previous ))
++        arctic_log_front( previous, mouse ? "loses the foreground, by a click, to" : "loses the foreground to", hwnd );
++
+     if (ret && previous != hwnd)
+     {
+         if (send_msg_old)  /* old window belongs to other thread */
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index ee112c0..024bd52 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -303,6 +303,8 @@ extern void window_monitor_dpi_changed( HWND hwnd, UINT old_dpi, UINT new_dpi );
+ extern HWND get_window_relative( HWND hwnd, UINT rel );
+ extern DWORD get_window_thread( HWND hwnd, DWORD *process );
+ extern void arctic_log_minimize( HWND hwnd, const char *how, INT asked, INT done );
++extern BOOL arctic_is_big( HWND hwnd );
++extern void arctic_log_front( HWND hwnd, const char *what, HWND other );
+ extern HWND is_current_process_window( HWND hwnd );
+ extern HWND is_current_thread_window( HWND hwnd );
+ extern BOOL is_desktop_window( HWND hwnd );
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index b4051d5..53bca5d 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -4128,6 +4128,30 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
+ 
+     orig_flags = winpos->flags;
+ 
++    /* Arctic: what puts a big window down, or another one over it */
++    if (!(winpos->flags & SWP_NOZORDER) && !(get_window_long( winpos->hwnd, GWL_STYLE ) & WS_CHILD))
++    {
++        HWND front = NtUserGetForegroundWindow();
++
++        if (winpos->hwndInsertAfter == HWND_BOTTOM && arctic_is_big( winpos->hwnd ))
++            arctic_log_front( winpos->hwnd, "goes to the bottom, under", HWND_BOTTOM );
++        else if ((winpos->hwndInsertAfter == HWND_TOP || winpos->hwndInsertAfter == HWND_TOPMOST) &&
++                 front && front != winpos->hwnd && arctic_is_big( front ))
++        {
++            RECT big, rect;
++            DWORD front_pid = 0, pid = 0;
++
++            get_window_thread( front, &front_pid );
++            get_window_thread( winpos->hwnd, &pid );
++            /* a window of another program, half the size of the big one at least */
++            if (front_pid != pid && get_window_rect( front, &big, get_thread_dpi() ) &&
++                get_window_rect( winpos->hwnd, &rect, get_thread_dpi() ) &&
++                (LONGLONG)(rect.right - rect.left) * (rect.bottom - rect.top) * 2 >=
++                (LONGLONG)(big.right - big.left) * (big.bottom - big.top))
++                arctic_log_front( front, "gets covered by", winpos->hwnd );
++        }
++    }
++
+     /* First, check z-order arguments.  */
+     if (!(winpos->flags & SWP_NOZORDER))
+     {
+@@ -5105,6 +5129,44 @@ void arctic_log_minimize( HWND hwnd, const char *how, INT asked, INT done )
+              (int)GetCurrentThreadId(), command, NtUserGetForegroundWindow() );
+ }
+ 
++/* Arctic: a maximized or full screen window now and then went behind
++ * another one, nobody having touched anything. Whatever takes it from the
++ * top is written to the log: "arctic-front" in the logs of the boot medium. */
++BOOL arctic_is_big( HWND hwnd )
++{
++    DWORD style = get_window_long( hwnd, GWL_STYLE );
++    MONITORINFO info;
++    RECT rect;
++
++    if (!hwnd || (style & (WS_CHILD | WS_MINIMIZE)) || !(style & WS_VISIBLE)) return FALSE;
++    if (style & WS_MAXIMIZE) return TRUE;
++    if (!get_window_rect( hwnd, &rect, get_thread_dpi() )) return FALSE;
++    info = monitor_info_from_window( hwnd, MONITOR_DEFAULTTONEAREST );
++    return is_fullscreen( &info, &rect );
++}
++
++void arctic_log_front( HWND hwnd, const char *what, HWND other )
++{
++    const WCHAR *app = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
++    WCHAR title[64] = {0}, class[64] = {0}, other_class[64] = {0};
++    UNICODE_STRING name = { 0, sizeof(class) - sizeof(WCHAR), class };
++    UNICODE_STRING name2 = { 0, sizeof(other_class) - sizeof(WCHAR), other_class };
++    DWORD pid = 0, other_pid = 0;
++
++    NtUserInternalGetWindowText( hwnd, title, ARRAY_SIZE(title) );
++    NtUserGetClassName( hwnd, FALSE, &name );
++    get_window_thread( hwnd, &pid );
++    if (other && (ULONG_PTR)other > 1)
++    {
++        NtUserGetClassName( other, FALSE, &name2 );
++        get_window_thread( other, &other_pid );
++    }
++    MESSAGE( "arctic-front: %p (%s %s, process %04x) %s %p (%s, process %04x) by %s (%04x, thread %04x), "
++             "foreground %p\n", hwnd, debugstr_w(class), debugstr_w(title), (int)pid, what, other,
++             debugstr_w(other_class), (int)other_pid, debugstr_w(app), (int)GetCurrentProcessId(),
++             (int)GetCurrentThreadId(), NtUserGetForegroundWindow() );
++}
++
+ static BOOL show_window( HWND hwnd, INT cmd )
+ {
+     WND *win;
+@@ -5140,6 +5202,7 @@ static BOOL show_window( HWND hwnd, INT cmd )
+     {
+     case SW_HIDE:
+         if (!was_visible) goto done;
++        if (arctic_is_big( hwnd )) arctic_log_front( hwnd, "is hidden; its owner", get_window_relative( hwnd, GW_OWNER ) );
+         show_flag = FALSE;
+         swp |= SWP_HIDEWINDOW | SWP_NOSIZE | SWP_NOMOVE;
+         if (style & WS_CHILD) swp |= SWP_NOACTIVATE | SWP_NOZORDER;
