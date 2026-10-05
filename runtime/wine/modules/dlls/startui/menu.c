@@ -1218,6 +1218,8 @@ void menu_toggle( HWND tray_window, const RECT *button_rect, BOOL click )
     focus_shown = FALSE;
     set_mode( MODE_HOME );
     place();
+    /* the shell's look, as chosen on the taskbar's page Оформлення */
+    ArcticApplyShellLook( menu );
     InvalidateRect( menu, NULL, FALSE );
     ShowWindow( menu, SW_SHOW );
     SetForegroundWindow( menu );

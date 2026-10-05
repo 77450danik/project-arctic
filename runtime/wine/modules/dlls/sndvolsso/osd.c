@@ -293,6 +293,7 @@ void osd_show(void)
 {
     if (!create_osd()) return;
     reload();
+    if (!IsWindowVisible( osd )) shell_look( osd );
     place();
     InvalidateRect( osd, NULL, FALSE );
     SetTimer( osd, TIMER_HIDE, SHOWN_MS, NULL );

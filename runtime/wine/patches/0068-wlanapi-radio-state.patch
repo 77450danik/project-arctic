@@ -1,0 +1,39 @@
+diff --git a/include/wlanapi.h b/include/wlanapi.h
+--- a/include/wlanapi.h
++++ b/include/wlanapi.h
+@@ -158,6 +158,28 @@
+     wlan_intf_opcode_ihv_end = 0x3fffffff
+ } WLAN_INTF_OPCODE, *PWLAN_INTF_OPCODE;
+ 
++typedef enum _DOT11_RADIO_STATE
++{
++    dot11_radio_state_unknown,
++    dot11_radio_state_on,
++    dot11_radio_state_off
++} DOT11_RADIO_STATE, *PDOT11_RADIO_STATE;
++
++#define WLAN_MAX_PHY_INDEX 64
++
++typedef struct _WLAN_PHY_RADIO_STATE
++{
++    DWORD dwPhyIndex;
++    DOT11_RADIO_STATE dot11SoftwareRadioState;
++    DOT11_RADIO_STATE dot11HardwareRadioState;
++} WLAN_PHY_RADIO_STATE, *PWLAN_PHY_RADIO_STATE;
++
++typedef struct _WLAN_RADIO_STATE
++{
++    DWORD dwNumberOfPhys;
++    WLAN_PHY_RADIO_STATE PhyRadioState[WLAN_MAX_PHY_INDEX];
++} WLAN_RADIO_STATE, *PWLAN_RADIO_STATE;
++
+ typedef enum _WLAN_OPCODE_VALUE_TYPE
+ {
+     wlan_opcode_value_type_query_only = 0,
+@@ -331,5 +353,6 @@
+ DWORD WINAPI WlanRegisterNotification(HANDLE, DWORD, BOOL, WLAN_NOTIFICATION_CALLBACK, void *, void *, DWORD *);
+ DWORD WINAPI WlanGetAvailableNetworkList(HANDLE, const GUID *, DWORD, void *, WLAN_AVAILABLE_NETWORK_LIST **);
+ DWORD WINAPI WlanQueryInterface(HANDLE, const GUID *, WLAN_INTF_OPCODE, void *, DWORD *, void **, WLAN_OPCODE_VALUE_TYPE *);
++DWORD WINAPI WlanSetInterface(HANDLE, const GUID *, WLAN_INTF_OPCODE, DWORD, const void *, void *);
+ 
+ #endif /* _WLAN_WLANAPI_H */

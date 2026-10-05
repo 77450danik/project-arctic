@@ -46,6 +46,9 @@ extern HINSTANCE sndvolsso_instance;
 
 WCHAR *load_string( UINT id );
 
+/* the shell's look (startui.dll, the taskbar's page Оформлення) on a flyout */
+void shell_look( HWND hwnd );
+
 /* audio.c: the default output and its volume, through the Core Audio API */
 BOOL audio_init(void);
 void audio_shutdown(void);

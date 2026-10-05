@@ -20,6 +20,7 @@
 #include "winbase.h"
 #include "winuser.h"
 #include "objbase.h"
+#include "wlanapi.h"
 #include "docobj.h"
 #include "shlguid.h"
 #include "wine/debug.h"

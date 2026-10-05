@@ -4,3 +4,5 @@
 @ stdcall ArcticStartMenuCustomize(long)
 @ stdcall ArcticApplyTaskbarLook(long)
 @ stdcall ArcticTaskbarLookPage(long)
+@ stdcall ArcticApplyShellLook(long)
+@ stdcall ArcticGetShellLook(ptr ptr ptr)

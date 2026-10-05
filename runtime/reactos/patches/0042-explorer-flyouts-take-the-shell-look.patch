@@ -1,0 +1,330 @@
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -187,9 +187,28 @@
+     }
+ 
+     /* the acrylic: the desktop behind the toast, blurred, under #101010 at 0.75 */
++    /* Arctic: the shell's look (startui.dll, the taskbar's page Оформлення):
++     * effect 4 acrylic, 3 blur, 2 a tint without blur, 1 solid; the tint's
++     * colour and alpha. Without it, the acrylic of Windows 10. */
++    static void ShellLook(DWORD *pEffect, DWORD *pRgb, DWORD *pAlpha)
++    {
++        typedef BOOL (WINAPI *PFN_GETLOOK)(DWORD *, DWORD *, DWORD *);
++        HMODULE hModule = LoadLibraryW(L"startui.dll");
++        PFN_GETLOOK pGetLook = hModule ? (PFN_GETLOOK)GetProcAddress(hModule, "ArcticGetShellLook") : NULL;
++
++        *pEffect = 4;
++        *pRgb = RGB(0x10, 0x10, 0x10);
++        *pAlpha = 0xbf;
++        if (pGetLook)
++            pGetLook(pEffect, pRgb, pAlpha);
++    }
++
+     void PaintBackdrop()
+     {
+-        int r = TOAST_BLUR, cx = m_cx + 6 * r, cy = m_cy + 6 * r;
++        DWORD dwEffect, dwRgb, dwAlpha;
++        ShellLook(&dwEffect, &dwRgb, &dwAlpha);
++        int r = dwEffect >= 3 ? TOAST_BLUR : 0, cx = m_cx + 6 * r, cy = m_cy + 6 * r;
++        int tintR = GetRValue(dwRgb), tintG = GetGValue(dwRgb), tintB = GetBValue(dwRgb), a = (int)dwAlpha;
+         HDC hdcScreen = ::GetDC(NULL), hdc = CreateCompatibleDC(hdcScreen);
+         DWORD *pBits = NULL;
+         HBITMAP hbm = CreateBits(hdcScreen, cx, cy, &pBits);
+@@ -199,19 +218,25 @@
+         {
+             HGDIOBJ hOld = SelectObject(hdc, hbm);
+             SetViewportOrgEx(hdc, -(m_x - 3 * r), -(m_y - 3 * r), NULL);
+-            ok = PaintDesktop(hdc);
++            ok = dwEffect != 1 && PaintDesktop(hdc);
+             SetViewportOrgEx(hdc, 0, 0, NULL);
+             if (ok)
+             {
+-                BoxBlur(pBits, cx, cy, r);
++                if (r)
++                    BoxBlur(pBits, cx, cy, r);
+                 for (int y = 0; y < m_cy; y++)
+                 {
+                     for (int x = 0; x < m_cx; x++)
+                     {
+                         DWORD p = pBits[(y + 3 * r) * cx + x + 3 * r];
+-                        int b = (p & 0xff) / 4 + 0x10 * 3 / 4;
+-                        int g = ((p >> 8) & 0xff) / 4 + 0x10 * 3 / 4;
+-                        int rr = ((p >> 16) & 0xff) / 4 + 0x10 * 3 / 4;
++                        /* the acrylic's grain: a faint noise, as dwm.exe adds */
++                        int n = dwEffect == 4 ? (int)(((x * 1103515245u + y * 12345u) >> 16) & 7) - 3 : 0;
++                        int b = ((p & 0xff) * (255 - a) + tintB * a) / 255 + n;
++                        int g = (((p >> 8) & 0xff) * (255 - a) + tintG * a) / 255 + n;
++                        int rr = (((p >> 16) & 0xff) * (255 - a) + tintR * a) / 255 + n;
++                        b = b < 0 ? 0 : b > 255 ? 255 : b;
++                        g = g < 0 ? 0 : g > 255 ? 255 : g;
++                        rr = rr < 0 ? 0 : rr > 255 ? 255 : rr;
+                         m_pContent[y * m_cx + x] = 0xff000000 | (rr << 16) | (g << 8) | b;
+                     }
+                 }
+@@ -223,9 +248,9 @@
+         ::ReleaseDC(NULL, hdcScreen);
+         if (!ok)
+         {
+-            /* the acrylic's fallback colour */
++            /* a solid look, or the backdrop could not be had: the tint itself */
+             for (int i = 0; i < m_cx * m_cy; i++)
+-                m_pContent[i] = 0xff1f1f1f;
++                m_pContent[i] = 0xff000000 | (tintR << 16) | (tintG << 8) | tintB;
+         }
+     }
+ 
+diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
+--- a/base/shell/explorer/trayntfy.cpp
++++ b/base/shell/explorer/trayntfy.cpp
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "precomp.h"
++#include <math.h>
+ #include <commoncontrols.h>
+ 
+ static const WCHAR szTrayNotifyWndClass[] = L"TrayNotifyWnd";
+@@ -132,6 +133,77 @@
+     DeleteObject(hbm);
+ }
+ 
++/* the gear of Language preferences, as Segoe MDL2 Assets' Settings: a ring
++ * with eight teeth around a hole, sampled 4 x 4 a pixel on a 16 unit grid */
++static float GearRadius(float angle)
++{
++    const float tooth = 0.785398f; /* 45 degrees between teeth */
++    float a = fmodf(angle + 8 * tooth, tooth) - tooth / 2;
++
++    /* a tooth over 30 of the 45 degrees, slightly tapered */
++    return fabsf(a) < 0.20f ? 7.6f : fabsf(a) < 0.30f ? 7.6f - (fabsf(a) - 0.20f) * 18.0f : 5.8f;
++}
++
++static void DrawGear(HDC hdc, int x, int y, int size, COLORREF color)
++{
++    BITMAPINFO bi;
++    DWORD *pBits;
++    HBITMAP hbm;
++
++    ZeroMemory(&bi, sizeof(bi));
++    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
++    bi.bmiHeader.biWidth = size;
++    bi.bmiHeader.biHeight = -size;
++    bi.bmiHeader.biPlanes = 1;
++    bi.bmiHeader.biBitCount = 32;
++    hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)&pBits, NULL, 0);
++    if (!hbm)
++        return;
++    for (int py = 0; py < size; py++)
++    {
++        for (int px = 0; px < size; px++)
++        {
++            int hits = 0;
++            for (int j = 0; j < 4; j++)
++            {
++                for (int i = 0; i < 4; i++)
++                {
++                    float sx = (px + (i + 0.5f) / 4) * 16.0f / size - 8, sy = (py + (j + 0.5f) / 4) * 16.0f / size - 8;
++                    float d = sqrtf(sx * sx + sy * sy), r = GearRadius(atan2f(sy, sx));
++                    /* the outline of the toothed ring, one unit wide, and the hole's edge */
++                    if ((d <= r && d >= r - 1.15f) || fabsf(d - 2.7f) <= 0.55f)
++                        hits++;
++                    else if (d <= r && d >= 5.8f - 1.15f && r > 6.0f && d <= 5.8f)
++                        hits++;
++                }
++            }
++            DWORD a = hits * 255 / 16;
++            pBits[py * size + px] = (a << 24) | ((GetRValue(color) * a / 255) << 16) |
++                                    ((GetGValue(color) * a / 255) << 8) | (GetBValue(color) * a / 255);
++        }
++    }
++    HDC hdcMem = CreateCompatibleDC(hdc);
++    HGDIOBJ hOld = SelectObject(hdcMem, hbm);
++    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
++    GdiAlphaBlend(hdc, x, y, size, size, hdcMem, 0, 0, size, size, bf);
++    SelectObject(hdcMem, hOld);
++    DeleteDC(hdcMem);
++    DeleteObject(hbm);
++}
++
++/* Arctic: the shell's look (startui.dll, the taskbar's page Оформлення) */
++static void ArcticShellLook(HWND hWnd)
++{
++    typedef VOID (WINAPI *PFN_LOOK)(HWND);
++    HMODULE hModule = LoadLibraryW(L"startui.dll");
++    PFN_LOOK pLook = hModule ? (PFN_LOOK)GetProcAddress(hModule, "ArcticApplyShellLook") : NULL;
++
++    if (pLook)
++        pLook(hWnd);
++}
++
++#define INPUT_PAD ArcticDpiScale(5)
++
+ class CInputFlyout :
+     public CWindowImpl<CInputFlyout, CWindow, CWinTraits<WS_POPUP, WS_EX_TOOLWINDOW | WS_EX_TOPMOST> >
+ {
+@@ -144,7 +216,7 @@
+     HFONT m_hfAbbr, m_hfName;
+ 
+ public:
+-    DECLARE_WND_CLASS_EX(L"ArcticInputFlyout", CS_DROPSHADOW, COLOR_WINDOW)
++    DECLARE_WND_CLASS_EX(L"ArcticInputFlyout", 0, COLOR_WINDOW)
+ 
+     CInputFlyout() : m_hwndIndicator(NULL), m_count(0), m_current(NULL), m_hover(-1), m_pressed(FALSE),
+                      m_hfAbbr(NULL), m_hfName(NULL)
+@@ -153,7 +225,7 @@
+ 
+     int Height() const
+     {
+-        return 5 + m_count * INPUT_TILE_HEIGHT + 5 + 1 + 5 + INPUT_SETTINGS_HEIGHT + 5;
++        return INPUT_PAD + m_count * INPUT_TILE_HEIGHT + INPUT_PAD + 1 + INPUT_PAD + INPUT_SETTINGS_HEIGHT + INPUT_PAD;
+     }
+ 
+     void Open(HWND hwndIndicator, HKL current)
+@@ -166,12 +238,15 @@
+         m_count = GetKeyboardLayoutList(_countof(m_layouts), m_layouts);
+         m_hover = -1;
+         m_pressed = FALSE;
++        /* 16 and 15 pixels at 100%, at the shell's DPI */
+         if (!m_hfAbbr)
+-            m_hfAbbr = CreateInputFont(16, FW_SEMIBOLD);
++            m_hfAbbr = CreateInputFont(ArcticDpiScale(16), FW_SEMIBOLD);
+         if (!m_hfName)
+-            m_hfName = CreateInputFont(15, FW_NORMAL);
++            m_hfName = CreateInputFont(ArcticDpiScale(15), FW_NORMAL);
+         if (!m_hWnd && !Create(NULL))
+             return;
++        /* the acrylic of the shell behind it, as behind the taskbar */
++        ArcticShellLook(m_hWnd);
+ 
+         /* above the indicator, inside the screen */
+         ::GetWindowRect(hwndIndicator, &rcIndicator);
+@@ -198,9 +273,9 @@
+ 
+     int HitTest(POINT pt)
+     {
+-        if (pt.y >= 5 && pt.y < 5 + m_count * INPUT_TILE_HEIGHT)
+-            return (pt.y - 5) / INPUT_TILE_HEIGHT;
+-        if (pt.y >= Height() - 5 - INPUT_SETTINGS_HEIGHT && pt.y < Height() - 5)
++        if (pt.y >= INPUT_PAD && pt.y < INPUT_PAD + m_count * INPUT_TILE_HEIGHT)
++            return (pt.y - INPUT_PAD) / INPUT_TILE_HEIGHT;
++        if (pt.y >= Height() - INPUT_PAD - INPUT_SETTINGS_HEIGHT && pt.y < Height() - INPUT_PAD)
+             return m_count;
+         return -1;
+     }
+@@ -208,28 +283,39 @@
+     LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
+         PAINTSTRUCT ps;
+-        HDC hdc = BeginPaint(&ps);
++        HDC hdcWnd = BeginPaint(&ps), hdc;
+         RECT rc, rcTile, rcText;
+-        HBRUSH hbr;
++        BITMAPINFO bi;
++        void *pvBits;
++        HBITMAP hbm;
++        HGDIOBJ hOldBm;
+ 
+         GetClientRect(&rc);
+-        /* #F21E1E1E over the desktop is, near enough, #1E1E1E: a window of its own has nothing behind */
+-        hbr = CreateSolidBrush(RGB(0x1e, 0x1e, 0x1e));
+-        FillRect(hdc, &rc, hbr);
+-        DeleteObject(hbr);
++        /* drawn on black, which dwm.exe shows as the shell's acrylic */
++        ZeroMemory(&bi, sizeof(bi));
++        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
++        bi.bmiHeader.biWidth = rc.right;
++        bi.bmiHeader.biHeight = -rc.bottom;
++        bi.bmiHeader.biPlanes = 1;
++        bi.bmiHeader.biBitCount = 32;
++        hbm = CreateDIBSection(hdcWnd, &bi, DIB_RGB_COLORS, &pvBits, NULL, 0);
++        if (!hbm)
++        {
++            EndPaint(&ps);
++            return 0;
++        }
++        hdc = CreateCompatibleDC(hdcWnd);
++        hOldBm = SelectObject(hdc, hbm);
++        FillRect(hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+         SetBkMode(hdc, TRANSPARENT);
+ 
+         for (int i = 0; i < m_count; i++)
+         {
+             WCHAR szAbbr[8], szLanguage[80], szKeyboard[128];
+ 
+-            SetRect(&rcTile, 0, 5 + i * INPUT_TILE_HEIGHT, rc.right, 5 + (i + 1) * INPUT_TILE_HEIGHT);
++            SetRect(&rcTile, 0, INPUT_PAD + i * INPUT_TILE_HEIGHT, rc.right, INPUT_PAD + (i + 1) * INPUT_TILE_HEIGHT);
+             if (m_layouts[i] == m_current)
+-            {
+-                hbr = CreateSolidBrush(INPUT_ACCENT);
+-                FillRect(hdc, &rcTile, hbr);
+-                DeleteObject(hbr);
+-            }
++                FillAlpha(hdc, &rcTile, INPUT_ACCENT, 255);
+             if (i == m_hover)
+                 FillAlpha(hdc, &rcTile, RGB(255, 255, 255), m_pressed ? 0x33 : 0x19);
+ 
+@@ -246,48 +332,38 @@
+             SelectObject(hdc, m_hfName);
+             SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top, rc.right - ArcticDpiScale(22), rcTile.top + ArcticDpiScale(30));
+             DrawTextW(hdc, szLanguage, -1, &rcText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
++            SetTextColor(hdc, RGB(0xcc, 0xcc, 0xcc));
+             SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top + ArcticDpiScale(30), rc.right - ArcticDpiScale(22), rcTile.bottom);
+             DrawTextW(hdc, szKeyboard, -1, &rcText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+             SelectObject(hdc, hOld);
+         }
+ 
+         /* the separator and Language preferences */
+-        int y = 5 + m_count * INPUT_TILE_HEIGHT + 5;
+-        SetRect(&rcText, 12, y, rc.right - 12, y + 1);
++        int y = INPUT_PAD + m_count * INPUT_TILE_HEIGHT + INPUT_PAD;
++        SetRect(&rcText, ArcticDpiScale(12), y, rc.right - ArcticDpiScale(12), y + 1);
+         FillAlpha(hdc, &rcText, RGB(255, 255, 255), 0x33);
+-        y += 1 + 5;
++        y += 1 + INPUT_PAD;
+         SetRect(&rcTile, 0, y, rc.right, y + INPUT_SETTINGS_HEIGHT);
+         if (m_hover == m_count)
+             FillAlpha(hdc, &rcTile, RGB(255, 255, 255), m_pressed ? 0x33 : 0x19);
+         {
+             WCHAR szSettings[64];
+-            HGDIOBJ hOld = SelectObject(hdc, m_hfName);
+-            int cx = 19 + 8, cy = y + 12 + 8;
+-            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+-            HGDIOBJ hOldPen = SelectObject(hdc, hPen), hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+-            static const signed char teeth[8][4] =
+-            {
+-                { 5, 0, 7, 0 }, { 4, 4, 5, 5 }, { 0, 5, 0, 7 }, { -4, 4, -5, 5 },
+-                { -5, 0, -7, 0 }, { -4, -4, -5, -5 }, { 0, -5, 0, -7 }, { 4, -4, 5, -5 },
+-            };
+-
+-            Ellipse(hdc, cx - 2, cy - 2, cx + 3, cy + 3);
+-            Ellipse(hdc, cx - 5, cy - 5, cx + 6, cy + 6);
+-            for (int i = 0; i < 8; i++)
+-            {
+-                MoveToEx(hdc, cx + teeth[i][0], cy + teeth[i][1], NULL);
+-                LineTo(hdc, cx + teeth[i][2], cy + teeth[i][3]);
+-            }
+-            SelectObject(hdc, hOldBrush);
+-            SelectObject(hdc, hOldPen);
+-            DeleteObject(hPen);
++            int gear = ArcticDpiScale(16);
+ 
++            /* the gear in the abbreviations' column, beside its text */
++            DrawGear(hdc, (INPUT_TILE_COLUMN - ArcticDpiScale(14) - gear) / 2, y + (INPUT_SETTINGS_HEIGHT - gear) / 2,
++                     gear, RGB(255, 255, 255));
+             LoadStringW(GetModuleHandleW(NULL), IDS_INPUT_SETTINGS, szSettings, _countof(szSettings));
++            HGDIOBJ hOld = SelectObject(hdc, m_hfName);
+             SetTextColor(hdc, RGB(255, 255, 255));
+-            SetRect(&rcText, INPUT_TILE_COLUMN, y + 12, rc.right - 14, y + INPUT_SETTINGS_HEIGHT);
+-            DrawTextW(hdc, szSettings, -1, &rcText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
++            SetRect(&rcText, INPUT_TILE_COLUMN, y, rc.right - ArcticDpiScale(14), y + INPUT_SETTINGS_HEIGHT);
++            DrawTextW(hdc, szSettings, -1, &rcText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+             SelectObject(hdc, hOld);
+         }
++        BitBlt(hdcWnd, 0, 0, rc.right, rc.bottom, hdc, 0, 0, SRCCOPY);
++        SelectObject(hdc, hOldBm);
++        DeleteDC(hdc);
++        DeleteObject(hbm);
+         EndPaint(&ps);
+         return 0;
+     }

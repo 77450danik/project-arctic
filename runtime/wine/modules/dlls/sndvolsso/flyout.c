@@ -599,6 +599,7 @@ void flyout_toggle( HWND tray, UINT icon_id )
     anchor();
     place();
     InvalidateRect( flyout, NULL, FALSE );
+    shell_look( flyout );
     ShowWindow( flyout, SW_SHOW );
     SetForegroundWindow( flyout );
     SetFocus( flyout );

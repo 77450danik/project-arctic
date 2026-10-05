@@ -1,9 +1,10 @@
 MODULE    = pnidui.dll
-IMPORTS   = uuid wlanapi iphlpapi ws2_32 shell32 user32 gdi32 advapi32 ole32
+IMPORTS   = uuid dwmapi wlanapi iphlpapi ws2_32 shell32 user32 gdi32 advapi32 ole32
 
 VER_FILEDESCRIPTION_STR = "Network icon of the notification area"
 
 SOURCES = \
+	flyout.c \
 	main.c \
 	pnidui.rc \
 	tray.c

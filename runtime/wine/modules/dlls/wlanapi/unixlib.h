@@ -34,6 +34,8 @@ struct wlan_unix_interface
     UINT32 scanning;
     char   ssid[33];          /* of the network it is connected to, "" if none */
     INT32  signal;            /* dBm of that network, 0 if not known */
+    UINT32 powered;           /* the radio is on (iwd Device.Powered) */
+    UINT32 station;           /* iwd runs a station on it (only while powered) */
 };
 
 struct wlan_interfaces_params
@@ -84,6 +86,12 @@ struct wlan_forget_params
     const char *ssid;
 };
 
+struct wlan_power_params
+{
+    const char *path;         /* of the device */
+    UINT32      on;
+};
+
 enum wlan_funcs
 {
     unix_wlan_interfaces,
@@ -92,6 +100,7 @@ enum wlan_funcs
     unix_wlan_connect,
     unix_wlan_disconnect,
     unix_wlan_forget,
+    unix_wlan_set_power,
     unix_funcs_count
 };
 

@@ -426,7 +426,8 @@ DWORD WINAPI WlanEnumInterfaces(HANDLE handle, void *reserved, WLAN_INTERFACE_IN
         interface_guid( interfaces[i].name, &info->InterfaceGuid );
         MultiByteToWideChar( CP_UTF8, 0, interfaces[i].description, -1, info->strInterfaceDescription,
                              ARRAY_SIZE(info->strInterfaceDescription) );
-        info->isState = interface_state( interfaces[i].state );
+        /* a radio switched off: the adapter is there, not ready */
+        info->isState = interfaces[i].powered ? interface_state( interfaces[i].state ) : wlan_interface_state_not_ready;
     }
     ret_list->dwNumberOfItems = count;
     *interface_list = ret_list;
@@ -679,7 +680,7 @@ DWORD WINAPI WlanQueryInterface(HANDLE handle, const GUID *guid, WLAN_INTF_OPCOD
         WLAN_INTERFACE_STATE *state = WlanAllocateMemory( sizeof(*state) );
 
         if (!state) return ERROR_NOT_ENOUGH_MEMORY;
-        *state = interface_state( info.state );
+        *state = info.powered ? interface_state( info.state ) : wlan_interface_state_not_ready;
         *data = state;
         *data_size = sizeof(*state);
         return ERROR_SUCCESS;
@@ -718,10 +719,50 @@ DWORD WINAPI WlanQueryInterface(HANDLE handle, const GUID *guid, WLAN_INTF_OPCOD
         *data_size = sizeof(*attr);
         return ERROR_SUCCESS;
     }
+    case wlan_intf_opcode_radio_state:
+    {
+        WLAN_RADIO_STATE *radio = WlanAllocateMemory( sizeof(*radio) );
+
+        if (!radio) return ERROR_NOT_ENOUGH_MEMORY;
+        memset( radio, 0, sizeof(*radio) );
+        radio->dwNumberOfPhys = 1;
+        radio->PhyRadioState[0].dot11SoftwareRadioState = info.powered ? dot11_radio_state_on : dot11_radio_state_off;
+        radio->PhyRadioState[0].dot11HardwareRadioState = dot11_radio_state_on;
+        if (opcode_type) *opcode_type = wlan_opcode_value_type_set_by_user;
+        *data = radio;
+        *data_size = sizeof(*radio);
+        return ERROR_SUCCESS;
+    }
     default:
         FIXME( "opcode %#x\n", opcode );
         return ERROR_NOT_SUPPORTED;
     }
+}
+
+/* the software radio switch: Wi-Fi on or off, airplane mode */
+DWORD WINAPI WlanSetInterface(HANDLE handle, const GUID *guid, WLAN_INTF_OPCODE opcode, DWORD size,
+                              const void *data, void *reserved)
+{
+    struct wlan_unix_interface info;
+    struct wlan_power_params params;
+    const WLAN_PHY_RADIO_STATE *radio = data;
+    NTSTATUS status;
+
+    TRACE("(%p, %s, 0x%x, %lu, %p, %p)\n", handle, wine_dbgstr_guid(guid), opcode, size, data, reserved);
+
+    if (!handle || !guid || reserved || !data) return ERROR_INVALID_PARAMETER;
+    if (!handle_index(handle)) return ERROR_INVALID_HANDLE;
+    if (!find_interface( guid, &info )) return ERROR_NOT_FOUND;
+    if (opcode != wlan_intf_opcode_radio_state)
+    {
+        FIXME( "opcode %#x\n", opcode );
+        return ERROR_NOT_SUPPORTED;
+    }
+    if (size < sizeof(*radio)) return ERROR_INVALID_PARAMETER;
+    params.path = info.path;
+    params.on = radio->dot11SoftwareRadioState == dot11_radio_state_on;
+    if ((status = WINE_UNIX_CALL( unix_wlan_set_power, &params ))) return error_from_status( status );
+    return ERROR_SUCCESS;
 }
 
 DWORD WINAPI WlanSetProfile(HANDLE handle, const GUID *guid, DWORD flags, const WCHAR *xml,

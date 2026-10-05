@@ -181,6 +181,8 @@ enum glyph right_glyph( int action );
 const WCHAR *right_name( int action );
 void customize_dialog( HWND owner );
 
+void WINAPI ArcticApplyShellLook( HWND hwnd );
+
 /* menu.c */
 void menu_toggle( HWND tray, const RECT *button, BOOL click );
 void menu_hide(void);

@@ -28,7 +28,7 @@
 @ stdcall WlanScan(ptr ptr ptr ptr ptr)
 @ stub WlanSetAutoConfigParameter
 @ stub WlanSetFilterList
-@ stub WlanSetInterface
+@ stdcall WlanSetInterface(ptr ptr long long ptr ptr)
 @ stdcall WlanSetProfile(ptr ptr long wstr wstr long ptr ptr)
 @ stub WlanSetProfileCustomUserData
 @ stub WlanSetProfileEapUserData

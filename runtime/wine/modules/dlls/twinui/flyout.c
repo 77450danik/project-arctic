@@ -241,6 +241,7 @@ static void show_flyout( const HWND *hwnds, UINT n, const RECT *button )
     update_tooltips();
     SetTimer( flyout, TIMER_REFRESH, 250, NULL );
     InvalidateRect( flyout, NULL, TRUE );
+    set_acrylic( flyout );   /* the look may have changed since it was made */
     ShowWindow( flyout, SW_SHOWNOACTIVATE );
 }
 

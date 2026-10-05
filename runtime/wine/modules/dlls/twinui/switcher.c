@@ -378,6 +378,7 @@ static void start( BOOL backwards )
 
     set_cloaked( switcher, TRUE );
     place();
+    set_acrylic( switcher );   /* the look may have changed since it was made */
     ShowWindow( switcher, SW_SHOW );
     SetForegroundWindow( switcher );
     SetTimer( switcher, TIMER_POLL, 15, NULL );

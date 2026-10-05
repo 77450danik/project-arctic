@@ -190,7 +190,7 @@ static NTSTATUS wlan_interfaces( void *args )
            sd_bus_message_enter_container( reply, 'e', "oa{sa{sv}}" ) > 0)
     {
         const char *iface;
-        int station = 0;
+        int station = 0, device = 0;
 
         sd_bus_message_read( reply, "o", &path );
         sd_bus_message_enter_container( reply, 'a', "{sa{sv}}" );
@@ -198,13 +198,16 @@ static NTSTATUS wlan_interfaces( void *args )
         {
             sd_bus_message_read( reply, "s", &iface );
             if (!strcmp( iface, IWD ".Station" )) station = 1;
+            if (!strcmp( iface, IWD ".Device" )) device = 1;
             sd_bus_message_skip( reply, "a{sv}" );
             sd_bus_message_exit_container( reply );
         }
         sd_bus_message_exit_container( reply );
         sd_bus_message_exit_container( reply );
 
-        if (station)
+        /* a device with its radio off has no station, and is still listed, as
+         * Windows lists an adapter whose radio is switched off */
+        if (device)
         {
             struct wlan_unix_interface *info = &params->interfaces[params->count++];
             char state[32] = "", network[128] = "";
@@ -213,6 +216,9 @@ static NTSTATUS wlan_interfaces( void *args )
             snprintf( info->path, sizeof(info->path), "%s", path );
             get_string( path, IWD ".Device", "Name", info->name, sizeof(info->name) );
             adapter_description( info->name, info->description, sizeof(info->description) );
+            info->powered = get_bool( path, IWD ".Device", "Powered" );
+            info->station = station;
+            if (!station) continue;
             get_string( path, IWD ".Station", "State", state, sizeof(state) );
             info->state = parse_state( state );
             info->scanning = get_bool( path, IWD ".Station", "Scanning" );
@@ -400,6 +406,19 @@ static NTSTATUS wlan_forget( void *args )
     return STATUS_SUCCESS;
 }
 
+/* the radio on or off, as Windows' Wi-Fi switch and airplane mode do */
+static NTSTATUS wlan_set_power( void *args )
+{
+    struct wlan_power_params *params = args;
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    int r;
+
+    if (!get_bus()) return STATUS_NOT_SUPPORTED;
+    r = sd_bus_set_property( bus, IWD, params->path, IWD ".Device", "Powered", &error, "b", (int)!!params->on );
+    sd_bus_error_free( &error );
+    return r < 0 ? bus_error( r ) : STATUS_SUCCESS;
+}
+
 static NTSTATUS locked( NTSTATUS (*func)(void *), void *args )
 {
     NTSTATUS status;
@@ -415,6 +434,7 @@ static NTSTATUS locked_networks( void *args )   { return locked( wlan_networks, 
 static NTSTATUS locked_scan( void *args )       { return locked( wlan_scan, args ); }
 static NTSTATUS locked_disconnect( void *args ) { return locked( wlan_disconnect, args ); }
 static NTSTATUS locked_forget( void *args )     { return locked( wlan_forget, args ); }
+static NTSTATUS locked_set_power( void *args )  { return locked( wlan_set_power, args ); }
 
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
@@ -424,6 +444,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     wlan_connect,   /* takes the lock only to find the network, then waits on a bus of its own */
     locked_disconnect,
     locked_forget,
+    locked_set_power,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );

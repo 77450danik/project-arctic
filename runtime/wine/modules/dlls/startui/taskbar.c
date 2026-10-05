@@ -169,6 +169,27 @@ void WINAPI ArcticApplyTaskbarLook( HWND tray )
     apply_look( tray, &look );
 }
 
+/* the same look on every surface of the shell, as Windows' transparency
+ * setting reaches the Start menu, the flyouts and the toasts: each calls
+ * this when it shows */
+void WINAPI ArcticApplyShellLook( HWND hwnd )
+{
+    ArcticApplyTaskbarLook( hwnd );
+}
+
+/* for what draws its own backdrop (the toasts): the effect (ARCTIC_ACCENT_*),
+ * the tint as RGB and its alpha 0-255 */
+BOOL WINAPI ArcticGetShellLook( DWORD *effect, DWORD *rgb, DWORD *alpha )
+{
+    struct look look;
+
+    load_look( &look );
+    if (effect) *effect = look.effect;
+    if (rgb) *rgb = look.color & 0xffffff;
+    if (alpha) *alpha = look.effect == ARCTIC_ACCENT_ENABLE_GRADIENT ? 255 : look.opacity * 255 / 100;
+    return TRUE;
+}
+
 /**********************************************************************
  *          The page
  */
@@ -331,6 +352,8 @@ static INT_PTR WINAPI page_proc( HWND dialog, UINT msg, WPARAM wparam, LPARAM lp
         {
             save_look( &page->look );
             if (page->tray) ArcticApplyTaskbarLook( page->tray );
+            /* the flyouts take it when they show next; the open ones hear it now */
+            PostMessageW( HWND_BROADCAST, RegisterWindowMessageW( L"ArcticShellLookChanged" ), 0, 0 );
             SetWindowLongPtrW( dialog, DWLP_MSGRESULT, PSNRET_NOERROR );
             return TRUE;
         }

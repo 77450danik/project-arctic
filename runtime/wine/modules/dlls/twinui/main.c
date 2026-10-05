@@ -119,13 +119,23 @@ const struct arctic_taskbar_window *find_taskbar_row( const struct arctic_taskba
     return NULL;
 }
 
-/* the shell's dark acrylic behind the window, as the taskbar has */
+/* the shell's look behind the window, as the taskbar has: the one chosen on
+ * the taskbar's page Оформлення (startui.dll), else the dark acrylic */
 void set_acrylic( HWND hwnd )
 {
+    static void (WINAPI *apply)( HWND );
+    static BOOL looked;
     struct arctic_accent_policy policy = { ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND, 0, SHELL_ACRYLIC_TINT, 0 };
     struct { DWORD attrib; void *data; SIZE_T size; } attr = { 19 /* WCA_ACCENT_POLICY */, &policy, sizeof(policy) };
 
-    SetWindowCompositionAttribute( hwnd, &attr );
+    if (!looked)
+    {
+        HMODULE module = LoadLibraryW( L"startui.dll" );
+        if (module) apply = (void *)GetProcAddress( module, "ArcticApplyShellLook" );
+        looked = TRUE;
+    }
+    if (apply) apply( hwnd );
+    else SetWindowCompositionAttribute( hwnd, &attr );
 }
 
 void set_transition( HWND hwnd, DWORD transition )

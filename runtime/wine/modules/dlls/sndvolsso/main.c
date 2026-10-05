@@ -48,6 +48,21 @@ WCHAR *load_string( UINT id )
     return buf;
 }
 
+void shell_look( HWND hwnd )
+{
+    static void (WINAPI *apply)( HWND );
+    static BOOL looked;
+
+    if (!looked)
+    {
+        HMODULE module = LoadLibraryW( L"startui.dll" );
+        if (module) apply = (void *)GetProcAddress( module, "ArcticApplyShellLook" );
+        looked = TRUE;
+    }
+    /* without it the flyout keeps the acrylic it was made with */
+    if (apply) apply( hwnd );
+}
+
 static struct volume_tray *impl_from_IOleCommandTarget( IOleCommandTarget *iface )
 {
     return CONTAINING_RECORD( iface, struct volume_tray, IOleCommandTarget_iface );
