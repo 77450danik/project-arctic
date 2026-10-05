@@ -89,18 +89,43 @@ static void load_graphics_driver( const GUID *guid )
  * moving it here would only take it out of its place at the top */
 static BOOL CALLBACK bring_window_on_screen( HWND hwnd, LPARAM param )
 {
-    RECT rect, work;
+    const RECT *work = (const RECT *)param;
+    WCHAR class[64] = {0};
+    RECT rect;
     int x, y;
 
     if (!IsWindowVisible( hwnd ) || IsIconic( hwnd )) return TRUE;
     if (GetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_TOOLWINDOW) return TRUE;
     if (MonitorFromWindow( hwnd, MONITOR_DEFAULTTONULL )) return TRUE;
-    if (!GetWindowRect( hwnd, &rect ) || !SystemParametersInfoW( SPI_GETWORKAREA, 0, &work, 0 )) return TRUE;
+    if (!GetWindowRect( hwnd, &rect )) return TRUE;
 
-    x = min( max( rect.left, work.left ), max( work.right - (rect.right - rect.left), work.left ) );
-    y = min( max( rect.top, work.top ), max( work.bottom - (rect.bottom - rect.top), work.top ) );
+    x = min( max( rect.left, work->left ), max( work->right - (rect.right - rect.left), work->left ) );
+    y = min( max( rect.top, work->top ), max( work->bottom - (rect.bottom - rect.top), work->top ) );
+    GetClassNameW( hwnd, class, ARRAY_SIZE(class) );
+    MESSAGE( "csrss: %p (%s) is on no monitor at %s, it comes back to %d,%d\n", hwnd, debugstr_w(class),
+             wine_dbgstr_rect( &rect ), x, y );
     SetWindowPos( hwnd, 0, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE );
     return TRUE;
+}
+
+/* Windows that the monitors lost come back to the primary one's work area.
+ * Only when the monitors really changed: while the display driver counts
+ * them again there are none for a moment, and then every window, a
+ * maximized Chrome too, was "on no monitor" and the work area nothing:
+ * windows went to 32767,32767 (the largest place win32u allows), off the
+ * screen, active and in front, when Chrome started or the Control Panel
+ * opened. */
+static void bring_windows_on_screen(void)
+{
+    MONITORINFO info = { .cbSize = sizeof(info) };
+    POINT origin = { 0, 0 };
+
+    if (!GetSystemMetrics( SM_CMONITORS )) return;
+    if (!GetMonitorInfoW( MonitorFromPoint( origin, MONITOR_DEFAULTTOPRIMARY ), &info )) return;
+    if (IsRectEmpty( &info.rcWork ) || info.rcWork.right - info.rcWork.left > 32767 ||
+        info.rcWork.bottom - info.rcWork.top > 32767)
+        return;
+    EnumWindows( bring_window_on_screen, (LPARAM)&info.rcWork );
 }
 
 static WCHAR monitor_set[1024];
@@ -130,12 +155,26 @@ static void read_monitor_set( WCHAR *set, SIZE_T size )
  * that knows. */
 static void display_changed(void)
 {
+    static RECT desktop;
     int count = GetSystemMetrics( SM_CMONITORS );
     DEVMODEW mode = { .dmSize = sizeof(mode) };
     WCHAR set[ARRAY_SIZE(monitor_set)];
+    RECT now;
 
-    EnumWindows( bring_window_on_screen, 0 );
+    /* no monitor at all: the driver is counting them again, nothing changed yet */
+    if (!count)
+    {
+        MESSAGE( "csrss: the display changed with no monitor, the windows stay\n" );
+        return;
+    }
+    SetRect( &now, GetSystemMetrics( SM_XVIRTUALSCREEN ), GetSystemMetrics( SM_YVIRTUALSCREEN ),
+             GetSystemMetrics( SM_XVIRTUALSCREEN ) + GetSystemMetrics( SM_CXVIRTUALSCREEN ),
+             GetSystemMetrics( SM_YVIRTUALSCREEN ) + GetSystemMetrics( SM_CYVIRTUALSCREEN ) );
     read_monitor_set( set, ARRAY_SIZE(set) );
+    if (!set[0]) return;
+    if (!wcscmp( set, monitor_set ) && EqualRect( &now, &desktop )) return;
+    desktop = now;
+    bring_windows_on_screen();
     if (!wcscmp( set, monitor_set )) return;
     wcscpy( monitor_set, set );
     ClipCursor( NULL );

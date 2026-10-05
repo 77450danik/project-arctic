@@ -333,6 +333,75 @@ static BOOL language_chord( UINT key, BOOL pressed )
     return TRUE;
 }
 
+/* Start opens when the Windows key goes up with nothing else pressed since:
+ * win32k tells the shell with HSHELL_TASKMAN, and the taskbar of ReactOS'
+ * explorer answers that with TWM_OPENSTARTMENU to itself, which toggles the
+ * menu. The taskbar is found by enumerating: FindWindowW does not see another
+ * process's local classes here. */
+#define TWM_OPENSTARTMENU (WM_USER + 260)
+
+static BOOL CALLBACK find_taskbar( HWND hwnd, LPARAM lparam )
+{
+    WCHAR class[32];
+
+    if (!GetClassNameW( hwnd, class, ARRAY_SIZE(class) ) || wcscmp( class, L"Shell_TrayWnd" )) return TRUE;
+    *(HWND *)lparam = hwnd;
+    return FALSE;
+}
+
+static void open_start_menu(void)
+{
+    HWND taskbar = 0;
+
+    EnumWindows( find_taskbar, (LPARAM)&taskbar );
+    if (!taskbar) WARN( "no taskbar for the Windows key\n" );
+    else PostMessageW( taskbar, TWM_OPENSTARTMENU, 0, 0 );
+}
+
+#define KEY_S          31
+#define KEY_LEFTSHIFT  42
+#define KEY_RIGHTSHIFT 54
+
+static BOOL windows_key_alone;  /* down, and nothing else pressed since */
+static BOOL clip_key_down;      /* the S of Win+Shift+S, kept from programs */
+
+/* The Windows key's chords that are the system's. TRUE: the key goes to no
+ * program, as a hotkey's does not. */
+static BOOL windows_key_chord( UINT key, int value )
+{
+    BOOL win = GetAsyncKeyState( VK_LWIN ) < 0 || GetAsyncKeyState( VK_RWIN ) < 0;
+
+    if (key == KEY_LEFTMETA || key == KEY_RIGHTMETA)
+    {
+        if (value == 1) windows_key_alone = TRUE;
+        else if (!value && windows_key_alone)
+        {
+            windows_key_alone = FALSE;
+            open_start_menu();
+        }
+        return FALSE;
+    }
+    if (value) windows_key_alone = FALSE;
+
+    /* Win+Shift+S: screen snipping, the overlay of the Snipping Tool */
+    if (key == KEY_S)
+    {
+        if (value == 1 && win && GetAsyncKeyState( VK_SHIFT ) < 0 && GetAsyncKeyState( VK_CONTROL ) >= 0 &&
+            GetAsyncKeyState( VK_MENU ) >= 0)
+        {
+            clip_key_down = TRUE;
+            screen_snip();
+            return TRUE;
+        }
+        if (clip_key_down)
+        {
+            if (!value) clip_key_down = FALSE;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 /* The power button shuts the computer down, Windows' default for it ("When I
  * press the power button: Shut down"): the session ends through winlogon as
  * from Start, so programs are asked and C: is left clean. On its own thread:
@@ -387,8 +456,15 @@ static DWORD WINAPI raw_input_thread( void *arg )
             case RIT_KEY:
             {
                 HKL layout = InterlockedExchangePointer( (void **)&pending_layout, NULL );
+                BOOL system;
+
                 if (layout) ActivateKeyboardLayout( layout, 0 );
                 if (event->value) follow_input_language();
+                if ((system = windows_key_chord( event->code, event->value )))
+                {
+                    if (event->code == repeat_key) repeat_key = 0;
+                    break;
+                }
                 send_key( event->code, event->value );
                 if (language_chord( event->code, event->value )) next_input_language();
                 if (event->code == KEY_SYSRQ && event->value == 1) print_screen();
@@ -407,6 +483,7 @@ static DWORD WINAPI raw_input_thread( void *arg )
                 break;
             }
             case RIT_BUTTON:
+                if (event->value) windows_key_alone = FALSE;
                 send_button( event->code, event->value );
                 break;
             case RIT_MOTION:

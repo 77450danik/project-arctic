@@ -178,6 +178,10 @@ cp "$RFS"/usr/lib/nvidia/wine/*.dll "$PFX/drive_c/windows/system32/" 2>/dev/null
 # Google Chrome, the browser of the system (ci/install-chrome.sh)
 bash "$ROOT/ci/install-chrome.sh" "$PFX"
 
+# the Snipping Tool in Start, as in Windows 11 (Win+Shift+S starts it too)
+python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Ножиці.lnk" \
+    'C:\windows\system32\snippingtool.exe'
+
 mkdir -p "$PFX/drive_c/windows/system32/config"
 cp "$PFX/system.reg" "$PFX/user.reg" "$PFX/userdef.reg" "$PFX/.update-timestamp" "$PFX/drive_c/windows/system32/config/"
 mv "$PFX" "$OUT/prefix"

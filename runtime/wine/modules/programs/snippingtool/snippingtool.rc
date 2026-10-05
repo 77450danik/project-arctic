@@ -1,0 +1,98 @@
+/*
+ * Snipping Tool resources
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winnls.h"
+#include "resource.h"
+
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+/* @makedep: snippingtool.ico */
+IDI_SNIPPINGTOOL ICON snippingtool.ico
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_APP_NAME         "Snipping Tool"
+    IDS_TOAST_TITLE      "Snip copied to clipboard"
+    IDS_TOAST_TEXT       "Select here to mark up and share the image."
+    IDS_AUTOSAVE_NAME    "Screenshot %04u-%02u-%02u %02u%02u%02u.png"
+    IDS_MODE_RECTANGLE   "Rectangle"
+    IDS_MODE_WINDOW      "Window"
+    IDS_MODE_FULL_SCREEN "Full screen"
+    IDS_MODE_FREEFORM    "Freeform"
+    IDS_CLOSE            "Close (Esc)"
+    IDS_OVERLAY_TITLE    "Screen snipping"
+    IDS_NEW              "New"
+    IDS_PEN              "Ballpoint pen (select again for colours)"
+    IDS_HIGHLIGHTER      "Highlighter"
+    IDS_ERASER           "Eraser"
+    IDS_CROP             "Image crop"
+    IDS_UNDO             "Undo (Ctrl+Z)"
+    IDS_REDO             "Redo (Ctrl+Y)"
+    IDS_COPY             "Copy (Ctrl+C)"
+    IDS_SAVE             "Save as (Ctrl+S)"
+    IDS_FOLDER           "Show in folder"
+    IDS_EMPTY            "Select New or press Win+Shift+S to start snipping."
+    IDS_FILTER           "PNG (*.png)|*.png|JPEG (*.jpg)|*.jpg|"
+    IDS_SAVE_FAILED      "The image could not be saved."
+    IDS_COLOR_BLACK      "Black"
+    IDS_COLOR_RED        "Red"
+    IDS_COLOR_YELLOW     "Yellow"
+    IDS_COLOR_GREEN      "Green"
+    IDS_COLOR_BLUE       "Blue"
+    IDS_COLOR_PURPLE     "Purple"
+    IDS_COLOR_WHITE      "White"
+    IDS_SIZE_THIN        "Thin"
+    IDS_SIZE_MEDIUM      "Medium"
+    IDS_SIZE_THICK       "Thick"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_APP_NAME         "Ножиці"
+    IDS_TOAST_TITLE      "Фрагмент скопійовано в буфер обміну"
+    IDS_TOAST_TEXT       "Виберіть тут, щоб додати позначки й поділитися зображенням."
+    IDS_AUTOSAVE_NAME    "Знімок екрана %04u-%02u-%02u %02u%02u%02u.png"
+    IDS_MODE_RECTANGLE   "Прямокутник"
+    IDS_MODE_WINDOW      "Вікно"
+    IDS_MODE_FULL_SCREEN "Повний екран"
+    IDS_MODE_FREEFORM    "Довільна форма"
+    IDS_CLOSE            "Закрити (Esc)"
+    IDS_OVERLAY_TITLE    "Вирізання фрагмента екрана"
+    IDS_NEW              "Новий"
+    IDS_PEN              "Кулькова ручка (ще раз — кольори)"
+    IDS_HIGHLIGHTER      "Маркер"
+    IDS_ERASER           "Гумка"
+    IDS_CROP             "Обрізати зображення"
+    IDS_UNDO             "Скасувати (Ctrl+Z)"
+    IDS_REDO             "Повторити (Ctrl+Y)"
+    IDS_COPY             "Копіювати (Ctrl+C)"
+    IDS_SAVE             "Зберегти як (Ctrl+S)"
+    IDS_FOLDER           "Показати в папці"
+    IDS_EMPTY            "Виберіть «Новий» або натисніть Win+Shift+S, щоб зробити знімок."
+    IDS_FILTER           "PNG (*.png)|*.png|JPEG (*.jpg)|*.jpg|"
+    IDS_SAVE_FAILED      "Не вдалося зберегти зображення."
+    IDS_COLOR_BLACK      "Чорний"
+    IDS_COLOR_RED        "Червоний"
+    IDS_COLOR_YELLOW     "Жовтий"
+    IDS_COLOR_GREEN      "Зелений"
+    IDS_COLOR_BLUE       "Синій"
+    IDS_COLOR_PURPLE     "Фіолетовий"
+    IDS_COLOR_WHITE      "Білий"
+    IDS_SIZE_THIN        "Тонка"
+    IDS_SIZE_MEDIUM      "Середня"
+    IDS_SIZE_THICK       "Товста"
+}

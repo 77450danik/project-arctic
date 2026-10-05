@@ -264,6 +264,35 @@ done:
     return 0;
 }
 
+/* Win+Shift+S: the Snipping Tool's overlay, as the shell starts it in
+ * Windows 11; on a thread of its own, the keys must not wait for it */
+static DWORD WINAPI snip_thread( void *arg )
+{
+    WCHAR cmdline[MAX_PATH + 16];
+    STARTUPINFOW si = { .cb = sizeof(si) };
+    PROCESS_INFORMATION pi;
+    UINT len = GetSystemDirectoryW( cmdline + 1, MAX_PATH );
+
+    cmdline[0] = '"';
+    if (!len || len >= MAX_PATH) return 0;
+    wcscat( cmdline, L"\\SnippingTool.exe\" /clip" );
+    if (!CreateProcessW( NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi ))
+    {
+        ERR( "%s: %lu\n", debugstr_w(cmdline), GetLastError() );
+        return 0;
+    }
+    CloseHandle( pi.hThread );
+    CloseHandle( pi.hProcess );
+    return 0;
+}
+
+void screen_snip(void)
+{
+    HANDLE thread;
+
+    if ((thread = CreateThread( NULL, 0, snip_thread, NULL, 0, NULL ))) CloseHandle( thread );
+}
+
 /* the raw input thread saw PrintScreen go down */
 void print_screen(void)
 {

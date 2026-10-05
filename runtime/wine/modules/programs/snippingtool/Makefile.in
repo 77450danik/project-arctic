@@ -1,0 +1,13 @@
+MODULE    = snippingtool.exe
+IMPORTS   = windowscodecs ole32 shell32 shcore comctl32 comdlg32 dwmapi user32 gdi32 advapi32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Snipping Tool"
+
+SOURCES = \
+	capture.c \
+	editor.c \
+	ink.c \
+	main.c \
+	overlay.c \
+	snippingtool.rc

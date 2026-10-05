@@ -1,0 +1,97 @@
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 562b4a7..0dd0d92 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -1015,7 +1015,7 @@
+ @ stdcall SendNotifyMessageA(long long long long)
+ @ stdcall SendNotifyMessageW(long long long long)
+ @ stub ServerSetFunctionPointers
+-@ stdcall SetActiveWindow(long) NtUserSetActiveWindow
++@ stdcall SetActiveWindow(long)
+ @ stdcall -import SetCapture(long) NtUserSetCapture
+ @ stdcall SetCaretBlinkTime(long) NtUserSetCaretBlinkTime
+ @ stdcall SetCaretPos(long long) NtUserSetCaretPos
+@@ -1044,7 +1044,7 @@
+ # @ stub SetFeatureReportResponse
+ @ stdcall SetFocus(long) NtUserSetFocus
+ # @ stub SetForegroundRedirectionForActivationObject
+-@ stdcall SetForegroundWindow(long) NtUserSetForegroundWindow
++@ stdcall SetForegroundWindow(long)
+ # @ stub SetFullscreenMagnifierOffsetsDWMUpdated
+ @ stdcall SetGestureConfig(ptr long long ptr long)
+ @ stdcall SetInternalWindowPos(long long ptr ptr) NtUserSetInternalWindowPos
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index 84329ec..88f06d0 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -28,6 +28,8 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(win);
+ 
++void arctic_log_stack( const char *what, HWND hwnd, int value );
++
+ #define MAX_ATOM_LEN 255 /* from dlls/kernel32/atom.c */
+ 
+ static const char *debugstr_us( const UNICODE_STRING *us )
+@@ -468,6 +470,29 @@ HWND WINAPI DECLSPEC_HOTPATCH CreateWindowExW( DWORD exStyle, LPCWSTR className,
+ 
+ void arctic_log_stack( const char *what, HWND hwnd, int value );
+ 
++/***********************************************************************
++ *		SetForegroundWindow (USER32.@)
++ *
++ * Arctic: who brings a window to the foreground, with the stack: a
++ * minimized window activated by the shell came over a maximized one
++ * ("grep arctic-minimize: .* activate:"). The value is 1 when the window
++ * is minimized.
++ */
++BOOL WINAPI SetForegroundWindow( HWND hwnd )
++{
++    arctic_log_stack( "activate: SetForegroundWindow", hwnd, IsIconic( hwnd ) );
++    return NtUserSetForegroundWindow( hwnd );
++}
++
++/***********************************************************************
++ *		SetActiveWindow (USER32.@)
++ */
++HWND WINAPI SetActiveWindow( HWND hwnd )
++{
++    arctic_log_stack( "activate: SetActiveWindow", hwnd, IsIconic( hwnd ) );
++    return NtUserSetActiveWindow( hwnd );
++}
++
+ /***********************************************************************
+  *		CloseWindow (USER32.@)
+  */
+@@ -642,6 +667,8 @@ UINT WINAPI GetDpiForWindow( HWND hwnd )
+  */
+ void WINAPI SwitchToThisWindow( HWND hwnd, BOOL alt_tab )
+ {
++    arctic_log_stack( IsIconic( hwnd ) ? "activate: SwitchToThisWindow, restoring" : "activate: SwitchToThisWindow",
++                      hwnd, alt_tab );
+     /* as in Windows, the window becomes the foreground one, not only the top one */
+     if (IsIconic( hwnd )) NtUserShowWindow( hwnd, SW_RESTORE );
+     NtUserSetForegroundWindow( hwnd );
+@@ -808,6 +835,7 @@ BOOL WINAPI LockSetForegroundWindow( UINT lockcode )
+  */
+ BOOL WINAPI BringWindowToTop( HWND hwnd )
+ {
++    arctic_log_stack( "activate: BringWindowToTop", hwnd, IsIconic( hwnd ) );
+     return NtUserSetWindowPos( hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE );
+ }
+ 
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 69d821c..a0010cc 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2674,6 +2674,10 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse, BOOL internal )
+ 
+     if (mouse) hwnd = get_full_window_handle( hwnd );
+     new_thread_id = get_window_thread( hwnd, NULL );
++    if (hwnd && (get_window_long( hwnd, GWL_STYLE ) & WS_MINIMIZE))
++        arctic_log_minimize( hwnd, mouse ? "activates, minimized, by the mouse," :
++                             internal ? "activates, minimized, from the driver," : "activates, minimized,",
++                             0, 0 );
+ 
+     SERVER_START_REQ( set_foreground_window )
+     {

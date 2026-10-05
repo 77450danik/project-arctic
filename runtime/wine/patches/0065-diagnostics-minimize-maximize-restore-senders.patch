@@ -1,0 +1,458 @@
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 42f4a80..072d4f0 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -62,6 +62,14 @@ static inline BOOL get_pending_wmchar( MSG *msg, UINT first, UINT last, BOOL rem
+ }
+ 
+ 
++/* Arctic: who sends a window WM_SYSCOMMAND to minimize, maximize or restore
++ * it (win.c, arctic_log_stack) */
++extern void arctic_log_stack( const char *what, HWND hwnd, int value );
++#define ARCTIC_SYSCOMMAND(name) \
++    do { if (msg == WM_SYSCOMMAND && ((wparam & 0xfff0) == SC_MINIMIZE || (wparam & 0xfff0) == SC_MAXIMIZE || \
++                                      (wparam & 0xfff0) == SC_RESTORE)) \
++             arctic_log_stack( name " WM_SYSCOMMAND", hwnd, (int)(wparam & 0xfff0) ); } while (0)
++
+ /***********************************************************************
+  *           MessageWndProc
+  *
+@@ -514,6 +522,7 @@ BOOL unpack_dde_message( HWND hwnd, UINT message, WPARAM *wparam, LPARAM *lparam
+ LRESULT WINAPI SendMessageTimeoutW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                     UINT flags, UINT timeout, PDWORD_PTR res_ptr )
+ {
++    ARCTIC_SYSCOMMAND( "SendMessageTimeoutW" );
+     struct send_message_timeout_params params = { .flags = flags, .timeout = timeout };
+     LRESULT res;
+ 
+@@ -528,6 +537,7 @@ LRESULT WINAPI SendMessageTimeoutW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
+ LRESULT WINAPI SendMessageTimeoutA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                     UINT flags, UINT timeout, PDWORD_PTR res_ptr )
+ {
++    ARCTIC_SYSCOMMAND( "SendMessageTimeoutA" );
+     struct send_message_timeout_params params = { .flags = flags, .timeout = timeout };
+     LRESULT res = 0;
+ 
+@@ -578,6 +588,7 @@ static LRESULT dispatch_send_message( struct win_proc_params *params, WPARAM wpa
+  */
+ LRESULT WINAPI SendMessageW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
++    ARCTIC_SYSCOMMAND( "SendMessageW" );
+     struct win_proc_params params;
+     LRESULT retval;
+ 
+@@ -593,6 +604,7 @@ LRESULT WINAPI SendMessageW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+  */
+ LRESULT WINAPI SendMessageA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
++    ARCTIC_SYSCOMMAND( "SendMessageA" );
+     struct win_proc_params params;
+     LRESULT retval;
+ 
+@@ -615,6 +627,7 @@ LRESULT WINAPI SendMessageA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+  */
+ BOOL WINAPI SendNotifyMessageA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
++    ARCTIC_SYSCOMMAND( "SendNotifyMessageA" );
+     if (!WIN_IsCurrentThread( hwnd ) && !map_wparam_AtoW( msg, &wparam, WMCHAR_MAP_SENDMESSAGE ))
+         return FALSE;
+ 
+@@ -627,6 +640,7 @@ BOOL WINAPI SendNotifyMessageA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
+  */
+ BOOL WINAPI SendNotifyMessageW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
++    ARCTIC_SYSCOMMAND( "SendNotifyMessageW" );
+     return NtUserMessageCall( hwnd, msg, wparam, lparam, 0, NtUserSendNotifyMessage, FALSE );
+ }
+ 
+@@ -637,6 +651,7 @@ BOOL WINAPI SendNotifyMessageW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
+ BOOL WINAPI SendMessageCallbackA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                   SENDASYNCPROC callback, ULONG_PTR data )
+ {
++    ARCTIC_SYSCOMMAND( "SendMessageCallbackA" );
+     struct send_message_callback_params params = { .callback = callback, .data = data };
+ 
+     if (!WIN_IsCurrentThread( hwnd ) && !map_wparam_AtoW( msg, &wparam, WMCHAR_MAP_SENDMESSAGE ))
+@@ -652,6 +667,7 @@ BOOL WINAPI SendMessageCallbackA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
+ BOOL WINAPI SendMessageCallbackW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                   SENDASYNCPROC callback, ULONG_PTR data )
+ {
++    ARCTIC_SYSCOMMAND( "SendMessageCallbackW" );
+     struct send_message_callback_params params = { .callback = callback, .data = data };
+     return NtUserMessageCall( hwnd, msg, wparam, lparam, &params, NtUserSendMessageCallback, FALSE );
+ }
+@@ -690,6 +706,7 @@ BOOL WINAPI PostMessageA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+  */
+ BOOL WINAPI PostMessageW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
++    ARCTIC_SYSCOMMAND( "PostMessageW" );
+     return NtUserPostMessage( hwnd, msg, wparam, lparam );
+ }
+ 
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 57fd092..562b4a7 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -1113,7 +1113,7 @@
+ @ stdcall -arch=win64 SetWindowLongPtrA(long long long)
+ @ stdcall -arch=win64 SetWindowLongPtrW(long long long)
+ @ stdcall SetWindowLongW(long long long)
+-@ stdcall SetWindowPlacement(long ptr) NtUserSetWindowPlacement
++@ stdcall SetWindowPlacement(long ptr)
+ @ stdcall SetWindowPos(long long long long long long long) NtUserSetWindowPos
+ @ stdcall SetWindowRgn(long long long) NtUserSetWindowRgn
+ # @ stub SetWindowRgnEx
+@@ -1133,7 +1133,7 @@
+ @ stdcall ShowScrollBar(long long long) NtUserShowScrollBar
+ @ stub ShowStartGlass
+ # @ stub ShowSystemCursor
+-@ stdcall ShowWindow(long long) NtUserShowWindow
++@ stdcall ShowWindow(long long)
+ @ stdcall ShowWindowAsync(long long)
+ @ stdcall ShutdownBlockReasonCreate(long wstr)
+ @ stdcall ShutdownBlockReasonDestroy(long)
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index fb9a5ea..84329ec 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -466,12 +466,15 @@ HWND WINAPI DECLSPEC_HOTPATCH CreateWindowExW( DWORD exStyle, LPCWSTR className,
+ }
+ 
+ 
++void arctic_log_stack( const char *what, HWND hwnd, int value );
++
+ /***********************************************************************
+  *		CloseWindow (USER32.@)
+  */
+ BOOL WINAPI CloseWindow( HWND hwnd )
+ {
+     if (GetWindowLongW( hwnd, GWL_STYLE ) & WS_CHILD) return FALSE;
++    arctic_log_stack( "CloseWindow", hwnd, SW_MINIMIZE );
+     NtUserShowWindow( hwnd, SW_MINIMIZE );
+     return TRUE;
+ }
+@@ -1869,40 +1872,74 @@ WORD WINAPI TileChildWindows( HWND parent, UINT flags )
+     return TileWindows( parent, flags, NULL, 0, NULL );
+ }
+ 
+-/***********************************************************************
+- *		ShowWindowAsync (USER32.@)
+- *
+- * Arctic: windows of other programs minimized by nobody's hand (explorer's
+- * "minimize all" when the Control Panel is opened from Start): the stack of
+- * every asynchronous minimize goes to the log with "arctic-minimize", as
+- * module+offset, to be read against the symbols of the build.
+- */
+-BOOL WINAPI ShowWindowAsync( HWND hwnd, INT cmd )
+-{
+-    if (cmd == SW_MINIMIZE || cmd == SW_SHOWMINNOACTIVE || cmd == SW_SHOWMINIMIZED || cmd == SW_FORCEMINIMIZE)
++/* Arctic: windows minimized, maximized or restored by nobody's hand. The
++ * stack of whoever asks, as module+offset to read against the build's
++ * symbols, with the wall clock: "grep arctic-minimize" in the logs. */
++void arctic_log_stack( const char *what, HWND hwnd, int value )
++{
++    void *frames[24];
++    USHORT count = RtlCaptureStackBackTrace( 2, ARRAY_SIZE(frames), frames, NULL );
++    WCHAR class[64] = {0};
++    char line[2048], ascii_class[64];
++    SYSTEMTIME now;
++    DWORD pid = 0;
++    int len;
++
++    GetLocalTime( &now );
++    if (hwnd) GetClassNameW( hwnd, class, ARRAY_SIZE(class) );
++    if (hwnd) GetWindowThreadProcessId( hwnd, &pid );
++    WideCharToMultiByte( CP_ACP, 0, class, -1, ascii_class, sizeof(ascii_class), NULL, NULL );
++    len = snprintf( line, sizeof(line), "arctic-minimize: %02u:%02u:%02u.%03u %s %p (%s, process %04x) %#x by process "
++                    "%04x thread %04x from", now.wHour, now.wMinute, now.wSecond, now.wMilliseconds, what, hwnd,
++                    ascii_class, (int)pid, value, (int)GetCurrentProcessId(), (int)GetCurrentThreadId() );
++    for (USHORT i = 0; i < count && len < (int)sizeof(line) - 80; i++)
+     {
+-        void *frames[24];
+-        USHORT count = RtlCaptureStackBackTrace( 1, ARRAY_SIZE(frames), frames, NULL );
+-        char line[2048];
+-        int len = snprintf( line, sizeof(line), "arctic-minimize: ShowWindowAsync %p SW %d from", hwnd, cmd );
++        WCHAR path[MAX_PATH], *name;
++        char ascii[64];
++        HMODULE module;
+ 
+-        for (USHORT i = 0; i < count && len < (int)sizeof(line) - 80; i++)
++        if (GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                                frames[i], &module ) && GetModuleFileNameW( module, path, MAX_PATH ))
+         {
+-            WCHAR path[MAX_PATH], *name;
+-            char ascii[64];
+-            HMODULE module;
+-
+-            if (GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+-                                    frames[i], &module ) && GetModuleFileNameW( module, path, MAX_PATH ))
+-            {
+-                name = wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path;
+-                WideCharToMultiByte( CP_ACP, 0, name, -1, ascii, sizeof(ascii), NULL, NULL );
+-                len += snprintf( line + len, sizeof(line) - len, " %s+%#lx", ascii,
+-                                 (unsigned long)((char *)frames[i] - (char *)module) );
+-            }
+-            else len += snprintf( line + len, sizeof(line) - len, " %p", frames[i] );
++            name = wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path;
++            WideCharToMultiByte( CP_ACP, 0, name, -1, ascii, sizeof(ascii), NULL, NULL );
++            len += snprintf( line + len, sizeof(line) - len, " %s+%#lx", ascii,
++                             (unsigned long)((char *)frames[i] - (char *)module) );
+         }
+-        MESSAGE( "%s\n", line );
++        else len += snprintf( line + len, sizeof(line) - len, " %p", frames[i] );
+     }
++    MESSAGE( "%s\n", line );
++}
++
++static BOOL is_minimize_cmd( INT cmd )
++{
++    return cmd == SW_MINIMIZE || cmd == SW_SHOWMINNOACTIVE || cmd == SW_SHOWMINIMIZED || cmd == SW_FORCEMINIMIZE;
++}
++
++/***********************************************************************
++ *		ShowWindow (USER32.@)
++ */
++BOOL WINAPI ShowWindow( HWND hwnd, INT cmd )
++{
++    if (is_minimize_cmd( cmd ) || cmd == SW_MAXIMIZE || cmd == SW_RESTORE) arctic_log_stack( "ShowWindow", hwnd, cmd );
++    return NtUserShowWindow( hwnd, cmd );
++}
++
++/***********************************************************************
++ *		SetWindowPlacement (USER32.@)
++ */
++BOOL WINAPI SetWindowPlacement( HWND hwnd, const WINDOWPLACEMENT *placement )
++{
++    if (placement) arctic_log_stack( "SetWindowPlacement", hwnd, placement->showCmd );
++    return NtUserSetWindowPlacement( hwnd, placement );
++}
++
++/***********************************************************************
++ *		ShowWindowAsync (USER32.@)
++ */
++BOOL WINAPI ShowWindowAsync( HWND hwnd, INT cmd )
++{
++    if (is_minimize_cmd( cmd ) || cmd == SW_MAXIMIZE || cmd == SW_RESTORE)
++        arctic_log_stack( "ShowWindowAsync", hwnd, cmd );
+     return NtUserShowWindowAsync( hwnd, cmd );
+ }
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+index 3af824b..0ae648c 100644
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -1158,6 +1158,7 @@ static LRESULT handle_sys_command( HWND hwnd, WPARAM wparam, LPARAM lparam )
+         break;
+ 
+     case SC_MAXIMIZE:
++        arctic_log_syscommand( hwnd, wparam, "gets" );
+         if (is_iconic(hwnd)) NtUserShowOwnedPopups( hwnd, TRUE );
+         if (!(get_window_long( hwnd, GWL_STYLE ) & WS_VISIBLE)) maximize_hidden_window( hwnd );
+         else NtUserShowWindow( hwnd, SW_MAXIMIZE );
+@@ -1185,6 +1186,7 @@ static LRESULT handle_sys_command( HWND hwnd, WPARAM wparam, LPARAM lparam )
+         break;
+ 
+     case SC_RESTORE:
++        arctic_log_syscommand( hwnd, wparam, "gets" );
+         if (is_iconic( hwnd )) NtUserShowOwnedPopups( hwnd, TRUE );
+         NtUserShowWindow( hwnd, SW_RESTORE );
+         break;
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index aa7b606..933e1cc 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -4581,6 +4581,7 @@ static LRESULT send_window_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
+ {
+     struct send_message_info info;
+     DWORD_PTR res = 0;
++    if (msg == WM_SYSCOMMAND) arctic_log_syscommand( hwnd, wparam, "sent" );
+ 
+     info.type    = ansi ? MSG_ASCII : MSG_UNICODE;
+     info.hwnd    = hwnd;
+@@ -4601,6 +4602,7 @@ static LRESULT send_client_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
+                                     UINT flags, UINT timeout, DWORD_PTR *res_ptr, BOOL ansi )
+ {
+     struct send_message_info info;
++    if (msg == WM_SYSCOMMAND) arctic_log_syscommand( hwnd, wparam, "sent" );
+ 
+     info.type    = ansi ? MSG_ASCII : MSG_UNICODE;
+     info.hwnd    = hwnd;
+@@ -4651,6 +4653,7 @@ LRESULT send_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ BOOL send_notify_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, BOOL ansi )
+ {
+     struct send_message_info info;
++    if (msg == WM_SYSCOMMAND) arctic_log_syscommand( hwnd, wparam, "sent (notify)" );
+ 
+     if (is_pointer_message( msg, wparam ))
+     {
+@@ -4675,6 +4678,7 @@ static BOOL send_message_callback( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
+                                    const struct send_message_callback_params *params, BOOL ansi )
+ {
+     struct send_message_info info;
++    if (msg == WM_SYSCOMMAND) arctic_log_syscommand( hwnd, wparam, "sent (callback)" );
+ 
+     if (is_pointer_message( msg, wparam ))
+     {
+@@ -4702,6 +4706,7 @@ static BOOL send_message_callback( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
+ BOOL WINAPI NtUserPostMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
+     struct send_message_info info;
++    if (msg == WM_SYSCOMMAND) arctic_log_syscommand( hwnd, wparam, "posted" );
+ 
+     if (is_pointer_message( msg, wparam ))
+     {
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 024bd52..08dfcf4 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -303,6 +303,8 @@ extern void window_monitor_dpi_changed( HWND hwnd, UINT old_dpi, UINT new_dpi );
+ extern HWND get_window_relative( HWND hwnd, UINT rel );
+ extern DWORD get_window_thread( HWND hwnd, DWORD *process );
+ extern void arctic_log_minimize( HWND hwnd, const char *how, INT asked, INT done );
++extern void arctic_log_syscommand( HWND hwnd, WPARAM wparam, const char *how );
++extern const char *arctic_now(void);
+ extern BOOL arctic_is_big( HWND hwnd );
+ extern void arctic_log_front( HWND hwnd, const char *what, HWND other );
+ extern HWND is_current_process_window( HWND hwnd );
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 53bca5d..f510319 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -24,6 +24,8 @@
+ #endif
+ 
+ #include <assert.h>
++#include <sys/time.h>
++#include <time.h>
+ 
+ #include "ntstatus.h"
+ #include "ntgdi_private.h"
+@@ -5110,6 +5112,51 @@ static BOOL is_minimize_command( INT cmd )
+     return cmd == SW_MINIMIZE || cmd == SW_SHOWMINIMIZED || cmd == SW_SHOWMINNOACTIVE || cmd == SW_FORCEMINIMIZE;
+ }
+ 
++/* Arctic: the wall clock of the log lines, local time with milliseconds, to
++ * match them with what the user did */
++const char *arctic_now(void)
++{
++    static __thread char buf[16];
++    struct timeval tv;
++    struct tm tm;
++
++    gettimeofday( &tv, NULL );
++    localtime_r( &tv.tv_sec, &tm );
++    snprintf( buf, sizeof(buf), "%02d:%02d:%02d.%03d", tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(tv.tv_usec / 1000) );
++    return buf;
++}
++
++/* Arctic: who asks a window to minimize, maximize or restore with
++ * WM_SYSCOMMAND, the way that does not go through ShowWindow: the sender's
++ * process and thread, and how (sent, posted). A window minimized by nobody's
++ * hand gets one of these. "grep arctic-syscommand" in the logs. */
++void arctic_log_syscommand( HWND hwnd, WPARAM wparam, const char *how )
++{
++    const WCHAR *app = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
++    WCHAR title[64] = {0}, class[64] = {0};
++    UNICODE_STRING name = { 0, sizeof(class) - sizeof(WCHAR), class };
++    const char *command;
++    DWORD pid = 0;
++
++    switch (wparam & 0xfff0)
++    {
++    case SC_MINIMIZE: command = "SC_MINIMIZE"; break;
++    case SC_MAXIMIZE: command = "SC_MAXIMIZE"; break;
++    case SC_RESTORE:  command = "SC_RESTORE"; break;
++    default: return;
++    }
++    if (hwnd && (ULONG_PTR)hwnd > 1)
++    {
++        NtUserInternalGetWindowText( hwnd, title, ARRAY_SIZE(title) );
++        NtUserGetClassName( hwnd, FALSE, &name );
++        get_window_thread( hwnd, &pid );
++    }
++    MESSAGE( "arctic-syscommand: %s %s %s to %p (%s %s, process %04x, style %08x) by %s (%04x, thread %04x), "
++             "foreground %p\n", arctic_now(), how, command, hwnd, debugstr_w(class), debugstr_w(title), (int)pid,
++             hwnd ? (int)get_window_long( hwnd, GWL_STYLE ) : 0, debugstr_w(app), (int)GetCurrentProcessId(),
++             (int)GetCurrentThreadId(), NtUserGetForegroundWindow() );
++}
++
+ void arctic_log_minimize( HWND hwnd, const char *how, INT asked, INT done )
+ {
+     const WCHAR *app = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+@@ -5123,8 +5170,8 @@ void arctic_log_minimize( HWND hwnd, const char *how, INT asked, INT done )
+     get_window_thread( hwnd, &pid );
+     if (asked == done) snprintf( command, sizeof(command), "SW %d", done );
+     else snprintf( command, sizeof(command), "SW %d, startup info made it SW %d", asked, done );
+-    MESSAGE( "arctic-minimize: %s %p (%s %s, process %04x, style %08x) by %s (%04x, thread %04x): %s, "
+-             "foreground %p\n", how, hwnd, debugstr_w(class), debugstr_w(title), (int)pid,
++    MESSAGE( "arctic-minimize: %s %s %p (%s %s, process %04x, style %08x) by %s (%04x, thread %04x): %s, "
++             "foreground %p\n", arctic_now(), how, hwnd, debugstr_w(class), debugstr_w(title), (int)pid,
+              (int)get_window_long( hwnd, GWL_STYLE ), debugstr_w(app), (int)GetCurrentProcessId(),
+              (int)GetCurrentThreadId(), command, NtUserGetForegroundWindow() );
+ }
+@@ -5161,8 +5208,8 @@ void arctic_log_front( HWND hwnd, const char *what, HWND other )
+         NtUserGetClassName( other, FALSE, &name2 );
+         get_window_thread( other, &other_pid );
+     }
+-    MESSAGE( "arctic-front: %p (%s %s, process %04x) %s %p (%s, process %04x) by %s (%04x, thread %04x), "
+-             "foreground %p\n", hwnd, debugstr_w(class), debugstr_w(title), (int)pid, what, other,
++    MESSAGE( "arctic-front: %s %p (%s %s, process %04x) %s %p (%s, process %04x) by %s (%04x, thread %04x), "
++             "foreground %p\n", arctic_now(), hwnd, debugstr_w(class), debugstr_w(title), (int)pid, what, other,
+              debugstr_w(other_class), (int)other_pid, debugstr_w(app), (int)GetCurrentProcessId(),
+              (int)GetCurrentThreadId(), NtUserGetForegroundWindow() );
+ }
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 2297287..34df51c 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -26,6 +26,8 @@
+ 
+ #include <assert.h>
+ #include <stdlib.h>
++#include <sys/time.h>
++#include <time.h>
+ 
+ #include "ntstatus.h"
+ 
+@@ -472,6 +474,22 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     wayland_win_data_release(data);
+ }
+ 
++/* Arctic: a window maximized, un-maximized or restored by the compositor's
++ * configure, with the wall clock: "grep arctic-configure" in the logs */
++static void arctic_log_configure(HWND hwnd, const char *what, int width, int height, int state)
++{
++    WCHAR class[64] = {0};
++    UNICODE_STRING name = { 0, sizeof(class) - sizeof(WCHAR), class };
++    struct timeval tv;
++    struct tm tm;
++
++    gettimeofday(&tv, NULL);
++    localtime_r(&tv.tv_sec, &tm);
++    NtUserGetClassName(hwnd, FALSE, &name);
++    MESSAGE("arctic-configure: %02d:%02d:%02d.%03d %p (%s) %s: configure %dx%d state %#x\n", tm.tm_hour, tm.tm_min,
++            tm.tm_sec, (int)(tv.tv_usec / 1000), hwnd, debugstr_w(class), what, width, height, state);
++}
++
+ static void wayland_configure_window(HWND hwnd)
+ {
+     struct wayland_surface *surface;
+@@ -568,6 +586,7 @@ static void wayland_configure_window(HWND hwnd)
+     if (restoring_from_minimize)
+     {
+         TRACE("hwnd=%p restoring from minimize\n", hwnd);
++        arctic_log_configure(hwnd, "restored from minimize (SC_RESTORE)", width, height, state);
+         surface->current = surface->processing;
+         memset(&surface->processing, 0, sizeof(surface->processing));
+         xdg_surface_ack_configure(surface->xdg_surface,
+@@ -594,7 +613,11 @@ static void wayland_configure_window(HWND hwnd)
+     style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+     if (!(state & WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED) != !(style & WS_MAXIMIZE)
+         && !(state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN))
++    {
++        arctic_log_configure(hwnd, (style & WS_MAXIMIZE) ? "un-maximized" : "maximized", width, height,
++                             state);
+         NtUserSetWindowLong(hwnd, GWL_STYLE, style ^ WS_MAXIMIZE, FALSE);
++    }
+ 
+     /* The Wayland maximized and fullscreen states are very strict about
+      * surface size, so don't let the application override it. The tiled state
