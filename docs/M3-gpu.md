@@ -15,29 +15,36 @@
 | Intel Gen 7–12 | `i915` | iris, crocus / anv, hasvk |
 | Intel Xe2 і новіші (Lunar Lake, Battlemage) | `xe` | iris / anv |
 | NVIDIA Turing і новіші (GTX 16, RTX 20 → RTX 50) | `nvidia` (відкриті модулі) | NVIDIA |
-| NVIDIA до Turing (GTX 600 → GTX 10) | `nouveau` | nouveau / NVK |
+| NVIDIA Maxwell, Pascal, Volta (GTX 750 → GTX 10, Titan V) | `nvidia` (закриті модулі 580) | NVIDIA |
+| NVIDIA Kepler і старші (GTX 600/700) | `nouveau` | nouveau / NVK |
 | Немає драйвера / QEMU / `nomodeset` | `simpledrm` | llvmpipe / lavapipe |
 
 Як це влаштовано:
 
 - **Модулі ядра** — усі DRM-драйвери з конфігу Arch, модулями. `udevd` вантажить
   їх за PCI-ідентифікатором.
-- **NVIDIA.** Відкриті модулі збираються в CI разом з ядром
-  (`ci/build-kernel.sh`) і підписуються його ключем. Userspace (`nvidia-utils`)
-  береться з архіву Arch **тієї самої версії** — вона одна на обидва місця,
-  `kernel/NVIDIA_VERSION`. Щоб оновити NVIDIA: змінити цей файл і дочекатися
-  перезбірки ядра.
-- **nvidia чи nouveau.** Модуль `nvidia` вантажиться за аліасом і сам
+- **NVIDIA.** Гілка 580 — остання, що підтримує Pascal і старші. З її
+  `.run` (`kernel/NVIDIA_VERSION`) `ci/build-kernel.sh` збирає два набори
+  модулів, підписаних ключем ядра: відкриті (Turing і новіші) — у дерево
+  модулів, закриті (Maxwell, Pascal, Volta) — у `/usr/lib/arctic/nvidia-legacy`.
+  Userspace ставить `ci/install-nvidia-userspace.py` з того самого `.run` за
+  його маніфестом (Arch пакує лише найновішу гілку). Щоб оновити NVIDIA:
+  змінити `kernel/NVIDIA_VERSION` і перезібрати ядро й образ.
+- **Хто бере карту.** Відкритий `nvidia` вантажиться за аліасом і сам
   відмовляється від карт без GSP (до Turing). `nouveau` для автозавантаження
-  заблокований пакетом `nvidia-utils`, тож нову карту він не перехопить.
-  `arctic-gpu` (`host/init/arctic-gpu.c`), якого udev запускає для кожного
-  відеоадаптера, дивиться, чи прив'язався драйвер: якщо ні — вантажить
-  `nouveau`, якщо це `nvidia` — довантажує `nvidia_drm` (у нього немає
-  аліасу). Що вибрано, видно в `kernel.log`: `arctic-gpu: 10de:2b85 0000:01:00.0: nvidia`.
+  заблокований (`arctic-gpu.conf`). `arctic-gpu` (`host/init/arctic-gpu.c`),
+  якого udev запускає для кожного відеоадаптера, дивиться, чи прив'язався
+  драйвер: якщо ні, а карта Maxwell…Volta (0x1340–0x1DFF), — вивантажує
+  відкриті модулі й вантажить закриті (`nvidia`, `nvidia-modeset`,
+  `nvidia-drm modeset=1 fbdev=1`, `nvidia-uvm`); інакше — `nouveau`; якщо це
+  відкритий `nvidia` — довантажує `nvidia_drm` (у нього немає аліасу). Що
+  вибрано, видно в `kernel.log`: `arctic-gpu: 10de:1c8d: NVIDIA's proprietary driver`.
+  Навіщо: `nouveau` не піднімає частоти Pascal (підписана прошивка), і GTX
+  1050 працював на стартових — WebGPU у Chrome давав 4–5 кадрів/с.
 - **Старі Radeon.** GCN 1.0/1.1 за замовчуванням бере `radeon`, без Vulkan.
   `/etc/modprobe.d/arctic-gpu.conf` віддає їх `amdgpu`.
 - **Прошивки:** `linux-firmware-{amdgpu,radeon,intel,nvidia}`; GSP для
-  відкритих модулів NVIDIA — у самому `nvidia-utils`.
+  відкритих модулів NVIDIA — з `.run` (`/usr/lib/firmware/nvidia/<версія>`).
 - **Userspace:** `mesa`, `vulkan-radeon`, `vulkan-intel`, `vulkan-nouveau`,
   `vulkan-swrast` і NVIDIA. Завантажувач Vulkan бачить усі ICD і бере ті, що
   знаходять свою карту.
@@ -198,5 +205,5 @@ Independent Flip):
 - Vulkan-композиція замість CPU для вікон з GPU-буферами.
 - Кілька GPU з моніторами одночасно (зараз монітори другої карти не
   використовуються).
-- NVIDIA до Turing (GTX 900/1000) на `nouveau` працює без підняття частот:
-  повільно. Закритий драйвер 580.xx для них — окреме рішення.
+- NVIDIA Kepler (GTX 600/700) на `nouveau` працює без підняття частот:
+  повільно (гілка 470 під нове ядро не збирається).

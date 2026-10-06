@@ -30,7 +30,9 @@ if [ ! -f "$CACHE/BOOTX64.EFI" ]; then
         echo "limine: applying $(basename "$patch")"
         patch -d "$SRC" -p1 --quiet < "$patch"
     done
-    (cd "$SRC" && ./configure --enable-uefi-x86-64 >/dev/null && make -j"$(nproc)" >/dev/null)
+    # clang takes TMP/TEMP before /tmp, and a shell started from Windows has
+    # them as C:\ paths it cannot use
+    (cd "$SRC" && unset TMP TEMP && export TMPDIR=/tmp && ./configure --enable-uefi-x86-64 >/dev/null && make -j"$(nproc)" >/dev/null)
     mkdir -p "$CACHE"
     cp "$SRC/bin/BOOTX64.EFI" "$CACHE/BOOTX64.EFI"
 fi

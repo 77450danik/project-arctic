@@ -19,11 +19,19 @@ rm -rf "$RFS" "$OUT/prefix" "$OUT/initrd"
 mkdir -p "$RFS"
 # shellcheck disable=SC2046
 pacstrap -C /tmp/pacman.conf -c -G -M "$RFS" $(grep -v '^[[:space:]]*#' "$ROOT/host/rootfs/packages.txt")
-# NVIDIA's user space, the same version as its kernel modules (build-kernel.sh):
-# the Arch archive keeps every release, the repository only the newest
+# NVIDIA's user space, the same version as its kernel modules (build-kernel.sh),
+# from the same .run: Arch packages only the newest branch, and the 580 branch
+# is the last that drives Pascal and older
 NV=$(cat "$ROOT/kernel/NVIDIA_VERSION")
-pacstrap -C /tmp/pacman.conf -c -G -M -U "$RFS" \
-    "https://archive.archlinux.org/packages/n/nvidia-utils/nvidia-utils-$NV-1-x86_64.pkg.tar.zst"
+NVDL=${KERNEL_DOWNLOADS:-/tmp}
+mkdir -p "$NVDL"
+[ -s "$NVDL/NVIDIA-Linux-x86_64-$NV.run" ] || curl -fL --retry 5 -o "$NVDL/NVIDIA-Linux-x86_64-$NV.run" \
+    "https://download.nvidia.com/XFree86/Linux-x86_64/$NV/NVIDIA-Linux-x86_64-$NV.run"
+rm -rf /tmp/nvidia-run
+sh "$NVDL/NVIDIA-Linux-x86_64-$NV.run" -x --target /tmp/nvidia-run > /dev/null
+python3 "$ROOT/ci/install-nvidia-userspace.py" /tmp/nvidia-run "$RFS"
+rm -rf /tmp/nvidia-run
+ldconfig -r "$RFS"
 
 chroot "$RFS" localedef -i uk_UA -f UTF-8 uk_UA.UTF-8
 chroot "$RFS" localedef -i en_US -f UTF-8 en_US.UTF-8
@@ -37,6 +45,11 @@ echo arctic > "$RFS/etc/hostname"
 mkdir -p "$RFS/mnt/c" "$RFS/usr/share/arctic"
 
 cp -a "$OUT/kernel/lib/modules" "$RFS/usr/lib/"
+# the proprietary NVIDIA modules for Maxwell, Pascal and Volta (arctic-gpu loads them)
+if [ -d "$OUT/kernel/nvidia-legacy" ]; then
+    mkdir -p "$RFS/usr/lib/arctic"
+    cp -a "$OUT/kernel/nvidia-legacy" "$RFS/usr/lib/arctic/"
+fi
 cp -a "$OUT/wine/usr/." "$RFS/usr/"
 
 INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop}.c)

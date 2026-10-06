@@ -37,7 +37,9 @@ python "$ROOT/ci/mkpanic.py" /usr/share/fonts/noto/NotoSans-Light.ttf drivers/gp
 ARCH_CONFIG=$(ls /usr/lib/modules/*/build/.config | head -n1)
 echo "base config: $ARCH_CONFIG"
 cp "$ARCH_CONFIG" .config
-scripts/kconfig/merge_config.sh -m .config "$ROOT/kernel/arctic.config"
+# merge_config.sh does not take a path with spaces (a checkout in "project arctic")
+cp "$ROOT/kernel/arctic.config" "$WORK/arctic.config"
+scripts/kconfig/merge_config.sh -m .config "$WORK/arctic.config"
 make olddefconfig
 
 # Fail loudly if a required option was dropped by a dependency
@@ -62,16 +64,26 @@ make -j"$(nproc)" "${CC[@]}" bzImage modules
 ccache -s
 make INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
 
-# NVIDIA's open kernel modules (Turing and newer) for this very kernel, signed
-# with its key like the modules above. Their user space must be the same
-# version: build-rootfs.sh takes it from the Arch archive by this number.
+# NVIDIA's kernel modules for this very kernel, signed with its key like the
+# modules above, both from the driver's .run of one version (kernel/
+# NVIDIA_VERSION, the 580 branch: the last that drives Pascal and older):
+# the open modules take Turing and newer and are what modprobe finds; the
+# proprietary ones (Maxwell, Pascal, Volta) wait in nvidia-legacy/, outside
+# the module tree, for arctic-gpu to load when the open module declines the
+# card. build-rootfs.sh installs the user space from the same .run.
 NV=$(cat "$ROOT/kernel/NVIDIA_VERSION")
-[ -s "$DL/nvidia-$NV.tar.gz" ] || curl -fL --retry 5 -o "$DL/nvidia-$NV.tar.gz" \
-    "https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/$NV.tar.gz"
-tar xf "$DL/nvidia-$NV.tar.gz" -C "$WORK"
-make -C "$WORK/open-gpu-kernel-modules-$NV" -j"$(nproc)" "${CC[@]}" SYSSRC="$PWD" SYSOUT="$PWD" modules
-make -C "$WORK/open-gpu-kernel-modules-$NV" SYSSRC="$PWD" SYSOUT="$PWD" \
+[ -s "$DL/NVIDIA-Linux-x86_64-$NV.run" ] || curl -fL --retry 5 -o "$DL/NVIDIA-Linux-x86_64-$NV.run" \
+    "https://download.nvidia.com/XFree86/Linux-x86_64/$NV/NVIDIA-Linux-x86_64-$NV.run"
+sh "$DL/NVIDIA-Linux-x86_64-$NV.run" -x --target "$WORK/nvidia-$NV" > /dev/null
+make -C "$WORK/nvidia-$NV/kernel-open" -j"$(nproc)" "${CC[@]}" SYSSRC="$PWD" SYSOUT="$PWD" modules
+make -C "$WORK/nvidia-$NV/kernel-open" SYSSRC="$PWD" SYSOUT="$PWD" \
     INSTALL_MOD_PATH="$OUT" INSTALL_MOD_STRIP=1 modules_install
+make -C "$WORK/nvidia-$NV/kernel" -j"$(nproc)" "${CC[@]}" SYSSRC="$PWD" SYSOUT="$PWD" modules
+make -C "$WORK/nvidia-$NV/kernel" SYSSRC="$PWD" SYSOUT="$PWD" \
+    INSTALL_MOD_PATH="$WORK/legacy" INSTALL_MOD_DIR=nvidia-legacy INSTALL_MOD_STRIP=1 modules_install
+mkdir -p "$OUT/nvidia-legacy"
+find "$WORK/legacy" -path '*/nvidia-legacy/*.ko*' -exec cp {} "$OUT/nvidia-legacy/" \;
+ls "$OUT"/nvidia-legacy/
 depmod -b "$OUT" "$(make -s kernelrelease)"
 ls "$OUT"/lib/modules/*/kernel/drivers/video/nvidia*.ko*
 
