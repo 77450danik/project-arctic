@@ -5,8 +5,9 @@ LVM_SETTILEVIEWINFO: a small icon view in fixed tiles, the icon centred
 upright, the label the whole rest of the tile, so a click under the name
 (on a capacity bar) hits the item. What goes in a tile its owner draws.
 ---
---- a/dll/win32/comctl32/listview.c	2026-10-06 19:50:14.368014038 +0200
-+++ b/dll/win32/comctl32/listview.c	2026-10-06 19:50:22.273730744 +0200
+diff -ruN a/dll/win32/comctl32/listview.c b/dll/win32/comctl32/listview.c
+--- a/dll/win32/comctl32/listview.c	2026-10-06 20:27:53.618011922 +0200
++++ b/dll/win32/comctl32/listview.c	2026-10-06 20:27:53.620841397 +0200
 @@ -275,6 +275,8 @@
    SIZE iconSize;
    BOOL autoSpacing;
@@ -76,7 +77,18 @@ upright, the label the whole rest of the tile, so a click under the name
  
    infoPtr->uView = nView;
  
-@@ -11347,6 +11361,7 @@
+@@ -9389,6 +9403,10 @@
+   }
+ 
+   LISTVIEW_UpdateItemSize(infoPtr);
++  /* Arctic: laid out again in the new view's item size: arranged above, the
++   * items stood as far apart as the old view had them (tiles are wider) */
++  if (nView == LV_VIEW_ICON || nView == LV_VIEW_SMALLICON)
++      LISTVIEW_Arrange(infoPtr, LVA_DEFAULT);
+   LISTVIEW_UpdateSize(infoPtr);
+   LISTVIEW_UpdateScroll(infoPtr);
+   LISTVIEW_InvalidateList(infoPtr);
+@@ -11347,6 +11365,7 @@
          /* LVM_SETVIEW doesn't change window style bits within LVS_TYPEMASK,
             changing style updates current view only when view bits change. */
          map_style_view(infoPtr);
@@ -84,7 +96,7 @@ upright, the label the whole rest of the tile, so a click under the name
          SendMessageW(infoPtr->hwndEdit, WM_KILLFOCUS, 0, 0);
      	ShowWindow(infoPtr->hwndHeader, SW_HIDE);
  
-@@ -11696,7 +11711,7 @@
+@@ -11696,7 +11715,7 @@
      return (infoPtr->notifyFormat == NFR_UNICODE);
  
    case LVM_GETVIEW:
@@ -93,7 +105,7 @@ upright, the label the whole rest of the tile, so a click under the name
  
    case LVM_GETVIEWRECT:
      return LISTVIEW_GetViewRect(infoPtr, (LPRECT)lParam);
-@@ -11844,7 +11859,19 @@
+@@ -11844,7 +11863,19 @@
  
    /* case LVM_SETTILEINFO: */
  

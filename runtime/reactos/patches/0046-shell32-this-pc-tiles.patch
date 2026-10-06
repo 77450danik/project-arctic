@@ -3,12 +3,13 @@ shell32: This PC in tiles with the drives' capacity, as in Windows 10
 The folder view gets FVM_TILE (on comctl32's LV_VIEW_TILE) and draws the
 tiles: the large icon, the name, for a drive a capacity bar (red past nine
 tenths) and "X free of Y"; Windows 10's light blue when hot or selected.
-This PC opens in tiles.
+This PC opens in tiles (not in the view of the window it was opened from, nor
+in one kept from before tiles); View has Tiles.
 ---
 diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
 --- a/dll/win32/shell32/CDefView.cpp	2026-10-06 19:52:08.445320772 +0200
-+++ b/dll/win32/shell32/CDefView.cpp	2026-10-06 19:57:25.036710192 +0200
-@@ -316,6 +316,11 @@
++++ b/dll/win32/shell32/CDefView.cpp	2026-10-06 20:06:19.117675012 +0200
+@@ -316,6 +316,13 @@
      BOOL CreateList();
      void UpdateListColors();
      BOOL InitList();
@@ -17,10 +18,12 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
 +    void DrawTile(LPNMLVCUSTOMDRAW cd);
 +    HICON TileIcon(int iImage, PCUITEMID_CHILD pidl, int size);
 +    struct { int iImage, size; HICON icon; } m_TileIcons[64] = {};
++    BOOL m_ViewModeOwn = FALSE;   /* the view mode came from this folder's own saved state */
++    BOOL m_ViewModeTiles = FALSE; /* ... saved since tiles came (ArcticTiles) */
      static INT CALLBACK ListViewCompareItems(LPARAM lParam1, LPARAM lParam2, LPARAM lpData);
  
      HRESULT MapFolderColumnToListColumn(UINT FoldCol);
-@@ -376,7 +381,8 @@
+@@ -376,7 +383,8 @@
  
      static inline bool IsSupportedFolderViewMode(int Mode)
      {
@@ -30,7 +33,7 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
      }
  
      // *** IOleWindow methods ***
-@@ -642,6 +648,10 @@
+@@ -642,6 +650,10 @@
  
      _DoFolderViewCB(SFVM_VIEWRELEASE, 0, 0);
  
@@ -41,7 +44,7 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
      if (m_viewinfo_data.hbmBack)
      {
          ::DeleteObject(m_viewinfo_data.hbmBack);
-@@ -885,6 +895,9 @@
+@@ -885,6 +897,9 @@
          case FVM_LIST:
              dwStyle |= LVS_LIST;
              break;
@@ -51,7 +54,7 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
          default:
              dwStyle |= LVS_LIST;
              break;
-@@ -991,6 +1004,7 @@
+@@ -991,6 +1006,7 @@
      Shell_GetImageLists(&big_icons, &small_icons);
      m_ListView.SetImageList(big_icons, LVSIL_NORMAL);
      m_ListView.SetImageList(small_icons, LVSIL_SMALL);
@@ -59,7 +62,7 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
  
      m_hMenuArrangeModes = CreateMenu();
  
-@@ -2671,6 +2685,8 @@
+@@ -2671,6 +2687,8 @@
              break;
          case NM_CUSTOMDRAW:
              TRACE("-- NM_CUSTOMDRAW %p\n", this);
@@ -68,7 +71,24 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
              return CDRF_DODEFAULT;
          case NM_RELEASEDCAPTURE:
              TRACE("-- NM_RELEASEDCAPTURE %p\n", this);
-@@ -3579,6 +3595,204 @@
+@@ -3330,6 +3348,8 @@
+         if (FAILED(hr = SHPropertyBag_ReadDWORD(pPB, L"Mode", &data)))
+             goto loadfallback;
+         cvs.FolderSettings.ViewMode = data;
++        m_ViewModeOwn = TRUE;
++        m_ViewModeTiles = ReadDWORD(pPB, L"ArcticTiles", 0) != 0;
+         cvs.FolderSettings.fFlags = ReadDWORD(pPB, L"FFlags", FWF_NOGROUPING);
+         data = ReadDWORD(pPB, L"Sort", ~0ul);
+         cvs.SortColId = data != ~0ul ? (WORD)data : LISTVIEW_SORT_INFO::UNSPECIFIEDCOLUMN;
+@@ -3415,6 +3435,7 @@
+         UINT uViewMode;
+         GetCurrentViewMode(&uViewMode);
+         hr = SHPropertyBag_WriteDWORD(pPB, L"Mode", uViewMode);
++        SHPropertyBag_WriteDWORD(pPB, L"ArcticTiles", 1);
+         SHPropertyBag_WriteDWORD(pPB, L"FFlags", m_FolderSettings.fFlags);
+         SHPropertyBag_WriteDWORD(pPB, L"Sort", cvs.SortColId);
+         SHPropertyBag_WriteDWORD(pPB, L"SortDir", cvs.SortDir);
+@@ -3579,6 +3600,204 @@
      return hr;
  }
  
@@ -273,7 +293,7 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
  FOLDERVIEWMODE CDefView::GetDefaultViewMode()
  {
      FOLDERVIEWMODE mode = ((m_FolderSettings.fFlags & FWF_DESKTOP) || !IsOS(OS_SERVERADMINUI)) ? FVM_ICON : FVM_DETAILS;
-@@ -3618,6 +3832,7 @@
+@@ -3618,6 +3837,7 @@
          case FVM_SMALLICON: dwStyle = LVS_SMALLICON; break;
          case FVM_LIST:      dwStyle = LVS_LIST;      break;
          case FVM_DETAILS:   dwStyle = LVS_REPORT;    break;
@@ -281,7 +301,7 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
          default:
              FIXME("ViewMode %d not implemented\n", ViewMode);
              dwStyle = LVS_LIST;
-@@ -3629,6 +3844,7 @@
+@@ -3629,6 +3849,7 @@
      /* This will not necessarily be the actual mode set above.
         This mimics the behavior of Windows XP. */
      m_FolderSettings.ViewMode = ViewMode;
@@ -289,6 +309,31 @@ diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
      CheckToolbar();
      return S_OK;
  }
+@@ -3873,6 +4094,13 @@
+     }
+ 
+     LoadViewState();
++    /* Arctic: a folder whose own view is tiles (This PC) opens in tiles, not in
++     * the view of the window it was opened from nor the one kept from before
++     * tiles came; a view the user chose for it since is kept */
++    FOLDERVIEWMODE folderMode = FVM_AUTO;
++    if (SUCCEEDED(_DoFolderViewCB(SFVM_DEFVIEWMODE, 0, (LPARAM)&folderMode)) && folderMode == FVM_TILE &&
++        !(m_ViewModeOwn && m_ViewModeTiles))
++        m_FolderSettings.ViewMode = FVM_TILE;
+     if (view_flags & SV3CVW3_FORCEVIEWMODE)
+         m_FolderSettings.ViewMode = requestedViewMode;
+     if (view_flags & SV3CVW3_FORCEFOLDERFLAGS)
+diff -ruN a/dll/win32/shell32/CDefViewBckgrndMenu.cpp b/dll/win32/shell32/CDefViewBckgrndMenu.cpp
+--- a/dll/win32/shell32/CDefViewBckgrndMenu.cpp	2026-10-06 19:52:08.445394816 +0200
++++ b/dll/win32/shell32/CDefViewBckgrndMenu.cpp	2026-10-06 20:06:19.113825799 +0200
+@@ -256,6 +256,7 @@
+     case FCIDM_SHVIEW_SMALLICON:
+     case FCIDM_SHVIEW_LISTVIEW:
+     case FCIDM_SHVIEW_REPORTVIEW:
++    case FCIDM_SHVIEW_TILEVIEW:
+     case FCIDM_SHVIEW_AUTOARRANGE:
+     case FCIDM_SHVIEW_SNAPTOGRID:
+     case FCIDM_SHVIEW_REFRESH:
 diff -ruN a/dll/win32/shell32/folders/CDrivesFolder.cpp b/dll/win32/shell32/folders/CDrivesFolder.cpp
 --- a/dll/win32/shell32/folders/CDrivesFolder.cpp	2026-10-06 19:52:08.448998941 +0200
 +++ b/dll/win32/shell32/folders/CDrivesFolder.cpp	2026-10-06 19:52:08.550962849 +0200
@@ -308,8 +353,24 @@ diff -ruN a/dll/win32/shell32/folders/CDrivesFolder.cpp b/dll/win32/shell32/fold
  }
 diff -ruN a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
 --- a/dll/win32/shell32/lang/en-US.rc	2026-10-06 19:52:08.449543593 +0200
-+++ b/dll/win32/shell32/lang/en-US.rc	2026-10-06 19:52:08.551831666 +0200
-@@ -752,6 +752,7 @@
++++ b/dll/win32/shell32/lang/en-US.rc	2026-10-06 20:06:19.113260509 +0200
+@@ -6,6 +6,7 @@
+     MENUITEM "S&mall Icons", FCIDM_SHVIEW_SMALLICON
+     MENUITEM "&List", FCIDM_SHVIEW_LISTVIEW
+     MENUITEM "&Details", FCIDM_SHVIEW_REPORTVIEW
++    MENUITEM "&Tiles", FCIDM_SHVIEW_TILEVIEW
+     MENUITEM "", -1, MFT_SEPARATOR
+     POPUP "Arrange &Icons By", FCIDM_SHVIEW_ARRANGE
+     BEGIN
+@@ -26,6 +27,7 @@
+             MENUITEM "S&mall Icons", FCIDM_SHVIEW_SMALLICON
+             MENUITEM "&List", FCIDM_SHVIEW_LISTVIEW
+             MENUITEM "&Details", FCIDM_SHVIEW_REPORTVIEW
++            MENUITEM "&Tiles", FCIDM_SHVIEW_TILEVIEW
+         END
+         MENUITEM "", -1, MFT_SEPARATOR
+         POPUP "Arrange &Icons By", FCIDM_SHVIEW_ARRANGE
+@@ -752,6 +754,7 @@
      IDS_SHV_COLUMN_ATTRIBUTES "Attributes"
      IDS_SHV_COLUMN_DISK_CAPACITY "Total Size"
      IDS_SHV_COLUMN_DISK_AVAILABLE "Free Space"
@@ -319,8 +380,24 @@ diff -ruN a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
      IDS_SHV_COLUMN_FILENAME "Filename"
 diff -ruN a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
 --- a/dll/win32/shell32/lang/uk-UA.rc	2026-10-06 19:52:08.450294826 +0200
-+++ b/dll/win32/shell32/lang/uk-UA.rc	2026-10-06 19:52:08.551603159 +0200
-@@ -752,6 +752,7 @@
++++ b/dll/win32/shell32/lang/uk-UA.rc	2026-10-06 20:06:19.111551890 +0200
+@@ -6,6 +6,7 @@
+     MENUITEM "&Дрібні значки", FCIDM_SHVIEW_SMALLICON
+     MENUITEM "Спис&ок", FCIDM_SHVIEW_LISTVIEW
+     MENUITEM "&Подробиці", FCIDM_SHVIEW_REPORTVIEW
++    MENUITEM "Пли&тка", FCIDM_SHVIEW_TILEVIEW
+     MENUITEM "", -1, MFT_SEPARATOR
+     POPUP "&Упорядкувати значки", FCIDM_SHVIEW_ARRANGE
+     BEGIN
+@@ -26,6 +27,7 @@
+             MENUITEM "&Дрібні значки", FCIDM_SHVIEW_SMALLICON
+             MENUITEM "Спис&ок", FCIDM_SHVIEW_LISTVIEW
+             MENUITEM "&Подробиці", FCIDM_SHVIEW_REPORTVIEW
++            MENUITEM "Пли&тка", FCIDM_SHVIEW_TILEVIEW
+         END
+         MENUITEM "", -1, MFT_SEPARATOR
+         POPUP "&Упорядкувати значки", FCIDM_SHVIEW_ARRANGE
+@@ -752,6 +754,7 @@
      IDS_SHV_COLUMN_ATTRIBUTES "Атрибути"
      IDS_SHV_COLUMN_DISK_CAPACITY "Розмір"
      IDS_SHV_COLUMN_DISK_AVAILABLE "Вільний Розмір"
