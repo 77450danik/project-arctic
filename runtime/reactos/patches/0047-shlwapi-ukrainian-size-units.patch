@@ -1,0 +1,25 @@
+shlwapi: sizes in Ukrainian units, as Windows writes them
+
+"3,44 ГБ вільно з 5,99 ГБ", not GB: КБ, МБ, ГБ, ТБ, ПБ, ЕБ.
+---
+--- a/dll/win32/shlwapi/lang/uk-UA.rc	2026-10-06 19:55:28.846351388 +0200
++++ b/dll/win32/shlwapi/lang/uk-UA.rc	2026-10-06 19:55:28.849207874 +0200
+@@ -27,12 +27,12 @@
+     IDS_TIME_INTERVAL_MINUTES  " хв"
+     IDS_TIME_INTERVAL_SECONDS  " сек."
+ #ifdef __REACTOS__
+-    IDS_KB_FORMAT "%s KB"
+-    IDS_MB_FORMAT "%s MB"
+-    IDS_GB_FORMAT "%s GB"
+-    IDS_TB_FORMAT "%s TB"
+-    IDS_PB_FORMAT "%s PB"
+-    IDS_EB_FORMAT "%s EB"
++    IDS_KB_FORMAT "%s КБ"
++    IDS_MB_FORMAT "%s МБ"
++    IDS_GB_FORMAT "%s ГБ"
++    IDS_TB_FORMAT "%s ТБ"
++    IDS_PB_FORMAT "%s ПБ"
++    IDS_EB_FORMAT "%s ЕБ"
+     IDS_RESTRICTED "This operation has been cancelled due to restrictions on this computer. Please contact your system administrator."
+     IDS_RESTRICTIONS "Restrictions"
+     IDS_ANY_FILE "%s File"

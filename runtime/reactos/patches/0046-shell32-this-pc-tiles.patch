@@ -1,0 +1,341 @@
+shell32: This PC in tiles with the drives' capacity, as in Windows 10
+
+The folder view gets FVM_TILE (on comctl32's LV_VIEW_TILE) and draws the
+tiles: the large icon, the name, for a drive a capacity bar (red past nine
+tenths) and "X free of Y"; Windows 10's light blue when hot or selected.
+This PC opens in tiles.
+---
+diff -ruN a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
+--- a/dll/win32/shell32/CDefView.cpp	2026-10-06 19:52:08.445320772 +0200
++++ b/dll/win32/shell32/CDefView.cpp	2026-10-06 19:57:25.036710192 +0200
+@@ -316,6 +316,11 @@
+     BOOL CreateList();
+     void UpdateListColors();
+     BOOL InitList();
++    void UpdateTileView();
++    LRESULT OnCustomDraw(LPNMLVCUSTOMDRAW cd);
++    void DrawTile(LPNMLVCUSTOMDRAW cd);
++    HICON TileIcon(int iImage, PCUITEMID_CHILD pidl, int size);
++    struct { int iImage, size; HICON icon; } m_TileIcons[64] = {};
+     static INT CALLBACK ListViewCompareItems(LPARAM lParam1, LPARAM lParam2, LPARAM lpData);
+ 
+     HRESULT MapFolderColumnToListColumn(UINT FoldCol);
+@@ -376,7 +381,8 @@
+ 
+     static inline bool IsSupportedFolderViewMode(int Mode)
+     {
+-        return Mode >= FVM_FIRST && Mode <= FVM_DETAILS; // We don't support Tile nor Thumbstrip
++        // Arctic: tiles too (This PC's drives with their capacity bars); not Thumbstrip
++        return (Mode >= FVM_FIRST && Mode <= FVM_DETAILS) || Mode == FVM_TILE;
+     }
+ 
+     // *** IOleWindow methods ***
+@@ -642,6 +648,10 @@
+ 
+     _DoFolderViewCB(SFVM_VIEWRELEASE, 0, 0);
+ 
++    for (UINT i = 0; i < _countof(m_TileIcons); i++)
++        if (m_TileIcons[i].icon)
++            DestroyIcon(m_TileIcons[i].icon);
++
+     if (m_viewinfo_data.hbmBack)
+     {
+         ::DeleteObject(m_viewinfo_data.hbmBack);
+@@ -885,6 +895,9 @@
+         case FVM_LIST:
+             dwStyle |= LVS_LIST;
+             break;
++        case FVM_TILE:
++            dwStyle |= LVS_SMALLICON; /* made a tile view in UpdateTileView */
++            break;
+         default:
+             dwStyle |= LVS_LIST;
+             break;
+@@ -991,6 +1004,7 @@
+     Shell_GetImageLists(&big_icons, &small_icons);
+     m_ListView.SetImageList(big_icons, LVSIL_NORMAL);
+     m_ListView.SetImageList(small_icons, LVSIL_SMALL);
++    UpdateTileView();
+ 
+     m_hMenuArrangeModes = CreateMenu();
+ 
+@@ -2671,6 +2685,8 @@
+             break;
+         case NM_CUSTOMDRAW:
+             TRACE("-- NM_CUSTOMDRAW %p\n", this);
++            if (lpnmh->hwndFrom == m_ListView.m_hWnd)
++                return OnCustomDraw((LPNMLVCUSTOMDRAW)lpnmh);
+             return CDRF_DODEFAULT;
+         case NM_RELEASEDCAPTURE:
+             TRACE("-- NM_RELEASEDCAPTURE %p\n", this);
+@@ -3579,6 +3595,204 @@
+     return hr;
+ }
+ 
++/* Arctic: Windows 10's tiles, This PC's default: the large icon beside the
++ * name, and for a drive a capacity bar and "X free of Y" under it. The list
++ * view lays the tiles out (LV_VIEW_TILE, comctl32); they are drawn here. */
++void CDefView::UpdateTileView()
++{
++    HIMAGELIST big_icons, small_icons;
++
++    if (!m_ListView)
++        return;
++    Shell_GetImageLists(&big_icons, &small_icons);
++    if (m_FolderSettings.ViewMode == FVM_TILE)
++    {
++        HDC hdc = ::GetDC(m_ListView);
++        int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
++        ::ReleaseDC(m_ListView, hdc);
++        LVTILEVIEWINFO tvi = { sizeof(tvi) };
++        tvi.dwMask = LVTVIM_TILESIZE;
++        tvi.dwFlags = LVTVIF_FIXEDSIZE;
++        tvi.sizeTile.cx = MulDiv(256, dpi, 96);
++        tvi.sizeTile.cy = MulDiv(60, dpi, 96);
++        m_ListView.SetImageList(big_icons, LVSIL_SMALL);
++        m_ListView.SendMessage(LVM_SETTILEVIEWINFO, 0, (LPARAM)&tvi);
++        m_ListView.SendMessage(LVM_SETVIEW, LV_VIEW_TILE, 0);
++    }
++    else if (m_ListView.SendMessage(LVM_GETVIEW, 0, 0) == LV_VIEW_TILE)
++    {
++        DWORD view = LV_VIEW_LIST;
++        switch (m_FolderSettings.ViewMode)
++        {
++            case FVM_ICON:      view = LV_VIEW_ICON;      break;
++            case FVM_SMALLICON: view = LV_VIEW_SMALLICON; break;
++            case FVM_DETAILS:   view = LV_VIEW_DETAILS;   break;
++            default: break;
++        }
++        m_ListView.SetImageList(small_icons, LVSIL_SMALL);
++        m_ListView.SendMessage(LVM_SETVIEW, view, 0);
++    }
++}
++
++/* an item's icon at a tile's size, kept by its index in the system image list */
++HICON CDefView::TileIcon(int iImage, PCUITEMID_CHILD pidl, int size)
++{
++    UINT slot = (UINT)iImage % _countof(m_TileIcons);
++    if (m_TileIcons[slot].icon && m_TileIcons[slot].iImage == iImage && m_TileIcons[slot].size == size)
++        return m_TileIcons[slot].icon;
++
++    HICON icon = NULL;
++    CComPtr<IExtractIconW> pei;
++    if (m_pSFParent && SUCCEEDED(m_pSFParent->GetUIObjectOf(m_hWnd, 1, &pidl, IID_NULL_PPV_ARG(IExtractIconW, &pei))))
++    {
++        WCHAR file[MAX_PATH];
++        int index = 0;
++        UINT flags = 0;
++        if (SUCCEEDED(pei->GetIconLocation(GIL_FORSHELL, file, _countof(file), &index, &flags)))
++        {
++            HICON hBig = NULL, hLittle = NULL;
++            if (pei->Extract(file, index, &hBig, &hLittle, MAKELONG(size, 16)) == S_OK)
++            {
++                icon = hBig;
++                if (hLittle)
++                    DestroyIcon(hLittle);
++            }
++            else if (!(flags & GIL_NOTFILENAME))
++                PrivateExtractIconsW(file, index, size, size, &icon, NULL, 1, 0);
++        }
++    }
++    if (!icon)
++        return NULL;
++    if (m_TileIcons[slot].icon)
++        DestroyIcon(m_TileIcons[slot].icon);
++    m_TileIcons[slot].iImage = iImage;
++    m_TileIcons[slot].size = size;
++    m_TileIcons[slot].icon = icon;
++    return icon;
++}
++
++LRESULT CDefView::OnCustomDraw(LPNMLVCUSTOMDRAW cd)
++{
++    if (m_FolderSettings.ViewMode != FVM_TILE)
++        return CDRF_DODEFAULT;
++    switch (cd->nmcd.dwDrawStage)
++    {
++        case CDDS_PREPAINT:
++            return CDRF_NOTIFYITEMDRAW;
++        case CDDS_ITEMPREPAINT:
++            DrawTile(cd);
++            return CDRF_SKIPDEFAULT;
++    }
++    return CDRF_DODEFAULT;
++}
++
++void CDefView::DrawTile(LPNMLVCUSTOMDRAW cd)
++{
++    HDC hdc = cd->nmcd.hdc;
++    int item = (int)cd->nmcd.dwItemSpec, dpi = GetDeviceCaps(hdc, LOGPIXELSY);
++    RECT rc;
++    WCHAR name[MAX_PATH] = L"", path[MAX_PATH] = L"";
++    LVITEMW lvi = { LVIF_IMAGE | LVIF_STATE | LVIF_PARAM | LVIF_TEXT, item };
++    HIMAGELIST big_icons, small_icons;
++
++    if (!ListView_GetItemRect(m_ListView, item, &rc, LVIR_BOUNDS))
++        return;
++    lvi.stateMask = LVIS_SELECTED | LVIS_FOCUSED | LVIS_OVERLAYMASK | LVIS_CUT;
++    lvi.pszText = name;
++    lvi.cchTextMax = _countof(name);
++    if (!ListView_GetItem(m_ListView, &lvi))
++        return;
++
++    /* Windows 10's light blue: hot, selected, selected without the focus */
++    BOOL selected = (lvi.state & LVIS_SELECTED) != 0, hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
++    BOOL active = ::GetFocus() == m_ListView.m_hWnd;
++    if (selected || hot)
++    {
++        COLORREF fill = selected ? (active ? RGB(0xcc, 0xe8, 0xff) : RGB(0xd9, 0xd9, 0xd9)) : RGB(0xe5, 0xf3, 0xff);
++        COLORREF edge = selected ? (active ? RGB(0x99, 0xd1, 0xff) : RGB(0xd9, 0xd9, 0xd9)) : RGB(0xe5, 0xf3, 0xff);
++        HBRUSH brush = CreateSolidBrush(fill);
++        HPEN pen = CreatePen(PS_SOLID, 1, edge);
++        HGDIOBJ oldBrush = SelectObject(hdc, brush), oldPen = SelectObject(hdc, pen);
++        Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
++        SelectObject(hdc, oldBrush);
++        SelectObject(hdc, oldPen);
++        DeleteObject(brush);
++        DeleteObject(pen);
++    }
++
++    Shell_GetImageLists(&big_icons, &small_icons);
++    /* Windows 10's tiles have 48 pixel icons; the shell's image lists stop at 32 */
++    int cx = MulDiv(48, dpi, 96), cy = cx;
++    int pad = MulDiv(6, dpi, 96);
++    HICON icon = TileIcon(lvi.iImage, (PCUITEMID_CHILD)lvi.lParam, cx);
++    if (icon)
++        DrawIconEx(hdc, rc.left + pad, rc.top + (rc.bottom - rc.top - cy) / 2, icon, cx, cy, 0, NULL, DI_NORMAL);
++    else
++    {
++        ImageList_GetIconSize(big_icons, &cx, &cy);
++        ImageList_Draw(big_icons, lvi.iImage, hdc, rc.left + pad, rc.top + (rc.bottom - rc.top - cy) / 2,
++                       ILD_TRANSPARENT | (lvi.state & LVIS_OVERLAYMASK) | ((lvi.state & LVIS_CUT) ? ILD_BLEND50 : 0));
++    }
++
++    /* a drive: its capacity */
++    ULARGE_INTEGER avail = {}, total = {}, freeAll = {};
++    BOOL drive = FALSE;
++    STRRET str;
++    if (m_pSFParent && SUCCEEDED(m_pSFParent->GetDisplayNameOf((PCUITEMID_CHILD)lvi.lParam, SHGDN_FORPARSING, &str)) &&
++        SUCCEEDED(StrRetToBufW(&str, (PCUITEMID_CHILD)lvi.lParam, path, _countof(path))) &&
++        path[0] && path[1] == L':' && path[2] == L'\\' && !path[3])
++    {
++        UINT type = GetDriveTypeW(path);
++        drive = type != DRIVE_NO_ROOT_DIR && type != DRIVE_CDROM && GetDiskFreeSpaceExW(path, &avail, &total, &freeAll) &&
++                total.QuadPart;
++    }
++
++    HFONT font = (HFONT)m_ListView.SendMessage(WM_GETFONT, 0, 0);
++    HGDIOBJ oldFont = SelectObject(hdc, font);
++    TEXTMETRICW tm;
++    GetTextMetricsW(hdc, &tm);
++    int lineH = tm.tmHeight, barH = MulDiv(14, dpi, 96), gap = MulDiv(3, dpi, 96);
++    int left = rc.left + pad + cx + MulDiv(8, dpi, 96), right = rc.right - pad;
++    int block = drive ? lineH * 2 + barH + gap * 2 : lineH;
++    int top = rc.top + (rc.bottom - rc.top - block) / 2;
++    SetBkMode(hdc, TRANSPARENT);
++    SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
++    RECT line = { left, top, right, top + lineH };
++    DrawTextW(hdc, name, -1, &line, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
++    if (drive)
++    {
++        RECT bar = { left, line.bottom + gap, min(right, left + MulDiv(180, dpi, 96)), line.bottom + gap + barH };
++        HBRUSH back = CreateSolidBrush(RGB(0xe6, 0xe6, 0xe6)), border = CreateSolidBrush(RGB(0xbc, 0xbc, 0xbc));
++        FillRect(hdc, &bar, back);
++        FrameRect(hdc, &bar, border);
++        ULONGLONG used = total.QuadPart - freeAll.QuadPart;
++        RECT fill = bar;
++        InflateRect(&fill, -1, -1);
++        fill.right = fill.left + (LONG)((fill.right - fill.left) * (double)used / (double)total.QuadPart);
++        /* more than nine tenths used: red, as Windows warns of a full drive */
++        HBRUSH meter = CreateSolidBrush(used * 10 > total.QuadPart * 9 ? RGB(0xda, 0x26, 0x26) : RGB(0x26, 0xa0, 0xda));
++        if (fill.right > fill.left)
++            FillRect(hdc, &fill, meter);
++        DeleteObject(back);
++        DeleteObject(border);
++        DeleteObject(meter);
++
++        WCHAR freeText[64], totalText[64], format[64], text[192];
++        StrFormatByteSizeW(avail.QuadPart, freeText, _countof(freeText));
++        StrFormatByteSizeW(total.QuadPart, totalText, _countof(totalText));
++        if (!LoadStringW(shell32_hInstance, IDS_DRIVE_FREE_OF, format, _countof(format)))
++            StringCchCopyW(format, _countof(format), L"%s free of %s");
++        StringCchPrintfW(text, _countof(text), format, freeText, totalText);
++        SetTextColor(hdc, RGB(0x6d, 0x6d, 0x6d));
++        RECT line2 = { left, bar.bottom + gap, right, bar.bottom + gap + lineH };
++        DrawTextW(hdc, text, -1, &line2, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
++    }
++    SelectObject(hdc, oldFont);
++
++    if ((lvi.state & LVIS_FOCUSED) && active && !(m_ListView.SendMessage(WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS))
++        DrawFocusRect(hdc, &rc);
++}
++
+ FOLDERVIEWMODE CDefView::GetDefaultViewMode()
+ {
+     FOLDERVIEWMODE mode = ((m_FolderSettings.fFlags & FWF_DESKTOP) || !IsOS(OS_SERVERADMINUI)) ? FVM_ICON : FVM_DETAILS;
+@@ -3618,6 +3832,7 @@
+         case FVM_SMALLICON: dwStyle = LVS_SMALLICON; break;
+         case FVM_LIST:      dwStyle = LVS_LIST;      break;
+         case FVM_DETAILS:   dwStyle = LVS_REPORT;    break;
++        case FVM_TILE:      dwStyle = LVS_SMALLICON; break;
+         default:
+             FIXME("ViewMode %d not implemented\n", ViewMode);
+             dwStyle = LVS_LIST;
+@@ -3629,6 +3844,7 @@
+     /* This will not necessarily be the actual mode set above.
+        This mimics the behavior of Windows XP. */
+     m_FolderSettings.ViewMode = ViewMode;
++    UpdateTileView();
+     CheckToolbar();
+     return S_OK;
+ }
+diff -ruN a/dll/win32/shell32/folders/CDrivesFolder.cpp b/dll/win32/shell32/folders/CDrivesFolder.cpp
+--- a/dll/win32/shell32/folders/CDrivesFolder.cpp	2026-10-06 19:52:08.448998941 +0200
++++ b/dll/win32/shell32/folders/CDrivesFolder.cpp	2026-10-06 19:52:08.550962849 +0200
+@@ -1421,11 +1421,9 @@
+                 g_IsFloppyCache = 0;
+             }
+             break;
+-        #if ROSPOLICY_DRIVESFOLDER_DEFLARGEICONS
+-        case SFVM_DEFVIEWMODE:
+-            *((FOLDERVIEWMODE*)lParam) = FVM_ICON;
++        case SFVM_DEFVIEWMODE: /* Arctic: Windows 10's This PC, drives in tiles with their capacity */
++            *((FOLDERVIEWMODE*)lParam) = FVM_TILE;
+             return S_OK;
+-        #endif
+     }
+     return E_NOTIMPL;
+ }
+diff -ruN a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
+--- a/dll/win32/shell32/lang/en-US.rc	2026-10-06 19:52:08.449543593 +0200
++++ b/dll/win32/shell32/lang/en-US.rc	2026-10-06 19:52:08.551831666 +0200
+@@ -752,6 +752,7 @@
+     IDS_SHV_COLUMN_ATTRIBUTES "Attributes"
+     IDS_SHV_COLUMN_DISK_CAPACITY "Total Size"
+     IDS_SHV_COLUMN_DISK_AVAILABLE "Free Space"
++    IDS_DRIVE_FREE_OF "%s free of %s"
+     IDS_SHV_COLUMN_OWNER "Owner"
+     IDS_SHV_COLUMN_GROUP "Group"
+     IDS_SHV_COLUMN_FILENAME "Filename"
+diff -ruN a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+--- a/dll/win32/shell32/lang/uk-UA.rc	2026-10-06 19:52:08.450294826 +0200
++++ b/dll/win32/shell32/lang/uk-UA.rc	2026-10-06 19:52:08.551603159 +0200
+@@ -752,6 +752,7 @@
+     IDS_SHV_COLUMN_ATTRIBUTES "Атрибути"
+     IDS_SHV_COLUMN_DISK_CAPACITY "Розмір"
+     IDS_SHV_COLUMN_DISK_AVAILABLE "Вільний Розмір"
++    IDS_DRIVE_FREE_OF "%s вільно з %s"
+     IDS_SHV_COLUMN_OWNER "Власник"
+     IDS_SHV_COLUMN_GROUP "Група"
+     IDS_SHV_COLUMN_FILENAME "Ім'я файла"
+diff -ruN a/dll/win32/shell32/shresdef.h b/dll/win32/shell32/shresdef.h
+--- a/dll/win32/shell32/shresdef.h	2026-10-06 19:52:08.445089079 +0200
++++ b/dll/win32/shell32/shresdef.h	2026-10-06 19:52:08.551193254 +0200
+@@ -843,6 +843,7 @@
+ #define IDS_USERFOLDER_MUSIC     21790
+ #define IDS_USERFOLDER_VIDEOS    21791
+ #define IDS_USERFOLDER_DOWNLOADS 21798
++#define IDS_DRIVE_FREE_OF        21900 /* Arctic: "%s free of %s" under a drive's capacity bar */
+ 
+ #define IDI_SHELL_DELETE5 16721
+ 

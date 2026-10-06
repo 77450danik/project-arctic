@@ -1,0 +1,116 @@
+comctl32: the list view lays out tiles (LV_VIEW_TILE)
+
+Windows 10 shows This PC in tiles. The list view takes LV_VIEW_TILE and
+LVM_SETTILEVIEWINFO: a small icon view in fixed tiles, the icon centred
+upright, the label the whole rest of the tile, so a click under the name
+(on a capacity bar) hits the item. What goes in a tile its owner draws.
+---
+--- a/dll/win32/comctl32/listview.c	2026-10-06 19:50:14.368014038 +0200
++++ b/dll/win32/comctl32/listview.c	2026-10-06 19:50:22.273730744 +0200
+@@ -275,6 +275,8 @@
+   SIZE iconSize;
+   BOOL autoSpacing;
+   SIZE iconSpacing;
++  BOOL bTile;                /* LV_VIEW_TILE (Arctic): small icon view in tiles of tileSize */
++  SIZE tileSize;
+   SIZE iconStateSize;
+   POINT currIconPos;        /* this is the position next icon will be placed */
+ 
+@@ -2449,6 +2451,8 @@
+ 	    }
+ 
+ 	    Icon.top    = Box.top;
++	    if (infoPtr->bTile && infoPtr->nItemHeight > infoPtr->iconSize.cy)
++	        Icon.top += (infoPtr->nItemHeight - infoPtr->iconSize.cy) / 2;
+ 	    Icon.right  = Icon.left;
+ 	    if (infoPtr->himlSmall &&
+                 (!lpColumnInfo || lpLVItem->iSubItem == 0 ||
+@@ -2558,7 +2562,8 @@
+ 	{
+ 	    Label.left = Icon.right;
+ 	    Label.top = Box.top;
+-	    Label.right = min(Label.left + labelSize.cx, Label.right);
++	    if (!infoPtr->bTile) /* a tile is all label, the lines under the name included */
++	        Label.right = min(Label.left + labelSize.cx, Label.right);
+ 	    Label.bottom = Label.top + infoPtr->nItemHeight;
+ 	}
+   
+@@ -3037,6 +3042,8 @@
+ 
+     TRACE("uView=%d\n", infoPtr->uView);
+ 
++    if (infoPtr->bTile && infoPtr->tileSize.cx > 0)
++        return infoPtr->tileSize.cx;
+     if (infoPtr->uView == LV_VIEW_ICON)
+ 	nItemWidth = infoPtr->iconSpacing.cx;
+     else if (infoPtr->uView == LV_VIEW_DETAILS)
+@@ -3097,6 +3104,8 @@
+ 
+     TRACE("uView=%d\n", infoPtr->uView);
+ 
++    if (infoPtr->bTile && infoPtr->tileSize.cy > 0)
++        return infoPtr->tileSize.cy;
+     if (infoPtr->uView == LV_VIEW_ICON)
+ 	nItemHeight = infoPtr->iconSpacing.cy;
+     else
+@@ -9344,14 +9353,19 @@
+ {
+   HIMAGELIST himl;
+ 
+-  if (infoPtr->uView == nView) return 1;
++  if (infoPtr->uView == nView && !infoPtr->bTile) return 1;
+ 
+   if ((INT)nView < 0 || nView > LV_VIEW_MAX) return -1;
++  /* Arctic: tiles are small icon view laid out in fixed tiles (LVM_SETTILEVIEWINFO),
++   * the large icon beside the label; what goes under the label the owner draws */
+   if (nView == LV_VIEW_TILE)
+   {
+-      FIXME("View LV_VIEW_TILE unimplemented\n");
+-      return -1;
++      if (infoPtr->bTile) return 1;
++      infoPtr->bTile = TRUE;
++      nView = LV_VIEW_SMALLICON;
+   }
++  else
++      infoPtr->bTile = FALSE;
+ 
+   infoPtr->uView = nView;
+ 
+@@ -11347,6 +11361,7 @@
+         /* LVM_SETVIEW doesn't change window style bits within LVS_TYPEMASK,
+            changing style updates current view only when view bits change. */
+         map_style_view(infoPtr);
++        infoPtr->bTile = FALSE;
+         SendMessageW(infoPtr->hwndEdit, WM_KILLFOCUS, 0, 0);
+     	ShowWindow(infoPtr->hwndHeader, SW_HIDE);
+ 
+@@ -11696,7 +11711,7 @@
+     return (infoPtr->notifyFormat == NFR_UNICODE);
+ 
+   case LVM_GETVIEW:
+-    return infoPtr->uView;
++    return infoPtr->bTile ? LV_VIEW_TILE : infoPtr->uView;
+ 
+   case LVM_GETVIEWRECT:
+     return LISTVIEW_GetViewRect(infoPtr, (LPRECT)lParam);
+@@ -11844,7 +11859,19 @@
+ 
+   /* case LVM_SETTILEINFO: */
+ 
+-  /* case LVM_SETTILEVIEWINFO: */
++  case LVM_SETTILEVIEWINFO:
++  {
++    const LVTILEVIEWINFO *tvi = (const LVTILEVIEWINFO *)lParam;
++    if (!tvi || tvi->cbSize < sizeof(*tvi)) return FALSE;
++    if (tvi->dwMask & LVTVIM_TILESIZE)
++    {
++        infoPtr->tileSize = tvi->sizeTile;
++        LISTVIEW_UpdateItemSize(infoPtr);
++        if (infoPtr->bTile) LISTVIEW_Arrange(infoPtr, LVA_DEFAULT);
++        LISTVIEW_InvalidateList(infoPtr);
++    }
++    return TRUE;
++  }
+ 
+   /* case LVM_SETTILEWIDTH: */
+ 

@@ -1,0 +1,29 @@
+comctl32: an animation control without the critical section's debug info
+
+Wine, as Windows since 8, makes a critical section with no debug info:
+DebugInfo is (void *)-1. The animation control wrote its name there, at
+address 0x27, and crashed. That is the flying folders of the dialog that
+copies and moves files: dropping a file on the desktop moved nothing.
+---
+--- a/dll/win32/comctl32/animate.c
++++ b/dll/win32/comctl32/animate.c
+@@ -823,7 +823,8 @@
+     TRACE("Animate style=0x%08x, parent=%p\n", infoPtr->dwStyle, infoPtr->hwndNotify);
+ 
+     InitializeCriticalSection(&infoPtr->cs);
+-    infoPtr->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": ANIMATE_INFO*->cs");
++    if (infoPtr->cs.DebugInfo && infoPtr->cs.DebugInfo != (void *)-1)
++        infoPtr->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": ANIMATE_INFO*->cs");
+ 
+     return TRUE;
+ }
+@@ -837,7 +838,8 @@
+     /* free animate info data */
+     SetWindowLongPtrW(infoPtr->hwndSelf, 0, 0);
+ 
+-    infoPtr->cs.DebugInfo->Spare[0] = 0;
++    if (infoPtr->cs.DebugInfo && infoPtr->cs.DebugInfo != (void *)-1)
++        infoPtr->cs.DebugInfo->Spare[0] = 0;
+     DeleteCriticalSection(&infoPtr->cs);
+     heap_free(infoPtr);
+ 
