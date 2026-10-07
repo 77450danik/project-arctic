@@ -1,0 +1,196 @@
+Subject: [PATCH] With timeout 0, a held key opens the menu; the logo is put back at once.
+
+Arctic's disk install boots with "timeout: 0" so that nothing waits after
+the firmware, as with Windows' boot manager. A key held while the machine
+starts still opens the hidden menu (undo the last update, nothing saved).
+
+shim 16 writes "TPM extend operation occurred, but the event could not be
+written..." on laptops whose firmware TPM event log is full, and in quiet
+mode Limine leaves the screen alone, so the text stayed until the kernel
+drew its boot screen. bgrt_redraw() puts the firmware's picture back as
+Limine starts, before the disk scan and the config's checks, and again
+before the kernel: black around the PC maker's (BGRT) logo, the logo drawn
+over itself.
+---
+diff --git a/common/entry.s3.c b/common/entry.s3.c
+index e1556f5..0e5bb5a 100644
+--- a/common/entry.s3.c
++++ b/common/entry.s3.c
+@@ -10,6 +10,7 @@
+ #include <lib/trace.h>
+ #include <lib/bli.h>
+ #include <lib/tpm.h>
++#include <lib/bgrt.h>
+ #include <sys/e820.h>
+ #include <sys/a20.h>
+ #include <sys/idt.h>
+@@ -48,6 +49,10 @@ noreturn void uefi_entry(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
+ 
+     term_fallback();
+ 
++    /* Arctic: shim's warning about a full TPM event log off the screen
++     * before anything else, the disk scan and the config's checks included */
++    bgrt_redraw();
++
+     status = gBS->SetWatchdogTimer(0, 0x10000, 0, NULL);
+     if (status) {
+         print("WARNING: Failed to disable watchdog timer!\n");
+diff --git a/common/lib/bgrt.c b/common/lib/bgrt.c
+index 351ced5..d7e4060 100644
+--- a/common/lib/bgrt.c
++++ b/common/lib/bgrt.c
+@@ -8,6 +8,9 @@
+ 
+ #if defined (UEFI)
+ 
++#include <efi.h>
++#include <mm/pmm.h>
++
+ void bgrt_restore(uint64_t fb_width, uint64_t fb_height) {
+     if (!firmware_logo) {
+         return;
+@@ -73,6 +76,91 @@ void bgrt_restore(uint64_t fb_width, uint64_t fb_height) {
+     bgrt->header.checksum = 256 - acpi_checksum(bgrt, bgrt->header.length);
+ }
+ 
++/* Arctic: the screen as the firmware left it, black with the PC maker's
++ * logo, as Windows' boot manager puts it back. shim writes a warning on
++ * laptops whose TPM event log is full; without this it would stay on the
++ * screen until the kernel draws. The logo's own pixels are drawn over, not
++ * cleared first, so where nothing was written over it nothing changes. */
++void bgrt_redraw(void) {
++    EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
++    EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = NULL;
++
++    if (gBS->HandleProtocol(gST->ConsoleOutHandle, &gop_guid, (void **)&gop) != EFI_SUCCESS || gop == NULL) {
++        if (gBS->LocateProtocol(&gop_guid, NULL, (void **)&gop) != EFI_SUCCESS || gop == NULL) {
++            return;
++        }
++    }
++    if (gop->Mode == NULL || gop->Mode->Info == NULL) {
++        return;
++    }
++    uint32_t scr_w = gop->Mode->Info->HorizontalResolution;
++    uint32_t scr_h = gop->Mode->Info->VerticalResolution;
++
++    /* the logo, if there is one this can draw: an uncompressed 24 or 32 bit BMP */
++    struct acpi_bgrt *bgrt = acpi_get_table("BGRT", 0);
++    uint8_t *bmp = NULL;
++    uint32_t w = 0, h = 0, bpp = 0, data = 0;
++    int32_t raw_h = 0;
++    if (bgrt != NULL && bgrt->header.length >= sizeof(struct acpi_bgrt) && bgrt->version == 1
++     && bgrt->image_type == 0 && bgrt->image_address != 0 && bgrt->image_address <= UINTPTR_MAX) {
++        bmp = (uint8_t *)(uintptr_t)bgrt->image_address;
++        uint32_t dib = 0, compression = 0;
++        uint16_t bits = 0;
++        if (bmp[0] == 'B' && bmp[1] == 'M') {
++            memcpy(&data, &bmp[10], 4);
++            memcpy(&dib, &bmp[14], 4);
++        }
++        if (dib >= 40) {
++            memcpy(&w, &bmp[18], 4);
++            memcpy(&raw_h, &bmp[22], 4);
++            memcpy(&bits, &bmp[28], 2);
++            memcpy(&compression, &bmp[30], 4);
++            h = raw_h < 0 ? -(uint32_t)raw_h : (uint32_t)raw_h;
++            bpp = bits;
++        }
++        if (dib < 40 || (bpp != 24 && bpp != 32) || (compression != 0 && !(compression == 3 && bpp == 32))
++         || w == 0 || h == 0 || w > 8192 || h > 8192) {
++            bmp = NULL;
++        }
++    }
++
++    uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0; /* the logo's rectangle on the screen */
++    if (bmp != NULL) {
++        x0 = bgrt->image_offset_x < scr_w ? bgrt->image_offset_x : scr_w;
++        y0 = bgrt->image_offset_y < scr_h ? bgrt->image_offset_y : scr_h;
++        x1 = x0 + w < scr_w ? x0 + w : scr_w;
++        y1 = y0 + h < scr_h ? y0 + h : scr_h;
++    }
++
++    EFI_GRAPHICS_OUTPUT_BLT_PIXEL black = {0};
++    if (y0 > 0)
++        gop->Blt(gop, &black, EfiBltVideoFill, 0, 0, 0, 0, scr_w, y0, 0);
++    if (y1 < scr_h)
++        gop->Blt(gop, &black, EfiBltVideoFill, 0, 0, 0, y1, scr_w, scr_h - y1, 0);
++    if (y1 > y0 && x0 > 0)
++        gop->Blt(gop, &black, EfiBltVideoFill, 0, 0, 0, y0, x0, y1 - y0, 0);
++    if (y1 > y0 && x1 < scr_w)
++        gop->Blt(gop, &black, EfiBltVideoFill, 0, 0, x1, y0, scr_w - x1, y1 - y0, 0);
++    if (bmp == NULL || x1 <= x0 || y1 <= y0) {
++        return;
++    }
++
++    uint32_t cw = x1 - x0, ch = y1 - y0;
++    uint32_t stride = ((w * bpp + 31) / 32) * 4;
++    EFI_GRAPHICS_OUTPUT_BLT_PIXEL *pixels = ext_mem_alloc((uint64_t)cw * ch * sizeof(*pixels));
++    for (uint32_t y = 0; y < ch; y++) {
++        const uint8_t *row = bmp + data + (size_t)(raw_h < 0 ? y : h - 1 - y) * stride;
++        for (uint32_t x = 0; x < cw; x++) {
++            const uint8_t *p = row + (size_t)x * (bpp / 8);
++            pixels[y * cw + x].Blue = p[0];
++            pixels[y * cw + x].Green = p[1];
++            pixels[y * cw + x].Red = p[2];
++        }
++    }
++    gop->Blt(gop, pixels, EfiBltBufferToVideo, 0, 0, x0, y0, cw, ch, 0);
++    pmm_free(pixels, (uint64_t)cw * ch * sizeof(*pixels));
++}
++
+ #else
+ 
+ void bgrt_restore(uint64_t fb_width, uint64_t fb_height) {
+diff --git a/common/lib/bgrt.h b/common/lib/bgrt.h
+index 5bcc4d3..016474b 100644
+--- a/common/lib/bgrt.h
++++ b/common/lib/bgrt.h
+@@ -3,5 +3,8 @@
+ #include <stdint.h>
+ 
+ void bgrt_restore(uint64_t fb_width, uint64_t fb_height);
++#if defined (UEFI)
++void bgrt_redraw(void);
++#endif
+ 
+ #endif
+diff --git a/common/menu.c b/common/menu.c
+index fc8571a..5505092 100644
+--- a/common/menu.c
++++ b/common/menu.c
+@@ -4,6 +4,9 @@
+ #include <stdnoreturn.h>
+ #include <config.h>
+ #include <menu.h>
++
++/* how long a key held since power-on has to show up */
++#define ARCTIC_HELD_KEY_MS 30
+ #include <lib/bli.h>
+ #include <lib/print.h>
+ #include <lib/misc.h>
+@@ -16,6 +19,7 @@
+ #include <lib/gterm.h>
+ #include <lib/getchar.h>
+ #include <lib/uri.h>
++#include <lib/bgrt.h>
+ #include <mm/pmm.h>
+ #include <drivers/vbe.h>
+ #include <drivers/vga_textmode.h>
+@@ -2000,7 +2004,16 @@ noreturn void _menu(bool first_run) {
+             // Selecting a directory is not an error; it just cannot be booted.
+             skip_timeout = true;
+         } else if (!timeout_ms) {
+-            goto autoboot;
++            /* Arctic: no wait at all, as Windows' boot manager; a key held
++             * while the machine starts still opens the hidden menu */
++            if (quiet && pit_sleep_ms_and_quit_on_keypress(ARCTIC_HELD_KEY_MS)) {
++                skip_timeout = true;
++            } else {
++#if defined (UEFI)
++                bgrt_redraw();
++#endif
++                goto autoboot;
++            }
+         }
+     }
+ 

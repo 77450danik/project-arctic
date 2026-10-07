@@ -33,6 +33,8 @@
 #include "shlobj.h"
 #include "knownfolders.h"
 #include "dwmapi.h"
+#include "winternl.h"
+#include "powrprof.h"
 #include "wine/arctic_dwm.h"
 #include "wine/debug.h"
 
@@ -578,6 +580,47 @@ static BOOL update_ready(void)
     return GetFileAttributesW( path ) != INVALID_FILE_ATTRIBUTES;
 }
 
+/* Power Options' "Show in Power menu" (FlyoutMenuSettings, as Windows keeps them) */
+static BOOL flyout_shows( const WCHAR *name, DWORD fallback )
+{
+    DWORD value = fallback, size = sizeof(value);
+
+    RegGetValueW( HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FlyoutMenuSettings", name,
+                  RRF_RT_REG_DWORD, NULL, &value, &size );
+    return value != 0;
+}
+
+/* "Режим глибокого сну", once msconfig turned hibernation on (HibernateEnabled,
+ * as Windows keeps it; docs/hibernation.md) and Power Options show it */
+static BOOL hibernate_enabled(void)
+{
+    DWORD value = 0, size = sizeof(value);
+
+    return !RegGetValueW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power", L"HibernateEnabled",
+                          RRF_RT_REG_DWORD, NULL, &value, &size ) && value && flyout_shows( L"ShowHibernateOption", 1 );
+}
+
+/* "Сон" where the machine can sleep (docs/power.md) */
+static BOOL sleep_enabled(void)
+{
+    return IsPwrSuspendAllowed() && flyout_shows( L"ShowSleepOption", 1 );
+}
+
+static DWORD WINAPI sleep_thread( void *arg )
+{
+    SetSuspendState( FALSE, FALSE, FALSE );
+    return 0;
+}
+
+/* The machine sleeps inside SetSuspendState and the call returns when it
+ * wakes: on a thread of its own, the menu keeps answering meanwhile */
+static DWORD WINAPI hibernate_thread( void *arg )
+{
+    if (!SetSuspendState( TRUE, FALSE, FALSE ) && GetLastError() == ERROR_BUSY)
+        MessageBoxW( NULL, load_string( IDS_HIBERNATE_REFUSED ), load_string( IDS_HIBERNATE ), MB_ICONWARNING );
+    return 0;
+}
+
 static void place_menu( int index );
 
 static void do_right( int index )
@@ -787,8 +830,11 @@ static void power_menu(void)
     POINT pt = { rect.right, rect.top };
     UINT cmd;
 
-    AppendMenuW( popup, MF_STRING, 1, load_string( update_ready() ? IDS_UPDATE_AND_RESTART : IDS_RESTART ) );
+    /* Windows 10's order: Sleep, Hibernate, Shut down, Restart */
+    if (sleep_enabled()) AppendMenuW( popup, MF_STRING, 4, load_string( IDS_SLEEP ) );
+    if (hibernate_enabled()) AppendMenuW( popup, MF_STRING, 3, load_string( IDS_HIBERNATE ) );
     AppendMenuW( popup, MF_STRING, 2, load_string( IDS_SHUT_DOWN ) );
+    AppendMenuW( popup, MF_STRING, 1, load_string( update_ready() ? IDS_UPDATE_AND_RESTART : IDS_RESTART ) );
     ClientToScreen( menu, &pt );
     in_popup = TRUE;
     cmd = TrackPopupMenuEx( popup, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y,
@@ -799,7 +845,12 @@ static void power_menu(void)
     menu_hide();
     /* winlogon ends the session, arctic-init restarts and the next start
      * installs a waiting update */
-    if (cmd == 1) ExitWindowsEx( EWX_REBOOT, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED );
+    if (cmd == 3 || cmd == 4)
+    {
+        HANDLE thread = CreateThread( NULL, 0, cmd == 3 ? hibernate_thread : sleep_thread, NULL, 0, NULL );
+        if (thread) CloseHandle( thread );
+    }
+    else if (cmd == 1) ExitWindowsEx( EWX_REBOOT, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED );
     else ExitWindowsEx( EWX_SHUTDOWN | EWX_POWEROFF, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED );
 }
 

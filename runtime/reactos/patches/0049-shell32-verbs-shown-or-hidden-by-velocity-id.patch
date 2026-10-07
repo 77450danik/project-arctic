@@ -1,0 +1,71 @@
+diff --git a/dll/win32/shell32/CDefaultContextMenu.cpp b/dll/win32/shell32/CDefaultContextMenu.cpp
+--- a/dll/win32/shell32/CDefaultContextMenu.cpp
++++ b/dll/win32/shell32/CDefaultContextMenu.cpp
+@@ -706,6 +706,55 @@
+     return cIds;
+ }
+ 
++/* Arctic: whether the program of a verb's command is on the disk, as
++ * CreateProcess would find it */
++static BOOL
++VerbProgramExists(HKEY hkClass, PCWSTR pszVerb)
++{
++    WCHAR szKey[MAX_PATH], szCommand[MAX_PATH * 2], szProgram[MAX_PATH], szFound[MAX_PATH];
++    DWORD cb = sizeof(szCommand);
++
++    if (FAILED(StringCchPrintfW(szKey, _countof(szKey), L"shell\\%s\\command", pszVerb)) ||
++        RegGetValueW(hkClass, szKey, NULL, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
++                     NULL, szCommand, &cb) != ERROR_SUCCESS)
++    {
++        return FALSE;
++    }
++    PathRemoveArgsW(szCommand);
++    PathUnquoteSpacesW(szCommand);
++    if (!ExpandEnvironmentStringsW(szCommand, szProgram, _countof(szProgram)) || !*szProgram)
++        return FALSE;
++    if (!PathIsFileSpecW(szProgram))
++        return PathFileExistsW(szProgram) && !PathIsDirectoryW(szProgram);
++    return SearchPathW(NULL, szProgram, L".exe", _countof(szFound), szFound, NULL) != 0;
++}
++
++/* Arctic: a feature of Windows 10's "velocity" switches, as far as context menu
++ * verbs use it (0x639bc8: "Open PowerShell window here" instead of "Open
++ * command window here"). A feature is on while a verb of the class that shows
++ * with it (ShowBasedOnVelocityId) has its program: without PowerShell the
++ * command window comes back. */
++static BOOL
++IsVelocityFeatureOn(HKEY hkClass, DWORD dwId)
++{
++    WCHAR szVerb[MAX_VERB];
++    HKEY hkShell;
++    BOOL bOn = FALSE;
++
++    if (RegOpenKeyExW(hkClass, L"shell", 0, KEY_READ, &hkShell) != ERROR_SUCCESS)
++        return FALSE;
++    for (DWORD i = 0; !bOn; ++i)
++    {
++        DWORD cch = _countof(szVerb);
++        if (RegEnumKeyExW(hkShell, i, szVerb, &cch, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
++            break;
++        if (RegGetDword(hkShell, szVerb, L"ShowBasedOnVelocityId", 0) == dwId)
++            bOn = VerbProgramExists(hkClass, szVerb);
++    }
++    RegCloseKey(hkShell);
++    return bOn;
++}
++
+ UINT
+ CDefaultContextMenu::AddStaticContextMenusToMenu(
+     HMENU hMenu,
+@@ -807,6 +856,11 @@
+             if (DWORD dwRest = (hide ? 0 : RegGetDword(hkVerb, NULL, L"SuppressionPolicy", 0)))
+                 hide = SHRestricted((RESTRICTIONS)dwRest);
+ 
++            if (DWORD dwId = (hide ? 0 : RegGetDword(hkVerb, NULL, L"ShowBasedOnVelocityId", 0)))
++                hide = !IsVelocityFeatureOn(info.hkClass, dwId);
++            if (DWORD dwId = (hide ? 0 : RegGetDword(hkVerb, NULL, L"HideBasedOnVelocityId", 0)))
++                hide = IsVelocityFeatureOn(info.hkClass, dwId);
++
+             if (RegValueExists(hkVerb, L"NeverDefault"))
+                 fState &= ~MFS_DEFAULT;
+ 

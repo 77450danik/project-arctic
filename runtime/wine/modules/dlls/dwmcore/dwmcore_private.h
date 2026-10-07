@@ -103,6 +103,7 @@ int  kms_open(void);                  /* 0 on success */
 bool kms_probe(void);                 /* rereads the connectors; true if monitors came or went */
 bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool test );
 void kms_flush( struct kms_output *output );  /* after drawing: shadow-buffered drivers copy only on this */
+bool kms_set_power( bool on );        /* the monitors lit or dark (DPMS) */
 int  kms_hotplug_socket(void);        /* kernel uevents, -1 if none */
 enum kms_event
 {

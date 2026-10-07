@@ -98,6 +98,7 @@ static struct frect            snap_from, snap_to;  /* it grows from the pointer
 static uint64_t                snap_start;   /* µs, 0: not shown */
 static bool                    snap_leaving; /* it fades away */
 static bool                    vrr_allowed = true;  /* the Windows setting */
+static bool                    monitors_off;        /* the power policy turned the display off */
 static uint32_t                vrr_off[DWM_MAX_OUTPUTS];  /* connectors it is turned off for */
 static uint32_t                vrr_off_count;
 static bool                    hw_cursor;    /* the card has a cursor plane for directly shown windows */
@@ -1640,6 +1641,8 @@ static void repaint(void)
     bool composed = false, gpu = gl_active();
 
     animating = update_animations( now );
+    /* a dark display shows nothing: the frames wait for it to light again */
+    if (monitors_off) return;
     wl_list_for_each( output, &outputs, link )
     {
         struct kms_output *o = output->kms;
@@ -3197,6 +3200,12 @@ static NTSTATUS dwm_set_options( void *args )
     vrr_allowed = !!params->vrr;
     vrr_off_count = min( params->vrr_off_count, ARRAY_SIZE(vrr_off) );
     memcpy( vrr_off, params->vrr_off, vrr_off_count * sizeof(*vrr_off) );
+    if (monitors_off != !!params->monitors_off)
+    {
+        monitors_off = !!params->monitors_off;
+        MESSAGE( "dwm: display %s\n", monitors_off ? "turned off" : "turned on" );
+        kms_set_power( !monitors_off );
+    }
     damage();
     return STATUS_SUCCESS;
 }

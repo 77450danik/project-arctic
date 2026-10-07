@@ -1,0 +1,12 @@
+MODULE    = batmeter.dll
+IMPORTS   = uuid dwmapi rpcrt4 powrprof shell32 user32 gdi32 advapi32 ole32
+
+VER_FILEDESCRIPTION_STR = "Battery Meter Helper DLL"
+
+SOURCES = \
+	batmeter.rc \
+	flyout.c \
+	glyph.c \
+	main.c \
+	power.c \
+	tray.c

@@ -47,7 +47,7 @@ static BOOL CALLBACK find_class_proc( HWND hwnd, LPARAM param )
     return FALSE;
 }
 
-static HWND find_toplevel( const WCHAR *class )
+HWND find_toplevel( const WCHAR *class )
 {
     struct find_class find = { class, 0 };
 

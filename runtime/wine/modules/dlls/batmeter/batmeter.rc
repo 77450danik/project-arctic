@@ -1,0 +1,124 @@
+/*
+ * Battery icon of the notification area: resources
+ *
+ * The Ukrainian texts are Windows 10's own (batmeter.dll.mui, stobject.dll.mui,
+ * BatteryFlyoutExperience in Windows.UI.PCShell.uk-UA.pri), with their
+ * no-break spaces; they are FormatMessage strings (%1!u!, %n, %%).
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "batmeter.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TIP_AC                 "Plugged in"
+    IDS_TIP_FULL_IN_HOURS      "%2!u! hr %1!u! min until fully charged"
+    IDS_TIP_FULL_IN_MINUTES    "%1!u! min until fully charged"
+    IDS_TIP_CHARGING           "%1!u!%% available (plugged in)"
+    IDS_TIP_AC_PERCENT         "%1!u!%% available (plugged in)"
+    IDS_TIP_FULL               "Fully charged (100%%)"
+    IDS_TIP_NO_BATTERY         "No battery is detected"
+    IDS_TIP_AC_ONLY            "Plugged in"
+    IDS_TIP_HOURS_LEFT         "%3!u! hr %2!u! min (%1!u!%%) remaining"
+    IDS_TIP_MINUTES_LEFT       "%2!u! min (%1!u!%%) remaining"
+    IDS_TIP_PERCENT_LEFT       "%1!u!%% remaining"
+    IDS_TIP_UNKNOWN            "Unknown"
+    IDS_TIP_SAVER_HOURS        "%3!u! hr %2!u! min (%1!u!%%) remaining\nBattery saver on"
+    IDS_TIP_SAVER_MINUTES      "%2!u! min (%1!u!%%) remaining\nBattery saver on"
+    IDS_TIP_SAVER_PERCENT      "%1!u!%% remaining\nBattery saver on"
+    IDS_MENU_POWER_OPTIONS     "Power Options"
+    IDS_MENU_MOBILITY_CENTER   "Windows Mobility Center"
+    IDS_LOW_TITLE              "Battery is low"
+    IDS_LOW_TEXT               "You might want to plug in your PC."
+    IDS_RESERVE_TITLE          "Your battery is running low"
+    IDS_RESERVE_TEXT           "Plug in your PC."
+    IDS_BATTERY_METER          "Battery Meter"
+    IDS_ONE_MINUTE             "1 minute "
+    IDS_ONE_HOUR               "1 hour "
+    IDS_ONE_DAY                "1 day "
+    IDS_MINUTES                "%1!u! minutes "
+    IDS_HOURS                  "%1!u! hours "
+    IDS_DAYS                   "%1!u! days "
+    IDS_LEFT                   "%1!s!%2!s!remaining"
+    IDS_FULLY_CHARGED          "Fully charged"
+    IDS_PLUGGED_IN             "Plugged in"
+    IDS_UNTIL_FULL             "%1!s!%2!s!until fully charged"
+    IDS_SETTINGS_LINK          "Battery settings"
+    IDS_BEST_PERFORMANCE       "Best performance"
+    IDS_BEST_BATTERY           "Best battery life"
+    IDS_MODE_DC                "Power mode (on battery): "
+    IDS_BETTER_PERFORMANCE     "Better performance"
+    IDS_BETTER_BATTERY         "Better battery"
+    IDS_BATTERY_SAVER          "Battery saver"
+    IDS_RECOMMENDED            "Recommended"
+    IDS_MODE_AC                "Power mode (plugged in): "
+    IDS_BATTERY_MISSING        "Battery %1!u!: Not present"
+    IDS_BATTERY_PERCENT        "Battery %1!u!: %2!u!%%"
+    IDS_BATTERY_FULL           "Battery %1!u!: %2!u!%%, fully charged"
+    IDS_BATTERY_IN_USE         "Battery %1!u!: %2!u!%%, in use"
+    IDS_PERCENT                "%1!u!%%"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TIP_AC                 "Підключено до електромережі"
+    IDS_TIP_FULL_IN_HOURS      "%2!u! год. %1!u! хв. до повного зарядження"
+    IDS_TIP_FULL_IN_MINUTES    "%1!u! хв. до повного зарядження"
+    IDS_TIP_CHARGING           "%1!u!%% доступно (підключено до електромережі)"
+    IDS_TIP_AC_PERCENT         "%1!u!%% доступно (підключено до електромережі)"
+    IDS_TIP_FULL               "Повністю заряджено (100 %%)"
+    IDS_TIP_NO_BATTERY         "Акумулятор не знайдено"
+    IDS_TIP_AC_ONLY            "Підключено до електромережі"
+    IDS_TIP_HOURS_LEFT         "%3!u! год. %2!u! хв. (%1!u!%%) залишилось"
+    IDS_TIP_MINUTES_LEFT       "%2!u! хв. (%1!u!%%) залишилось"
+    IDS_TIP_PERCENT_LEFT       "Залишилось %1!u!%%"
+    IDS_TIP_UNKNOWN            "Немає даних"
+    IDS_TIP_SAVER_HOURS        "Залишилося: %3!u! год. %2!u! хв. (%1!u!%%)\nЕкономію заряду ввімкнуто"
+    IDS_TIP_SAVER_MINUTES      "Залишилося: %2!u! хв. (%1!u!%%)\nЕкономію заряду ввімкнуто"
+    IDS_TIP_SAVER_PERCENT      "Залишилося: %1!u!%%\nЕкономію заряду ввімкнуто"
+    IDS_MENU_POWER_OPTIONS     "Електроживлення"
+    IDS_MENU_MOBILITY_CENTER   "Центр підтримки портативних ПК"
+    IDS_LOW_TITLE              "Низький заряд акумулятора."
+    IDS_LOW_TEXT               "Може знадобитися підключеняя ПК до електромережі."
+    IDS_RESERVE_TITLE          "Акумулятор майже розряджено"
+    IDS_RESERVE_TEXT           "Підключіть ПК до електромережі."
+    IDS_BATTERY_METER          "Індикатор акумулятора"
+    IDS_ONE_MINUTE             "1 хвилина "
+    IDS_ONE_HOUR               "1 година "
+    IDS_ONE_DAY                "1 день "
+    IDS_MINUTES                "%1!u! хв. "
+    IDS_HOURS                  "%1!u! год. "
+    IDS_DAYS                   "%1!u! дн. "
+    IDS_LEFT                   "Залишилось: %1!s!%2!s!%n"
+    IDS_FULLY_CHARGED          "Повністю заряджено"
+    IDS_PLUGGED_IN             "Підключено до електромережі"
+    IDS_UNTIL_FULL             "%1!s!%2!s!%nдо повного заряду"
+    IDS_SETTINGS_LINK          "Параметри живлення від акумулятора"
+    IDS_BEST_PERFORMANCE       "Найвища продуктивність"
+    IDS_BEST_BATTERY           "Найкращий час роботи акумулятора"
+    IDS_MODE_DC                "Режим живлення (з живленням від акумулятора): "
+    IDS_BETTER_PERFORMANCE     "Висока продуктивність"
+    IDS_BETTER_BATTERY         "Вдосконалена батарея"
+    IDS_BATTERY_SAVER          "Економія заряду"
+    IDS_RECOMMENDED            "Рекомендовано"
+    IDS_MODE_AC                "Режим живлення (з живленням від електромережі): "
+    IDS_BATTERY_MISSING        "Батарея %1!u!: відсутня"
+    IDS_BATTERY_PERCENT        "Акумулятор %1!u!: %2!u!%%"
+    IDS_BATTERY_FULL           "Батарея %1!u!: %2!u!%%, повністю заряджено"
+    IDS_BATTERY_IN_USE         "Батарея %1!u!: %2!u!%%, використовується"
+    IDS_PERCENT                "%1!u!%%"
+}

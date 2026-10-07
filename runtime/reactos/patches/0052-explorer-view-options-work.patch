@@ -1,0 +1,1245 @@
+diff --git a/dll/win32/browseui/internettoolbar.cpp b/dll/win32/browseui/internettoolbar.cpp
+--- a/dll/win32/browseui/internettoolbar.cpp
++++ b/dll/win32/browseui/internettoolbar.cpp
+@@ -25,6 +25,9 @@
+ 
+ #include "precomp.h"
+ 
++/* Arctic: a private command of CGID_PrivCITCommands (shellbrowser.cpp has it too) */
++#define ITID_ARCTIC_MENUWINDOW 0x7F01
++
+ #if 1
+ 
+ interface IAugmentedShellFolder : public IShellFolder
+@@ -1155,6 +1158,20 @@
+     ::ShowWindow(bandInfo.hwndChild, (bandInfo.fStyle & RBBS_HIDDEN) ? SW_HIDE : SW_SHOW); // CORE-17236
+     SendMessage(fMainReBar, RB_SETBANDINFOW, index, (LPARAM)&bandInfo);
+ 
++    /* Arctic: the band itself learns it, as at ShowDW: a menu band shown later
++     * (Alt, "Always show menus" off) had been told hidden when the window
++     * opened, and its menus did not open on a click */
++    int id;
++    IUnknown *pUnk;
++    for (UINT i = 0; SUCCEEDED(EnumBands(i, &id, &pUnk)); ++i)
++    {
++        if (pUnk && id == BandID)
++        {
++            IUnknown_ShowDW(pUnk, !(bandInfo.fStyle & RBBS_HIDDEN));
++            break;
++        }
++    }
++
+     ReserveBorderSpace(0);
+     SetDirty();
+     return S_OK;
+@@ -1235,6 +1252,13 @@
+                 return ToggleBandVisibility(ITBBID_TOOLSBAND);
+             case ITID_MENUBANDSHOWN:
+                 return ToggleBandVisibility(ITBBID_MENUBAND);
++            case ITID_ARCTIC_MENUWINDOW:
++                /* Arctic: the menu band's window, for the browser's Alt keys */
++                if (!pvaOut)
++                    return E_INVALIDARG;
++                V_VT(pvaOut) = VT_I8;
++                V_I8(pvaOut) = (LONGLONG)(LONG_PTR)fMenuBandWindow;
++                return S_OK;
+             case ITID_ADDRESSBANDSHOWN:
+                 return ToggleBandVisibility(ITBBID_ADDRESSBAND);
+             case ITID_LINKSBANDSHOWN:
+diff --git a/dll/win32/browseui/regtreeoptions.cpp b/dll/win32/browseui/regtreeoptions.cpp
+--- a/dll/win32/browseui/regtreeoptions.cpp
++++ b/dll/win32/browseui/regtreeoptions.cpp
+@@ -528,6 +528,18 @@
+     return S_OK;
+ }
+ 
++/* Arctic: whether an item is checked by default (its DefaultValue is its CheckedValue) */
++static BOOL IsCheckedByDefault(HKEY hKey)
++{
++    DWORD dwDefault = 0, dwChecked = 0, cb = sizeof(DWORD);
++    if (SHRegGetValueW(hKey, NULL, L"DefaultValue", SRRF_RT_DWORD, NULL, &dwDefault, &cb) != ERROR_SUCCESS)
++        return FALSE;
++    cb = sizeof(DWORD);
++    if (SHRegGetValueW(hKey, NULL, L"CheckedValue", SRRF_RT_DWORD, NULL, &dwChecked, &cb) != ERROR_SUCCESS)
++        return FALSE;
++    return dwDefault == dwChecked;
++}
++
+ HRESULT STDMETHODCALLTYPE CRegTreeOptions::ToggleItem(HTREEITEM hTI)
+ {
+     TVITEM tvi;
+@@ -541,6 +553,19 @@
+ 
+     if (tvi.iImage <= max(STATE_CHECKOFF, STATE_CHECKON))
+     {
++        /* Arctic: as in Windows, an item with WarningIfNotDefault ("Hide protected
++         * operating system files") asks before it leaves its default */
++        WCHAR szWarning[1024], szTitle[MAX_PATH] = L"";
++        HKEY hKey = (HKEY)tvi.lParam;
++        BOOL bNewChecked = (tvi.iImage ^ 1) == STATE_CHECKON;
++        if (hKey && SUCCEEDED(SHLoadRegUIStringW(hKey, L"WarningIfNotDefault", szWarning, _countof(szWarning))) &&
++            *szWarning && bNewChecked != IsCheckedByDefault(hKey))
++        {
++            HWND hSheet = GetParent(GetParent(m_hTree));
++            GetWindowTextW(hSheet, szTitle, _countof(szTitle));
++            if (MessageBoxW(GetParent(m_hTree), szWarning, szTitle, MB_YESNO | MB_ICONWARNING) != IDYES)
++                return S_FALSE;
++        }
+         tvi.iImage ^= 1;
+     }
+     else
+diff --git a/dll/win32/browseui/settings.cpp b/dll/win32/browseui/settings.cpp
+--- a/dll/win32/browseui/settings.cpp
++++ b/dll/win32/browseui/settings.cpp
+@@ -11,7 +11,8 @@
+ 
+ void ShellSettings::Save()
+ {
+-    SHRegSetUSValueW(L"Software\\Microsoft\\Internet Explorer\\Main", L"StatusBarOther",
++    /* Arctic: where Windows 10's Folder Options keep it ("Show status bar") */
++    SHRegSetUSValueW(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"ShowStatusBar",
+                      REG_DWORD, &fStatusBarVisible, sizeof(fStatusBarVisible), SHREGSET_FORCE_HKCU);
+ 
+     SHRegSetUSValueW(L"Software\\Microsoft\\Internet Explorer\\Main", L"ShowGoButton",
+@@ -27,8 +28,8 @@
+ 
+ void ShellSettings::Load()
+ {
+-    fStatusBarVisible = SHRegGetBoolUSValueW(L"Software\\Microsoft\\Internet Explorer\\Main",
+-                                             L"StatusBarOther", FALSE, TRUE);
++    fStatusBarVisible = SHRegGetBoolUSValueW(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                                             L"ShowStatusBar", FALSE, TRUE);
+ 
+     fShowGoButton = CAddressBand::ShouldShowGoButton();
+ 
+diff --git a/dll/win32/browseui/shellbrowser.cpp b/dll/win32/browseui/shellbrowser.cpp
+--- a/dll/win32/browseui/shellbrowser.cpp
++++ b/dll/win32/browseui/shellbrowser.cpp
+@@ -20,6 +20,16 @@
+ 
+ #include "precomp.h"
+ 
++/* Arctic: Folder Options' "Always show menus" (Explorer\Advanced\AlwaysShowMenus,
++ * off by default as in Windows 10) */
++static BOOL MenusAlwaysShown()
++{
++    DWORD dwShow = FALSE, cb = sizeof(dwShow);
++    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                L"AlwaysShowMenus", NULL, &dwShow, &cb);
++    return dwShow != 0;
++}
++
+ #include <shellapi.h>
+ #include <htiframe.h>
+ #include <strsafe.h>
+@@ -317,6 +327,17 @@
+     SBFOLDERSETTINGS m_deffoldersettings;
+     DWORD m_BrowserSvcFlags;
+     bool m_Destroyed;
++    /* Arctic: Folder Options' "Always show menus" off (Windows 10's default):
++     * the menu bar is hidden and Alt or F10 shows it for a while */
++    BOOL m_bAltAlone = FALSE;
++    BOOL m_bMenuShownByKey = FALSE;
++    BOOL _IsMenuBandShown();
++    void _ShowMenuBand(BOOL bShow);
++    void _HideKeyMenu();
++    HWND _GetMenuToolbar();
++    void _OpenMenuItem(int index);
++    int _FindMenuMnemonic(WCHAR ch);
++    void _ShowKeyMenu();
+     BYTE m_NonFullscreenState;
+ 
+     enum { FSF_MBAR = 0x1, FSF_SBAR = 0x2, FSF_RESIZE = 0x4, FSF_MAXIMIZED = 0x8 };
+@@ -820,6 +841,9 @@
+     if (FAILED_UNEXPECTEDLY(hResult))
+         return hResult;
+ 
++    /* Arctic: the menu bar follows "Always show menus", not the saved toolbars */
++    _ShowMenuBand(MenusAlwaysShown());
++
+     fToolbarProxy.Initialize(m_hWnd, clientBar);
+ 
+     // create status bar
+@@ -3155,8 +3179,202 @@
+     return E_NOTIMPL;
+ }
+ 
++BOOL CShellBrowser::_IsMenuBandShown()
++{
++    OLECMD cmd = { ITID_MENUBANDSHOWN, 0 };
++    if (FAILED(IUnknown_QueryStatus(fClientBars[BIInternetToolbar].clientBar, CGID_PrivCITCommands, 1, &cmd, NULL)))
++        return TRUE;
++    return (cmd.cmdf & OLECMDF_LATCHED) != 0;
++}
++
++void CShellBrowser::_ShowMenuBand(BOOL bShow)
++{
++    if (!fClientBars[BIInternetToolbar].clientBar || !bShow == !_IsMenuBandShown())
++        return;
++    IUnknown_Exec(fClientBars[BIInternetToolbar].clientBar, CGID_PrivCITCommands, ITID_MENUBANDSHOWN, 0, NULL, NULL);
++}
++
++/* the toolbar of the menu band: its items are the menus */
++#define ITID_ARCTIC_MENUWINDOW 0x7F01 /* internettoolbar.cpp: the menu band's window */
++HWND CShellBrowser::_GetMenuToolbar()
++{
++    VARIANT var;
++    VariantInit(&var);
++    if (FAILED(IUnknown_Exec(fClientBars[BIInternetToolbar].clientBar, CGID_PrivCITCommands,
++                             ITID_ARCTIC_MENUWINDOW, 0, NULL, &var)) || V_VT(&var) != VT_I8)
++    {
++        return NULL;
++    }
++    HWND hwndMenu = (HWND)(LONG_PTR)V_I8(&var);
++    if (!hwndMenu)
++        return NULL;
++    WCHAR szClass[64];
++    if (GetClassNameW(hwndMenu, szClass, _countof(szClass)) && !wcscmp(szClass, TOOLBARCLASSNAMEW))
++        return hwndMenu;
++    return ::FindWindowExW(hwndMenu, NULL, TOOLBARCLASSNAMEW, NULL);
++}
++
++/* opens a menu as a click on it does */
++void CShellBrowser::_OpenMenuItem(int index)
++{
++    /* the menu band opens a menu on the toolbar's TBN_DROPDOWN, which the rebar
++     * passes up to the toolbars and they to the band (CMenuToolbarBase::ProcessClick) */
++    HWND hwndTb = _GetMenuToolbar();
++    TBBUTTON tb;
++    if (!hwndTb || index < 0 || !::SendMessageW(hwndTb, TB_GETBUTTON, index, (LPARAM)&tb))
++        return;
++    NMTOOLBARW nmtb = {};
++    nmtb.hdr.hwndFrom = hwndTb;
++    nmtb.hdr.idFrom = ::GetDlgCtrlID(hwndTb);
++    nmtb.hdr.code = TBN_DROPDOWN;
++    nmtb.iItem = tb.idCommand;
++    ::SendMessageW(hwndTb, TB_SETHOTITEM, index, 0);
++    ::SendMessageW(::GetParent(hwndTb), WM_NOTIFY, nmtb.hdr.idFrom, (LPARAM)&nmtb);
++}
++
++/* the menu whose underlined letter is ch, or -1 */
++int CShellBrowser::_FindMenuMnemonic(WCHAR ch)
++{
++    HWND hwndTb = _GetMenuToolbar();
++    if (!hwndTb)
++        return -1;
++    int count = (int)::SendMessageW(hwndTb, TB_BUTTONCOUNT, 0, 0);
++    for (int i = 0; i < count; i++)
++    {
++        TBBUTTON tb;
++        WCHAR szText[128];
++        if (!::SendMessageW(hwndTb, TB_GETBUTTON, i, (LPARAM)&tb) ||
++            ::SendMessageW(hwndTb, TB_GETBUTTONTEXTW, tb.idCommand, (LPARAM)szText) <= 0)
++        {
++            continue;
++        }
++        PCWSTR amp = wcschr(szText, L'&');
++        if (amp && amp[1] && towupper(amp[1]) == towupper(ch))
++            return i;
++    }
++    return -1;
++}
++
++/* Alt or F10: the menu bar comes, its first menu marked, as in Windows */
++void CShellBrowser::_ShowKeyMenu()
++{
++    _ShowMenuBand(TRUE);
++    m_bMenuShownByKey = TRUE;
++    if (HWND hwndTb = _GetMenuToolbar())
++        ::SendMessageW(hwndTb, TB_SETHOTITEM, 0, 0);
++}
++
++void CShellBrowser::_HideKeyMenu()
++{
++    if (!m_bMenuShownByKey)
++        return;
++    m_bMenuShownByKey = FALSE;
++    if (HWND hwndTb = _GetMenuToolbar())
++        ::SendMessageW(hwndTb, TB_SETHOTITEM, (WPARAM)-1, 0);
++    if (!MenusAlwaysShown())
++        _ShowMenuBand(FALSE);
++}
++
+ HRESULT STDMETHODCALLTYPE CShellBrowser::v_MayTranslateAccelerator(MSG *pmsg)
+ {
++    /* Arctic: with the menu bar hidden, Alt alone or F10 shows it, Alt with a
++     * letter shows it and opens that menu (the menu band takes the key next);
++     * Esc, Alt again, a click outside it or a command hide it again */
++    /* the menu bar's keys work the same when it is always shown, it only does
++     * not hide then */
++    {
++        switch (pmsg->message)
++        {
++            case WM_SYSKEYDOWN:
++                if (pmsg->wParam == VK_MENU)
++                {
++                    if (!(pmsg->lParam & 0x40000000))
++                        m_bAltAlone = TRUE;
++                }
++                else
++                {
++                    m_bAltAlone = FALSE;
++                    if (pmsg->wParam == VK_F10 && !m_bMenuShownByKey)
++                    {
++                        _ShowKeyMenu();
++                        return S_OK;
++                    }
++                }
++                break;
++            case WM_SYSCHAR:
++            case WM_CHAR:
++            {
++                /* Alt+letter, or a letter while the menu bar has the keys: the
++                 * menu with that underlined letter opens. The typed character, so
++                 * that "&Файл" opens with Ф in the Ukrainian layout */
++                if (pmsg->message == WM_CHAR && !m_bMenuShownByKey)
++                    break;
++                int index = _FindMenuMnemonic((WCHAR)pmsg->wParam);
++                if (index >= 0)
++                {
++                    if (!m_bMenuShownByKey)
++                        _ShowKeyMenu();
++                    _OpenMenuItem(index);
++                    return S_OK;
++                }
++                break;
++            }
++            case WM_SYSKEYUP:
++                if (pmsg->wParam == VK_MENU && m_bAltAlone)
++                {
++                    m_bAltAlone = FALSE;
++                    if (m_bMenuShownByKey)
++                    {
++                        _HideKeyMenu();
++                        return S_OK;
++                    }
++                    _ShowKeyMenu();
++                    return S_OK;
++                }
++                break;
++            case WM_KEYDOWN:
++                m_bAltAlone = FALSE;
++                if (pmsg->wParam == VK_ESCAPE)
++                {
++                    if (m_bMenuShownByKey)
++                    {
++                        _HideKeyMenu();
++                        return S_OK;
++                    }
++                }
++                else if (m_bMenuShownByKey)
++                {
++                    /* the menu bar has the keys while it is shown by them */
++                    HWND hwndTb = _GetMenuToolbar();
++                    int count = hwndTb ? (int)::SendMessageW(hwndTb, TB_BUTTONCOUNT, 0, 0) : 0;
++                    int hot = hwndTb ? (int)::SendMessageW(hwndTb, TB_GETHOTITEM, 0, 0) : -1;
++                    if (count > 0 && (pmsg->wParam == VK_LEFT || pmsg->wParam == VK_RIGHT))
++                    {
++                        hot = (hot < 0 ? 0 : hot + (pmsg->wParam == VK_RIGHT ? 1 : count - 1)) % count;
++                        ::SendMessageW(hwndTb, TB_SETHOTITEM, hot, 0);
++                        return S_OK;
++                    }
++                    if (count > 0 && (pmsg->wParam == VK_DOWN || pmsg->wParam == VK_UP || pmsg->wParam == VK_RETURN))
++                    {
++                        _OpenMenuItem(hot < 0 ? 0 : hot);
++                        return S_OK;
++                    }
++                }
++                break;
++            case WM_LBUTTONDOWN:
++            case WM_RBUTTONDOWN:
++            case WM_NCLBUTTONDOWN:
++                m_bAltAlone = FALSE;
++                if (m_bMenuShownByKey)
++                {
++                    HWND hwndMenu = _GetMenuToolbar();
++                    if (!hwndMenu || (pmsg->hwnd != hwndMenu && !::IsChild(hwndMenu, pmsg->hwnd)))
++                        _HideKeyMenu();
++                }
++                break;
++        }
++    }
++
+     for (int i = 0; i < 3; i++)
+     {
+         if (IUnknown_TranslateAcceleratorIO(fClientBars[i].clientBar, pmsg) == S_OK)
+@@ -3917,6 +4135,13 @@
+ LRESULT CShellBrowser::OnSettingChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
+     RefreshCabinetState();
++    /* Arctic: Folder Options' "Show status bar" reaches the open windows */
++    if (!m_bMenuShownByKey)
++        _ShowMenuBand(MenusAlwaysShown());
++    BOOL fStatusBarVisible = m_settings.fStatusBarVisible;
++    m_settings.Load();
++    if (fStatusBarVisible != m_settings.fStatusBarVisible)
++        SendMessageW(BWM_SETTINGCHANGE, 0, (LPARAM)&m_settings);
+     SHPropagateMessage(m_hWnd, uMsg, wParam, lParam, TRUE);
+     return 0;
+ }
+@@ -4167,6 +4392,7 @@
+ LRESULT CShellBrowser::RelayCommands(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
+     CComHeapPtr<ITEMIDLIST> pidl;
++    _HideKeyMenu(); /* Arctic: a command of the menu shown by Alt hides it again */
+     switch (LOWORD(wParam))
+     {
+         case FCIDM_SHBROWSER_REFRESH:
+diff --git a/dll/win32/browseui/toolsband.cpp b/dll/win32/browseui/toolsband.cpp
+--- a/dll/win32/browseui/toolsband.cpp
++++ b/dll/win32/browseui/toolsband.cpp
+@@ -224,14 +224,20 @@
+ 
+ // The buttons Windows shows, each with its label. The rest wait in the
+ // customize dialog.
+-const int numShownButtons = 7;
+-const int numHiddenButtons = 18;
++const int numShownButtons = 11;
++const int numHiddenButtons = 15;
+ TBBUTTON tbButtonsAdd[numShownButtons + numHiddenButtons] =
+ {
+     { backImageIndex, IDM_GOTO_BACK, TBSTATE_ENABLED, BTNS_DROPDOWN | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Back },
+     { forwardImageIndex, IDM_GOTO_FORWARD, TBSTATE_ENABLED, BTNS_DROPDOWN | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Forward },
+     { upImageIndex, IDM_GOTO_UPONELEVEL, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0,  BtnIdx_Up },
+     { 6, -1, TBSTATE_ENABLED, BTNS_SEP },
++    /* Arctic: Windows 11's command bar: copy, paste, delete, with their names
++       like the other buttons, grey while they cannot be used (CDefView) */
++    { copyImageIndex, gCopyCommandID, 0, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Copy },
++    { pasteImageIndex, gPasteCommandID, 0, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Paste },
++    { deleteImageIndex, gDeleteCommandID, 0, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Delete },
++    { 6, -1, TBSTATE_ENABLED, BTNS_SEP },
+     { searchImageIndex, gSearchCommandID, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Search },
+     { 6, -1, TBSTATE_ENABLED, BTNS_SEP },
+     { viewsImageIndex, gViewsCommandID, TBSTATE_ENABLED, BTNS_WHOLEDROPDOWN | BTNS_SHOWTEXT, { 0 }, 0, BtnIdx_Views },
+@@ -242,7 +248,6 @@
+ 
+     { moveToImageIndex, gMoveToCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_MoveTo },
+     { copyToImageIndex, gCopyToCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_CopyTo },
+-    { deleteImageIndex, gDeleteCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Delete },
+     { undoImageIndex, gUndoCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Undo },
+     { 0, gStopCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Stop },
+     { 0, IDM_VIEW_REFRESH, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Refresh },
+@@ -254,8 +259,6 @@
+     { 0, gFullScreenCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_FullScreen },
+     { propertiesImageIndex, gPropertiesCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Properties },
+     { cutImageIndex, gCutCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Cut },
+-    { copyImageIndex, gCopyCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Copy },
+-    { pasteImageIndex, gPasteCommandID, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_Paste },
+     { folderOptionsImageIndex, IDM_TOOLS_FOLDEROPTIONS, TBSTATE_ENABLED, BTNS_BUTTON, { 0 }, 0, BtnIdx_FolderOptions },
+ };
+ 
+diff --git a/dll/win32/shdocvw/CExplorerBand.cpp b/dll/win32/shdocvw/CExplorerBand.cpp
+--- a/dll/win32/shdocvw/CExplorerBand.cpp
++++ b/dll/win32/shdocvw/CExplorerBand.cpp
+@@ -140,6 +140,51 @@
+     return TRUE;
+ }
+ 
++static BOOL NavPaneShowsAllFolders()
++{
++    DWORD dwShowAll = FALSE, cb = sizeof(dwShowAll);
++    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                L"NavPaneShowAllFolders", NULL, &dwShowAll, &cb);
++    return dwShowAll != 0;
++}
++
++/* Arctic: the top level, as Windows 10 has it: Quick access, This PC, Network;
++ * with "Show all folders", Quick access and the desktop with all under it */
++void CExplorerBand::_InsertRoots()
++{
++    m_bShowAllFolders = NavPaneShowsAllFolders();
++    _InsertQuickAccess();
++    if (m_bShowAllFolders)
++    {
++        CComHeapPtr<ITEMIDLIST> pidl;
++        if (SUCCEEDED(SHGetFolderLocation(NULL, CSIDL_DESKTOP, NULL, 0, &pidl)))
++        {
++            HTREEITEM hDesktop = _InsertItem(NULL, m_pDesktop, pidl, pidl, FALSE);
++            if (hDesktop)
++                TreeView_Expand(m_hwndTreeView, hDesktop, TVE_EXPAND);
++        }
++    }
++    else
++    {
++        _InsertTopFolder(CSIDL_DRIVES);
++        _InsertTopFolder(CSIDL_NETWORK);
++    }
++}
++
++void CExplorerBand::_OnSettingChange()
++{
++    if (!m_hwndTreeView || NavPaneShowsAllFolders() == m_bShowAllFolders)
++        return;
++    ++m_mtxBlockNavigate;
++    m_hwndTreeView.SendMessage(WM_SETREDRAW, FALSE, 0);
++    TreeView_DeleteAllItems(m_hwndTreeView);
++    m_hQuickAccess = NULL;
++    _InsertRoots();
++    m_hwndTreeView.SendMessage(WM_SETREDRAW, TRUE, 0);
++    --m_mtxBlockNavigate;
++    _NavigateToCurrentFolder();
++}
++
+ void CExplorerBand::_InsertTopFolder(INT csidl)
+ {
+     CComHeapPtr<ITEMIDLIST> pidl;
+@@ -295,9 +340,7 @@
+         return hr;
+ 
+     // The top level of Windows 10's navigation pane
+-    _InsertQuickAccess();
+-    _InsertTopFolder(CSIDL_DRIVES);
+-    _InsertTopFolder(CSIDL_NETWORK);
++    _InsertRoots();
+ 
+     // Navigate to current folder position
+     _NavigateToCurrentFolder();
+diff --git a/dll/win32/shdocvw/CExplorerBand.h b/dll/win32/shdocvw/CExplorerBand.h
+--- a/dll/win32/shdocvw/CExplorerBand.h
++++ b/dll/win32/shdocvw/CExplorerBand.h
+@@ -68,6 +68,9 @@
+     void _InsertQuickAccess();
+     void _InsertPins();
+     void _InsertTopFolder(INT csidl);
++    void _InsertRoots();
++    void _OnSettingChange() override;
++    BOOL m_bShowAllFolders = FALSE; /* Arctic: Folder Options' "Show all folders" */
+     HTREEITEM m_hQuickAccess = NULL;
+     BOOL _NavigateToPIDL(
+         _In_ LPCITEMIDLIST dest,
+diff --git a/dll/win32/shdocvw/CNSCBand.cpp b/dll/win32/shdocvw/CNSCBand.cpp
+--- a/dll/win32/shdocvw/CNSCBand.cpp
++++ b/dll/win32/shdocvw/CNSCBand.cpp
+@@ -417,6 +417,8 @@
+         CItemData* pItemData = _GetItemData(hItem);
+         if (!pItemData && hItem == TVI_ROOT && !_WantsRootItem())
+             hr = psfDesktop->BindToObject(m_pidlRoot, NULL, IID_PPV_ARG(IShellFolder, ppFolder));
++        else if (pItemData && _ILIsDesktop(pItemData->absolutePidl))
++            { *ppFolder = psfDesktop; (*ppFolder)->AddRef(); hr = S_OK; } /* Arctic: the desktop as an item ("Show all folders") */
+         else
+             hr = psfDesktop->BindToObject(pItemData->absolutePidl, NULL, IID_PPV_ARG(IShellFolder, ppFolder));
+         if (FAILED_UNEXPECTEDLY(hr))
+@@ -1693,3 +1695,10 @@
+ {
+     return DRAGDROP_S_USEDEFAULTCURSORS;
+ }
++
++LRESULT CNSCBand::OnSettingChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
++{
++    _OnSettingChange();
++    bHandled = FALSE;
++    return 0;
++}
+diff --git a/dll/win32/shdocvw/CNSCBand.h b/dll/win32/shdocvw/CNSCBand.h
+--- a/dll/win32/shdocvw/CNSCBand.h
++++ b/dll/win32/shdocvw/CNSCBand.h
+@@ -242,6 +242,8 @@
+     LRESULT OnNotify(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT OnShellEvent(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
++    LRESULT OnSettingChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
++    virtual void _OnSettingChange() { } /* Arctic: a setting of Folder Options changed */
+ 
+     BEGIN_MSG_MAP(CNSCBand)
+         MESSAGE_HANDLER(WM_CREATE, OnCreate)
+@@ -254,6 +256,7 @@
+         MESSAGE_HANDLER(WM_TIMER, OnTimer)
+         MESSAGE_HANDLER(WM_CONTEXTMENU, OnContextMenu)
+         MESSAGE_HANDLER(WM_USER_SHELLEVENT, OnShellEvent)
++        MESSAGE_HANDLER(WM_SETTINGCHANGE, OnSettingChange)
+     END_MSG_MAP()
+ };
+ #endif // def __cplusplus
+diff --git a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
+--- a/dll/win32/shell32/CDefView.cpp
++++ b/dll/win32/shell32/CDefView.cpp
+@@ -278,6 +278,7 @@
+     signed char               m_SpecialFolder;
+     bool                      m_isFullStatusBar;
+     bool                      m_ScheduledStatusbarUpdate;
++    bool                      m_SyncingChecks; /* Arctic: check boxes follow the selection */
+     bool                      m_HasCutItems;
+ 
+     CLSID m_Category;
+@@ -318,6 +319,8 @@
+     BOOL InitList();
+     void UpdateTileView();
+     LRESULT OnCustomDraw(LPNMLVCUSTOMDRAW cd);
++    void UpdatePasteButton();
++    LRESULT OnClipboardUpdate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     void DrawTile(LPNMLVCUSTOMDRAW cd);
+     HICON TileIcon(int iImage, PCUITEMID_CHILD pidl, int size);
+     struct { int iImage, size; HICON icon; } m_TileIcons[64] = {};
+@@ -559,6 +562,7 @@
+     MESSAGE_HANDLER(WM_KILLFOCUS, OnKillFocus)
+     MESSAGE_HANDLER(WM_NCCREATE, OnNCCreate)
+     MESSAGE_HANDLER(WM_CREATE, OnCreate)
++    MESSAGE_HANDLER(WM_CLIPBOARDUPDATE, OnClipboardUpdate)
+     MESSAGE_HANDLER(WM_ACTIVATE, OnActivate)
+     MESSAGE_HANDLER(WM_NOTIFY, OnNotify)
+     MESSAGE_HANDLER(WM_COMMAND, OnCommand)
+@@ -629,6 +633,7 @@
+     m_SpecialFolder(-1),
+     m_isFullStatusBar(true),
+     m_ScheduledStatusbarUpdate(false),
++    m_SyncingChecks(false),
+     m_HasCutItems(false),
+     m_Destroyed(FALSE)
+ {
+@@ -813,12 +818,46 @@
+     if (cSelectedItems > 0)
+     {
+         UINT maxquery = 42; // Checking the attributes can be slow, only check small selections (_DoCopyToMoveToFolder will verify the full array)
+-        att = SFGAO_CANCOPY | SFGAO_CANMOVE;
++        att = SFGAO_CANCOPY | SFGAO_CANMOVE | SFGAO_CANDELETE;
+         if (cSelectedItems <= maxquery && (!GetSelections() || FAILED(m_pSFParent->GetAttributesOf(m_cidl, m_apidl, &att))))
+             att = 0;
+     }
+     m_pShellBrowser->SendControlMsg(FCW_TOOLBAR, TB_ENABLEBUTTON, FCIDM_SHVIEW_COPYTO, (att & SFGAO_CANCOPY) != 0, &lResult);
+     m_pShellBrowser->SendControlMsg(FCW_TOOLBAR, TB_ENABLEBUTTON, FCIDM_SHVIEW_MOVETO, (att & SFGAO_CANMOVE) != 0, &lResult);
++    /* Arctic: Windows 11's copy and delete buttons, grey with nothing to act on */
++    m_pShellBrowser->SendControlMsg(FCW_TOOLBAR, TB_ENABLEBUTTON, FCIDM_SHVIEW_COPY, (att & SFGAO_CANCOPY) != 0, &lResult);
++    m_pShellBrowser->SendControlMsg(FCW_TOOLBAR, TB_ENABLEBUTTON, FCIDM_SHVIEW_DELETE, (att & SFGAO_CANDELETE) != 0, &lResult);
++    UpdatePasteButton();
++}
++
++/* Arctic: Add/RemoveClipboardFormatListener (Vista), which the headers of this
++ * build do not declare */
++static void ClipboardListener(HWND hwnd, BOOL bAdd)
++{
++    typedef BOOL (WINAPI *PFN_LISTENER)(HWND);
++    HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
++    PFN_LISTENER pfn = hUser32 ? (PFN_LISTENER)GetProcAddress(hUser32, bAdd ? "AddClipboardFormatListener"
++                                                                            : "RemoveClipboardFormatListener") : NULL;
++    if (pfn)
++        pfn(hwnd);
++}
++
++/* Arctic: Paste is grey unless the clipboard holds files (Windows 11): empty,
++ * or text, or a picture leave nothing to paste into a folder */
++void CDefView::UpdatePasteButton()
++{
++    LRESULT lResult;
++    if (!m_pShellBrowser)
++        return;
++    BOOL bFiles = IsClipboardFormatAvailable(CF_HDROP) ||
++                  IsClipboardFormatAvailable(RegisterClipboardFormatW(CFSTR_SHELLIDLISTW));
++    m_pShellBrowser->SendControlMsg(FCW_TOOLBAR, TB_ENABLEBUTTON, FCIDM_SHVIEW_INSERT, bFiles, &lResult);
++}
++
++LRESULT CDefView::OnClipboardUpdate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
++{
++    UpdatePasteButton();
++    return 0;
+ }
+ 
+ void CDefView::UpdateStatusbarLocation()
+@@ -857,6 +896,24 @@
+ 
+ // ##### helperfunctions for initializing the view #####
+ 
++/* Arctic: the list view styles that Folder Options' View page sets, as in
++ * Windows: "Show pop-up description for folder and desktop items" (infotips)
++ * and "Use check boxes to select items" */
++static UINT GetShellStateListExStyle()
++{
++    SHELLSTATE ss = {};
++    SHGetSetSettings(&ss, SSF_SHOWINFOTIP | 0x00800000 /* SSF_AUTOCHECKSELECT */, FALSE);
++    return (ss.fShowInfoTip ? LVS_EX_INFOTIP : 0) | (ss.fAutoCheckSelect ? LVS_EX_CHECKBOXES : 0);
++}
++
++/* Arctic: "Show encrypted or compressed NTFS files in color" */
++static BOOL ShowCompColor()
++{
++    SHELLSTATE ss = {};
++    SHGetSetSettings(&ss, SSF_SHOWCOMPCOLOR, FALSE);
++    return ss.fShowCompColor;
++}
++
+ // creates the list view window
+ BOOL CDefView::CreateList()
+ {
+@@ -866,7 +923,7 @@
+     dwStyle = WS_TABSTOP | WS_VISIBLE | WS_CHILDWINDOW | WS_CLIPSIBLINGS | WS_CLIPCHILDREN |
+               LVS_SHAREIMAGELISTS | LVS_EDITLABELS | LVS_AUTOARRANGE; // FIXME: Remove LVS_AUTOARRANGE when the view is able to save ItemPos
+     dwExStyle = (m_FolderSettings.fFlags & FWF_NOCLIENTEDGE) ? 0 : WS_EX_CLIENTEDGE;
+-    ListExStyle = LVS_EX_INFOTIP | LVS_EX_LABELTIP;
++    ListExStyle = LVS_EX_LABELTIP | GetShellStateListExStyle();
+ 
+     if (m_FolderSettings.fFlags & FWF_DESKTOP)
+     {
+@@ -1671,6 +1728,7 @@
+ 
+ LRESULT CDefView::OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
++    ClipboardListener(m_hWnd, FALSE);
+     if (!m_Destroyed)
+     {
+         m_Destroyed = TRUE;
+@@ -1787,6 +1845,8 @@
+ 
+     TRACE("%p\n", this);
+ 
++    ClipboardListener(m_hWnd, TRUE); /* Arctic: the Paste button follows the clipboard */
++
+     if (SUCCEEDED(QueryInterface(IID_PPV_ARG(IDropTarget, &pdt))))
+     {
+         if (FAILED(RegisterDragDrop(m_hWnd, pdt)))
+@@ -2774,6 +2834,36 @@
+             break;
+         case LVN_ITEMCHANGED:
+             TRACE("-- LVN_ITEMCHANGED %p\n", this);
++            /* Arctic: with check boxes (Windows' AutoCheckSelect) the box and the
++             * selection are one: a click on the box selects the item or not,
++             * and a selection made otherwise checks the boxes */
++            if (!m_SyncingChecks && (lpnmlv->uChanged & LVIF_STATE) &&
++                (ListView_GetExtendedListViewStyle(m_ListView) & LVS_EX_CHECKBOXES))
++            {
++                UINT changed = lpnmlv->uOldState ^ lpnmlv->uNewState;
++                m_SyncingChecks = true;
++                if ((changed & LVIS_STATEIMAGEMASK) && lpnmlv->iItem >= 0 && (lpnmlv->uOldState & LVIS_STATEIMAGEMASK))
++                {
++                    BOOL checked = ((lpnmlv->uNewState & LVIS_STATEIMAGEMASK) >> 12) == 2;
++                    m_ListView.SetItemState(lpnmlv->iItem, checked ? LVIS_SELECTED : 0, LVIS_SELECTED);
++                }
++                else if (changed & LVIS_SELECTED)
++                {
++                    BOOL selected = (lpnmlv->uNewState & LVIS_SELECTED) != 0;
++                    if (lpnmlv->iItem >= 0)
++                    {
++                        ListView_SetCheckState(m_ListView, lpnmlv->iItem, selected);
++                    }
++                    else
++                    {
++                        for (int i = 0; i < m_ListView.GetItemCount(); i++)
++                        {
++                            ListView_SetCheckState(m_ListView, i, selected);
++                        }
++                    }
++                }
++                m_SyncingChecks = false;
++            }
+             if ((lpnmlv->uOldState ^ lpnmlv->uNewState) & (LVIS_SELECTED | LVIS_FOCUSED))
+             {
+                 OnStateChange(CDBOSC_SELCHANGE); // browser will get the IDataObject
+@@ -2786,6 +2876,21 @@
+                 _DoFolderViewCB(SFVM_SELECTIONCHANGED, NULL/* FIXME */, NULL/* FIXME */);
+             }
+             break;
++        case LVN_GETINFOTIPW:
++        {
++            /* Arctic: the pop-up description of the item (its IQueryInfo), shown
++             * while Folder Options' "Show pop-up description" adds LVS_EX_INFOTIP */
++            NMLVGETINFOTIPW *pTip = (NMLVGETINFOTIPW *)lpnmh;
++            PCUITEMID_CHILD pidl = _PidlByItem(pTip->iItem);
++            PWSTR pszTip = NULL;
++            if (pidl && pTip->pszText && pTip->cchTextMax &&
++                SHELL_QueryInfoTipAlloc(m_pSFParent, 0, pidl, &pszTip) == S_OK && pszTip)
++            {
++                StringCchCopyW(pTip->pszText, pTip->cchTextMax, pszTip);
++                CoTaskMemFree(pszTip);
++            }
++            break;
++        }
+         case LVN_BEGINDRAG:
+         case LVN_BEGINRDRAG:
+             TRACE("-- LVN_BEGINDRAG\n");
+@@ -3046,8 +3151,9 @@
+     if (wParam == SPI_SETDESKWALLPAPER || wParam == 0)
+         UpdateListColors();
+ 
+-    UINT ListExMask = LVS_EX_TRACKSELECT | LVS_EX_ONECLICKACTIVATE;
+-    UINT ListExBits = GetItemActivateFlags();
++    UINT ListExMask = LVS_EX_TRACKSELECT | LVS_EX_ONECLICKACTIVATE | LVS_EX_INFOTIP | LVS_EX_CHECKBOXES;
++    UINT ListExBits = GetItemActivateFlags() | GetShellStateListExStyle();
++    BOOL hadChecks = (ListView_GetExtendedListViewStyle(m_ListView) & LVS_EX_CHECKBOXES) != 0;
+     if (wParam == SPI_GETICONTITLELOGFONT ||
+         (lParam && !lstrcmpiW((PWSTR)lParam, REGSTR_PATH_EXPLORER L"\\IconUnderline")))
+     {
+@@ -3055,6 +3161,17 @@
+         ListExBits |= SHELL_GetIconUnderlineFlags();
+     }
+     m_ListView.SetExtendedListViewStyle(ListExBits, ListExMask);
++    if (!hadChecks && (ListExBits & LVS_EX_CHECKBOXES))
++    {
++        /* the boxes come on: those of the selected items are checked */
++        m_SyncingChecks = true;
++        for (int i = m_ListView.GetNextItem(-1, LVNI_SELECTED); i >= 0; i = m_ListView.GetNextItem(i, LVNI_SELECTED))
++        {
++            ListView_SetCheckState(m_ListView, i, TRUE);
++        }
++        m_SyncingChecks = false;
++    }
++    m_ListView.Invalidate(); /* the colours of compressed files may have changed */
+     m_ListView.SendMessage(uMsg, wParam, lParam);
+     return S_OK;
+ }
+@@ -3679,7 +3796,26 @@
+ LRESULT CDefView::OnCustomDraw(LPNMLVCUSTOMDRAW cd)
+ {
+     if (m_FolderSettings.ViewMode != FVM_TILE)
++    {
++        /* Arctic: compressed files blue, encrypted ones green, as Windows
++         * shows them with "Show encrypted or compressed NTFS files in color" */
++        switch (cd->nmcd.dwDrawStage)
++        {
++            case CDDS_PREPAINT:
++                return ShowCompColor() ? CDRF_NOTIFYITEMDRAW : CDRF_DODEFAULT;
++            case CDDS_ITEMPREPAINT:
++            {
++                PCUITEMID_CHILD pidl = _PidlByItem((int)cd->nmcd.dwItemSpec);
++                DWORD attributes = pidl ? _ILGetFileAttributes(pidl, NULL, 0) : 0;
++                if (attributes & FILE_ATTRIBUTE_ENCRYPTED)
++                    cd->clrText = RGB(0x13, 0x92, 0x0e);
++                else if (attributes & FILE_ATTRIBUTE_COMPRESSED)
++                    cd->clrText = RGB(0x00, 0x00, 0xff);
++                return CDRF_DODEFAULT;
++            }
++        }
+         return CDRF_DODEFAULT;
++    }
+     switch (cd->nmcd.dwDrawStage)
+     {
+         case CDDS_PREPAINT:
+diff --git a/dll/win32/shell32/folders/CDrivesFolder.cpp b/dll/win32/shell32/folders/CDrivesFolder.cpp
+--- a/dll/win32/shell32/folders/CDrivesFolder.cpp
++++ b/dll/win32/shell32/folders/CDrivesFolder.cpp
+@@ -627,6 +627,29 @@
+     return initIcon->QueryInterface(riid, ppvOut);
+ }
+ 
++/* Arctic: Folder Options' "Hide empty drives" (Explorer\Advanced\
++ * HideDrivesWithNoMedia, on by default): a card reader or a disc drive with
++ * nothing in it is not shown in This PC, as in Windows */
++static BOOL HideEmptyDrive(LPCWSTR pszRoot)
++{
++    DWORD dwHide = TRUE, cb = sizeof(dwHide);
++    UINT uType = GetDriveTypeW(pszRoot);
++    if (uType != DRIVE_REMOVABLE && uType != DRIVE_CDROM)
++        return FALSE;
++    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                L"HideDrivesWithNoMedia", NULL, &dwHide, &cb);
++    if (!dwHide)
++        return FALSE;
++    /* floppies are never asked: that would spin the drive */
++    extern BOOL IsDriveFloppyW(LPCWSTR pszDriveRoot);
++    if (uType == DRIVE_REMOVABLE && IsDriveFloppyW(pszRoot))
++        return FALSE;
++    UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
++    BOOL bEmpty = !GetVolumeInformationW(pszRoot, NULL, 0, NULL, NULL, NULL, NULL, 0);
++    SetErrorMode(oldMode);
++    return bEmpty;
++}
++
+ class CDrivesFolderEnum :
+     public CEnumIDListBase
+ {
+@@ -640,7 +663,7 @@
+                 DWORD dwDrivemap = GetLogicalDrives() & ~SHRestricted(REST_NODRIVES);
+                 for (; wszDriveName[0] <= 'Z'; wszDriveName[0]++)
+                 {
+-                    if (dwDrivemap & 1)
++                    if ((dwDrivemap & 1) && !HideEmptyDrive(wszDriveName))
+                         AddToEnumList(_ILCreateDrive(wszDriveName));
+                     dwDrivemap >>= 1;
+                 }
+diff --git a/dll/win32/shell32/folders/CFSFolder.cpp b/dll/win32/shell32/folders/CFSFolder.cpp
+--- a/dll/win32/shell32/folders/CFSFolder.cpp
++++ b/dll/win32/shell32/folders/CFSFolder.cpp
+@@ -1422,6 +1422,216 @@
+ *  drag starts, and GetData's it if the drop is in another explorer window that
+ *  needs the positions.
+ */
++/* Arctic: the pop-up description of a file or a folder (IQueryInfo), as
++ * Windows 10 shows it in File Explorer and on the desktop:
++ *   a file:   Item type / Size / Date modified
++ *   a folder: Date created, and with Folder Options' "Display file size
++ *             information in folder tips" its size (counted for a second at
++ *             most), the folders and the files in it */
++class CFSInfoTip : public IQueryInfo
++{
++    LONG m_cRef;
++    WCHAR m_szPath[MAX_PATH];
++
++    static void AppendLine(CStringW &tip, UINT idLabel, LPCWSTR pszValue)
++    {
++        WCHAR szLabel[80];
++        LoadStringW(shell32_hInstance, idLabel, szLabel, _countof(szLabel));
++        if (!tip.IsEmpty())
++            tip += L"\n";
++        tip += szLabel;
++        tip += L": ";
++        tip += pszValue;
++    }
++
++    static void FormatTime(const FILETIME *pft, LPWSTR pszOut, UINT cch)
++    {
++        FILETIME local;
++        SYSTEMTIME st;
++        WCHAR szTime[40];
++        FileTimeToLocalFileTime(pft, &local);
++        FileTimeToSystemTime(&local, &st);
++        GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &st, NULL, pszOut, cch);
++        GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, &st, NULL, szTime, _countof(szTime));
++        StringCchCatW(pszOut, cch, L" ");
++        StringCchCatW(pszOut, cch, szTime);
++    }
++
++    static BOOL Shown(const WIN32_FIND_DATAW &fd)
++    {
++        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
++            return FALSE;
++        return !(fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM));
++    }
++
++    /* the size of a tree, until the deadline; FALSE when it was not reached */
++    static BOOL TreeSize(LPCWSTR pszDir, ULONGLONG &size, DWORD deadline)
++    {
++        WCHAR szFind[MAX_PATH];
++        WIN32_FIND_DATAW fd;
++        BOOL complete = TRUE;
++        PathCombineW(szFind, pszDir, L"*");
++        HANDLE hFind = FindFirstFileW(szFind, &fd);
++        if (hFind == INVALID_HANDLE_VALUE)
++            return TRUE;
++        do
++        {
++            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
++                continue;
++            if ((LONG)(GetTickCount() - deadline) > 0)
++            {
++                complete = FALSE;
++                break;
++            }
++            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
++            {
++                if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
++                    continue;
++                WCHAR szSub[MAX_PATH];
++                PathCombineW(szSub, pszDir, fd.cFileName);
++                if (!TreeSize(szSub, size, deadline))
++                {
++                    complete = FALSE;
++                    break;
++                }
++            }
++            else
++            {
++                size += ((ULONGLONG)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
++            }
++        } while (FindNextFileW(hFind, &fd));
++        FindClose(hFind);
++        return complete;
++    }
++
++    void FolderTip(CStringW &tip, const WIN32_FILE_ATTRIBUTE_DATA &data)
++    {
++        WCHAR szValue[MAX_PATH], szFormat[80], szFind[MAX_PATH];
++        FormatTime(&data.ftCreationTime, szValue, _countof(szValue));
++        AppendLine(tip, IDS_INFOTIP_CREATED, szValue);
++
++        DWORD dwSizeTip = TRUE, cb = sizeof(dwSizeTip);
++        SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                    L"FolderContentsInfoTip", NULL, &dwSizeTip, &cb);
++        if (!dwSizeTip)
++            return;
++
++        CStringW folders, files;
++        WIN32_FIND_DATAW fd;
++        PathCombineW(szFind, m_szPath, L"*");
++        HANDLE hFind = FindFirstFileW(szFind, &fd);
++        BOOL empty = TRUE;
++        if (hFind != INVALID_HANDLE_VALUE)
++        {
++            do
++            {
++                if (!Shown(fd))
++                    continue;
++                empty = FALSE;
++                CStringW &list = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? folders : files;
++                if (list.GetLength() > 60)
++                {
++                    if (list.Right(3) != L"...")
++                        list += L", ...";
++                    continue;
++                }
++                if (!list.IsEmpty())
++                    list += L", ";
++                list += fd.cFileName;
++            } while (FindNextFileW(hFind, &fd));
++            FindClose(hFind);
++        }
++        if (empty)
++        {
++            LoadStringW(shell32_hInstance, IDS_INFOTIP_EMPTYFOLDER, szValue, _countof(szValue));
++            tip += L"\n";
++            tip += szValue;
++            return;
++        }
++        ULONGLONG size = 0;
++        BOOL complete = TreeSize(m_szPath, size, GetTickCount() + 1000);
++        WCHAR szSize[64];
++        StrFormatByteSizeW(size, szSize, _countof(szSize));
++        LoadStringW(shell32_hInstance, complete ? IDS_INFOTIP_FOLDERSIZE : IDS_INFOTIP_FOLDERMORE, szFormat, _countof(szFormat));
++        StringCchPrintfW(szValue, _countof(szValue), szFormat, szSize);
++        tip += L"\n";
++        tip += szValue;
++        if (!folders.IsEmpty())
++        {
++            LoadStringW(shell32_hInstance, IDS_INFOTIP_FOLDERS, szFormat, _countof(szFormat));
++            CStringW line;
++            line.Format(szFormat, folders.GetString());
++            tip += L"\n" + line;
++        }
++        if (!files.IsEmpty())
++        {
++            LoadStringW(shell32_hInstance, IDS_INFOTIP_FILES, szFormat, _countof(szFormat));
++            CStringW line;
++            line.Format(szFormat, files.GetString());
++            tip += L"\n" + line;
++        }
++    }
++
++public:
++    CFSInfoTip(LPCWSTR pszPath) : m_cRef(1)
++    {
++        StringCchCopyW(m_szPath, _countof(m_szPath), pszPath);
++    }
++    virtual ~CFSInfoTip() {}
++
++    STDMETHODIMP QueryInterface(REFIID riid, void **ppv) override
++    {
++        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IQueryInfo))
++        {
++            *ppv = static_cast<IQueryInfo *>(this);
++            AddRef();
++            return S_OK;
++        }
++        *ppv = NULL;
++        return E_NOINTERFACE;
++    }
++    STDMETHODIMP_(ULONG) AddRef() override { return InterlockedIncrement(&m_cRef); }
++    STDMETHODIMP_(ULONG) Release() override
++    {
++        LONG ref = InterlockedDecrement(&m_cRef);
++        if (!ref)
++            delete this;
++        return ref;
++    }
++
++    STDMETHODIMP GetInfoTip(DWORD dwFlags, WCHAR **ppwszTip) override
++    {
++        WIN32_FILE_ATTRIBUTE_DATA data;
++        CStringW tip;
++        WCHAR szValue[MAX_PATH];
++
++        *ppwszTip = NULL;
++        if (!GetFileAttributesExW(m_szPath, GetFileExInfoStandard, &data))
++            return E_FAIL;
++        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
++        {
++            FolderTip(tip, data);
++        }
++        else
++        {
++            SHFILEINFOW sfi = {};
++            if (SHGetFileInfoW(m_szPath, data.dwFileAttributes, &sfi, sizeof(sfi), SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES))
++                AppendLine(tip, IDS_INFOTIP_ITEMTYPE, sfi.szTypeName);
++            StrFormatByteSizeW(((ULONGLONG)data.nFileSizeHigh << 32) | data.nFileSizeLow, szValue, _countof(szValue));
++            AppendLine(tip, IDS_INFOTIP_SIZE, szValue);
++            FormatTime(&data.ftLastWriteTime, szValue, _countof(szValue));
++            AppendLine(tip, IDS_INFOTIP_MODIFIED, szValue);
++        }
++        return SHStrDupW(tip, ppwszTip);
++    }
++
++    STDMETHODIMP GetInfoFlags(DWORD *pdwFlags) override
++    {
++        *pdwFlags = 0;
++        return S_OK;
++    }
++};
++
+ HRESULT WINAPI CFSFolder::GetUIObjectOf(HWND hwndOwner,
+                                         UINT cidl, PCUITEMID_CHILD_ARRAY apidl,
+                                         REFIID riid, UINT * prgfInOut,
+@@ -1469,6 +1679,22 @@
+             if (hr != S_OK)
+                 hr = CFSExtractIcon_CreateInstance(this, apidl[0], riid, &pObj);
+         }
++        else if (IsEqualIID(riid, IID_IQueryInfo) && cidl == 1)
++        {
++            /* Arctic: pop-up descriptions */
++            WCHAR szPath[MAX_PATH];
++            PIDLIST_ABSOLUTE pidlFull = ILCombine(m_pidlRoot, apidl[0]);
++            if (pidlFull && SHGetPathFromIDListW(pidlFull, szPath))
++            {
++                pObj = static_cast<IQueryInfo *>(new CFSInfoTip(szPath));
++                hr = S_OK;
++            }
++            else
++            {
++                hr = E_FAIL;
++            }
++            ILFree(pidlFull);
++        }
+         else if (IsEqualIID (riid, IID_IDropTarget))
+         {
+             /* only interested in attempting to bind to shell folders, not files (except exe), so if we fail, rebind to root */
+@@ -2227,10 +2453,70 @@
+     return hr;
+ }
+ 
++/* Arctic: Windows 10's friendly dates in the list (Folder Options: "Use friendly
++ * dates", Explorer\Advanced\FriendlyDates, on by default): within the hour "N
++ * minutes ago", earlier today "N hours ago", then "Yesterday, 12:30" */
++static BOOL FormatFriendlyDate(const FILETIME &ft, LPWSTR Buf, UINT cchBuf)
++{
++    DWORD dwFriendly = TRUE, cb = sizeof(dwFriendly);
++    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                L"FriendlyDates", NULL, &dwFriendly, &cb);
++    if (!dwFriendly)
++        return FALSE;
++
++    FILETIME now, lft, lnow;
++    SYSTEMTIME st, stNow;
++    WCHAR szFormat[64], szTime[40];
++    GetSystemTimeAsFileTime(&now);
++    ULONGLONG then = ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
++    ULONGLONG cur = ((ULONGLONG)now.dwHighDateTime << 32) | now.dwLowDateTime;
++    if (then > cur)
++        return FALSE; /* the future: the date itself */
++    ULONGLONG minutes = (cur - then) / (60ULL * 10000000ULL);
++
++    FileTimeToLocalFileTime(&ft, &lft);
++    FileTimeToSystemTime(&lft, &st);
++    FileTimeToLocalFileTime(&now, &lnow);
++    FileTimeToSystemTime(&lnow, &stNow);
++    BOOL today = st.wYear == stNow.wYear && st.wMonth == stNow.wMonth && st.wDay == stNow.wDay;
++
++    if (minutes < 60)
++    {
++        UINT n = max((UINT)minutes, 1u);
++        LoadStringW(shell32_hInstance, n == 1 ? IDS_FRIENDLY_MINUTE : IDS_FRIENDLY_MINUTES, szFormat, _countof(szFormat));
++        return SUCCEEDED(StringCchPrintfW(Buf, cchBuf, szFormat, n));
++    }
++    if (today)
++    {
++        UINT n = (UINT)(minutes / 60);
++        LoadStringW(shell32_hInstance, n == 1 ? IDS_FRIENDLY_HOUR : IDS_FRIENDLY_HOURS, szFormat, _countof(szFormat));
++        return SUCCEEDED(StringCchPrintfW(Buf, cchBuf, szFormat, n));
++    }
++    /* yesterday: the local day before today */
++    FILETIME yday = lnow;
++    ULARGE_INTEGER y;
++    y.LowPart = yday.dwLowDateTime;
++    y.HighPart = yday.dwHighDateTime;
++    y.QuadPart -= 24ULL * 60 * 60 * 10000000ULL;
++    yday.dwLowDateTime = y.LowPart;
++    yday.dwHighDateTime = y.HighPart;
++    SYSTEMTIME stY;
++    FileTimeToSystemTime(&yday, &stY);
++    if (st.wYear == stY.wYear && st.wMonth == stY.wMonth && st.wDay == stY.wDay)
++    {
++        LoadStringW(shell32_hInstance, IDS_FRIENDLY_YESTERDAY, szFormat, _countof(szFormat));
++        GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, &st, NULL, szTime, _countof(szTime));
++        return SUCCEEDED(StringCchPrintfW(Buf, cchBuf, L"%s, %s", szFormat, szTime));
++    }
++    return FALSE;
++}
++
+ HRESULT CFSFolder::FormatDateTime(const FILETIME &ft, LPWSTR Buf, UINT cchBuf)
+ {
+     FILETIME lft;
+     SYSTEMTIME time;
++    if (FormatFriendlyDate(ft, Buf, cchBuf))
++        return S_OK;
+     FileTimeToLocalFileTime(&ft, &lft);
+     FileTimeToSystemTime(&lft, &time);
+     UINT ret = GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &time, NULL, Buf, cchBuf);
+diff --git a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -941,6 +941,20 @@
+     IDS_FOLDER_OPTIONS "File Explorer Options"
+     IDS_LAUNCHTO_QUICKACCESS "Quick access"
+     IDS_LAUNCHTO_THISPC "This PC"
++    IDS_INFOTIP_ITEMTYPE "Item type"
++    IDS_INFOTIP_SIZE "Size"
++    IDS_INFOTIP_MODIFIED "Date modified"
++    IDS_INFOTIP_CREATED "Date created"
++    IDS_INFOTIP_FOLDERSIZE "Size: %s"
++    IDS_INFOTIP_FOLDERMORE "Size: more than %s"
++    IDS_INFOTIP_EMPTYFOLDER "Empty folder"
++    IDS_INFOTIP_FILES "Files: %s"
++    IDS_INFOTIP_FOLDERS "Folders: %s"
++    IDS_FRIENDLY_YESTERDAY "Yesterday"
++    IDS_FRIENDLY_MINUTES "%u minutes ago"
++    IDS_FRIENDLY_HOURS "%u hours ago"
++    IDS_FRIENDLY_MINUTE "%u minute ago"
++    IDS_FRIENDLY_HOUR "%u hour ago"
+     IDS_TASKBAR_OPTIONS "Taskbar and Start Menu"
+     IDS_TASKBAR_OPTIONS_INFOTIP "Customize the Start Menu and the taskbar, such as the types of items to be displayed and how they should appear."
+     IDS_RECYCLEBIN_LOCATION "Recycle Bin Location"
+diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -941,6 +941,20 @@
+     IDS_FOLDER_OPTIONS "Параметри Файлового провідника"
+     IDS_LAUNCHTO_QUICKACCESS "Швидкий доступ"
+     IDS_LAUNCHTO_THISPC "Цей ПК"
++    IDS_INFOTIP_ITEMTYPE "Тип елемента"
++    IDS_INFOTIP_SIZE "Розмір"
++    IDS_INFOTIP_MODIFIED "Дата змінення"
++    IDS_INFOTIP_CREATED "Дата створення"
++    IDS_INFOTIP_FOLDERSIZE "Розмір: %s"
++    IDS_INFOTIP_FOLDERMORE "Розмір: більше %s"
++    IDS_INFOTIP_EMPTYFOLDER "Пуста папка"
++    IDS_INFOTIP_FILES "Файли: %s"
++    IDS_INFOTIP_FOLDERS "Папки: %s"
++    IDS_FRIENDLY_YESTERDAY "Учора"
++    IDS_FRIENDLY_MINUTES "%u хвилин тому"
++    IDS_FRIENDLY_HOURS "%u годин тому"
++    IDS_FRIENDLY_MINUTE "%u хвилину тому"
++    IDS_FRIENDLY_HOUR "%u годину тому"
+     IDS_TASKBAR_OPTIONS "Taskbar and Start Menu"
+     IDS_TASKBAR_OPTIONS_INFOTIP "Customize the Start Menu and the taskbar, such as the types of items to be displayed and how they should appear."
+     IDS_RECYCLEBIN_LOCATION "Розташування кошика"
+diff --git a/dll/win32/shell32/shresdef.h b/dll/win32/shell32/shresdef.h
+--- a/dll/win32/shell32/shresdef.h
++++ b/dll/win32/shell32/shresdef.h
+@@ -858,6 +858,22 @@
+ #define IDS_USERFOLDER_VIDEOS    21791
+ #define IDS_USERFOLDER_DOWNLOADS 21798
+ #define IDS_DRIVE_FREE_OF        21900 /* Arctic: "%s free of %s" under a drive's capacity bar */
++/* Arctic: the pop-up descriptions of files and folders, as Windows 10 words them */
++#define IDS_INFOTIP_ITEMTYPE     21901
++#define IDS_INFOTIP_SIZE         21902
++#define IDS_INFOTIP_MODIFIED     21903
++#define IDS_INFOTIP_CREATED      21904
++#define IDS_INFOTIP_FOLDERSIZE   21905
++#define IDS_INFOTIP_FOLDERMORE   21906
++#define IDS_INFOTIP_EMPTYFOLDER  21907
++#define IDS_INFOTIP_FILES        21908
++#define IDS_INFOTIP_FOLDERS      21909
++/* Arctic: Windows 10's friendly dates (Folder Options: "Use friendly dates") */
++#define IDS_FRIENDLY_YESTERDAY   21910
++#define IDS_FRIENDLY_MINUTES     21911
++#define IDS_FRIENDLY_HOURS       21912
++#define IDS_FRIENDLY_MINUTE      21913
++#define IDS_FRIENDLY_HOUR        21914
+ 
+ #define IDI_SHELL_DELETE5 16721
+ 
+diff --git a/dll/win32/shell32/wine/shellord.c b/dll/win32/shell32/wine/shellord.c
+--- a/dll/win32/shell32/wine/shellord.c
++++ b/dll/win32/shell32/wine/shellord.c
+@@ -261,7 +261,7 @@
+ #define SHGSS_GetSetAdv(getsetmacro) \
+     do { \
+         getsetmacro(L"HideFileExt", fShowExtensions, SSF_SHOWEXTENSIONS); \
+-        getsetmacro(L"ShowCompColor", fShowCompColor, SSF_SHOWCOMPCOLOR); \
++        getsetmacro(L"ShowEncryptCompressedColor", fShowCompColor, SSF_SHOWCOMPCOLOR); /* Arctic: Windows 10's name */ \
+         getsetmacro(L"DontPrettyPath", fDontPrettyPath, SSF_DONTPRETTYPATH); \
+         getsetmacro(L"ShowAttribCol", fShowAttribCol, SSF_SHOWATTRIBCOL); \
+         getsetmacro(L"MapNetDrvBtn", fMapNetDrvBtn, SSF_MAPNETDRVBUTTON); \

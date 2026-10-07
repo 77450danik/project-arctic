@@ -1,0 +1,165 @@
+Subject: [PATCH] ntdll, kernel32: every battery as one; battery saver in the status.
+
+Arctic (docs/power.md): energy_* or charge_* times the design voltage,
+power_now or current_now times the voltage, all batteries summed as
+Windows' composite battery, USB-C and USB chargers as the power supply;
+GetSystemPowerStatus says battery saver is on as Windows does
+(SystemStatusFlag), from the power policy's ArcticEnergySaverOn.
+---
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -4392,13 +4392,23 @@
+     return get_sys_str(dirname, basename, s) ? atoi(s) : 0;
+ }
+ 
++/* Arctic: every battery of the machine as one, as Windows' composite
++ * battery: energy_* (µWh) or charge_* (µAh) times the design voltage,
++ * power_now (µW) or current_now times the present voltage. Mains, USB-C
++ * and USB chargers are the power supply. */
++static LONG64 get_sys_ll(const char *dirname, const char *basename)
++{
++    char s[16];
++    return get_sys_str(dirname, basename, s) ? strtoll(s, NULL, 10) : -1;
++}
++
+ static NTSTATUS fill_battery_state( SYSTEM_BATTERY_STATE *bs )
+ {
+     DIR *d = opendir("/sys/class/power_supply");
+     struct dirent *de;
+     char s[16], path[64];
+-    BOOL found_ac = FALSE;
+-    LONG64 voltage; /* microvolts */
++    BOOL found_ac = FALSE, discharging = FALSE, charging = FALSE;
++    LONG64 remaining = 0, full = 0, rate = 0;
+ 
+     bs->AcOnLine = TRUE;
+     if (!d) return STATUS_SUCCESS;
+@@ -4410,44 +4420,75 @@
+         if (get_sys_str(path, "scope", s) && strcmp(s, "Device\n") == 0) continue;
+         if (!get_sys_str(path, "type", s)) continue;
+ 
+-        if (strcmp(s, "Mains\n") == 0)
++        if (strcmp(s, "Mains\n") == 0 || strncmp(s, "USB", 3) == 0 || strcmp(s, "Wireless\n") == 0)
+         {
+             if (!get_sys_str(path, "online", s)) continue;
+-            if (found_ac)
+-            {
+-                FIXME("Multiple mains found, only reporting on the first\n");
+-            }
+-            else
+-            {
+-                bs->AcOnLine = atoi(s);
+-                found_ac = TRUE;
+-            }
++            if (!found_ac) bs->AcOnLine = FALSE;
++            found_ac = TRUE;
++            if (atoi(s)) bs->AcOnLine = TRUE;
+         }
+         else if (strcmp(s, "Battery\n") == 0)
+         {
++            LONG64 voltage = get_sys_ll(path, "voltage_now"), design = get_sys_ll(path, "voltage_min_design");
++            LONG64 now, max, power;
++
++            if (get_sys_ll(path, "present") == 0) continue;
+             if (!get_sys_str(path, "status", s)) continue;
+-            if (bs->BatteryPresent)
++            if (strcmp(s, "Charging\n") == 0) charging = TRUE;
++            if (strcmp(s, "Discharging\n") == 0) discharging = TRUE;
++            bs->BatteryPresent = TRUE;
++
++            if ((now = get_sys_ll(path, "energy_now")) >= 0) max = get_sys_ll(path, "energy_full");
++            else
++            {
++                LONG64 volts = design > 0 ? design : voltage;
++                now = get_sys_ll(path, "charge_now");
++                max = get_sys_ll(path, "charge_full");
++                if (volts > 0 && now >= 0 && max > 0)
++                {
++                    now = now * volts / 1000000;
++                    max = max * volts / 1000000;
++                }
++                else now = max = -1;
++            }
++            if (now >= 0 && max > 0)
+             {
+-                FIXME("Multiple batteries found, only reporting on the first\n");
++                remaining += now / 1000;
++                full += max / 1000;
+             }
+             else
+             {
+-                bs->Charging = (strcmp(s, "Charging\n") == 0);
+-                bs->Discharging = (strcmp(s, "Discharging\n") == 0);
+-                bs->BatteryPresent = TRUE;
+-                voltage = get_sys_int(path, "voltage_now");
+-                bs->MaxCapacity = get_sys_int(path, "charge_full") * voltage / 1e9;
+-                bs->RemainingCapacity = get_sys_int(path, "charge_now") * voltage / 1e9;
+-                bs->Rate = -get_sys_int(path, "current_now") * voltage / 1e9;
+-                if (!bs->Charging && (LONG)bs->Rate < 0)
+-                    bs->EstimatedTime = 3600 * bs->RemainingCapacity / -(LONG)bs->Rate;
+-                else
+-                    bs->EstimatedTime = ~0u;
++                /* only a percentage: as a share of 100 Wh */
++                LONG64 capacity = get_sys_ll(path, "capacity");
++                if (capacity >= 0)
++                {
++                    remaining += capacity * 1000;
++                    full += 100000;
++                }
++            }
++            if ((power = get_sys_ll(path, "power_now")) < 0)
++            {
++                LONG64 current = get_sys_ll(path, "current_now");
++                power = current != -1 && voltage > 0 ? llabs(current) * voltage / 1000000 : 0;
+             }
++            rate += llabs(power) / 1000;
+         }
+     }
+-
+     closedir(d);
++
++    if (bs->BatteryPresent)
++    {
++        bs->Charging = charging;
++        bs->Discharging = discharging && !charging;
++        if (!found_ac) bs->AcOnLine = !bs->Discharging;
++        bs->MaxCapacity = full;
++        bs->RemainingCapacity = remaining;
++        bs->Rate = bs->Discharging ? -(LONG)rate : (LONG)rate;
++        if (bs->Discharging && rate > 0)
++            bs->EstimatedTime = 3600 * remaining / rate;
++        else
++            bs->EstimatedTime = ~0u;
++    }
+     return STATUS_SUCCESS;
+ }
+ 
+--- a/dlls/kernel32/powermgnt.c
++++ b/dlls/kernel32/powermgnt.c
+@@ -22,6 +22,7 @@
+ #include "ntstatus.h"
+ #include "windef.h"
+ #include "winbase.h"
++#include "winreg.h"
+ #include "winternl.h"
+ #include "kernel_private.h"
+ #include "wine/debug.h"
+@@ -60,9 +61,17 @@
+ 
+     ps->ACLineStatus = bs.AcOnLine;
+ 
++    /* Arctic: battery saver on (the power policy, docs/power.md) */
++    {
++        DWORD saver = 0, size = sizeof(saver);
++        if (!RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power", L"ArcticEnergySaverOn",
++                          RRF_RT_REG_DWORD, NULL, &saver, &size) && saver)
++            ps->SystemStatusFlag = 1;
++    }
++
+     if (bs.BatteryPresent)
+     {
+-        ps->BatteryLifePercent = bs.MaxCapacity ? 100 * bs.RemainingCapacity / bs.MaxCapacity : 100;
++        ps->BatteryLifePercent = bs.MaxCapacity ? min(100, (200 * (ULONGLONG)bs.RemainingCapacity / bs.MaxCapacity + 1) / 2) : 100;
+         ps->BatteryLifeTime = bs.EstimatedTime;
+         if (!bs.Charging && (LONG)bs.Rate < 0)
+             ps->BatteryFullLifeTime = 3600 * bs.MaxCapacity / -(LONG)bs.Rate;

@@ -15,7 +15,11 @@ struct screen {
     size_t size;
     uint32_t fb_id, crtc_id, conn_id;
     struct drm_mode_modeinfo mode;
+    int kept_mode; /* mode is the one already on the CRTC, not the monitor's preferred */
 };
+
+/* Which step the last failed screen_init stopped at */
+extern const char *screen_error;
 
 /* Prepares a framebuffer on an already open card fd. */
 int screen_init(struct screen *s, int fd);

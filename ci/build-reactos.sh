@@ -22,7 +22,7 @@ KEYBOARDS="kbdus kbdur kbdru"
 SHELL_DLLS="shell32 browseui shdocvw shlwapi comctl32 uxtheme devmgr"
 SHELL_EXTENSIONS="zipfldr stobject netshell"
 CONTROL_PANELS="desk mmsys"
-APPLICATIONS="sndvol32"
+APPLICATIONS="sndvol32 msconfig"
 # the About dialog's banner (ShellAbout), drawn by tools/make-brand.py
 BRANDING="rosbrand"
 TARGETS="explorer $SHELL_DLLS $SHELL_EXTENSIONS $CONTROL_PANELS $APPLICATIONS $BRANDING mizu.msstyles $KEYBOARDS"

@@ -35,9 +35,10 @@ REGEDIT4
 "Shell"="C:\\Windows\\explorer.exe"
 
 ; The notification area's own icons (stobject): Safely Remove Hardware and the
-; volume (sndvolsso.dll, sound.reg). Power joins when there is a battery to show.
+; volume (sndvolsso.dll, sound.reg) and the battery (batmeter.dll, docs/power.md),
+; which shows only when there is a battery.
 [HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Applets\SysTray]
-"Services"=dword:00000006
+"Services"=dword:00000007
 
 [HKEY_CURRENT_USER\Software\Wine\DllOverrides]
 "shell32"="native,builtin"
@@ -73,14 +74,8 @@ REGEDIT4
 "AlwaysShowExt"=""
 "NoRecentDocs"=""
 
-[HKEY_CLASSES_ROOT\Directory\shell\cmd\command]
-@="cmd.exe /s /k pushd \"%V\""
-
 [HKEY_CLASSES_ROOT\Drive]
 @="Drive"
-
-[HKEY_CLASSES_ROOT\Drive\shell\cmd\command]
-@="cmd.exe /s /k pushd \"%V\""
 
 [-HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\Namespace\{9D20AAE8-0625-44B0-9CA7-71889C2254D9}]
 

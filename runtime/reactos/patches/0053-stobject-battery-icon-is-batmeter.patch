@@ -1,0 +1,79 @@
+diff --git a/dll/shellext/stobject/power.cpp b/dll/shellext/stobject/power.cpp
+index 981b7463..8ab845cd 100644
+--- a/dll/shellext/stobject/power.cpp
++++ b/dll/shellext/stobject/power.cpp
+@@ -27,7 +27,7 @@ typedef struct _PWRSCHEMECONTEXT
+ } PWRSCHEMECONTEXT, *PPWRSCHEMECONTEXT;
+ 
+ CString  g_strTooltip;
+-static HICON g_hIconBattery = NULL;
++HICON g_hIconBattery = NULL;
+ 
+ #define HOUR_IN_SECS    3600
+ #define MIN_IN_SECS     60
+@@ -76,7 +76,8 @@ static UINT Quantize(BYTE p)
+ * @return The handle to respective battery icon.
+ *
+ *--*/
+-static HICON DynamicLoadIcon(HINSTANCE hinst)
++/* not static: the icon of the old service is no longer shown */
++HICON DynamicLoadIcon(HINSTANCE hinst)
+ {
+     SYSTEM_POWER_STATUS PowerStatus;
+     HICON hBatIcon;
+@@ -146,27 +147,47 @@ static HICON DynamicLoadIcon(HINSTANCE hinst)
+     return hBatIcon;
+ }
+ 
++/* Arctic: the battery icon is batmeter.dll's, the shell service object that
++ * shows the battery flyout of Windows 10 (docs/power.md), as the volume icon
++ * is sndvolsso.dll's. The power service starts and stops it; the icon, its
++ * flyout and its menu are its own, and it shows nothing without a battery. */
++static const CLSID CLSID_BatMeterSSO =
++    { 0x7b9c3e2a, 0x41d8, 0x4f6b, { 0x9a, 0x2e, 0x6c, 0x1d, 0x5b, 0x8f, 0x0a, 0x34 } };
++static IOleCommandTarget *g_pctPower;
++
+ HRESULT STDMETHODCALLTYPE Power_Init(_In_ CSysTray * pSysTray)
+ {
+-    TRACE("Power_Init\n");
+-    g_hIconBattery = DynamicLoadIcon(g_hInstance);
++    HRESULT hr;
+ 
+-    return pSysTray->NotifyIcon(NIM_ADD, ID_ICON_POWER, g_hIconBattery, g_strTooltip);
++    TRACE("Power_Init\n");
++    if (g_pctPower)
++        return S_OK;
++    hr = CoCreateInstance(CLSID_BatMeterSSO, NULL, CLSCTX_INPROC_SERVER, IID_IOleCommandTarget, (void **)&g_pctPower);
++    if (FAILED(hr))
++    {
++        /* the other icons come up all the same */
++        ERR("No battery icon: %#lx\n", hr);
++        return S_OK;
++    }
++    g_pctPower->Exec(&CGID_ShellServiceObject, OLECMDID_NEW, OLECMDEXECOPT_DODEFAULT, NULL, NULL);
++    return S_OK;
+ }
+ 
+ HRESULT STDMETHODCALLTYPE Power_Update(_In_ CSysTray * pSysTray)
+ {
+-    TRACE("Power_Update\n");
+-    g_hIconBattery = DynamicLoadIcon(g_hInstance);
+-
+-    return pSysTray->NotifyIcon(NIM_MODIFY, ID_ICON_POWER, g_hIconBattery, g_strTooltip);
++    return S_OK;
+ }
+ 
+ HRESULT STDMETHODCALLTYPE Power_Shutdown(_In_ CSysTray * pSysTray)
+ {
+     TRACE("Power_Shutdown\n");
+ 
+-    return pSysTray->NotifyIcon(NIM_DELETE, ID_ICON_POWER, NULL, NULL);
++    if (!g_pctPower)
++        return S_FALSE;
++    g_pctPower->Exec(&CGID_ShellServiceObject, OLECMDID_SAVE, OLECMDEXECOPT_DODEFAULT, NULL, NULL);
++    g_pctPower->Release();
++    g_pctPower = NULL;
++    return S_OK;
+ }
+ 
+ static void _RunPower()

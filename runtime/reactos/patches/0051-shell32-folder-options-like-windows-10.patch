@@ -1,0 +1,591 @@
+diff --git a/dll/win32/browseui/parsecmdline.cpp b/dll/win32/browseui/parsecmdline.cpp
+--- a/dll/win32/browseui/parsecmdline.cpp
++++ b/dll/win32/browseui/parsecmdline.cpp
+@@ -222,6 +222,27 @@
+     return pidl;
+ }
+ 
++/* Arctic: where File Explorer opens with no folder given, as Windows 10's
++ * Folder Options sets it (Explorer\Advanced\LaunchTo): 1 This PC,
++ * 2 Quick access (the default). With no Quick access folder, This PC. */
++static LPITEMIDLIST _GetLaunchToPidl()
++{
++    DWORD dwLaunchTo = 2, cb = sizeof(dwLaunchTo);
++    LPITEMIDLIST pidl = NULL;
++
++    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
++                L"LaunchTo", NULL, &dwLaunchTo, &cb);
++    if (dwLaunchTo != 1)
++    {
++        WCHAR szQuickAccess[] = L"::{679f85cb-0220-4080-b29b-5540cc05aab6}";
++        if (SUCCEEDED(_ParsePathToPidl(szQuickAccess, &pidl)))
++            return pidl;
++    }
++    if (SUCCEEDED(SHGetSpecialFolderLocation(NULL, CSIDL_DRIVES, &pidl)))
++        return pidl;
++    return _GetDocumentsPidl();
++}
++
+ /*************************************************************************
+ * SHExplorerParseCmdLine		[BROWSEUI.107]
+ */
+@@ -240,7 +261,7 @@
+     if (!*strFieldArray)
+     {
+         pInfo->dwFlags = 9;
+-        pInfo->pidlPath = _GetDocumentsPidl();
++        pInfo->pidlPath = _GetLaunchToPidl();
+         if (!pInfo->pidlPath)
+         {
+             GetWindowsDirectoryW(strDir, MAX_PATH);
+diff --git a/dll/win32/shell32/CFolderOptions.cpp b/dll/win32/shell32/CFolderOptions.cpp
+--- a/dll/win32/shell32/CFolderOptions.cpp
++++ b/dll/win32/shell32/CFolderOptions.cpp
+@@ -40,6 +40,7 @@
+ INT_PTR CALLBACK FolderOptionsGeneralDlg(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
+ INT_PTR CALLBACK FolderOptionsViewDlg(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
+ INT_PTR CALLBACK FolderOptionsFileTypesDlg(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
++INT_PTR CALLBACK FolderOptionsSearchDlg(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
+ 
+ HRESULT STDMETHODCALLTYPE CFolderOptions::AddPages(LPFNSVADDPROPSHEETPAGE pfnAddPage, LPARAM lParam)
+ {
+@@ -68,10 +69,11 @@
+     if (!pfnAddPage(hPage, lParam))
+         return E_FAIL;
+ 
+-    hPage = SH_CreatePropertySheetPage(IDD_FOLDER_OPTIONS_FILETYPES, FolderOptionsFileTypesDlg, sheetparam, NULL);
++    /* Arctic: Windows 10's Search page, not Windows XP's File Types */
++    hPage = SH_CreatePropertySheetPage(IDD_FOLDER_OPTIONS_SEARCH, FolderOptionsSearchDlg, sheetparam, NULL);
+     if (hPage == NULL)
+     {
+-        ERR("Failed to create property sheet page FolderOptionsFileTypes\n");
++        ERR("Failed to create property sheet page FolderOptionsSearch\n");
+         return E_FAIL;
+     }
+     if (!pfnAddPage(hPage, lParam))
+diff --git a/dll/win32/shell32/CMakeLists.txt b/dll/win32/shell32/CMakeLists.txt
+--- a/dll/win32/shell32/CMakeLists.txt
++++ b/dll/win32/shell32/CMakeLists.txt
+@@ -35,6 +35,7 @@
+     dialogs/item_prop.cpp
+     dialogs/general.cpp
+     dialogs/recycler_prop.cpp
++    dialogs/search.cpp
+     dialogs/view.cpp
+     CDropTargetHelper.cpp
+     CEnumIDListBase.cpp
+diff --git a/dll/win32/shell32/dialogs/folder_options.cpp b/dll/win32/shell32/dialogs/folder_options.cpp
+--- a/dll/win32/shell32/dialogs/folder_options.cpp
++++ b/dll/win32/shell32/dialogs/folder_options.cpp
+@@ -161,7 +161,8 @@
+     if (hpage)
+         hppages[num_pages++] = hpage;
+ 
+-    hpage = SH_CreatePropertySheetPage(IDD_FOLDER_OPTIONS_FILETYPES, FolderOptionsFileTypesDlg, 0, NULL);
++    /* Arctic: Windows 10's Search page, not Windows XP's File Types */
++    hpage = SH_CreatePropertySheetPage(IDD_FOLDER_OPTIONS_SEARCH, FolderOptionsSearchDlg, 0, NULL);
+     if (hpage)
+         hppages[num_pages++] = hpage;
+ 
+diff --git a/dll/win32/shell32/dialogs/folder_options.h b/dll/win32/shell32/dialogs/folder_options.h
+--- a/dll/win32/shell32/dialogs/folder_options.h
++++ b/dll/win32/shell32/dialogs/folder_options.h
+@@ -44,6 +44,14 @@
+     WPARAM wParam,
+     LPARAM lParam);
+ 
++// IDD_FOLDER_OPTIONS_SEARCH (Arctic: Windows 10's third page)
++INT_PTR CALLBACK
++FolderOptionsSearchDlg(
++    HWND hwndDlg,
++    UINT uMsg,
++    WPARAM wParam,
++    LPARAM lParam);
++
+ HBITMAP Create24BppBitmap(HDC hDC, INT cx, INT cy);
+ HBITMAP BitmapFromIcon(HICON hIcon, INT cx, INT cy);
+ 
+diff --git a/dll/win32/shell32/dialogs/general.cpp b/dll/win32/shell32/dialogs/general.cpp
+--- a/dll/win32/shell32/dialogs/general.cpp
++++ b/dll/win32/shell32/dialogs/general.cpp
+@@ -177,8 +177,61 @@
+     HICON hTaskIcon;
+     HICON hFolderIcon;
+     HICON hClickIcon;
++    HICON hPrivacyIcon;
++    BOOL bUseCommonTasks; /* no longer on the page (Windows 10): kept as it is */
+ } GENERAL_DIALOG, *PGENERAL_DIALOG;
+ 
++/* Arctic: the rest of Windows 10's page. "Open File Explorer to" is
++ * Explorer\Advanced\LaunchTo (1 This PC, 2 Quick access, its default); the
++ * privacy boxes are Explorer\ShowRecent and ShowFrequent (1 by default). */
++#define EXPLORER_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer"
++#define LAUNCHTO_THISPC      1
++#define LAUNCHTO_QUICKACCESS 2
++
++static DWORD
++GeneralDlg_GetDword(LPCWSTR pszSubKey, LPCWSTR pszValue, DWORD dwDefault)
++{
++    DWORD dwValue = dwDefault, cb = sizeof(dwValue);
++    if (SHGetValueW(HKEY_CURRENT_USER, pszSubKey, pszValue, NULL, &dwValue, &cb) != ERROR_SUCCESS)
++        return dwDefault;
++    return dwValue;
++}
++
++static void
++GeneralDlg_SetDword(LPCWSTR pszSubKey, LPCWSTR pszValue, DWORD dwValue)
++{
++    SHSetValueW(HKEY_CURRENT_USER, pszSubKey, pszValue, REG_DWORD, &dwValue, sizeof(dwValue));
++}
++
++static void
++GeneralDlg_StorePrivacyToUI(HWND hwndDlg, DWORD dwLaunchTo, BOOL bShowRecent, BOOL bShowFrequent)
++{
++    HWND hCombo = GetDlgItem(hwndDlg, IDC_FOLDER_OPTIONS_LAUNCHTO);
++    /* item data: the LaunchTo value of the choice */
++    for (INT i = 0; i < (INT)SendMessageW(hCombo, CB_GETCOUNT, 0, 0); ++i)
++    {
++        if ((DWORD)SendMessageW(hCombo, CB_GETITEMDATA, i, 0) == dwLaunchTo)
++            SendMessageW(hCombo, CB_SETCURSEL, i, 0);
++    }
++    CheckDlgButton(hwndDlg, IDC_FOLDER_OPTIONS_SHOWRECENT, bShowRecent ? BST_CHECKED : BST_UNCHECKED);
++    CheckDlgButton(hwndDlg, IDC_FOLDER_OPTIONS_SHOWFREQUENT, bShowFrequent ? BST_CHECKED : BST_UNCHECKED);
++}
++
++/* "Clear File Explorer history", as Windows does it at once: the recent
++ * items, the Run box's list, the paths typed in the address bar and what was
++ * searched for */
++static void
++GeneralDlg_ClearHistory(HWND hwndDlg)
++{
++    SHAddToRecentDocs(SHARD_PIDL, NULL);
++    SHDeleteKeyW(HKEY_CURRENT_USER, EXPLORER_KEY L"\\RunMRU");
++    SHDeleteKeyW(HKEY_CURRENT_USER, EXPLORER_KEY L"\\TypedPaths");
++    SHDeleteKeyW(HKEY_CURRENT_USER, EXPLORER_KEY L"\\WordWheelQuery");
++    SHDeleteKeyW(HKEY_CURRENT_USER, EXPLORER_KEY L"\\FrequentFolders");
++    SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, NULL, NULL);
++    EnableWindow(GetDlgItem(hwndDlg, IDC_FOLDER_OPTIONS_CLEARHISTORY), FALSE);
++}
++
+ static VOID
+ GeneralDlg_UpdateIcons(HWND hDlg, UINT nCtrlID, PGENERAL_DIALOG pGeneral)
+ {
+@@ -311,10 +364,25 @@
+     BOOL bUseCommonTasks = !!ss.fWebView;
+     BOOL bUnderlineHover = IntGetRawIconUnderlineValue() == UNDERLINE_HOVER;
+     BOOL bNewWindowMode = IntGetNewWindowMode();
++    pGeneral->bUseCommonTasks = bUseCommonTasks;
+ 
+     GeneralDlg_StoreToUI(hwndDlg, bDoubleClick, bUseCommonTasks, bUnderlineHover, bNewWindowMode, pGeneral);
+     GeneralDlg_UpdateIcons(hwndDlg, 0, pGeneral);
+ 
++    HWND hCombo = GetDlgItem(hwndDlg, IDC_FOLDER_OPTIONS_LAUNCHTO);
++    WCHAR szText[MAX_PATH];
++    LoadStringW(shell32_hInstance, IDS_LAUNCHTO_QUICKACCESS, szText, _countof(szText));
++    SendMessageW(hCombo, CB_SETITEMDATA, SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)szText), LAUNCHTO_QUICKACCESS);
++    LoadStringW(shell32_hInstance, IDS_LAUNCHTO_THISPC, szText, _countof(szText));
++    SendMessageW(hCombo, CB_SETITEMDATA, SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)szText), LAUNCHTO_THISPC);
++    GeneralDlg_StorePrivacyToUI(hwndDlg,
++                                GeneralDlg_GetDword(EXPLORER_KEY L"\\Advanced", L"LaunchTo", LAUNCHTO_QUICKACCESS),
++                                GeneralDlg_GetDword(EXPLORER_KEY, L"ShowRecent", TRUE),
++                                GeneralDlg_GetDword(EXPLORER_KEY, L"ShowFrequent", TRUE));
++
++    pGeneral->hPrivacyIcon = (HICON)LoadImageW(shell32_hInstance, MAKEINTRESOURCEW(IDI_SHELL_RECENT_DOCUMENTS),
++                                               IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
++    SendDlgItemMessageW(hwndDlg, IDC_FOLDER_OPTIONS_PRIVACYICON, STM_SETICON, (WPARAM)pGeneral->hPrivacyIcon, 0);
+     return TRUE;
+ }
+ 
+@@ -329,13 +397,14 @@
+ 
+     GeneralDlg_StoreToUI(hwndDlg, bDoubleClick, bUseCommonTasks, bUnderlineHover, bNewWindowMode, pGeneral);
+     GeneralDlg_UpdateIcons(hwndDlg, 0, pGeneral);
++    GeneralDlg_StorePrivacyToUI(hwndDlg, LAUNCHTO_QUICKACCESS, TRUE, TRUE);
+ }
+ 
+ static BOOL
+ GeneralDlg_OnApply(HWND hwndDlg, PGENERAL_DIALOG pGeneral)
+ {
+     BOOL bDoubleClick = !(IsDlgButtonChecked(hwndDlg, IDC_FOLDER_OPTIONS_SINGLECLICK) == BST_CHECKED);
+-    BOOL bUseCommonTasks = (IsDlgButtonChecked(hwndDlg, IDC_FOLDER_OPTIONS_COMMONTASKS) == BST_CHECKED);
++    BOOL bUseCommonTasks = pGeneral->bUseCommonTasks;
+     BOOL bUnderlineHover = (IsDlgButtonChecked(hwndDlg, IDC_FOLDER_OPTIONS_ULPOINT) == BST_CHECKED);
+     BOOL bNewWindowMode = !(IsDlgButtonChecked(hwndDlg, IDC_FOLDER_OPTIONS_SAMEWINDOW) == BST_CHECKED);
+ 
+@@ -344,6 +413,21 @@
+     IntSetShellStateSettings(bDoubleClick, bUseCommonTasks);
+     if (updateCabinets)
+         PostCabinetMessage(CWM_STATECHANGE, 0, 0);
++
++    HWND hCombo = GetDlgItem(hwndDlg, IDC_FOLDER_OPTIONS_LAUNCHTO);
++    INT iSel = (INT)SendMessageW(hCombo, CB_GETCURSEL, 0, 0);
++    if (iSel != CB_ERR)
++        GeneralDlg_SetDword(EXPLORER_KEY L"\\Advanced", L"LaunchTo", (DWORD)SendMessageW(hCombo, CB_GETITEMDATA, iSel, 0));
++    BOOL bShowRecent = IsDlgButtonChecked(hwndDlg, IDC_FOLDER_OPTIONS_SHOWRECENT) == BST_CHECKED;
++    BOOL bShowFrequent = IsDlgButtonChecked(hwndDlg, IDC_FOLDER_OPTIONS_SHOWFREQUENT) == BST_CHECKED;
++    if (bShowRecent != !!GeneralDlg_GetDword(EXPLORER_KEY, L"ShowRecent", TRUE) ||
++        bShowFrequent != !!GeneralDlg_GetDword(EXPLORER_KEY, L"ShowFrequent", TRUE))
++    {
++        GeneralDlg_SetDword(EXPLORER_KEY, L"ShowRecent", bShowRecent);
++        GeneralDlg_SetDword(EXPLORER_KEY, L"ShowFrequent", bShowFrequent);
++        /* Quick access shows what it may show */
++        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, NULL, NULL);
++    }
+     return TRUE;
+ }
+ 
+@@ -362,6 +446,7 @@
+             general.hTaskIcon = NULL;
+             general.hFolderIcon = NULL;
+             general.hClickIcon = NULL;
++            general.hPrivacyIcon = NULL;
+             return GeneralDlg_OnInitDialog(hwndDlg, &general);
+ 
+         case WM_COMMAND:
+@@ -383,6 +468,19 @@
+                         PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
+                     }
+                     break;
++                case IDC_FOLDER_OPTIONS_SHOWRECENT:
++                case IDC_FOLDER_OPTIONS_SHOWFREQUENT:
++                    if (HIWORD(wParam) == BN_CLICKED)
++                        PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
++                    break;
++                case IDC_FOLDER_OPTIONS_LAUNCHTO:
++                    if (HIWORD(wParam) == CBN_SELCHANGE)
++                        PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
++                    break;
++                case IDC_FOLDER_OPTIONS_CLEARHISTORY:
++                    if (HIWORD(wParam) == BN_CLICKED)
++                        GeneralDlg_ClearHistory(hwndDlg);
++                    break;
+                 case IDC_FOLDER_OPTIONS_RESTORE:
+                     if (HIWORD(wParam) == BN_CLICKED)
+                     {
+@@ -414,6 +512,7 @@
+             DestroyIcon(general.hTaskIcon);
+             DestroyIcon(general.hFolderIcon);
+             DestroyIcon(general.hClickIcon);
++            DestroyIcon(general.hPrivacyIcon);
+             break;
+ 
+         default:
+diff --git a/dll/win32/shell32/dialogs/search.cpp b/dll/win32/shell32/dialogs/search.cpp
+new file mode 100644
+--- /dev/null
++++ b/dll/win32/shell32/dialogs/search.cpp
+@@ -0,0 +1,91 @@
++/*
++ * PROJECT:     Arctic
++ * LICENSE:     LGPL-2.1-or-later (https://spdx.org/licenses/LGPL-2.1-or-later)
++ * PURPOSE:     Folder Options' Search page, as in Windows 10
++ */
++
++#include "precomp.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL (fprop);
++
++/* Where Windows 10 keeps them; the search of Arctic's File Explorer reads them */
++#define SEARCH_PREFS_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Search\\Preferences"
++#define SEARCH_UNINDEXED_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Search\\PrimaryProperties\\UnindexedLocations"
++
++static DWORD
++SearchDlg_GetDword(LPCWSTR pszSubKey, LPCWSTR pszValue, DWORD dwDefault)
++{
++    DWORD dwValue = dwDefault, cb = sizeof(dwValue);
++    if (SHGetValueW(HKEY_CURRENT_USER, pszSubKey, pszValue, NULL, &dwValue, &cb) != ERROR_SUCCESS)
++        return dwDefault;
++    return dwValue;
++}
++
++static void
++SearchDlg_SetDword(LPCWSTR pszSubKey, LPCWSTR pszValue, DWORD dwValue)
++{
++    SHSetValueW(HKEY_CURRENT_USER, pszSubKey, pszValue, REG_DWORD, &dwValue, sizeof(dwValue));
++}
++
++static void
++SearchDlg_StoreToUI(HWND hwndDlg, BOOL bNoIndex, BOOL bSystemFolders, BOOL bArchives, BOOL bContents)
++{
++    CheckDlgButton(hwndDlg, IDC_SEARCH_NOINDEX, bNoIndex ? BST_CHECKED : BST_UNCHECKED);
++    CheckDlgButton(hwndDlg, IDC_SEARCH_SYSTEMFOLDERS, bSystemFolders ? BST_CHECKED : BST_UNCHECKED);
++    CheckDlgButton(hwndDlg, IDC_SEARCH_ARCHIVES, bArchives ? BST_CHECKED : BST_UNCHECKED);
++    CheckDlgButton(hwndDlg, IDC_SEARCH_CONTENTS, bContents ? BST_CHECKED : BST_UNCHECKED);
++}
++
++static void
++SearchDlg_OnApply(HWND hwndDlg)
++{
++    SearchDlg_SetDword(SEARCH_PREFS_KEY, L"WholeFileSystem", IsDlgButtonChecked(hwndDlg, IDC_SEARCH_NOINDEX) == BST_CHECKED);
++    SearchDlg_SetDword(SEARCH_PREFS_KEY, L"SystemFolders", IsDlgButtonChecked(hwndDlg, IDC_SEARCH_SYSTEMFOLDERS) == BST_CHECKED);
++    SearchDlg_SetDword(SEARCH_PREFS_KEY, L"ArchivedFiles", IsDlgButtonChecked(hwndDlg, IDC_SEARCH_ARCHIVES) == BST_CHECKED);
++    /* "always search names and contents" is SearchOnly = 0 */
++    SearchDlg_SetDword(SEARCH_UNINDEXED_KEY, L"SearchOnly", IsDlgButtonChecked(hwndDlg, IDC_SEARCH_CONTENTS) != BST_CHECKED);
++}
++
++INT_PTR CALLBACK
++FolderOptionsSearchDlg(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
++{
++    switch (uMsg)
++    {
++        case WM_INITDIALOG:
++            SearchDlg_StoreToUI(hwndDlg,
++                                SearchDlg_GetDword(SEARCH_PREFS_KEY, L"WholeFileSystem", FALSE),
++                                SearchDlg_GetDword(SEARCH_PREFS_KEY, L"SystemFolders", TRUE),
++                                SearchDlg_GetDword(SEARCH_PREFS_KEY, L"ArchivedFiles", FALSE),
++                                !SearchDlg_GetDword(SEARCH_UNINDEXED_KEY, L"SearchOnly", TRUE));
++            return TRUE;
++
++        case WM_COMMAND:
++            switch (LOWORD(wParam))
++            {
++                case IDC_SEARCH_NOINDEX:
++                case IDC_SEARCH_SYSTEMFOLDERS:
++                case IDC_SEARCH_ARCHIVES:
++                case IDC_SEARCH_CONTENTS:
++                    if (HIWORD(wParam) == BN_CLICKED)
++                        PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
++                    break;
++                case IDC_SEARCH_RESTORE:
++                    if (HIWORD(wParam) == BN_CLICKED)
++                    {
++                        SearchDlg_StoreToUI(hwndDlg, FALSE, TRUE, FALSE, FALSE);
++                        PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
++                    }
++                    break;
++            }
++            break;
++
++        case WM_NOTIFY:
++            if (((LPNMHDR)lParam)->code == PSN_APPLY)
++            {
++                SearchDlg_OnApply(hwndDlg);
++                return TRUE;
++            }
++            break;
++    }
++    return FALSE;
++}
+diff --git a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -412,41 +412,59 @@
+     PUSHBUTTON "Cancel", IDCANCEL, 206, 236, 50, 14
+ END
+ 
+-IDD_FOLDER_OPTIONS_GENERAL DIALOGEX 0, 0, 264, 220
++IDD_FOLDER_OPTIONS_GENERAL DIALOGEX 0, 0, 240, 238
+ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION
+ CAPTION "General"
+ FONT 8, "MS Shell Dlg", 0, 0, 0x0
+ BEGIN
+-    GROUPBOX "Tasks", -1, 7, 10, 249, 40
+-    CONTROL "", IDC_FOLDER_OPTIONS_TASKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 20, 21, 20
+-    AUTORADIOBUTTON "Show common tasks in &folders", IDC_FOLDER_OPTIONS_COMMONTASKS, 40, 20, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Use Windows class&ic folders", IDC_FOLDER_OPTIONS_CLASSICFOLDERS, 40, 32, 210, 10
+-    GROUPBOX "Browse folders", -1, 7, 60, 249, 40, WS_TABSTOP
+-    CONTROL "", IDC_FOLDER_OPTIONS_FOLDERICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 70, 21, 20
+-    AUTORADIOBUTTON "Open each folder in the sa&me window", IDC_FOLDER_OPTIONS_SAMEWINDOW, 40, 70, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Open each folder in its own &window", IDC_FOLDER_OPTIONS_OWNWINDOW, 40, 82, 210, 10
+-    GROUPBOX "Click items as follows", -1, 7, 110, 249, 64
+-    CONTROL "", IDC_FOLDER_OPTIONS_CLICKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 120, 21, 20
+-    AUTORADIOBUTTON "&Single-click to open an item (point to select)", IDC_FOLDER_OPTIONS_SINGLECLICK, 40, 120, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "&Double-click to open an item (single-click to select)", IDC_FOLDER_OPTIONS_DOUBLECLICK, 40, 156, 210, 10
+-    AUTORADIOBUTTON "Underline icon titles consistent with my &browser", IDC_FOLDER_OPTIONS_ULBROWSER, 50, 132, 200, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Underline icon titles only when I &point at them", IDC_FOLDER_OPTIONS_ULPOINT, 50, 144, 200, 10
+-    PUSHBUTTON "&Restore Defaults", IDC_FOLDER_OPTIONS_RESTORE, 167, 178, 90, 14
++    LTEXT "Open File Explorer to:", -1, 7, 3, 77, 17
++    COMBOBOX IDC_FOLDER_OPTIONS_LAUNCHTO, 89, 7, 137, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    GROUPBOX "Browse folders", -1, 7, 22, 219, 38
++    CONTROL "", IDC_FOLDER_OPTIONS_FOLDERICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 34, 21, 20
++    AUTORADIOBUTTON "Open each folder in the sa&me window", IDC_FOLDER_OPTIONS_SAMEWINDOW, 41, 32, 178, 9, WS_TABSTOP | WS_GROUP
++    AUTORADIOBUTTON "Open each folder in its o&wn window", IDC_FOLDER_OPTIONS_OWNWINDOW, 41, 45, 178, 9
++    GROUPBOX "Click items as follows", -1, 7, 67, 219, 66
++    CONTROL "", IDC_FOLDER_OPTIONS_CLICKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 79, 21, 20
++    AUTORADIOBUTTON "&Single-click to open an item (point to select)", IDC_FOLDER_OPTIONS_SINGLECLICK, 41, 79, 174, 9, WS_TABSTOP | WS_GROUP
++    AUTORADIOBUTTON "&Double-click to open an item (single-click to select)", IDC_FOLDER_OPTIONS_DOUBLECLICK, 41, 122, 178, 9
++    AUTORADIOBUTTON "Underline icon titles consistent with my &browser", IDC_FOLDER_OPTIONS_ULBROWSER, 54, 91, 165, 16, BS_MULTILINE | WS_TABSTOP | WS_GROUP
++    AUTORADIOBUTTON "Underline icon titles only when I &point at them", IDC_FOLDER_OPTIONS_ULPOINT, 54, 110, 165, 9
++    GROUPBOX "Privacy", -1, 7, 142, 219, 71
++    CONTROL "", IDC_FOLDER_OPTIONS_PRIVACYICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 156, 21, 20
++    AUTOCHECKBOX "Show recently used files in Quick access", IDC_FOLDER_OPTIONS_SHOWRECENT, 41, 152, 178, 16, BS_MULTILINE | WS_TABSTOP | WS_GROUP
++    AUTOCHECKBOX "Show frequently used folders in Quick access", IDC_FOLDER_OPTIONS_SHOWFREQUENT, 41, 172, 178, 16, BS_MULTILINE | WS_TABSTOP | WS_GROUP
++    LTEXT "Clear File Explorer history", -1, 41, 191, 133, 16
++    PUSHBUTTON "&Clear", IDC_FOLDER_OPTIONS_CLEARHISTORY, 174, 188, 42, 14
++    PUSHBUTTON "&Restore Defaults", IDC_FOLDER_OPTIONS_RESTORE, 154, 212, 72, 14
+ END
+ 
+-IDD_FOLDER_OPTIONS_VIEW DIALOGEX 0, 0, 264, 220
++IDD_FOLDER_OPTIONS_VIEW DIALOGEX 0, 0, 240, 230
+ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION
+ CAPTION "View"
+ FONT 8, "MS Shell Dlg", 0, 0, 0x0
+ BEGIN
+-    GROUPBOX "Folder views", -1, 7, 10, 249, 60
+-    ICON IDI_SHELL_PROGRAMS_FOLDER2, IDC_STATIC, 14, 20, 21, 20
+-    LTEXT "You can apply the view (such as Details or Tiles) that you are using for this folder to all folders.", -1, 40, 20, 213, 20
+-    PUSHBUTTON "Apply to A&ll Folders", IDC_VIEW_APPLY_TO_ALL, 15, 50, 115, 14
+-    PUSHBUTTON "&Reset All Folders", IDC_VIEW_RESET_ALL, 135, 50, 115, 14
+-    LTEXT "Advanced settings:", -1, 7, 80, 100, 10
+-    CONTROL "", IDC_VIEW_TREEVIEW, "SysTreeView32", WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | TVS_DISABLEDRAGDROP | TVS_LINESATROOT, 7, 90, 249, 111
+-    PUSHBUTTON "Restore &Defaults", IDC_VIEW_RESTORE_DEFAULTS, 167, 204, 90, 14
++    GROUPBOX "Folder views", -1, 10, 5, 220, 55
++    ICON IDI_SHELL_PROGRAMS_FOLDER2, IDC_STATIC, 20, 20, 20, 20
++    LTEXT "You can apply this view (such as Details or Icons) to all folders of this type.", -1, 56, 14, 169, 24
++    PUSHBUTTON "Apply to Fo&lders", IDC_VIEW_APPLY_TO_ALL, 56, 40, 84, 15
++    PUSHBUTTON "&Reset Folders", IDC_VIEW_RESET_ALL, 143, 40, 77, 15
++    LTEXT "Advanced settings:", -1, 10, 70, 108, 8
++    CONTROL "", IDC_VIEW_TREEVIEW, "SysTreeView32", WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | TVS_DISABLEDRAGDROP | TVS_LINESATROOT, 10, 80, 220, 120
++    PUSHBUTTON "Restore &Defaults", IDC_VIEW_RESTORE_DEFAULTS, 87, 210, 143, 14
++END
++
++IDD_FOLDER_OPTIONS_SEARCH DIALOGEX 0, 0, 240, 230
++STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION
++CAPTION "Search"
++FONT 8, "MS Shell Dlg", 0, 0, 0x0
++BEGIN
++    GROUPBOX "How to search", -1, 7, 7, 224, 37
++    AUTOCHECKBOX "&Don't use the index when searching in file folders for system files (searches might take longer)", IDC_SEARCH_NOINDEX, 20, 19, 200, 20, BS_MULTILINE | BS_TOP | WS_TABSTOP | WS_GROUP
++    GROUPBOX "When searching non-indexed locations", -1, 7, 51, 224, 59
++    AUTOCHECKBOX "Include s&ystem directories", IDC_SEARCH_SYSTEMFOLDERS, 20, 62, 200, 10, WS_TABSTOP | WS_GROUP
++    AUTOCHECKBOX "Include co&mpressed files (ZIP, CAB...)", IDC_SEARCH_ARCHIVES, 20, 73, 200, 10, WS_TABSTOP
++    AUTOCHECKBOX "&Always search file names and contents (this might take several minutes)", IDC_SEARCH_CONTENTS, 20, 84, 200, 20, BS_MULTILINE | BS_TOP | WS_TABSTOP
++    PUSHBUTTON "&Restore Defaults", IDC_SEARCH_RESTORE, 81, 115, 150, 14
+ END
+ 
+ IDD_FOLDER_OPTIONS_FILETYPES DIALOGEX 0, 0, 264, 220
+@@ -920,7 +938,9 @@
+     FCIDM_SHVIEW_NEW "Ne&w" /* A menu item with an ampersand */
+     FCIDM_SHVIEW_NEWFOLDER "New &Folder"
+     FCIDM_SHVIEW_NEWLINK "New &Link"
+-    IDS_FOLDER_OPTIONS "Folder Options"
++    IDS_FOLDER_OPTIONS "File Explorer Options"
++    IDS_LAUNCHTO_QUICKACCESS "Quick access"
++    IDS_LAUNCHTO_THISPC "This PC"
+     IDS_TASKBAR_OPTIONS "Taskbar and Start Menu"
+     IDS_TASKBAR_OPTIONS_INFOTIP "Customize the Start Menu and the taskbar, such as the types of items to be displayed and how they should appear."
+     IDS_RECYCLEBIN_LOCATION "Recycle Bin Location"
+diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -412,41 +412,59 @@
+     PUSHBUTTON "Скасувати", IDCANCEL, 206, 236, 50, 14
+ END
+ 
+-IDD_FOLDER_OPTIONS_GENERAL DIALOGEX 0, 0, 264, 220
++IDD_FOLDER_OPTIONS_GENERAL DIALOGEX 0, 0, 240, 238
+ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION
+ CAPTION "Загальні"
+ FONT 8, "MS Shell Dlg", 0, 0, 0x0
+ BEGIN
+-    GROUPBOX "Завдання", -1, 7, 10, 249, 40
+-    CONTROL "", IDC_FOLDER_OPTIONS_TASKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 20, 21, 20
+-    AUTORADIOBUTTON "&Показувати список типових завдань у теках", IDC_FOLDER_OPTIONS_COMMONTASKS, 40, 20, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Використовувати зви&чайні папки Windows", IDC_FOLDER_OPTIONS_CLASSICFOLDERS, 40, 32, 210, 10
+-    GROUPBOX "Огляд папок", -1, 7, 60, 249, 40, WS_TABSTOP
+-    CONTROL "", IDC_FOLDER_OPTIONS_FOLDERICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 70, 21, 20
+-    AUTORADIOBUTTON "Відкривати папки в то&му самому вікні", IDC_FOLDER_OPTIONS_SAMEWINDOW, 40, 70, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Відкрива&ти кожну папку в окремому вікні", IDC_FOLDER_OPTIONS_OWNWINDOW, 40, 82, 210, 10
+-    GROUPBOX "Клацання мишею", -1, 7, 110, 249, 64
+-    CONTROL "", IDC_FOLDER_OPTIONS_CLICKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 120, 21, 20
+-    AUTORADIOBUTTON "Від&кривати одиночним, виділяти вказівником", IDC_FOLDER_OPTIONS_SINGLECLICK, 40, 120, 210, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Відкрив&ати подвійним, виділяти одиночним", IDC_FOLDER_OPTIONS_DOUBLECLICK, 40, 156, 210, 10
+-    AUTORADIOBUTTON "Підкресл&ювати підписи значків", IDC_FOLDER_OPTIONS_ULBROWSER, 50, 132, 200, 10, WS_TABSTOP | WS_GROUP
+-    AUTORADIOBUTTON "Підкр&еслювати лише при наведенні", IDC_FOLDER_OPTIONS_ULPOINT, 50, 144, 200, 10
+-    PUSHBUTTON "&Стандартно", IDC_FOLDER_OPTIONS_RESTORE, 167, 178, 90, 14
++    LTEXT "Відкрити у Файловому провіднику:", -1, 7, 3, 77, 17
++    COMBOBOX IDC_FOLDER_OPTIONS_LAUNCHTO, 89, 7, 137, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    GROUPBOX "Огляд папок", -1, 7, 22, 219, 38
++    CONTROL "", IDC_FOLDER_OPTIONS_FOLDERICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 34, 21, 20
++    AUTORADIOBUTTON "Відкривати папки в то&му самому вікні", IDC_FOLDER_OPTIONS_SAMEWINDOW, 41, 32, 178, 9, WS_TABSTOP | WS_GROUP
++    AUTORADIOBUTTON "Відкрива&ти кожну папку в окремому вікні", IDC_FOLDER_OPTIONS_OWNWINDOW, 41, 45, 178, 9
++    GROUPBOX "Клацання мишею", -1, 7, 67, 219, 66
++    CONTROL "", IDC_FOLDER_OPTIONS_CLICKICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 79, 21, 20
++    AUTORADIOBUTTON "Від&кривати одиночним, виділяти вказівником", IDC_FOLDER_OPTIONS_SINGLECLICK, 41, 79, 174, 9, WS_TABSTOP | WS_GROUP
++    AUTORADIOBUTTON "Відкрив&ати подвійним, виділяти одиночним", IDC_FOLDER_OPTIONS_DOUBLECLICK, 41, 122, 178, 9
++    AUTORADIOBUTTON "Підкресл&ювати підписи піктограм відповідно до настройок браузера", IDC_FOLDER_OPTIONS_ULBROWSER, 54, 91, 165, 16, BS_MULTILINE | WS_TABSTOP | WS_GROUP
++    AUTORADIOBUTTON "Підкр&еслювати лише за наведення", IDC_FOLDER_OPTIONS_ULPOINT, 54, 110, 165, 9
++    GROUPBOX "Конфіденційність", -1, 7, 142, 219, 71
++    CONTROL "", IDC_FOLDER_OPTIONS_PRIVACYICON, "Static", SS_ICON | WS_CHILD | WS_VISIBLE, 14, 156, 21, 20
++    AUTOCHECKBOX "Показувати нещодавно використані файли в Швидкому доступі", IDC_FOLDER_OPTIONS_SHOWRECENT, 41, 152, 178, 16, BS_MULTILINE | WS_TABSTOP | WS_GROUP
++    AUTOCHECKBOX "Показувати часто використовувані папки в Швидкому доступі", IDC_FOLDER_OPTIONS_SHOWFREQUENT, 41, 172, 178, 16, BS_MULTILINE | WS_TABSTOP | WS_GROUP
++    LTEXT "Очистити журнал Файлового провідника", -1, 41, 191, 133, 16
++    PUSHBUTTON "&Очистити", IDC_FOLDER_OPTIONS_CLEARHISTORY, 174, 188, 42, 14
++    PUSHBUTTON "За замов&чуванням", IDC_FOLDER_OPTIONS_RESTORE, 154, 212, 72, 14
+ END
+ 
+-IDD_FOLDER_OPTIONS_VIEW DIALOGEX 0, 0, 264, 220
++IDD_FOLDER_OPTIONS_VIEW DIALOGEX 0, 0, 240, 230
+ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION
+-CAPTION "Вигляд"
++CAPTION "Подання"
+ FONT 8, "MS Shell Dlg", 0, 0, 0x0
+ BEGIN
+-    GROUPBOX "Вигляд тек", -1, 7, 10, 249, 60
+-    ICON IDI_SHELL_PROGRAMS_FOLDER2, IDC_STATIC, 14, 20, 21, 20
+-    LTEXT "Можна застосувати вигляд, який використовується для цієї теки (наприклад, ""Таблиця"" або ""Плитка""), до всіх тек.", -1, 40, 20, 213, 20
+-    PUSHBUTTON "&Застосувати до всіх тек", IDC_VIEW_APPLY_TO_ALL, 15, 50, 115, 14
+-    PUSHBUTTON "&Скид для всіх тек", IDC_VIEW_RESET_ALL, 135, 50, 115, 14 //FIXME: accelerator collision &C
+-    LTEXT "Додаткові параметри:", -1, 7, 80, 100, 10
+-    CONTROL "", IDC_VIEW_TREEVIEW, "SysTreeView32", WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | TVS_DISABLEDRAGDROP | TVS_LINESATROOT, 7, 90, 249, 111
+-    PUSHBUTTON "&Стандартно", IDC_VIEW_RESTORE_DEFAULTS, 167, 204, 90, 14 //FIXME: accelerator collision &C
++    GROUPBOX "Подання папок", -1, 10, 5, 220, 55
++    ICON IDI_SHELL_PROGRAMS_FOLDER2, IDC_STATIC, 20, 20, 20, 20
++    LTEXT "Можна застосувати подання (наприклад, ""Таблиця"" або ""Піктограми"") до всіх папок цього типу.", -1, 56, 14, 169, 24
++    PUSHBUTTON "&Застосувати до папок", IDC_VIEW_APPLY_TO_ALL, 56, 40, 84, 15
++    PUSHBUTTON "&Скинути папки", IDC_VIEW_RESET_ALL, 143, 40, 77, 15
++    LTEXT "Додаткові параметри:", -1, 10, 70, 108, 8
++    CONTROL "", IDC_VIEW_TREEVIEW, "SysTreeView32", WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | TVS_DISABLEDRAGDROP | TVS_LINESATROOT, 10, 80, 220, 120
++    PUSHBUTTON "&Відновити значення за замовчуванням", IDC_VIEW_RESTORE_DEFAULTS, 87, 210, 143, 14
++END
++
++IDD_FOLDER_OPTIONS_SEARCH DIALOGEX 0, 0, 240, 230
++STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION
++CAPTION "Пошук"
++FONT 8, "MS Shell Dlg", 0, 0, 0x0
++BEGIN
++    GROUPBOX "Метод пошуку", -1, 7, 7, 224, 37
++    AUTOCHECKBOX "&Не використовувати індекс під час пошуку системних файлів у папках (можливо, пошук триватиме довше)", IDC_SEARCH_NOINDEX, 20, 19, 200, 20, BS_MULTILINE | BS_TOP | WS_TABSTOP | WS_GROUP
++    GROUPBOX "Під час пошуку неіндексованих розташувань", -1, 7, 51, 224, 59
++    AUTOCHECKBOX "Вклю&чати в область пошуку системні каталоги", IDC_SEARCH_SYSTEMFOLDERS, 20, 62, 200, 10, WS_TABSTOP | WS_GROUP
++    AUTOCHECKBOX "Включати стиснуті &файли (ZIP, CAB...)", IDC_SEARCH_ARCHIVES, 20, 73, 200, 10, WS_TABSTOP
++    AUTOCHECKBOX "Зав&жди шукати імена файлів і вміст (пошук може тривати кілька хвилин)", IDC_SEARCH_CONTENTS, 20, 84, 200, 20, BS_MULTILINE | BS_TOP | WS_TABSTOP
++    PUSHBUTTON "&Відновити", IDC_SEARCH_RESTORE, 81, 115, 150, 14
+ END
+ 
+ IDD_FOLDER_OPTIONS_FILETYPES DIALOGEX 0, 0, 264, 220
+@@ -920,7 +938,9 @@
+     FCIDM_SHVIEW_NEW "Ne&w" /* A menu item with an ampersand */
+     FCIDM_SHVIEW_NEWFOLDER "&Папку"
+     FCIDM_SHVIEW_NEWLINK "&Ярлик"
+-    IDS_FOLDER_OPTIONS "Властивості папки"
++    IDS_FOLDER_OPTIONS "Параметри Файлового провідника"
++    IDS_LAUNCHTO_QUICKACCESS "Швидкий доступ"
++    IDS_LAUNCHTO_THISPC "Цей ПК"
+     IDS_TASKBAR_OPTIONS "Taskbar and Start Menu"
+     IDS_TASKBAR_OPTIONS_INFOTIP "Customize the Start Menu and the taskbar, such as the types of items to be displayed and how they should appear."
+     IDS_RECYCLEBIN_LOCATION "Розташування кошика"
+diff --git a/dll/win32/shell32/shresdef.h b/dll/win32/shell32/shresdef.h
+--- a/dll/win32/shell32/shresdef.h
++++ b/dll/win32/shell32/shresdef.h
+@@ -463,6 +463,20 @@
+ #define IDC_FOLDER_OPTIONS_ULBROWSER       14009
+ #define IDC_FOLDER_OPTIONS_ULPOINT         14010
+ #define IDC_FOLDER_OPTIONS_RESTORE         14011
++/* Arctic: Folder Options as in Windows 10 (its control IDs) */
++#define IDD_FOLDER_OPTIONS_SEARCH          29961
++#define IDC_FOLDER_OPTIONS_LAUNCHTO        30108
++#define IDC_FOLDER_OPTIONS_SHOWRECENT      30084
++#define IDC_FOLDER_OPTIONS_SHOWFREQUENT    30085
++#define IDC_FOLDER_OPTIONS_CLEARHISTORY    30086
++#define IDC_FOLDER_OPTIONS_PRIVACYICON     30087
++#define IDC_SEARCH_NOINDEX                 30983
++#define IDC_SEARCH_SYSTEMFOLDERS           30984
++#define IDC_SEARCH_ARCHIVES                30985
++#define IDC_SEARCH_CONTENTS                30978
++#define IDC_SEARCH_RESTORE                 30986
++#define IDS_LAUNCHTO_QUICKACCESS           51378
++#define IDS_LAUNCHTO_THISPC                51379
+ 
+ /* Yes to all msgbox */
+ #define IDD_YESTOALL_MSGBOX  20

@@ -151,7 +151,11 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
     MSG msg;
 
     create_sas_window();
+    start_power_policy();
     run_userinit();
+    /* the session has begun: services.exe starts the services of programs
+     * now (Wine patch 0072), never while wineboot still sets the system up */
+    SetEvent( CreateEventW( NULL, TRUE, FALSE, L"Global\\__arctic_session_started" ) );
 
     while (GetMessageW( &msg, 0, 0, 0 ))
     {

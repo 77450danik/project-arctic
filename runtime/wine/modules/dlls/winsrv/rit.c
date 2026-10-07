@@ -402,16 +402,32 @@ static BOOL windows_key_chord( UINT key, int value )
     return FALSE;
 }
 
-/* The power button shuts the computer down, Windows' default for it ("When I
- * press the power button: Shut down"): the session ends through winlogon as
- * from Start, so programs are asked and C: is left clean. On its own thread:
+/* The power and sleep buttons do what the power plan says ("When I press
+ * the power button": docs/power.md): the power policy in winlogon does it.
+ * Without the policy the power button shuts the computer down, Windows'
+ * default on a desktop: the session ends through winlogon as from Start,
+ * so programs are asked and C: is left clean. On its own thread:
  * ExitWindowsEx waits for the session, the keys must not. */
 static DWORD WINAPI power_button_thread( void *arg )
 {
+    BOOL sleep_button = !!arg;
+    HANDLE policy = OpenEventW( EVENT_MODIFY_STATE, FALSE,
+                                sleep_button ? L"Global\\ArcticSleepButton" : L"Global\\ArcticPowerButton" );
+
+    if (policy)
+    {
+        MESSAGE( "csrss: %s button, to the power policy\n", sleep_button ? "sleep" : "power" );
+        SetEvent( policy );
+        CloseHandle( policy );
+        return 0;
+    }
+    if (sleep_button) return 0;
     MESSAGE( "csrss: power button, shutting down\n" );
     if (!ExitWindowsEx( EWX_SHUTDOWN | EWX_POWEROFF, 0 )) ERR( "ExitWindowsEx: %lu\n", GetLastError() );
     return 0;
 }
+
+static HANDLE user_input;
 
 static DWORD WINAPI raw_input_thread( void *arg )
 {
@@ -427,6 +443,8 @@ static DWORD WINAPI raw_input_thread( void *arg )
      * 150 % that is two thirds of it */
     SetThreadDpiAwarenessContext( DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 );
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL );
+    /* the power policy's inactivity (docs/power.md) */
+    user_input = CreateEventW( NULL, FALSE, FALSE, L"Global\\ArcticUserInput" );
 
     for (;;)
     {
@@ -447,6 +465,7 @@ static DWORD WINAPI raw_input_thread( void *arg )
             return status;
         }
 
+        if (params.count && user_input) SetEvent( user_input );
         for (UINT i = 0; i < params.count; i++)
         {
             const struct rit_event *event = &events[i];
@@ -468,10 +487,12 @@ static DWORD WINAPI raw_input_thread( void *arg )
                 send_key( event->code, event->value );
                 if (language_chord( event->code, event->value )) next_input_language();
                 if (event->code == KEY_SYSRQ && event->value == 1) print_screen();
-                if (event->code == KEY_POWER)
+                if (event->code == KEY_POWER || event->code == KEY_SLEEP)
                 {
                     HANDLE thread;
-                    if (event->value == 1 && (thread = CreateThread( NULL, 0, power_button_thread, NULL, 0, NULL )))
+                    if (event->value == 1 &&
+                        (thread = CreateThread( NULL, 0, power_button_thread,
+                                                (void *)(UINT_PTR)(event->code == KEY_SLEEP), 0, NULL )))
                         CloseHandle( thread );
                 }
                 else if (event->value)

@@ -1,0 +1,42 @@
+diff --git a/dll/win32/shell32/folders/CControlPanelFolder.cpp b/dll/win32/shell32/folders/CControlPanelFolder.cpp
+index 2c000779..7b6ed6b1 100644
+--- a/dll/win32/shell32/folders/CControlPanelFolder.cpp
++++ b/dll/win32/shell32/folders/CControlPanelFolder.cpp
+@@ -228,6 +228,28 @@ int CControlPanelEnum::RegisterRegistryCPanelApps(HKEY hkey_root, LPCWSTR szRepP
+ /**************************************************************************
+  *  CControlPanelEnum::CreateCPanelEnumList()
+  */
++/* Arctic: an applet named in "don't load" is not listed, as in Windows: it
++ * opens something the Control Panel lists otherwise (powercfg.cpl, the Power
++ * Options folder of powercpl.dll) */
++static BOOL CPanel_DontLoad(LPCWSTR pszFileName)
++{
++    static const WCHAR szKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Control Panel\\don't load";
++    HKEY hKey;
++    BOOL bSkip = FALSE;
++
++    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, szKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
++    {
++        bSkip = RegQueryValueExW(hKey, pszFileName, NULL, NULL, NULL, NULL) == ERROR_SUCCESS;
++        RegCloseKey(hKey);
++    }
++    if (!bSkip && RegOpenKeyExW(HKEY_CURRENT_USER, szKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
++    {
++        bSkip = RegQueryValueExW(hKey, pszFileName, NULL, NULL, NULL, NULL) == ERROR_SUCCESS;
++        RegCloseKey(hKey);
++    }
++    return bSkip;
++}
++
+ BOOL CControlPanelEnum::CreateCPanelEnumList(DWORD dwFlags)
+ {
+     WCHAR szPath[MAX_PATH];
+@@ -256,7 +278,7 @@ BOOL CControlPanelEnum::CreateCPanelEnumList(DWORD dwFlags)
+ 
+                 if (!(wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                     wcscpy(p, wfd.cFileName);
+-                    if (wcscmp(wfd.cFileName, L"ncpa.cpl"))
++                    if (wcscmp(wfd.cFileName, L"ncpa.cpl") && !CPanel_DontLoad(wfd.cFileName))
+                         RegisterCPanelApp(szPath);
+                 }
+             } while(FindNextFileW(hFile, &wfd));

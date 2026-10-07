@@ -33,6 +33,9 @@
 #define IDS_SHUT_DOWN           113
 #define IDS_RESTART             114
 #define IDS_UPDATE_AND_RESTART  115
+#define IDS_HIBERNATE           178
+#define IDS_HIBERNATE_REFUSED   179
+#define IDS_SLEEP               180
 #define IDS_PROGRAMS            116
 #define IDS_RESULTS_PROGRAMS    117
 #define IDS_RESULTS_SETTINGS    118

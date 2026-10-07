@@ -1,0 +1,18 @@
+diff --git a/dll/win32/shell32/CQueryAssociations.cpp b/dll/win32/shell32/CQueryAssociations.cpp
+--- a/dll/win32/shell32/CQueryAssociations.cpp
++++ b/dll/win32/shell32/CQueryAssociations.cpp
+@@ -55,7 +55,13 @@
+ static HRESULT SH32_AssocCreateElementOnKey(_In_ REFCLSID rclsid, _In_ HKEY hKey, _In_opt_ PCWSTR pszSubKey,
+                                             _In_ REFIID riid, _Outptr_ PVOID *ppv)
+ {
+-#if DLL_EXPORT_VERSION >= _WIN32_WINNT_VISTA
++    /* Arctic: our association elements (evalcmd/elements.cpp) only know
++     * IQuerySourceOld. shlwapi hands out the Vista IQuerySource whenever
++     * Windows says it is Vista or later, which Arctic's Windows does: the
++     * elements then called it through the old vtable (OpenSource landed on
++     * EnumSources, which wrote into L"shell") and the File Types page of
++     * Folder Options crashed explorer. The new source only for new elements. */
++#if SHELL32_CAssocElement_Version >= _WIN32_WINNT_VISTA
+     HRESULT hr = AssocCreateElementOnKeyInternal(rclsid, hKey, pszSubKey, riid, ppv, 6);
+     if (SUCCEEDED(hr))
+         return hr;

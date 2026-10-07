@@ -21,5 +21,8 @@ struct screen;
 int boot_font_load(const char *path);
 double boot_line_height(int big, double f);
 void boot_text(struct screen *s, int big, const char *text, double baseline, double f, uint32_t bg);
+/* the same, from x rather than centred; and how wide the text is */
+void boot_text_at(struct screen *s, int big, const char *text, double x, double baseline, double f, uint32_t bg);
+double boot_text_width(int big, const char *text, double f);
 
 #endif

@@ -1,0 +1,154 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 7 Oct 2026 01:00:00 +0200
+Subject: [PATCH] services: The services of programs start after the logon.
+
+services.exe started every auto-start service in turn, waiting for each,
+and only then told wineboot that the services were up. Chrome Remote
+Desktop's service held the start for minutes: after an update wine.inf's
+install hung beside it, wineboot never ended, every Wine program after it
+waited for wineboot's event, and the start ended on a blue screen. In
+Windows the logon does not wait for the services of programs. Drivers and
+the services in Windows' directory start as before; the others in a thread
+of their own once winlogon has begun the session
+(Global\__arctic_session_started), or after 5 minutes without one.
+---
+diff --git a/programs/services/services.c b/programs/services/services.c
+--- a/programs/services/services.c
++++ b/programs/services/services.c
+@@ -406,8 +406,76 @@
+     return FALSE;
+ }
+ 
++/* Arctic: a service that is a program of its own, outside Windows' directory
++ * (Chrome Remote Desktop, an updater...), as opposed to the drivers and
++ * services of the system that the start needs */
++static BOOL is_third_party_service(const struct service_entry *service)
++{
++    WCHAR windir[MAX_PATH], path[MAX_PATH];
++    const WCHAR *image = service->config.lpBinaryPathName;
++    UINT len;
++
++    if (!(service->config.dwServiceType & SERVICE_WIN32) || !image)
++        return FALSE;
++    if (*image == '"')
++        image++;
++    if (!ExpandEnvironmentStringsW(image, path, ARRAY_SIZE(path)))
++        return FALSE;
++    len = GetSystemWindowsDirectoryW(windir, ARRAY_SIZE(windir));
++    if (!len || len >= ARRAY_SIZE(windir))
++        return FALSE;
++    return wcsnicmp(path, windir, len) || path[len] != '\\';
++}
++
++struct background_autostart
++{
++    struct scmdatabase *db;
++    struct service_entry **services;
++    unsigned int count;
++};
++
++/* Arctic: as in Windows, the start does not wait for the services of programs:
++ * they come up beside it. One that hung or crashed over and over kept wineboot,
++ * and with it "Робота з оновленнями" and the desktop, waiting for minutes. */
++static DWORD WINAPI background_autostart_proc(void *arg)
++{
++    struct background_autostart *params = arg;
++    HANDLE session;
++    unsigned int i;
++
++    /* after the desktop, as the user sees it in Windows: winlogon signals the
++     * start of the session. Before it, wineboot may still be setting the
++     * system up after an update: a program's service starting then (Chrome
++     * Remote Desktop) held wine.inf's install, and every Wine program after it
++     * waited for wineboot for minutes. With no session, after 5 minutes. */
++    if ((session = CreateEventW( NULL, TRUE, FALSE, L"Global\\__arctic_session_started" )))
++    {
++        WaitForSingleObject( session, 5 * 60 * 1000 );
++        CloseHandle( session );
++    }
++
++    for (i = 0; i < params->count; i++)
++    {
++        struct service_entry *service = params->services[i];
++        DWORD err;
++
++        TRACE("starting %s beside the start\n", wine_dbgstr_w(service->name));
++        scmdatabase_lock_startup(params->db, INFINITE);
++        err = service_start(service, 0, NULL);
++        scmdatabase_unlock_startup(params->db);
++        if (err != ERROR_SUCCESS)
++            WINE_FIXME("Auto-start service %s failed to start: %ld\n",
++                       wine_dbgstr_w(service->name), err);
++        release_service(service);
++    }
++    free(params->services);
++    free(params);
++    return 0;
++}
++
+ static void scmdatabase_autostart_services(struct scmdatabase *db)
+ {
++    struct background_autostart *background = NULL;
+     struct service_entry **services_list;
+     unsigned int i = 0;
+     unsigned int size = 32;
+@@ -447,6 +515,17 @@
+ 
+     scmdatabase_unlock(db);
+     qsort(services_list, size, sizeof(services_list[0]), compare_service);
++    if ((background = malloc(sizeof(*background))) &&
++        !(background->services = malloc(max(size, 1) * sizeof(background->services[0]))))
++    {
++        free(background);
++        background = NULL;
++    }
++    if (background)
++    {
++        background->db = db;
++        background->count = 0;
++    }
+     scmdatabase_lock_startup(db, INFINITE);
+ 
+     for (i = 0; i < size; i++)
+@@ -459,6 +538,11 @@
+             services_list[delayed_cnt++] = service;
+             continue;
+         }
++        if (background && is_third_party_service(service))
++        {
++            background->services[background->count++] = service;
++            continue;
++        }
+         err = service_start(service, 0, NULL);
+         if (err != ERROR_SUCCESS)
+             WINE_FIXME("Auto-start service %s failed to start: %ld\n",
+@@ -468,6 +552,29 @@
+ 
+     scmdatabase_unlock_startup(db);
+ 
++    if (background)
++    {
++        HANDLE thread = NULL;
++
++        if (background->count &&
++            !(thread = CreateThread(NULL, 0, background_autostart_proc, background, 0, NULL)))
++        {
++            /* no thread: the old way, in turn */
++            for (i = 0; i < background->count; i++)
++            {
++                service_start(background->services[i], 0, NULL);
++                release_service(background->services[i]);
++            }
++        }
++        if (thread)
++            CloseHandle(thread);
++        else
++        {
++            free(background->services);
++            free(background);
++        }
++    }
++
+     if (!delayed_cnt || !schedule_delayed_autostart(services_list, delayed_cnt))
+         free(services_list);
+     SetupDiDestroyDeviceInfoList(set);

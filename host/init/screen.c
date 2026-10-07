@@ -9,9 +9,39 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+const char *screen_error = "";
+
 static void *zalloc(uint32_t count, size_t size)
 {
     return calloc(count ? count : 1, size);
+}
+
+static uint32_t whole_hz(const struct drm_mode_modeinfo *m)
+{
+    uint64_t total = (uint64_t)m->htotal * m->vtotal;
+
+    return total ? (uint32_t)(((uint64_t)m->clock * 1000 + total / 2) / total) : m->vrefresh;
+}
+
+/* The firmware lit the panel, and the GPU driver took its mode over as it
+ * was (i915 fastboot). Its timings may differ from the monitor's preferred
+ * mode (the panel's from the video BIOS, not EDID's), and asking for the
+ * preferred one at the same size and refresh makes the driver
+ * switch the panel off and on, a second of black. That mode is kept, as
+ * Windows keeps the picture the firmware left. */
+static void keep_crtc_mode(struct screen *s)
+{
+    struct drm_mode_crtc crtc = {.crtc_id = s->crtc_id};
+
+    if (ioctl(s->fd, DRM_IOCTL_MODE_GETCRTC, &crtc) || !crtc.mode_valid ||
+        crtc.mode.hdisplay != s->mode.hdisplay || crtc.mode.vdisplay != s->mode.vdisplay ||
+        whole_hz(&crtc.mode) != whole_hz(&s->mode))
+        return;
+    const struct drm_mode_modeinfo *a = &crtc.mode, *b = &s->mode;
+    s->kept_mode = a->clock != b->clock || a->hsync_start != b->hsync_start || a->hsync_end != b->hsync_end ||
+                   a->htotal != b->htotal || a->vsync_start != b->vsync_start || a->vsync_end != b->vsync_end ||
+                   a->vtotal != b->vtotal || a->flags != b->flags;
+    s->mode = crtc.mode;
 }
 
 /* Finds a connected connector, its preferred mode and a CRTC that can drive it. */
@@ -21,8 +51,10 @@ static int pick_output(struct screen *s)
     uint32_t *conns = NULL, *crtcs = NULL, *encs = NULL, *fbs = NULL;
     int found = 0;
 
-    if (ioctl(s->fd, DRM_IOCTL_MODE_GETRESOURCES, &res))
+    if (ioctl(s->fd, DRM_IOCTL_MODE_GETRESOURCES, &res)) {
+        screen_error = "GETRESOURCES";
         return -1;
+    }
     conns = zalloc(res.count_connectors, 4);
     crtcs = zalloc(res.count_crtcs, 4);
     encs = zalloc(res.count_encoders, 4);
@@ -67,6 +99,8 @@ static int pick_output(struct screen *s)
                     s->conn_id = conn.connector_id;
                     s->crtc_id = crtc;
                     s->mode = modes[m];
+                    if (enc.crtc_id)
+                        keep_crtc_mode(s);
                     found = 1;
                 }
             }
@@ -79,6 +113,8 @@ out:
     free(crtcs);
     free(encs);
     free(fbs);
+    if (!found)
+        screen_error = "no connected output";
     return found ? 0 : -1;
 }
 
@@ -90,19 +126,27 @@ int screen_init(struct screen *s, int fd)
         return -1;
 
     struct drm_mode_create_dumb cd = {.width = s->mode.hdisplay, .height = s->mode.vdisplay, .bpp = 32};
-    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &cd))
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &cd)) {
+        screen_error = "CREATE_DUMB";
         return -1;
+    }
     struct drm_mode_fb_cmd fb = {
         .width = cd.width, .height = cd.height, .pitch = cd.pitch, .bpp = 32, .depth = 24, .handle = cd.handle,
     };
-    if (ioctl(fd, DRM_IOCTL_MODE_ADDFB, &fb))
+    if (ioctl(fd, DRM_IOCTL_MODE_ADDFB, &fb)) {
+        screen_error = "ADDFB";
         return -1;
+    }
     struct drm_mode_map_dumb md = {.handle = cd.handle};
-    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &md))
+    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &md)) {
+        screen_error = "MAP_DUMB";
         return -1;
+    }
     void *map = mmap(NULL, cd.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)md.offset);
-    if (map == MAP_FAILED)
+    if (map == MAP_FAILED) {
+        screen_error = "mmap";
         return -1;
+    }
 
     s->width = cd.width;
     s->height = cd.height;

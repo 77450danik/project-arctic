@@ -86,7 +86,7 @@ static UINT               output_count;
 
 static const WCHAR monitor_store_keyW[] =
     L"System\\CurrentControlSet\\Control\\GraphicsDrivers\\MonitorDataStore";
-static HKEY   gpu_preferences, monitor_store;
+static HKEY   gpu_preferences, monitor_store, display_power;
 static HANDLE options_changed;
 
 /* "ACR0A2B", the Plug and Play id of the monitor from its EDID, as win32u
@@ -142,7 +142,11 @@ static void update_options(void)
         if (!RegGetValueW( monitor_store, id, L"VariableRefresh", RRF_RT_REG_DWORD, NULL, &on, &size ) && !on)
             params.vrr_off[params.vrr_off_count++] = outputs[i].id;
     }
+    /* the power policy's "turn off the display" (winlogon, docs/power.md) */
+    size = sizeof(params.monitors_off);
+    if (display_power) RegQueryValueExW( display_power, L"MonitorsOff", NULL, NULL, (BYTE *)&params.monitors_off, &size );
     WINE_UNIX_CALL( unix_dwm_set_options, &params );
+    if (display_power) RegNotifyChangeKeyValue( display_power, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
     if (gpu_preferences)
         RegNotifyChangeKeyValue( gpu_preferences, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
     if (monitor_store)
@@ -735,6 +739,10 @@ DWORD WINAPI DwmCoreRun(void)
                      KEY_QUERY_VALUE | KEY_NOTIFY, NULL, &gpu_preferences, NULL );
     RegCreateKeyExW( HKEY_LOCAL_MACHINE, monitor_store_keyW, 0, NULL, 0,
                      KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_NOTIFY, NULL, &monitor_store, NULL );
+    /* volatile: a display left dark by a crash is lit at the next start */
+    RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticDisplay", 0, NULL,
+                     REG_OPTION_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_NOTIFY, NULL, &display_power, NULL );
+    if (display_power) RegDeleteValueW( display_power, L"MonitorsOff" );
     options_changed = CreateEventW( NULL, FALSE, FALSE, NULL );
     publish_vrr_capability();
     update_options();

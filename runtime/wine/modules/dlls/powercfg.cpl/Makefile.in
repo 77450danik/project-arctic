@@ -1,0 +1,9 @@
+MODULE    = powercfg.cpl
+IMPORTS   = user32
+
+VER_FILEDESCRIPTION_STR = "Power Management Configuration Control Panel Applet"
+
+SOURCES = \
+	power.ico \
+	powercfg.c \
+	powercfg.rc

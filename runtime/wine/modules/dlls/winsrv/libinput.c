@@ -36,6 +36,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(winsrv);
 static struct libinput *li;
 static double motion_x, motion_y, scroll_x, scroll_y;  /* fractions not sent yet */
 static double raw_motion_x, raw_motion_y;
+#define KEY_POWER_CODE 116 /* linux/input-event-codes.h */
+static UINT64 session_start_usec; /* CLOCK_MONOTONIC, as libinput stamps its events */
 
 static int open_restricted( const char *path, int flags, void *data )
 {
@@ -57,7 +59,11 @@ static const struct libinput_interface input_interface =
 
 static NTSTATUS rit_init( void *args )
 {
+    struct timespec now;
     struct udev *udev;
+
+    clock_gettime( CLOCK_MONOTONIC, &now );
+    session_start_usec = (UINT64)now.tv_sec * 1000000 + now.tv_nsec / 1000;
 
     if (!(udev = udev_new())) return STATUS_UNSUCCESSFUL;
     li = libinput_udev_create_context( &input_interface, NULL, udev );
@@ -123,6 +129,17 @@ static void translate( struct rit_read_params *params, struct libinput_event *ev
         key = libinput_event_get_keyboard_event( event );
         pressed = libinput_event_keyboard_get_key_state( key ) == LIBINPUT_KEY_STATE_PRESSED;
         count = libinput_event_keyboard_get_seat_key_count( key );
+        /* The press of the power button that switched the machine on, or
+         * woke it from a fast startup, reaches the new session too (ACPI
+         * reports it after waking): ignored, as Windows ignores it. The
+         * event's own time counts: the session's clocks may still be those
+         * of before the sleep. */
+        if (libinput_event_keyboard_get_key( key ) == KEY_POWER_CODE &&
+            libinput_event_keyboard_get_time_usec( key ) < session_start_usec + 5000000)
+        {
+            MESSAGE( "csrss: power button at the start of the session, ignored\n" );
+            break;
+        }
         /* the same key on two keyboards is one key */
         if (pressed ? count == 1 : count == 0)
             add_event( params, RIT_KEY, libinput_event_keyboard_get_key( key ), 0, 0, pressed );

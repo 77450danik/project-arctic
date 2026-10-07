@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <glob.h>
 #include <grp.h>
 #include <limits.h>
 #include <net/if.h>
@@ -22,6 +23,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <linux/fiemap.h>
+#include <linux/genetlink.h>
+#include <linux/netlink.h>
+#include <linux/nl80211.h>
+#include <linux/fs.h>
+#include <linux/suspend_ioctls.h>
+#include <sys/sysmacros.h>
+#include <sys/utsname.h>
 #include <sys/klog.h>
 #include <linux/rtc.h>
 #include <netdb.h>
@@ -43,23 +52,29 @@
 #include <unistd.h>
 
 #include "bootanim.h"
+#include "hiberfil.h"
 #include "stop.h"
 
 #define NT_USER "nt"
 #define PREFIX "/run/nt"
 #define C_DRIVE "/mnt/c"
 #define REG_DIR C_DRIVE "/Windows/System32/config"
+#define HARDWARE_SETTLED "/run/arctic/hardware-settled" /* udevadm settle and the sound are done */
 #define HOST_STATE REG_DIR "/Host" /* what the host itself keeps, on a C: that keeps what is written */
 #define LOG_DIR C_DRIVE "/Windows/Logs/Arctic"
 #define WAYLAND_SOCKET "arctic-0" /* served by dwmcore.dll */
 #define FONT "/usr/share/arctic/bsod.font"
 #define VOLUMES_DIR "/run/arctic/volumes" /* written by arctic-volume */
 #define EJECT_DIR "/run/arctic/eject"     /* requests from mountmgr.sys */
+#define POWER_DIR "/run/arctic/power"     /* sleep, hibernation, Wi-Fi requests from powrprof.dll */
 
 static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
 static int dev_mode, anim = -1, stopped; /* anim: the boot screen's commands (bootanim.h) */
 static pid_t anim_pid;
 static int c_on_disk; /* C: is a partition that keeps what is written (ARCTIC_C=disk or stick, initrd) */
+static int c_installed; /* ARCTIC_C=disk: on an internal disk, where it can sleep (docs/hibernation.md) */
+static double desktop_at; /* the boot screen ends then, a little after the desktop is there */
+static int fast_startup(int restart);
 static uid_t nt_uid;
 static gid_t nt_gid;
 static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid, lxss_pid;
@@ -696,6 +711,25 @@ static void save_logs(void)
     copy_tail(LOG_DIR "/nt.log", MEDIUM_LOGS "/nt.log", 16 << 20, &nt_copied);
 }
 
+/* every Windows program (the processes of nt), wineserver stays: it holds
+ * the registry; with no client left, the next start of Wine begins anew */
+static void kill_nt_programs(void)
+{
+    DIR *proc = opendir("/proc");
+    char path[64];
+    struct stat st;
+
+    for (struct dirent *de; proc && (de = readdir(proc));) {
+        pid_t pid = (pid_t)atoi(de->d_name);
+        snprintf(path, sizeof(path), "/proc/%d", (int)pid);
+        if (pid > 1 && pid != wineserver_pid && !stat(path, &st) && st.st_uid == nt_uid)
+            kill(pid, SIGKILL);
+    }
+    if (proc)
+        closedir(proc);
+    usleep(500000); /* they are reaped by the waits that follow (child_exited) */
+}
+
 /* The session asked for it (winlogon.exe): every process goes, then the machine */
 /* every process but this one and the shutdown screen */
 static void kill_all_but(pid_t keep, int signal)
@@ -807,8 +841,10 @@ static void child_exited(pid_t pid, int status)
         wininit_pid = 0;
         /* its exit codes: 1 dwm.exe could not take the display, 2 csrss.exe
          * ended, 3 restart, 4 shut down, 5 winlogon.exe ended */
-        if (code == 3 || code == 4)
-            power_off(code == 3);
+        if (code == 3 || code == 4) {
+            if (!fast_startup(code == 3))
+                power_off(code == 3);
+        }
         else if (code == 1)
             nt_stop("VIDEO_DWM_INIT_ERROR", "dwm.exe");
         else
@@ -874,6 +910,24 @@ static char *capture(char *const argv[], int timeout_s)
     close(fd);
     buf[n > 0 ? n : 0] = 0;
     return buf;
+}
+
+/* Windows' "Working on updates" goes on after the restart: the start that
+ * brings the registry up to a new Wine shows it from where the initrd left
+ * it (ARCTIC_UPDATE_PERCENT). wineboot has no progress of its own, so the count follows the time:
+ * it nears 99% and waits there, and the screen never stands still as if the
+ * computer hung (once it did, and the power button cost the registry). */
+static pid_t update_progress(int from)
+{
+    pid_t pid = fork();
+
+    if (pid)
+        return pid;
+    for (unsigned int half_s = 0;; half_s++) {
+        int percent = from + (int)((99 - from) * half_s / (half_s + 40));
+        bootanim_send(anim, "update Робота з оновленнями, виконано %d%%\tНе вимикайте комп’ютер", percent);
+        usleep(500000);
+    }
 }
 
 /* After wineboot brought C:'s registry up to a newer Wine from wine.inf,
@@ -1040,6 +1094,7 @@ static void make_dir(const char *path, mode_t mode, int nt_owned)
 #define REG_BACK REG_DIR "/RegBack"
 static const char *const hives[] = {"system.reg", "user.reg", "userdef.reg"};
 static int arctic_registry; /* the registry this start came up with is Arctic's */
+static int hives_restored;  /* a hive of this start came back from RegBack */
 
 static int copy_whole(const char *from, const char *to)
 {
@@ -1075,8 +1130,13 @@ static void restore_hives(void)
         else {
             chown(path, nt_uid, nt_gid);
             say("registry: %s was lost, it came back from RegBack", hives[i]);
+            hives_restored = 1;
         }
     }
+    /* RegBack may be from before an update the lost hives had: the update of
+     * the registry runs again (its stamp can have reached the disk) */
+    if (hives_restored)
+        unlink(REG_DIR "/.update-timestamp");
 }
 
 /* once the desktop is up: these hives work */
@@ -1101,6 +1161,50 @@ static void back_up_hives(void)
  * hives live on C: like in Windows, and wineserver writes them there: the
  * prefix only links to them (a hive is replaced whole, next to its target).
  * There is no Z: drive. */
+/* The displays dwm.exe needs: every GPU that can drive a monitor (PCI class
+ * 03, but for 0302, a "3D controller" with no outputs: a laptop's NVIDIA
+ * behind Intel's screen) has its driver's DRM card. A desktop PC's NVIDIA
+ * or AMD card is waited for; with no such GPU found, every driver is. */
+static int display_cards_ready(void)
+{
+    DIR *dir = opendir("/sys/bus/pci/devices");
+    struct dirent *de;
+    int gpus = 0, ready = 0;
+
+    while (dir && (de = readdir(dir))) {
+        char path[PATH_MAX], class[16] = "";
+        if (de->d_name[0] == '.')
+            continue;
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", de->d_name);
+        read_line(path, class, sizeof(class));
+        if (strncmp(class, "0x03", 4) || !strncmp(class, "0x0302", 6))
+            continue;
+        gpus++;
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/drm", de->d_name);
+        DIR *drm = opendir(path);
+        struct dirent *ce;
+        while (drm && (ce = readdir(drm)))
+            if (!strncmp(ce->d_name, "card", 4)) {
+                ready++;
+                break;
+            }
+        if (drm)
+            closedir(drm);
+    }
+    if (dir)
+        closedir(dir);
+    return gpus && ready == gpus;
+}
+
+static void wait_for_display(void)
+{
+    double t0 = uptime();
+
+    while (access(HARDWARE_SETTLED, F_OK) && !display_cards_ready() && uptime() - t0 < 60)
+        usleep(20000);
+    say("display ready in %.1f s (%s)", uptime(), access(HARDWARE_SETTLED, F_OK) ? "every display GPU's card" : "all hardware");
+}
+
 static void prepare_nt(void)
 {
     char from[256], to[256];
@@ -1110,6 +1214,7 @@ static void prepare_nt(void)
     make_dir(PREFIX "/xdg", 0700, 1);
     make_dir(PREFIX "/dosdevices", 0755, 1);
     make_dir(EJECT_DIR, 0755, 1);
+    make_dir(POWER_DIR, 0755, 1);
     if (symlink(C_DRIVE, PREFIX "/dosdevices/c:") && errno != EEXIST)
         say("dosdevices/c: %s", strerror(errno));
     lchown(PREFIX "/dosdevices/c:", nt_uid, nt_gid);
@@ -1472,6 +1577,678 @@ static void read_cmdline(void)
     }
 }
 
+/* The session: wininit.exe starts dwm.exe, csrss.exe and winlogon.exe.
+ * The display now belongs to dwm.exe: the boot screen gives up DRM master
+ * but leaves its picture, and dwm becomes master by opening the card; the
+ * boot screen ends a little after the desktop is there (desktop_at). At
+ * the start, and again after a fast startup woke the machine. */
+static void start_session(const char *drm_debug)
+{
+    char *wininit[] = {"/usr/bin/wine", "wininit.exe", NULL};
+
+    wait_for_display();
+    bootanim_send(anim, "release");
+    wininit_pid = spawn(wininit, 1, ntlog);
+    say("wininit.exe pid %d", wininit_pid);
+
+    /* windows can only appear once dwm serves buffers */
+    int served = 0;
+    for (int i = 0; i < 200 && !(served = !access(PREFIX "/xdg/" WAYLAND_SOCKET, F_OK)); i++)
+        usleep(50000);
+    if (served)
+        announce("dwm ready in %.1f s", uptime());
+    else
+        say("dwm.exe did not start serving");
+    if (drm_debug && drm_debug[0])
+        write_sysfs("/sys/module/drm/parameters/debug", "0");
+    desktop_at = uptime() + 5;
+
+    /* a program named on the command line, for tests */
+    if (served && dev_program[0]) {
+        char *program[] = {"/usr/bin/wine", dev_program, NULL};
+        say("%s pid %d", dev_program, spawn(program, 1, ntlog));
+    }
+}
+
+/* --- Fast startup (docs/hibernation.md) ---
+ * Windows' "Швидкий запуск": the session has closed (wininit.exe ended with
+ * "restart" or "shut down"), the kernel with its drivers and NT's system
+ * part (wineserver, the services) sleep in C:\hiberfil.sys, and the next
+ * start wakes them and opens a new session. Off unless HiberbootEnabled is
+ * 1, as Windows keeps it; never with an update waiting. */
+#define HIBERFIL C_DRIVE "/hiberfil.sys"
+#define UPDATE_READY C_DRIVE "/Windows/System32/Host/Update/ready"
+
+/* a DWORD of the registry, through reg.exe while wineserver still runs */
+static int registry_flag(const char *key, const char *value)
+{
+    char *query[] = {"/usr/bin/wine", "reg.exe", "query", (char *)key, "/v", (char *)value, NULL};
+    char *out = capture(query, 30), *p = strstr(out, "REG_DWORD");
+
+    if (!p) {
+        for (char *c = out; *c; c++)
+            if (*c == '\n' || *c == '\r')
+                *c = '|';
+        say("registry: %s\\%s: %.300s", key, value, out);
+    }
+    return p && strtoul(p + strlen("REG_DWORD"), NULL, 0) != 0;
+}
+
+/* Windows' disks go before the machine sleeps: Windows 10 may change them
+ * meanwhile. A volume still in use keeps the machine from sleeping. */
+static int unmount_drives(void)
+{
+    DIR *dir = opendir(VOLUMES_DIR);
+    struct dirent *de;
+    int busy = 0;
+
+    while (dir && (de = readdir(dir))) {
+        char path[PATH_MAX], record[PATH_MAX];
+        if (de->d_name[0] == '.')
+            continue;
+        snprintf(path, sizeof(path), "/run/arctic/drives/%.200s", de->d_name);
+        snprintf(record, sizeof(record), VOLUMES_DIR "/%.200s", de->d_name);
+        if (umount2(path, 0) && errno != EINVAL && errno != ENOENT) {
+            say("sleep: %s is in use (%s)", de->d_name, strerror(errno));
+            busy = 1;
+            continue;
+        }
+        unlink(record); /* mountmgr.sys takes its letter away */
+        rmdir(path);
+    }
+    if (dir)
+        closedir(dir);
+    return busy ? -1 : 0;
+}
+
+/* and come back: arctic-volume mounts every volume udev knows again */
+static void mount_drives(void)
+{
+    char *trigger[] = {"/usr/bin/udevadm", "trigger", "--action=add", "--subsystem-match=block", NULL};
+
+    run(trigger, 0, hostlog, 30);
+}
+
+static int fiemap_extents(int fd, uint64_t size, uint64_t part_start, struct hib_extent *ext, uint32_t *count)
+{
+    size_t bytes = sizeof(struct fiemap) + 512 * sizeof(struct fiemap_extent);
+    struct fiemap *fm = calloc(1, bytes);
+    uint64_t next = 0;
+
+    *count = 0;
+    if (!fm)
+        return -1;
+    while (next < size) {
+        memset(fm, 0, bytes);
+        fm->fm_start = next;
+        fm->fm_length = size - next;
+        fm->fm_flags = FIEMAP_FLAG_SYNC;
+        fm->fm_extent_count = 512;
+        if (ioctl(fd, FS_IOC_FIEMAP, fm) || !fm->fm_mapped_extents)
+            break;
+        for (uint32_t i = 0; i < fm->fm_mapped_extents; i++) {
+            struct fiemap_extent *e = &fm->fm_extents[i];
+            if (e->fe_logical != next || e->fe_flags & (FIEMAP_EXTENT_UNKNOWN | FIEMAP_EXTENT_ENCODED |
+                                                          FIEMAP_EXTENT_DATA_INLINE | FIEMAP_EXTENT_DATA_TAIL |
+                                                          FIEMAP_EXTENT_NOT_ALIGNED) ||
+                *count >= HIB_MAX_EXTENTS) {
+                free(fm);
+                return -1; /* a hole, a compressed or a scattered file: no sectors of its own to write */
+            }
+            ext[*count].file_offset = e->fe_logical;
+            ext[*count].disk_offset = part_start + e->fe_physical;
+            ext[*count].length = e->fe_length;
+            (*count)++;
+            next = e->fe_logical + e->fe_length;
+        }
+    }
+    free(fm);
+    return next >= size ? 0 : -1;
+}
+
+/* writes len bytes at a file offset, through the extents, straight to the disk */
+static int write_mapped(int disk, const struct hib_extent *ext, uint32_t count, uint64_t off, const uint8_t *buf,
+                        size_t len)
+{
+    while (len) {
+        uint32_t i = 0;
+        while (i < count && !(off >= ext[i].file_offset && off < ext[i].file_offset + ext[i].length))
+            i++;
+        if (i == count)
+            return -1;
+        size_t piece = (size_t)(ext[i].file_offset + ext[i].length - off);
+        if (piece > len)
+            piece = len;
+        if (pwrite(disk, buf, piece, (off_t)(ext[i].disk_offset + off - ext[i].file_offset)) != (ssize_t)piece)
+            return -1;
+        off += piece;
+        buf += piece;
+        len -= piece;
+    }
+    return 0;
+}
+
+/* What is left of the session goes, as Windows logs session 1 off before
+ * it hibernates session 0: csrss.exe, dwm.exe and anything else of the
+ * session's that outlived winlogon. NT's system part stays: wineserver,
+ * services.exe and the services (winedevice, plugplay, rpcss...). */
+static void end_session_processes(void)
+{
+    enum { MAX = 4096 };
+    static pid_t pid[MAX];
+    static char keep[MAX], name[MAX][32];
+    int n = 0;
+    DIR *proc = opendir("/proc");
+
+    for (struct dirent *de; proc && n < MAX && (de = readdir(proc));) {
+        char path[64], line[256];
+        pid_t p = (pid_t)atoi(de->d_name);
+        uid_t uid = (uid_t)-1;
+        FILE *f;
+
+        if (p <= 1)
+            continue;
+        snprintf(path, sizeof(path), "/proc/%d/status", p);
+        if (!(f = fopen(path, "re")))
+            continue;
+        pid[n] = p;
+        name[n][0] = 0;
+        while (fgets(line, sizeof(line), f)) {
+            if (!strncmp(line, "Name:", 5))
+                sscanf(line + 5, "%31s", name[n]);
+            else if (!strncmp(line, "Uid:", 4))
+                uid = (uid_t)strtoul(line + 4, NULL, 10);
+        }
+        fclose(f);
+        if (uid == nt_uid)
+            n++;
+    }
+    if (proc)
+        closedir(proc);
+    /* NT's session 0, by name: Wine starts every process with a double
+     * fork, so a service's parent is not services.exe but arctic-init */
+    static const char *const system[] = {"wineserver", "services.exe", "winedevice.exe", "plugplay.exe",
+                                         "svchost.exe", "rpcss.exe", "spoolsv.exe", NULL};
+    for (int i = 0; i < n; i++) {
+        keep[i] = 0;
+        for (int k = 0; system[k]; k++)
+            if (!strcmp(name[i], system[k]))
+                keep[i] = 1;
+    }
+    char gone[1024] = "";
+    for (int i = 0; i < n; i++)
+        if (!keep[i]) {
+            size_t len = strlen(gone);
+            snprintf(gone + len, sizeof(gone) - len, " %s(%d)", name[i], pid[i]);
+            kill(pid[i], SIGTERM);
+        }
+    if (gone[0])
+        say("fast startup: the session's processes go:%s", gone);
+    for (int t = 0; t < 30; t++) { /* three seconds, then by force */
+        int alive = 0;
+        for (int i = 0; i < n; i++)
+            if (!keep[i] && !kill(pid[i], 0))
+                alive = 1;
+        if (!alive)
+            return;
+        usleep(100000);
+        int status;
+        pid_t r;
+        while ((r = waitpid(-1, &status, WNOHANG)) > 0)
+            child_exited(r, status);
+    }
+    for (int i = 0; i < n; i++)
+        if (!keep[i])
+            kill(pid[i], SIGKILL);
+}
+
+/* 1: woke up again; 0: did not sleep (the caller shuts down as before) */
+static int sleep_to_disk(int mode, int restart)
+{
+    struct stat st;
+    struct sysinfo si;
+    struct utsname un;
+    struct hib_where where = {0};
+    char link[64], real[PATH_MAX], disk[32], path[64];
+    const char *part;
+    int num, gpt = -1, raw = -1, hf = -1, snap = -1, frozen = 0, rc = 0, nvidia = 0;
+    uint64_t part_start, capacity;
+    uint8_t type[16], *buf = NULL, *area = NULL;
+    static struct hib_extent ext[HIB_MAX_EXTENTS];
+    uint32_t count = 0;
+
+    /* C:'s partition, its disk, and that it is a partition Windows sees */
+    if (stat(C_DRIVE, &st))
+        return 0;
+    snprintf(link, sizeof(link), "/sys/dev/block/%u:%u", major(st.st_dev), minor(st.st_dev));
+    if (!realpath(link, real) || !(part = strrchr(real, '/')) ||
+        hib_partition_disk(part + 1, disk, sizeof(disk), &num, &part_start)) {
+        say("sleep: C: is not a partition");
+        return 0;
+    }
+    snprintf(path, sizeof(path), "/dev/%s", disk);
+    if ((gpt = open(path, O_RDWR | O_CLOEXEC)) < 0 || (raw = open(path, O_RDWR | O_DIRECT | O_CLOEXEC)) < 0 ||
+        hib_gpt_get_type(gpt, num, type) || memcmp(type, hib_type_basic_data, 16)) {
+        say("sleep: C: is not a basic data partition of a GPT disk");
+        goto out;
+    }
+
+    /* hiberfil.sys: two fifths of the memory, as Windows sizes it */
+    sysinfo(&si);
+    capacity = ((uint64_t)si.totalram * si.mem_unit * 2 / 5 + HIB_HEADER_AREA + (1u << 20) - 1) & ~(uint64_t)((1u << 20) - 1);
+    if ((hf = open(HIBERFIL, O_RDWR | O_CREAT | O_CLOEXEC, 0644)) < 0 || fallocate(hf, 0, 0, (off_t)capacity) ||
+        fsync(hf) || fiemap_extents(hf, capacity, part_start, ext, &count)) {
+        say("sleep: hiberfil.sys: %s", strerror(errno));
+        goto out;
+    }
+    char limit[32];
+    snprintf(limit, sizeof(limit), "%llu", (unsigned long long)(capacity - HIB_HEADER_AREA));
+    write_sysfs("/sys/power/image_size", limit);
+
+    /* where the initrd finds it */
+    const char *root = strstr(cmdline_buf, "arctic.root=PARTUUID=");
+    if (root)
+        snprintf(where.partuuid, sizeof(where.partuuid), "%.*s", (int)strcspn(root + 21, " \n"), root + 21);
+    where.header_disk_offset = ext[0].disk_offset;
+    snprintf(where.disk, sizeof(where.disk), "%s", disk);
+    if (!where.partuuid[0] || hib_efi_mount() || hib_efi_write(&where)) {
+        say("sleep: no EFI variable for it: %s", strerror(errno));
+        goto out;
+    }
+
+    if (posix_memalign((void **)&buf, 4096, HIB_CHUNK) || posix_memalign((void **)&area, 4096, HIB_HEADER_AREA))
+        goto out;
+    /* no image to wake from until the whole new one is there */
+    memset(area, 0, HIB_HEADER_AREA);
+    if (write_mapped(raw, ext, count, 0, area, 4096) || fdatasync(raw))
+        goto out;
+
+    /* wineserver writes the registry in a child of its own (rename over the
+     * hive at the end): frozen in between, a machine that then lost power
+     * would start without system.reg. Its save ends first. */
+    for (int t = 0; t < 100; t++) {
+        DIR *proc = opendir("/proc");
+        int saving = 0;
+        for (struct dirent *de; proc && !saving && (de = readdir(proc));) {
+            char path[64], st[256] = "";
+            snprintf(path, sizeof(path), "/proc/%s/stat", de->d_name);
+            read_line(path, st, sizeof(st));
+            char *end = strrchr(st, ')');
+            int ppid = 0;
+            saving = strstr(st, "(wineserver)") && end && sscanf(end + 1, " %*c %d", &ppid) == 1 &&
+                     ppid == wineserver_pid;
+        }
+        if (proc)
+            closedir(proc);
+        if (!saving)
+            break;
+        if (!t)
+            say("sleep: the registry is being saved, waiting");
+        usleep(100000);
+    }
+
+    uname(&un);
+    say("%s: goes to sleep (%u extents, %llu MB at most)",
+        mode == HIB_HIBERNATE ? "hibernation" : restart ? "fast startup, restart" : "fast startup, shut down", count,
+        (unsigned long long)(capacity >> 20));
+    sync();
+    write_sysfs("/proc/sys/vm/drop_caches", "3");
+
+    /* NVIDIA's driver keeps what is in video memory (NVreg_PreserveVideoMemoryAllocations) */
+    nvidia = !write_sysfs("/proc/driver/nvidia/suspend", "hibernate");
+    if ((snap = open("/dev/snapshot", O_RDONLY | O_CLOEXEC)) < 0 || ioctl(snap, SNAPSHOT_FREEZE, 0)) {
+        say("sleep: /dev/snapshot: %s", strerror(errno));
+        goto out;
+    }
+    frozen = 1;
+    int in_suspend = 0;
+    if (ioctl(snap, SNAPSHOT_CREATE_IMAGE, &in_suspend)) {
+        say("sleep: no image: %s", strerror(errno));
+        goto out;
+    }
+    if (!in_suspend) {
+        rc = 1; /* the machine woke up here */
+        goto out;
+    }
+
+    /* From here the file systems are not written: the image holds them as
+     * they were. The image goes to the file's own sectors on the disk. */
+    loff_t size = 0;
+    uint64_t at = HIB_HEADER_AREA, total = 0;
+    uint32_t *crcs = (uint32_t *)(area + HIB_CRCS_AT), chunks = 0;
+    ioctl(snap, SNAPSHOT_GET_IMAGE_SIZE, &size);
+    if ((uint64_t)size > capacity - HIB_HEADER_AREA || (uint64_t)size / HIB_CHUNK + 1 > HIB_MAX_CHUNKS)
+        goto unwind;
+    for (;;) {
+        size_t fill = 0;
+        ssize_t n = 1;
+        while (fill < HIB_CHUNK && (n = read(snap, buf + fill, HIB_CHUNK - fill)) > 0)
+            fill += (size_t)n;
+        if (n < 0)
+            goto unwind;
+        if (!fill)
+            break;
+        crcs[chunks++] = hib_crc32c(0, buf, fill);
+        size_t padded = (fill + 4095) & ~(size_t)4095;
+        memset(buf + fill, 0, padded - fill);
+        if (write_mapped(raw, ext, count, at, buf, padded))
+            goto unwind;
+        at += padded;
+        total += fill;
+        if (n == 0)
+            break;
+    }
+    if (total != (uint64_t)size)
+        goto unwind;
+
+    struct hib_header *h = (struct hib_header *)area;
+    memcpy(h->magic, HIB_MAGIC, 8);
+    h->version = HIB_VERSION;
+    h->mode = (uint32_t)mode;
+    snprintf(h->kernel, sizeof(h->kernel), "%s %s", un.release, un.version);
+    snprintf(h->partuuid, sizeof(h->partuuid), "%s", where.partuuid);
+    h->image_bytes = total;
+    h->created = (uint64_t)time(NULL);
+    h->extent_count = count;
+    h->chunk_count = chunks;
+    memcpy(area + HIB_EXTENTS_AT, ext, (size_t)count * sizeof(*ext));
+    h->area_crc = 0;
+    h->area_crc = hib_crc32c(0, area, HIB_HEADER_AREA);
+    if (write_mapped(raw, ext, count, 0, area, HIB_HEADER_AREA) || fdatasync(raw))
+        goto unwind;
+    /* Windows 10 must not mount C: while it sleeps */
+    if (hib_gpt_set_type(gpt, num, hib_type_asleep))
+        goto unwind;
+    reboot(restart ? RB_AUTOBOOT : RB_POWER_OFF);
+
+unwind:
+    /* not written whole: the machine shuts down as before; the header page
+     * stays empty, so nothing wakes from a half image */
+    ioctl(snap, SNAPSHOT_FREE, 0);
+out:
+    if (frozen)
+        ioctl(snap, SNAPSHOT_UNFREEZE, 0);
+    if (snap >= 0)
+        close(snap);
+    if (nvidia)
+        write_sysfs("/proc/driver/nvidia/suspend", "resume");
+    if (hf >= 0)
+        close(hf);
+    if (raw >= 0)
+        close(raw);
+    if (gpt >= 0)
+        close(gpt);
+    free(buf);
+    free(area);
+    return rc;
+}
+
+static int fast_startup(int restart)
+{
+    if (!c_installed || stopped || !wineserver_pid)
+        return 0;
+    if (!registry_flag("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", "HiberbootEnabled"))
+        return 0;
+    if (!access(UPDATE_READY, F_OK)) {
+        say("fast startup: an update waits, so a full %s", restart ? "restart" : "shut down");
+        return 0;
+    }
+    /* Windows' "Завершення роботи" while the image is written */
+    if (anim >= 0)
+        bootanim_kill(&anim, &anim_pid);
+    anim = bootanim_start("/usr/share/arctic/spinner.bin", "/usr/share/arctic/logo.bgra", FONT, &anim_pid);
+    bootanim_send(anim, "update %s\t", restart ? "Перезавантаження" : "Завершення роботи");
+    bootanim_send(anim, "resume"); /* on waking: the boot screen again */
+    if (lxss_pid > 0) {
+        kill(lxss_pid, SIGTERM);
+        for (int i = 0; i < 600 && waitpid(lxss_pid, NULL, WNOHANG) == 0; i++)
+            usleep(100000);
+        lxss_pid = 0;
+    }
+    end_session_processes();
+    if (unmount_drives() || sleep_to_disk(HIB_FAST_STARTUP, restart) != 1) {
+        mount_drives();
+        say("fast startup: a full %s", restart ? "restart" : "shut down");
+        return 0;
+    }
+
+    /* Awake. The real-time clock holds local time, which the kernel read
+     * as UTC on waking; the network's time follows. */
+    announce("fast startup: awake");
+    set_clock();
+    sync_time();
+    mount_drives();
+    char *lxss[] = {"/usr/bin/arctic-lxss", NULL};
+    if (!access(lxss[0], X_OK))
+        lxss_pid = spawn(lxss, 0, hostlog);
+    start_session(NULL);
+    return 1;
+}
+
+/* The power policy of the NT world (winlogon, powrprof.dll; docs/power.md)
+ * sets the processor's energy preference and limits, the platform profile
+ * and PCI Express power saving itself: those files become the NT user's.
+ * Again after a sleep, as the processors that went offline come back. The
+ * backlight and USB devices are udev's (99-arctic.rules). */
+static void grant_power_knobs(void)
+{
+    static const char *const knobs[] = {
+        "/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference",
+        "/sys/devices/system/cpu/cpufreq/policy*/scaling_governor",
+        "/sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq",
+        "/sys/devices/system/cpu/cpufreq/policy*/scaling_min_freq",
+        "/sys/devices/system/cpu/intel_pstate/max_perf_pct",
+        "/sys/devices/system/cpu/intel_pstate/min_perf_pct",
+        "/sys/devices/system/cpu/intel_pstate/no_turbo",
+        "/sys/devices/system/cpu/cpufreq/boost",
+        "/sys/firmware/acpi/platform_profile",
+        "/sys/module/pcie_aspm/parameters/policy",
+        /* what the processor and its graphics draw, for the Control Panel */
+        "/sys/class/powercap/intel-rapl:*/energy_uj",
+        "/sys/class/powercap/intel-rapl:*:*/energy_uj",
+        "/sys/class/backlight/*/brightness",
+    };
+    int granted = 0;
+
+    for (size_t i = 0; i < sizeof(knobs) / sizeof(knobs[0]); i++) {
+        glob_t found;
+
+        if (glob(knobs[i], 0, NULL, &found))
+            continue;
+        for (size_t k = 0; k < found.gl_pathc; k++)
+            if (!chown(found.gl_pathv[k], nt_uid, nt_gid))
+                granted++;
+        globfree(&found);
+    }
+    say("power: %d settings are the NT world's", granted);
+}
+
+/* Wi-Fi power saving (Windows' "Режим енергозбереження" of the wireless
+ * adapter): nl80211's power save on every wireless interface */
+static int nl80211_family(int sock)
+{
+    struct {
+        struct nlmsghdr n;
+        struct genlmsghdr g;
+        char buf[256];
+    } req = {0}, ans;
+    struct nlattr *a;
+
+    req.n.nlmsg_type = GENL_ID_CTRL;
+    req.n.nlmsg_flags = NLM_F_REQUEST;
+    req.g.cmd = CTRL_CMD_GETFAMILY;
+    req.g.version = 1;
+    a = (struct nlattr *)req.buf;
+    a->nla_type = CTRL_ATTR_FAMILY_NAME;
+    a->nla_len = NLA_HDRLEN + sizeof("nl80211");
+    memcpy((char *)a + NLA_HDRLEN, "nl80211", sizeof("nl80211"));
+    req.n.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN) + NLA_ALIGN(a->nla_len);
+    if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
+        return -1;
+    ssize_t n = recv(sock, &ans, sizeof(ans), 0);
+    if (n < (ssize_t)NLMSG_LENGTH(GENL_HDRLEN) || ans.n.nlmsg_type == NLMSG_ERROR)
+        return -1;
+    int left = (int)ans.n.nlmsg_len - NLMSG_LENGTH(GENL_HDRLEN);
+    for (a = (struct nlattr *)ans.buf; left >= NLA_HDRLEN && a->nla_len >= NLA_HDRLEN && a->nla_len <= left;
+         left -= NLA_ALIGN(a->nla_len), a = (struct nlattr *)((char *)a + NLA_ALIGN(a->nla_len)))
+        if (a->nla_type == CTRL_ATTR_FAMILY_ID)
+            return *(uint16_t *)((char *)a + NLA_HDRLEN);
+    return -1;
+}
+
+static int wifi_power_save(int on)
+{
+    int sock = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_GENERIC), family, done = 0;
+    struct dirent *de;
+    DIR *net;
+
+    if (sock < 0)
+        return -1;
+    if ((family = nl80211_family(sock)) < 0 || !(net = opendir("/sys/class/net"))) {
+        close(sock);
+        return -1;
+    }
+    while ((de = readdir(net))) {
+        char path[PATH_MAX];
+        struct {
+            struct nlmsghdr n;
+            struct genlmsghdr g;
+            char buf[64];
+        } req = {0}, ans;
+        struct nlattr *a;
+        unsigned int index;
+
+        snprintf(path, sizeof(path), "/sys/class/net/%s/wireless", de->d_name);
+        if (de->d_name[0] == '.' || access(path, F_OK) || !(index = if_nametoindex(de->d_name)))
+            continue;
+        req.n.nlmsg_type = (uint16_t)family;
+        req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+        req.g.cmd = NL80211_CMD_SET_POWER_SAVE;
+        a = (struct nlattr *)req.buf;
+        a->nla_type = NL80211_ATTR_IFINDEX;
+        a->nla_len = NLA_HDRLEN + 4;
+        memcpy((char *)a + NLA_HDRLEN, &index, 4);
+        a = (struct nlattr *)(req.buf + NLA_ALIGN(a->nla_len));
+        a->nla_type = NL80211_ATTR_PS_STATE;
+        a->nla_len = NLA_HDRLEN + 4;
+        uint32_t state = on ? NL80211_PS_ENABLED : NL80211_PS_DISABLED;
+        memcpy((char *)a + NLA_HDRLEN, &state, 4);
+        req.n.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN) + 2 * NLA_ALIGN(NLA_HDRLEN + 4);
+        if (send(sock, &req, req.n.nlmsg_len, 0) < 0)
+            continue;
+        if (recv(sock, &ans, sizeof(ans), 0) >= (ssize_t)NLMSG_LENGTH(sizeof(struct nlmsgerr)) &&
+            ans.n.nlmsg_type == NLMSG_ERROR && !((struct nlmsgerr *)NLMSG_DATA(&ans.n))->error)
+            done++;
+    }
+    closedir(net);
+    close(sock);
+    say("power: Wi-Fi power saving %s on %d adapters", on ? "on" : "off", done);
+    return done ? 0 : -1;
+}
+
+/* Sleep (Windows' "Сон"): suspend to memory, S3 where the firmware has it,
+ * s2idle otherwise. NVIDIA's driver keeps the video memory itself. The
+ * real-time clock holds local time, which the kernel takes for UTC on
+ * waking: the clock is set again, then the network's time. */
+static int sleep_to_memory(void)
+{
+    char *redraw[] = {"/usr/bin/udevadm", "trigger", "--action=change", "--subsystem-match=drm", NULL};
+    int nvidia, ok;
+
+    announce("sleep");
+    sync();
+    nvidia = !write_sysfs("/proc/driver/nvidia/suspend", "suspend");
+    ok = !write_sysfs("/sys/power/state", "mem");
+    if (!ok)
+        say("sleep: %s", strerror(errno));
+    if (nvidia)
+        write_sysfs("/proc/driver/nvidia/suspend", "resume");
+    announce("sleep: awake");
+    set_clock();
+    sync_time();
+    run(redraw, 0, hostlog, 10);
+    grant_power_knobs();
+    return ok;
+}
+
+/* The answer powrprof.dll waits for, written whole before it appears */
+static void power_answer(const char *text)
+{
+    int fd = open(POWER_DIR "/.result", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+
+    if (fd < 0)
+        return;
+    if (write(fd, text, strlen(text)) < 0)
+        say("power: %s", strerror(errno));
+    fchown(fd, nt_uid, nt_gid);
+    close(fd);
+    rename(POWER_DIR "/.result", POWER_DIR "/result");
+}
+
+/* "Гібернація" (docs/hibernation.md): the whole session sleeps, programs
+ * and all. WSL's distributions stop first: their disks are files on a
+ * drive of Windows'. A drive of Windows' still open keeps the machine
+ * awake, and the menu says so. */
+static void serve_power(void)
+{
+    char request[64] = "";
+
+    if (access(POWER_DIR "/request", F_OK))
+        return;
+    read_line(POWER_DIR "/request", request, sizeof(request));
+    unlink(POWER_DIR "/request");
+    if (!strcmp(request, "sleep")) {
+        if (stopped)
+            power_answer("refused stopped\n");
+        else
+            power_answer(sleep_to_memory() ? "awake\n" : "refused no sleep\n");
+        return;
+    }
+    if (!strncmp(request, "wifi-powersave ", 15)) {
+        power_answer(wifi_power_save(!strcmp(request + 15, "on")) ? "refused\n" : "done\n");
+        return;
+    }
+    if (strcmp(request, "hibernate"))
+        return;
+    if (!c_installed || stopped ||
+        !registry_flag("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power", "HibernateEnabled")) {
+        say("hibernation: not on here");
+        power_answer("refused not enabled\n");
+        return;
+    }
+    announce("hibernation");
+    if (lxss_pid > 0) {
+        kill(lxss_pid, SIGTERM);
+        for (int i = 0; i < 600 && waitpid(lxss_pid, NULL, WNOHANG) == 0; i++)
+            usleep(100000);
+        lxss_pid = 0;
+    }
+    char *lxss[] = {"/usr/bin/arctic-lxss", NULL};
+    if (unmount_drives()) {
+        mount_drives();
+        if (!access(lxss[0], X_OK))
+            lxss_pid = spawn(lxss, 0, hostlog);
+        power_answer("refused a drive is in use\n");
+        return;
+    }
+    int woke = sleep_to_disk(HIB_HIBERNATE, 0) == 1;
+    if (woke) {
+        /* what a card kept in its own memory (a VM's, a dedicated GPU's)
+         * did not sleep with the rest: dwm.exe draws every monitor again on
+         * a "change" of its card */
+        char *redraw[] = {"/usr/bin/udevadm", "trigger", "--action=change", "--subsystem-match=drm", NULL};
+        announce("hibernation: awake");
+        run(redraw, 0, hostlog, 10);
+        set_clock();
+        sync_time();
+        grant_power_knobs();
+    }
+    mount_drives();
+    if (!access(lxss[0], X_OK))
+        lxss_pid = spawn(lxss, 0, hostlog);
+    power_answer(woke ? "awake\n" : "refused no image\n");
+}
+
 int main(void)
 {
     const char *anim_env = getenv("ARCTIC_BOOTANIM"), *c_env = getenv("ARCTIC_C");
@@ -1480,6 +2257,7 @@ int main(void)
     /* "stick": C: on a USB stick, written in the background; "disk": on an
      * internal disk (installed), written as any system writes */
     c_on_disk = c_env && (!strcmp(c_env, "disk") || !strcmp(c_env, "stick"));
+    c_installed = c_env && !strcmp(c_env, "disk");
     if (c_env && !strcmp(c_env, "stick")) {
         lazy_flush[sizeof(lazy_flush) - 2] = '1';
         snprintf(save_period, sizeof(save_period), "WINE_REGISTRY_SAVE_PERIOD=240");
@@ -1531,6 +2309,18 @@ int main(void)
     start_memory_compression();
     start_memory_combining();
 
+    /* C:\Windows\System32\config\Host\drm-debug (a drm.debug mask, e.g.
+     * 0x04): the display drivers say in kernel.log what they do while they
+     * load, until dwm.exe is there; for a screen that goes black at boot */
+    char drm_debug[32] = "";
+    if (!access(HOST_STATE "/drm-debug", F_OK)) {
+        read_line(HOST_STATE "/drm-debug", drm_debug, sizeof(drm_debug));
+        if (!drm_debug[0])
+            snprintf(drm_debug, sizeof(drm_debug), "0x04");
+        say("drm debug %s until the desktop: %s", drm_debug,
+            write_sysfs("/sys/module/drm/parameters/debug", drm_debug) ? "not set" : "on");
+    }
+
     /* Hardware: modules and firmware for whatever is plugged in */
     char *udevd[] = {"/usr/lib/systemd/systemd-udevd", NULL};
     char *trig_sub[] = {"/usr/bin/udevadm", "trigger", "--type=subsystems", "--action=add", NULL};
@@ -1542,10 +2332,25 @@ int main(void)
         usleep(50000);
     run(trig_sub, 0, hostlog, 60);
     run(trig_dev, 0, hostlog, 60);
-    run(settle, 0, hostlog, 90);
-    start_network();
+    /* VM tests (docs/power.md): a battery and a power supply the machine does
+     * not have, test_power's; /sys/module/test_power/parameters changes them */
+    if (strstr(cmdline_buf, "arctic.testpower")) {
+        char *modprobe[] = {"/usr/bin/modprobe", "test_power", NULL};
+        run(modprobe, 0, hostlog, 10);
+    }
+    /* The rest of the hardware comes in the background, as Windows starts
+     * the desktop before every driver is there: the NVIDIA driver alone took
+     * 3.7 s of udevadm settle on the MSI laptop. The NT world starts beside
+     * it, the session waits only for the GPUs with monitors (wait_for_display). */
+    if (!fork()) {
+        run(settle, 0, hostlog, 90);
+        grant_power_knobs();
+        setup_sound();
+        close(open(HARDWARE_SETTLED, O_WRONLY | O_CREAT | O_CLOEXEC, 0644));
+        _exit(0);
+    }
+    start_network(); /* iwd and the wired loop take adapters as they come */
     sync_time();
-    setup_sound();
 
     /* The NT world */
     prepare_nt();
@@ -1575,17 +2380,41 @@ int main(void)
     if (!stat("/usr/share/wine/wine.inf", &inf) && strtoull(stamp, NULL, 10) != (unsigned long long)inf.st_mtime &&
         strncmp(stamp, "disable", 7)) {
         say("the registry is brought up to this Wine (%s -> %llu)", stamp, (unsigned long long)inf.st_mtime);
-        bootanim_send(anim, "status Підготовка системи");
         updating = 1;
+        /* a power cut while wineboot rewrites the hives loses them: RegBack
+         * then gives back the registry of just before, not of the start
+         * that last backed it up (everything since: gone, a service with it) */
+        if (!hives_restored)
+            back_up_hives();
     }
+    /* from where the initrd left the screen; an initrd from before, from 0 */
+    const char *left_at = getenv("ARCTIC_UPDATE_PERCENT");
+    pid_t progress = updating ? update_progress(left_at ? atoi(left_at) : 0) : 0;
     /* Only then: the programs of HKLM\RunOnce, which wineboot still starts,
      * keep the variable, and a .NET program without mscoree loads no assembly */
     if (updating)
         snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=mscoree,mshtml=");
     int rc = run(wineboot, 1, ntlog, 300);
+    if (updating && rc == 137) {
+        /* wineboot hung: every Wine program started after it waits for its
+         * boot event (up to 5 minutes each), and the start took 20 minutes to
+         * end on a blue screen. Wine stops, the update is tried again at the
+         * next start, and this one goes on as a plain start. */
+        say("the update of the registry hung: Wine starts again without it");
+        kill_nt_programs();
+        unlink(REG_DIR "/.update-timestamp");
+        updating = 0;
+        rc = run(wineboot, 1, ntlog, 300);
+    }
     if (updating)
         reapply_registry();
     snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=");
+    if (progress > 0) {
+        kill(progress, SIGKILL);
+        waitpid(progress, NULL, 0);
+        bootanim_send(anim, "update Робота з оновленнями, виконано 100%%\tНе вимикайте комп’ютер");
+        sleep(1);
+    }
     bootanim_send(anim, "boot");
     mirror_ntlog();
     if (rc == 126 || rc == 127)
@@ -1608,33 +2437,8 @@ int main(void)
     if (strstr(cmdline_buf, "arctic.stoptest=nt"))
         nt_stop("MANUALLY_INITIATED_CRASH", "arctic.stoptest");
 
-    /* The session: wininit.exe starts dwm.exe, csrss.exe and winlogon.exe.
-     * The display now belongs to dwm.exe: the boot screen gives up DRM master
-     * but leaves its picture, and dwm becomes master by opening the card; the
-     * boot screen ends a little after the desktop is there (desktop_at). */
-    double desktop_at = 0;
-    if (!stopped) {
-        char *wininit[] = {"/usr/bin/wine", "wininit.exe", NULL};
-        bootanim_send(anim, "release");
-        wininit_pid = spawn(wininit, 1, ntlog);
-        say("wininit.exe pid %d", wininit_pid);
-
-        /* windows can only appear once dwm serves buffers */
-        int served = 0;
-        for (int i = 0; i < 200 && !(served = !access(PREFIX "/xdg/" WAYLAND_SOCKET, F_OK)); i++)
-            usleep(50000);
-        if (served)
-            announce("dwm ready in %.1f s", uptime());
-        else
-            say("dwm.exe did not start serving");
-        desktop_at = uptime() + 5;
-
-        /* a program named on the command line, for tests */
-        if (served && dev_program[0]) {
-            char *program[] = {"/usr/bin/wine", dev_program, NULL};
-            say("%s pid %d", dev_program, spawn(program, 1, ntlog));
-        }
-    }
+    if (!stopped)
+        start_session(drm_debug);
 
     for (unsigned int tick = 0;; tick++) {
         int status;
@@ -1646,6 +2450,7 @@ int main(void)
             start_shell();
         mirror_ntlog();
         serve_ejects();
+        serve_power();
         /* dwm.exe has had its first frames on the screen: the boot screen goes */
         if (anim >= 0 && !stopped && desktop_at && uptime() > desktop_at) {
             close(anim);

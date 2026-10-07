@@ -114,6 +114,7 @@ struct dwm_set_options_params
     UINT32 vrr;         /* variable refresh for games that fill a monitor */
     UINT32 vrr_off_count;
     UINT32 vrr_off[DWM_MAX_OUTPUTS];  /* connectors whose monitor the user turned it off for */
+    UINT32 monitors_off;  /* the power policy turned the display off (docs/power.md) */
 };
 
 /* what programs asked of their windows through dwmapi (wine/arctic_dwm.h) */

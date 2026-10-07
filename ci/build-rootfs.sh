@@ -52,7 +52,7 @@ if [ -d "$OUT/kernel/nvidia-legacy" ]; then
 fi
 cp -a "$OUT/wine/usr/." "$RFS/usr/"
 
-INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop}.c)
+INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop,hiberfil}.c)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"

@@ -6,6 +6,12 @@ SUBSYSTEM=="sound", OWNER="nt"
 SUBSYSTEM=="hidraw", OWNER="nt"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", OWNER="nt"
 
+# Power (docs/power.md): the power policy of the NT world sets the panel's
+# brightness and USB selective suspend itself, on devices that come later too
+SUBSYSTEM=="backlight", ACTION=="add", RUN+="/usr/bin/busybox chown nt /sys%p/brightness"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ACTION=="add", TEST=="power/control", \
+    RUN+="/usr/bin/busybox chown nt /sys%p/power/control"
+
 # Volumes that get a drive letter: arctic-volume mounts them and mountmgr.sys
 # gives each its letter; a CD's medium comes and goes with change events
 SUBSYSTEM=="block", ACTION=="add|change", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/bin/arctic-volume add"

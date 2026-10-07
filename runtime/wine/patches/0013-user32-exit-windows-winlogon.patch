@@ -6,14 +6,14 @@ Subject: [PATCH] user32: ExitWindowsEx asks winlogon to end the session.
 As in Windows, where it reaches winlogon through csrss; wineboot only
 runs when there is no winlogon.
 ---
- dlls/user32/user_main.c | 9 +++++++++
- 1 file changed, 9 insertions(+)
+ dlls/user32/user_main.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
 
 diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
 index ebd83737..01f2bd39 100644
 --- a/dlls/user32/user_main.c
 +++ b/dlls/user32/user_main.c
-@@ -256,17 +256,26 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+@@ -256,17 +256,34 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
  }
  
  
@@ -28,14 +28,22 @@ index ebd83737..01f2bd39 100644
  {
      WCHAR app[MAX_PATH];
 +    HWND winlogon;
++    int i;
      WCHAR cmdline[MAX_PATH + 64];
      PROCESS_INFORMATION pi;
      STARTUPINFOW si;
      void *redir;
  
-+    /* winlogon ends the session, as in Windows; wineboot only when it is not there */
-+    if ((winlogon = FindWindowW( L"SAS window class", NULL )))
-+        return PostMessageW( winlogon, WM_LOGONNOTIFY, LN_LOGOFF, flags );
++    /* winlogon ends the session, as in Windows; wineboot only when it is not
++     * there. A session still starting (the power button pressed right after
++     * the machine woke) has it in a moment: waited for, ten seconds at most. */
++    for (i = 0; i < 100; i++)
++    {
++        if ((winlogon = FindWindowW( L"SAS window class", NULL )))
++            return PostMessageW( winlogon, WM_LOGONNOTIFY, LN_LOGOFF, flags );
++        Sleep( 100 );
++    }
++    ERR( "no winlogon window: the session ends through wineboot\n" );
 +
      GetSystemDirectoryW( app, MAX_PATH - ARRAY_SIZE( L"\\wineboot.exe" ));
      lstrcatW( app, L"\\wineboot.exe" );

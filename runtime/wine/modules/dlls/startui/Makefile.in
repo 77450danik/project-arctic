@@ -1,5 +1,5 @@
 MODULE    = startui.dll
-IMPORTS   = uuid dwmapi comctl32 comdlg32 shell32 user32 gdi32 advapi32 ole32
+IMPORTS   = uuid dwmapi powrprof comctl32 comdlg32 shell32 user32 gdi32 advapi32 ole32
 
 VER_FILEDESCRIPTION_STR = "Start menu and taskbar look"
 

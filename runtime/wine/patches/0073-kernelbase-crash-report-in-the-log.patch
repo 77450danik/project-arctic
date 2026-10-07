@@ -1,0 +1,118 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 7 Oct 2026 02:00:00 +0200
+Subject: [PATCH] kernelbase: Where a program crashed goes to the log.
+
+As Windows writes "Faulting module name, offset" to its event log, an
+unhandled exception now writes the module and offset of its address and the
+frames above it (ebp chain on x86, unwind tables on x64, and the code
+addresses on the stack) before the debugger starts. It is written from
+inside the process: Chromium's sandboxed processes (Chrome Remote Desktop's
+host) let no other process open them, their own AeDebug debugger neither,
+so their crashes left nothing but an address.
+---
+diff --git a/dlls/kernelbase/debug.c b/dlls/kernelbase/debug.c
+--- a/dlls/kernelbase/debug.c
++++ b/dlls/kernelbase/debug.c
+@@ -458,6 +458,94 @@
+  *
+  * Does the effective debugger startup according to 'format'
+  */
++/* Arctic: where a program crashed, as Windows writes it to the event log
++ * ("Faulting module name ..., offset ..."), and the frames above it: from
++ * inside the process, which works where no debugger may open it (Chromium's
++ * sandboxed processes deny every other process, their own debugger too). */
++static BOOL readable( const void *ptr, SIZE_T size )
++{
++    MEMORY_BASIC_INFORMATION mbi;
++
++    if (!VirtualQuery( ptr, &mbi, sizeof(mbi) ) || mbi.State != MEM_COMMIT ||
++        (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
++        return FALSE;
++    return (const char *)ptr + size <= (const char *)mbi.BaseAddress + mbi.RegionSize;
++}
++
++/* "module+offset" of a code address, or FALSE */
++static BOOL describe_address( ULONG_PTR addr, char *buffer, int size )
++{
++    WCHAR path[MAX_PATH], *name;
++    HMODULE module;
++
++    if (!GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                             (const WCHAR *)addr, &module ))
++        return FALSE;
++    if (!GetModuleFileNameW( module, path, ARRAY_SIZE(path) )) wcscpy( path, L"?" );
++    name = wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path;
++    snprintf( buffer, size, "%ls+%#Ix", name, addr - (ULONG_PTR)module );
++    return TRUE;
++}
++
++static void report_crash( const EXCEPTION_POINTERS *ep )
++{
++    const CONTEXT *ctx = ep->ContextRecord;
++    char where[MAX_PATH + 32];
++    ULONG_PTR *sp;
++    int i, shown;
++
++    if (!describe_address( (ULONG_PTR)ep->ExceptionRecord->ExceptionAddress, where, sizeof(where) ))
++        strcpy( where, "no module" );
++    MESSAGE( "wine: crash: exception %#lx at %p in %s (thread %04lx)\n", ep->ExceptionRecord->ExceptionCode,
++             ep->ExceptionRecord->ExceptionAddress, where, GetCurrentThreadId() );
++#ifdef __i386__
++    {
++        ULONG_PTR *frame = (ULONG_PTR *)ctx->Ebp;
++
++        for (i = 0; i < 32 && frame && readable( frame, 2 * sizeof(*frame) ); i++)
++        {
++            if (describe_address( frame[1], where, sizeof(where) ))
++                MESSAGE( "wine: crash:   frame %2d %s\n", i, where );
++            if ((ULONG_PTR *)frame[0] <= frame) break;
++            frame = (ULONG_PTR *)frame[0];
++        }
++        sp = (ULONG_PTR *)ctx->Esp;
++    }
++#elif defined(__x86_64__)
++    {
++        CONTEXT context = *ctx;
++        UNWIND_HISTORY_TABLE table;
++        RUNTIME_FUNCTION *func;
++        ULONG_PTR base, frame;
++        void *data;
++
++        for (i = 0; i < 32 && context.Rip; i++)
++        {
++            if (describe_address( context.Rip, where, sizeof(where) ))
++                MESSAGE( "wine: crash:   frame %2d %s\n", i, where );
++            if (!(func = RtlLookupFunctionEntry( context.Rip, &base, &table )))
++            {
++                if (!readable( (void *)context.Rsp, sizeof(ULONG_PTR) )) break;
++                context.Rip = *(ULONG_PTR *)context.Rsp;
++                context.Rsp += sizeof(ULONG_PTR);
++                continue;
++            }
++            RtlVirtualUnwind( UNW_FLAG_NHANDLER, base, context.Rip, func, &context, &data, &frame, NULL );
++        }
++        sp = (ULONG_PTR *)ctx->Rsp;
++    }
++#else
++    sp = NULL;
++#endif
++    /* code addresses on the stack, for frames that keep no frame pointer */
++    for (i = shown = 0; sp && i < 1024 && shown < 32 && readable( sp + i, sizeof(*sp) ); i++)
++        if (describe_address( sp[i], where, sizeof(where) ))
++        {
++            MESSAGE( "wine: crash:   stack +%#x %s\n", (int)(i * sizeof(*sp)), where );
++            shown++;
++        }
++}
++
+ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
+ {
+     OBJECT_ATTRIBUTES attr;
+@@ -472,6 +560,7 @@
+ 
+     format_exception_msg( epointers, buffer, sizeof(buffer) );
+     MESSAGE( "wine: %s (thread %04lx), starting debugger...\n", buffer, GetCurrentThreadId() );
++    report_crash( epointers );
+ 
+     InitializeObjectAttributes( &attr, &nameW, 0, 0, NULL );
+     if (!NtOpenKey( &dbg_key, KEY_READ, &attr ))

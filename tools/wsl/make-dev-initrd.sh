@@ -12,6 +12,6 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 cp -a "$SRC/." "$WORK/"
-gcc -static -Os -Wall -o "$WORK/init" "$ROOT/host/init/initrd-init.c" "$ROOT"/host/init/{bootanim,screen,stop}.c
+gcc -static -Os -Wall -o "$WORK/init" "$ROOT/host/init/initrd-init.c" "$ROOT"/host/init/{bootanim,screen,stop,hiberfil}.c
 (cd "$WORK" && find . | cpio -o -H newc --quiet) | zstd -19 -q -f -o "$OUT"
 ls -l "$OUT"

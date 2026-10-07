@@ -38,10 +38,15 @@ static struct {
     struct screen s;
     int attached, simple;        /* on a card; that card is simpledrm (the firmware framebuffer) */
     int show_error;              /* why the picture could not go on screen, said once */
+    int why_card;                /* the card, and the step, that last failed: said once */
+    const char *why;
     uint32_t frames, dim;        /* the spinner: frame count, the side of a frame */
     uint8_t *alpha;              /* frames * dim * dim */
     int cx, cy;                  /* the spinner's middle */
     int update;                  /* the "working on updates" screen */
+    int wait;                    /* "please wait": the GPU driver blanked the panel to take it */
+    int resume_watch;            /* going to sleep (fast startup): the boot screen again on waking */
+    double resume_gap;
     char status[256], line1[256], line2[256];
 } a = {.devfd = -1};
 
@@ -272,7 +277,17 @@ static void draw_background(void)
     a.cx = (int)a.s.width / 2;
     a.cy = (int)(a.s.height * (a.update ? 0.43 : 0.75));
     screen_fill(&a.s, 0, 0, (int)a.s.width, (int)a.s.height, 0);
-    if (a.update) {
+    if (a.wait && !a.update) {
+        /* Windows' sign-in screen: the ring left of the words, both in the
+         * middle. After a modeset the PC maker's logo would only come back
+         * a second time; the firmware's picture is gone anyway. */
+        const char *text = a.status[0] ? a.status : "Будь ласка, зачекайте"; /* "Підготовка системи" */
+        double w = boot_text_width(1, text, f), gap = a.dim * 0.6;
+        double x = (a.s.width - (a.dim + gap + w)) / 2;
+        a.cx = (int)(x + a.dim / 2.0);
+        a.cy = (int)a.s.height / 2;
+        boot_text_at(&a.s, 1, text, x + a.dim + gap, a.cy + boot_line_height(1, f) * 0.3, f, 0);
+    } else if (a.update) {
         double base = a.cy + a.dim * 0.5 + boot_line_height(1, f) * 1.6;
         boot_text(&a.s, 1, a.line1, base, f, 0);
         boot_text(&a.s, 1, a.line2, base + boot_line_height(1, f) * 1.25, f, 0);
@@ -332,10 +347,32 @@ static void attach(void)
             int fd;
 
             snprintf(card, sizeof(card), "dri/card%d", i);
-            if ((fd = openat(a.devfd, card, O_RDWR | O_CLOEXEC)) < 0)
+            if ((fd = openat(a.devfd, card, O_RDWR | O_CLOEXEC)) < 0) {
+                if (errno != ENOENT && (i != a.why_card || a.why != strerror(errno))) {
+                    a.why_card = i;
+                    a.why = strerror(errno);
+                    say("card%d: %s", i, a.why);
+                }
                 continue;
+            }
             int simple = card_is_simple(fd);
-            if ((!pass && simple) || screen_init(&a.s, fd)) {
+            if (!pass && simple) {
+                close(fd);
+                continue;
+            }
+            struct timespec i0, i1;
+            clock_gettime(CLOCK_MONOTONIC, &i0);
+            screen_error = "";
+            int failed = screen_init(&a.s, fd);
+            clock_gettime(CLOCK_MONOTONIC, &i1);
+            long init_ms = (long)((i1.tv_sec - i0.tv_sec) * 1000 + (i1.tv_nsec - i0.tv_nsec) / 1000000);
+            /* why a GPU driver's card is not taken yet, once per reason, and
+             * anything slow: what the screen waits for while it is black */
+            if (!simple && ((failed && (i != a.why_card || screen_error != a.why)) || init_ms > 50))
+                say("card%d: %s in %ld ms", i, failed ? screen_error : "ready", init_ms);
+            if (failed) {
+                a.why_card = i;
+                a.why = screen_error;
                 close(fd);
                 continue;
             }
@@ -349,7 +386,27 @@ static void attach(void)
             draw_spinner(0);
             /* Someone else still has the display (dwm.exe going away as the
              * machine shuts down): tried again on the next check */
-            if (screen_show(&a.s)) {
+            /* A GPU driver after the firmware's framebuffer: a page flip
+             * succeeds only where it took the firmware's mode over as it
+             * was. Where it must switch the panel off and on to put its own
+             * (i915 on the MSI laptop: another PLL), the logo coming back
+             * after the black would look like a second start: then the
+             * screen says "please wait" instead. */
+            int flipped = 0;
+            if (!simple) {
+                struct drm_mode_crtc_page_flip flip = {.crtc_id = a.s.crtc_id, .fb_id = a.s.fb_id};
+                flipped = !ioctl(a.s.fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip);
+                if (!flipped && !a.wait) {
+                    a.wait = 1;
+                    draw_background();
+                    draw_spinner(0);
+                }
+            }
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            int shown = flipped ? 0 : screen_show(&a.s);
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            if (shown) {
                 if (errno != a.show_error)
                     say("card%d: no picture yet (%s)", i, strerror(errno));
                 a.show_error = errno;
@@ -357,7 +414,12 @@ static void attach(void)
                 return;
             }
             a.show_error = 0;
-            say("card%d %ux%u%s", i, a.s.width, a.s.height, simple ? " (firmware framebuffer)" : "");
+            /* a modeset that switches the panel off and on takes most of a second */
+            say("card%d %ux%u%s, on screen in %ld ms%s%s", i, a.s.width, a.s.height,
+                simple ? " (firmware framebuffer)" : "",
+                (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000),
+                a.s.kept_mode ? ", the firmware's timings kept" : "",
+                flipped ? ", the firmware's mode taken over (page flip)" : a.wait ? ", modeset: \"please wait\"" : "");
             return;
         }
 }
@@ -390,6 +452,17 @@ static void check_card(void)
         attach();
 }
 
+/* how long the machine has slept since it started: BOOTTIME goes on in
+ * sleep, MONOTONIC does not */
+static double asleep_s(void)
+{
+    struct timespec b, m;
+
+    clock_gettime(CLOCK_BOOTTIME, &b);
+    clock_gettime(CLOCK_MONOTONIC, &m);
+    return (double)(b.tv_sec - m.tv_sec) + (b.tv_nsec - m.tv_nsec) / 1e9;
+}
+
 static void command(char *line)
 {
     char *arg = strchr(line, ' ');
@@ -407,6 +480,10 @@ static void command(char *line)
         snprintf(a.line1, sizeof(a.line1), "%s", arg);
         snprintf(a.line2, sizeof(a.line2), "%s", tab ? tab : "");
         a.update = 1;
+    } else if (!strcmp(line, "resume")) {
+        a.resume_watch = 1;
+        a.resume_gap = asleep_s();
+        return;
     } else if (!strcmp(line, "boot")) {
         a.update = 0;
         a.status[0] = 0;
@@ -448,7 +525,19 @@ static void run(int ctl)
             if (used == sizeof(buf) - 1)
                 used = 0;
         }
-        if (!released && tick % 15 == 0)
+        /* woken from a fast startup: the boot screen, as Windows shows it */
+        if (a.resume_watch && asleep_s() - a.resume_gap > 1) {
+            a.resume_watch = 0;
+            a.update = 0;
+            a.status[0] = 0;
+            if (a.attached) {
+                draw_background();
+                dirty(0, 0, (int)a.s.width, (int)a.s.height);
+            }
+        }
+        /* without a card, every frame: the GPU driver's comes any moment
+         * (not while someone else holds the display) */
+        if (!released && ((!a.attached && !a.show_error) || tick % 15 == 0))
             check_card();
         /* Given up, the spinner still turns in the picture on the screen
          * until dwm.exe puts a picture of its own there, as Windows' turns

@@ -1,0 +1,380 @@
+msconfig: the boot page as Arctic has it, with fast startup and hibernation
+
+The boot page showed FREELDR.INI, which Arctic has none of. It names the
+system that starts and has the two power options of docs/hibernation.md,
+kept where Windows keeps them (HiberbootEnabled, HibernateEnabled); OK and
+Apply save them. Both are off unless set here.
+---
+diff -ruN a/base/applications/msconfig/freeldrpage.c b/base/applications/msconfig/freeldrpage.c
+--- a/base/applications/msconfig/freeldrpage.c	2026-10-06 14:51:04.146027687 +0200
++++ b/base/applications/msconfig/freeldrpage.c	2026-10-06 14:52:01.833456070 +0200
+@@ -2,9 +2,11 @@
+  * PROJECT:     ReactOS Applications
+  * LICENSE:     LGPL - See COPYING in the top level directory
+  * FILE:        base/applications/msconfig/freeldrpage.c
+- * PURPOSE:     Freeloader configuration page message handler
++ * PURPOSE:     The boot page, as Arctic has it: the system that starts, and
++ *              the two ways of starting from C:\hiberfil.sys
+  * COPYRIGHT:   Copyright 2005-2006 Christoph von Wittich <Christoph@ApiViewer.de>
+  *                        2011      Gregor Schneider <Gregor.Schneider@reactos.org>
++ *                        2026      Project Arctic
+  */
+ 
+ #include "precomp.h"
+@@ -12,153 +14,86 @@
+ HWND hFreeLdrPage;
+ HWND hFreeLdrDialog;
+ 
+-typedef struct
+-{
+-    ULONG TimeOut;
+-    WCHAR szDefaultOS[512];
+-    ULONG szDefaultPos;
+-    ULONG OSConfigurationCount;
+-    BOOL  UseBootIni;
+-} FREELDR_SETTINGS;
+-
+-static FREELDR_SETTINGS Settings = { 0, { 0, }, 0, 0, FALSE };
+-
+-#define BUFFER_SIZE 512
++/* The values Windows keeps them in: fast startup in the power settings of
++ * the session manager (Control Panel's "Turn on fast startup"), hibernation
++ * where powercfg /hibernate puts it. Arctic's host reads both when the
++ * session ends (docs/hibernation.md). Both are off unless set here. */
++static const WCHAR FastStartupKey[] = L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power";
++static const WCHAR FastStartupValue[] = L"HiberbootEnabled";
++static const WCHAR HibernateKey[] = L"SYSTEM\\CurrentControlSet\\Control\\Power";
++static const WCHAR HibernateValue[] = L"HibernateEnabled";
+ 
+ static BOOL
+-LoadBootIni(WCHAR *szDrive, HWND hDlg)
++ReadFlag(LPCWSTR Key, LPCWSTR Value)
+ {
+-    WCHAR szBuffer[BUFFER_SIZE];
+-    HWND hDlgCtrl;
+-    FILE * file;
+-    UINT length;
+-    LRESULT pos;
+-    HRESULT hr;
+-
+-    hr = StringCbCopyW(szBuffer, sizeof(szBuffer), szDrive);
+-    if (FAILED(hr))
+-        return FALSE;
++    DWORD Data = 0, Size = sizeof(Data);
+ 
+-    hr = StringCbCatW(szBuffer, sizeof(szBuffer), L"freeldr.ini");
+-    if (FAILED(hr))
++    if (RegGetValueW(HKEY_LOCAL_MACHINE, Key, Value, RRF_RT_REG_DWORD, NULL, &Data, &Size) != ERROR_SUCCESS)
+         return FALSE;
++    return Data != 0;
++}
+ 
+-    file = _wfopen(szBuffer, L"rt");
+-    if (!file)
+-    {
+-        hr = StringCbCopyW(szBuffer, sizeof(szBuffer), szDrive);
+-        if (FAILED(hr))
+-            return FALSE;
+-
+-        hr = StringCbCatW(szBuffer, sizeof(szBuffer), L"boot.ini");
+-        if (FAILED(hr))
+-            return FALSE;
+-
+-        file = _wfopen(szBuffer, L"rt");
+-        if (!file)
+-            return FALSE;
+-    }
+-
+-    hDlgCtrl = GetDlgItem(hDlg, IDC_LIST_BOX);
+-
+-    while(!feof(file))
+-    {
+-        if (fgetws(szBuffer, BUFFER_SIZE, file))
+-        {
+-            length = wcslen(szBuffer);
+-            if (length > 1)
+-            {
+-                szBuffer[length] = L'\0';
+-                szBuffer[length - 1] = L'\0';
+-
+-                pos = SendMessageW(hDlgCtrl, LB_ADDSTRING, 0, (LPARAM)szBuffer);
+-
+-                if (szBuffer[0] == L'[')
+-                    continue;
+-
+-                if (!_wcsnicmp(szBuffer, L"timeout=", 8))
+-                {
+-                    Settings.TimeOut = _wtoi(&szBuffer[8]);
+-                    continue;
+-                }
+-
+-                if (!_wcsnicmp(szBuffer, L"default=", 8))
+-                {
+-                    wcscpy(Settings.szDefaultOS, &szBuffer[8]);
+-                    continue;
+-                }
+-                if (pos != LB_ERR)
+-                    SendMessage(hDlgCtrl, LB_SETITEMDATA, pos, 1); // indicate that this item is an boot entry
+-                Settings.OSConfigurationCount++;
+-            }
+-        }
+-    }
+-
+-    fclose(file);
+-    Settings.UseBootIni = TRUE;
+-
+-    pos = SendMessageW(hDlgCtrl, LB_FINDSTRING, 3, (LPARAM)Settings.szDefaultOS);
+-    if (pos != LB_ERR)
+-    {
+-       Settings.szDefaultPos = pos;
+-       SendMessage(hDlgCtrl, LB_SETCURSEL, pos, 0);
+-    }
++static BOOL
++WriteFlag(LPCWSTR Key, LPCWSTR Value, BOOL On)
++{
++    DWORD Data = On ? 1 : 0;
++    HKEY hKey;
++    LONG rc;
+ 
+-    SetDlgItemInt(hDlg, IDC_TXT_BOOT_TIMEOUT, Settings.TimeOut, FALSE);
+-    if (Settings.OSConfigurationCount < 2)
+-    {
+-        EnableWindow(GetDlgItem(hDlg, IDC_BTN_SET_DEFAULT_BOOT), FALSE);
+-        EnableWindow(GetDlgItem(hDlg, IDC_BTN_MOVE_UP_BOOT_OPTION), FALSE);
+-        EnableWindow(GetDlgItem(hDlg, IDC_BTN_MOVE_DOWN_BOOT_OPTION), FALSE);
+-    }
+-    return TRUE;
++    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, Key, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS)
++        return FALSE;
++    rc = RegSetValueExW(hKey, Value, 0, REG_DWORD, (const BYTE *)&Data, sizeof(Data));
++    RegCloseKey(hKey);
++    return rc == ERROR_SUCCESS;
+ }
+ 
+-static BOOL
+-InitializeFreeLDRDialog(HWND hDlg)
++/* OK and Apply */
++VOID
++FreeLdrPage_SaveChanges(VOID)
+ {
+-    WCHAR winDir[PATH_MAX];
+-    WCHAR* ptr = NULL;
++    BOOL FastStartup = IsDlgButtonChecked(hFreeLdrPage, IDC_CBX_FAST_STARTUP) == BST_CHECKED;
++    BOOL Hibernate = IsDlgButtonChecked(hFreeLdrPage, IDC_CBX_HIBERNATE) == BST_CHECKED;
+ 
+-    GetWindowsDirectoryW(winDir, PATH_MAX);
+-    ptr = wcschr(winDir, L'\\');
+-    if (ptr == NULL)
++    if (!WriteFlag(FastStartupKey, FastStartupValue, FastStartup) ||
++        !WriteFlag(HibernateKey, HibernateValue, Hibernate))
+     {
+-        return FALSE;
++        WCHAR szText[256], szTitle[128];
++
++        LoadStringW(hInst, IDS_POWER_SAVE_FAILED, szText, ARRAYSIZE(szText));
++        LoadStringW(hInst, IDS_MSCONFIG, szTitle, ARRAYSIZE(szTitle));
++        MessageBoxW(hMainWnd, szText, szTitle, MB_ICONERROR);
+     }
+-    ptr[1] = L'\0';
+-    return LoadBootIni(winDir, hDlg);
+ }
+ 
+ INT_PTR CALLBACK
+ FreeLdrPageWndProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+ {
+-    LRESULT pos;
++    WCHAR szSystem[256];
+ 
+-    switch (message) {
++    UNREFERENCED_PARAMETER(lParam);
++
++    switch (message)
++    {
+     case WM_INITDIALOG:
+         hFreeLdrDialog = hDlg;
+         SetWindowPos(hDlg, NULL, 10, 32, 0, 0, SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSIZE | SWP_NOZORDER);
+-        InitializeFreeLDRDialog(hDlg);
+-        DisableAllExcept(hDlg, IDC_LIST_BOX); // FIXME: Implement saving
++        LoadStringW(hInst, IDS_BOOT_THIS_SYSTEM, szSystem, ARRAYSIZE(szSystem));
++        SendDlgItemMessageW(hDlg, IDC_LIST_BOX, LB_ADDSTRING, 0, (LPARAM)szSystem);
++        SendDlgItemMessageW(hDlg, IDC_LIST_BOX, LB_SETCURSEL, 0, 0);
++        CheckDlgButton(hDlg, IDC_CBX_FAST_STARTUP,
++                       ReadFlag(FastStartupKey, FastStartupValue) ? BST_CHECKED : BST_UNCHECKED);
++        CheckDlgButton(hDlg, IDC_CBX_HIBERNATE,
++                       ReadFlag(HibernateKey, HibernateValue) ? BST_CHECKED : BST_UNCHECKED);
+         return TRUE;
++
+     case WM_COMMAND:
+-        switch(HIWORD(wParam))
++        if ((LOWORD(wParam) == IDC_CBX_FAST_STARTUP || LOWORD(wParam) == IDC_CBX_HIBERNATE) &&
++            HIWORD(wParam) == BN_CLICKED)
+         {
+-            case LBN_SELCHANGE:
+-                pos = SendMessage((HWND)lParam, LB_GETCURSEL, 0, 0);
+-                if (pos != LB_ERR)
+-                {
+-                    LPARAM res = SendMessage((HWND)lParam, LB_GETITEMDATA, pos, 0);
+-                    if (!res) /* line is not a default one */
+-                        SendMessage((HWND)lParam, LB_SETCURSEL, Settings.szDefaultPos, 0);
+-                    else
+-                        Settings.szDefaultPos = pos;
+-
+-
+-                }
+-            break;
++            EnableWindow(GetDlgItem(hMainWnd, IDC_BTN_APPLY), TRUE);
+         }
++        break;
+     }
++
+     return 0;
+ }
+diff -ruN a/base/applications/msconfig/freeldrpage.h b/base/applications/msconfig/freeldrpage.h
+--- a/base/applications/msconfig/freeldrpage.h	2026-10-06 14:51:04.146052252 +0200
++++ b/base/applications/msconfig/freeldrpage.h	2026-10-06 14:52:01.833685375 +0200
+@@ -4,5 +4,6 @@
+ extern HWND hFreeLdrPage;
+ 
+ INT_PTR CALLBACK FreeLdrPageWndProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
++VOID FreeLdrPage_SaveChanges(VOID);
+ 
+ #endif /* _FREELDRPAGE_H_ */
+diff -ruN a/base/applications/msconfig/lang/en-US.rc b/base/applications/msconfig/lang/en-US.rc
+--- a/base/applications/msconfig/lang/en-US.rc	2026-10-06 14:51:04.149540886 +0200
++++ b/base/applications/msconfig/lang/en-US.rc	2026-10-06 14:52:01.842113293 +0200
+@@ -78,22 +78,12 @@
+ STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_CLIPCHILDREN
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LISTBOX IDC_LIST_BOX, 10, 10, 340, 50, WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+-            LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_HSCROLL
+-    PUSHBUTTON "&Check All Boot Paths", IDC_BTN_CHECK_BOOT_PATH, 10, 65, 70, 12
+-    PUSHBUTTON "&Set as Default", IDC_BTN_SET_DEFAULT_BOOT, 100, 65, 70, 12
+-    PUSHBUTTON "Move &Up", IDC_BTN_MOVE_UP_BOOT_OPTION, 190, 65, 70, 12
+-    PUSHBUTTON "Move &Down", IDC_BTN_MOVE_DOWN_BOOT_OPTION, 280, 65, 70, 12
+-    GROUPBOX "Boot Options", -1, 10, 80, 250, 90, 0, WS_EX_TRANSPARENT
+-    CHECKBOX "/SA&FEBOOT", IDC_CBX_SAFE_BOOT, 15, 90, 55, 10
+-    CHECKBOX "/&NOGUIBOOT", IDC_CBX_NO_GUI_BOOT, 15, 105, 60, 10
+-    CHECKBOX "/&BOOTLOG", IDC_CBX_BOOT_LOG, 15, 120, 50, 10
+-    CHECKBOX "/BAS&EVIDEO", IDC_CBX_BASE_VIDEO, 15, 135, 55, 10
+-    CHECKBOX "/S&OS", IDC_CBX_SOS, 15, 150, 50, 10
+-    PUSHBUTTON "Ad&vanced Options...", IDC_BTN_ADVANCED_OPTIONS, 100, 150, 70, 12
+-    LTEXT "&Timeout:", -1, 280, 91, 30, 10
+-    EDITTEXT IDC_TXT_BOOT_TIMEOUT, 310, 90, 25, 12, ES_LEFT
+-    LTEXT "sec.", -1, 340, 91, 15, 10
++    LISTBOX IDC_LIST_BOX, 10, 10, 340, 50, WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOINTEGRALHEIGHT | WS_VSCROLL
++    GROUPBOX "Power options", -1, 10, 70, 340, 95, 0, WS_EX_TRANSPARENT
++    AUTOCHECKBOX "Turn on &fast startup", IDC_CBX_FAST_STARTUP, 20, 84, 320, 10
++    LTEXT "Shutting down and restarting without updates keep the kernel and the drivers in C:\\hiberfil.sys, and the next start is faster.", -1, 32, 96, 310, 18
++    AUTOCHECKBOX "&Hibernate", IDC_CBX_HIBERNATE, 20, 122, 320, 10
++    LTEXT "Hibernate appears in the power menu: the whole session, open programs included, is kept in C:\\hiberfil.sys.", -1, 32, 134, 310, 18
+ END
+ 
+ IDD_FREELDR_ADVANCED_PAGE DIALOGEX 0, 0, 175, 175
+@@ -124,9 +114,11 @@
+ STRINGTABLE
+ BEGIN
+     IDS_MSCONFIG "System Configuration Program"
++    IDS_BOOT_THIS_SYSTEM "Arctic (C:\\Windows) : Current OS; Default OS"
++    IDS_POWER_SAVE_FAILED "The power options could not be saved."
+     IDS_TAB_GENERAL "General"
+     IDS_TAB_SYSTEM "SYSTEM.INI"
+-    IDS_TAB_FREELDR "FREELDR.INI"
++    IDS_TAB_FREELDR "Boot"
+     IDS_TAB_SERVICES "Services"
+     IDS_TAB_STARTUP "Startup"
+     IDS_TAB_TOOLS "Tools"
+diff -ruN a/base/applications/msconfig/lang/uk-UA.rc b/base/applications/msconfig/lang/uk-UA.rc
+--- a/base/applications/msconfig/lang/uk-UA.rc	2026-10-06 14:51:04.155642756 +0200
++++ b/base/applications/msconfig/lang/uk-UA.rc	2026-10-06 14:52:01.841918098 +0200
+@@ -86,22 +86,12 @@
+ STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_CLIPCHILDREN
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LISTBOX IDC_LIST_BOX, 10, 10, 340, 50, WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+-            LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_HSCROLL
+-    PUSHBUTTON "&Вибрати всі шляхи", IDC_BTN_CHECK_BOOT_PATH, 10, 65, 70, 12
+-    PUSHBUTTON "&Встановити стандартно", IDC_BTN_SET_DEFAULT_BOOT, 92, 65, 88, 12
+-    PUSHBUTTON "Перемістити Вв&ерх", IDC_BTN_MOVE_UP_BOOT_OPTION, 190, 65, 70, 12
+-    PUSHBUTTON "Перемістити В&низ", IDC_BTN_MOVE_DOWN_BOOT_OPTION, 280, 65, 70, 12
+-    GROUPBOX "Варіанти завантаження", -1, 10, 80, 250, 90, 0, WS_EX_TRANSPARENT
+-    CHECKBOX "/SA&FEBOOT", IDC_CBX_SAFE_BOOT, 15, 90, 55, 10
+-    CHECKBOX "/&NOGUIBOOT", IDC_CBX_NO_GUI_BOOT, 15, 105, 60, 10
+-    CHECKBOX "/&BOOTLOG", IDC_CBX_BOOT_LOG, 15, 120, 50, 10
+-    CHECKBOX "/BAS&EVIDEO", IDC_CBX_BASE_VIDEO, 15, 135, 55, 10
+-    CHECKBOX "/S&OS", IDC_CBX_SOS, 15, 150, 50, 10
+-    PUSHBUTTON "Д&одатково...", IDC_BTN_ADVANCED_OPTIONS, 100, 150, 70, 12
+-    LTEXT "&Затримка:", -1, 275, 91, 33, 10
+-    EDITTEXT IDC_TXT_BOOT_TIMEOUT, 310, 90, 25, 12, ES_LEFT
+-    LTEXT "сек.", -1, 340, 91, 15, 10
++    LISTBOX IDC_LIST_BOX, 10, 10, 340, 50, WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOINTEGRALHEIGHT | WS_VSCROLL
++    GROUPBOX "Параметри живлення", -1, 10, 70, 340, 95, 0, WS_EX_TRANSPARENT
++    AUTOCHECKBOX "Увімкнути &швидкий запуск", IDC_CBX_FAST_STARTUP, 20, 84, 320, 10
++    LTEXT "Завершення роботи й перезавантаження без оновлень зберігають ядро й драйвери у файлі C:\\hiberfil.sys, і наступний запуск відбувається швидше.", -1, 32, 96, 310, 18
++    AUTOCHECKBOX "&Гібернація", IDC_CBX_HIBERNATE, 20, 122, 320, 10
++    LTEXT "У меню живлення з'являється «Гібернація»: увесь сеанс разом із відкритими програмами зберігається у C:\\hiberfil.sys.", -1, 32, 134, 310, 18
+ END
+ 
+ IDD_FREELDR_ADVANCED_PAGE DIALOGEX 0, 0, 175, 175
+@@ -132,9 +122,11 @@
+ STRINGTABLE
+ BEGIN
+     IDS_MSCONFIG "Програма налаштування системи"
++    IDS_BOOT_THIS_SYSTEM "Arctic (C:\\Windows) : Поточна ОС; ОС за замовчуванням"
++    IDS_POWER_SAVE_FAILED "Не вдалося зберегти параметри живлення."
+     IDS_TAB_GENERAL "Загальні"
+     IDS_TAB_SYSTEM "SYSTEM.INI"
+-    IDS_TAB_FREELDR "FREELDR.INI"
++    IDS_TAB_FREELDR "Завантаження"
+     IDS_TAB_SERVICES "Служби"
+     IDS_TAB_STARTUP "Автозавантаження"
+     IDS_TAB_TOOLS "Утиліти"
+diff -ruN a/base/applications/msconfig/msconfig.c b/base/applications/msconfig/msconfig.c
+--- a/base/applications/msconfig/msconfig.c	2026-10-06 14:51:04.156008150 +0200
++++ b/base/applications/msconfig/msconfig.c	2026-10-06 14:52:01.839935976 +0200
+@@ -279,7 +279,14 @@
+ 
+             if (LOWORD(wParam) == IDOK)
+             {
+-                //MsConfig_OnSaveChanges();
++                FreeLdrPage_SaveChanges();
++            }
++
++            if (LOWORD(wParam) == IDC_BTN_APPLY)
++            {
++                FreeLdrPage_SaveChanges();
++                EnableWindow(GetDlgItem(hDlg, IDC_BTN_APPLY), FALSE);
++                return TRUE;
+             }
+ 
+             if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+diff -ruN a/base/applications/msconfig/msconfig.h b/base/applications/msconfig/msconfig.h
+--- a/base/applications/msconfig/msconfig.h	2026-10-06 14:51:04.156089601 +0200
++++ b/base/applications/msconfig/msconfig.h	2026-10-06 14:52:01.833763823 +0200
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
+ extern HINSTANCE hInst;
++extern HWND hMainWnd;
+ 
+ VOID DisableAllExcept(HWND hTabDlg, UINT idExcept);
+diff -ruN a/base/applications/msconfig/resource.h b/base/applications/msconfig/resource.h
+--- a/base/applications/msconfig/resource.h	2026-10-06 14:51:04.161984905 +0200
++++ b/base/applications/msconfig/resource.h	2026-10-06 14:52:01.833864287 +0200
+@@ -68,6 +68,8 @@
+ #define IDC_SYSTEM_TREE               1057
+ #define IDC_BTN_SYSTEM_ACTIVATE       1058
+ #define IDC_BTN_SYSTEM_DEACTIVATE     1059
++#define IDC_CBX_FAST_STARTUP          1060
++#define IDC_CBX_HIBERNATE             1061
+ 
+ #define IDS_TAB_TOOLS    2001
+ #define IDS_TAB_SYSTEM   2002
+@@ -112,5 +114,7 @@
+ #define IDS_SERVICES_UNKNOWN        2203
+ 
+ #define IDS_MSCONFIG 3000
++#define IDS_BOOT_THIS_SYSTEM  3002
++#define IDS_POWER_SAVE_FAILED 3003
+ 
+ #define IDI_APPICON 3001

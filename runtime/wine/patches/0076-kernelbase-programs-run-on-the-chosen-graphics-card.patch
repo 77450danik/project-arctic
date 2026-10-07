@@ -1,0 +1,119 @@
+Subject: [PATCH] kernelbase: programs run on the graphics card chosen for them.
+
+Arctic (docs/power.md): CreateProcess puts in the environment of a program
+what its choice in Windows' Graphics settings needs (PRIME offload,
+Mesa's device selection, DXVK's and vkd3d's filters), as the power
+policy works it out for the cards the machine has.
+---
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -26,6 +26,7 @@
+ #include "winbase.h"
+ #include "winnls.h"
+ #include "wincontypes.h"
++#include "winreg.h"
+ #include "winternl.h"
+ #include "processsnapshot.h"
+ 
+@@ -135,6 +136,84 @@
+ }
+ 
+ 
++/* Arctic: the graphics card a program runs on, as Windows' "Graphics
++ * settings" choose it (HKCU\\Software\\Microsoft\\DirectX\\UserGpuPreferences,
++ * docs/power.md). The power policy keeps what each choice puts in the
++ * environment in a volatile key, only on a machine with two cards; letting
++ * Windows decide is the fast card on the mains and the power saving one on
++ * battery. Windows' own programs are left on the card of the display. */
++static const WCHAR *const gpu_variables[] =
++{
++    L"DXVK_FILTER_DEVICE_NAME", L"VKD3D_FILTER_DEVICE_NAME", L"__NV_PRIME_RENDER_OFFLOAD", L"__VK_LAYER_NV_optimus",
++    L"MESA_VK_DEVICE_SELECT", L"DRI_PRIME", L"__GLX_VENDOR_LIBRARY_NAME", L"__EGL_VENDOR_LIBRARY_FILENAMES",
++};
++
++static BOOL is_gpu_variable( const WCHAR *entry )
++{
++    for (UINT i = 0; i < ARRAY_SIZE(gpu_variables); i++)
++    {
++        size_t len = lstrlenW( gpu_variables[i] );
++        if (!wcsnicmp( entry, gpu_variables[i], len ) && entry[len] == '=') return TRUE;
++    }
++    return FALSE;
++}
++
++static WCHAR *gpu_environment( const WCHAR *image, const WCHAR *env )
++{
++    WCHAR windir[MAX_PATH], value[64], vars[2048], *result, *out;
++    const WCHAR *source, *p, *choice;
++    SYSTEM_BATTERY_STATE battery;
++    DWORD size, pref = 0, len;
++    SIZE_T total = 1;
++    HKEY key;
++
++    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticGpu", 0, KEY_READ, &key ))
++        return NULL;
++    vars[0] = vars[1] = 0;
++    len = GetSystemWindowsDirectoryW( windir, MAX_PATH );
++    if (!len || wcsnicmp( image, windir, len ) || image[len] != '\\')
++    {
++        size = sizeof(value);
++        if (!RegGetValueW( HKEY_CURRENT_USER, L"Software\\Microsoft\\DirectX\\UserGpuPreferences", image,
++                           RRF_RT_REG_SZ, NULL, value, &size ) && (p = wcsstr( value, L"GpuPreference=" )))
++            pref = p[14] - '0';
++        if (pref == 1) choice = L"PowerSaving";
++        else if (pref == 2) choice = L"HighPerformanceGL";
++        else if (!NtPowerInformation( SystemBatteryState, NULL, 0, &battery, sizeof(battery) ) &&
++                 battery.BatteryPresent && !battery.AcOnLine)
++            choice = L"PowerSaving";
++        else choice = L"HighPerformance";
++        size = sizeof(vars) - 2 * sizeof(WCHAR);
++        if (RegGetValueW( key, NULL, choice, RRF_RT_REG_MULTI_SZ, NULL, vars, &size )) vars[0] = vars[1] = 0;
++        TRACE( "%s: %s\n", debugstr_w(image), debugstr_w(choice) );
++    }
++    RegCloseKey( key );
++
++    source = env ? env : GetEnvironmentStringsW();
++    for (p = source; *p; p += lstrlenW( p ) + 1) total += lstrlenW( p ) + 1;
++    for (p = vars; *p; p += lstrlenW( p ) + 1) total += lstrlenW( p ) + 1;
++    if ((result = out = RtlAllocateHeap( GetProcessHeap(), 0, total * sizeof(WCHAR) )))
++    {
++        for (p = source; *p; p += lstrlenW( p ) + 1)
++        {
++            if (is_gpu_variable( p )) continue;
++            lstrcpyW( out, p );
++            out += lstrlenW( p ) + 1;
++        }
++        /* NAME= takes a variable away */
++        for (p = vars; *p; p += lstrlenW( p ) + 1)
++        {
++            const WCHAR *eq = wcschr( p, '=' );
++            if (!eq || !eq[1]) continue;
++            lstrcpyW( out, p );
++            out += lstrlenW( p ) + 1;
++        }
++        *out = 0;
++    }
++    if (!env) FreeEnvironmentStringsW( (WCHAR *)source );
++    return result;
++}
++
+ /***********************************************************************
+  *           create_process_params
+  */
+@@ -162,6 +241,16 @@
+             MultiByteToWideChar( CP_ACP, 0, env, e - (char *)env, envW, lenW );
+     }
+ 
++    /* Arctic: the graphics card it runs on */
++    {
++        WCHAR *gpu = gpu_environment( imagepath, envW );
++        if (gpu)
++        {
++            if (envW != env) RtlFreeHeap( GetProcessHeap(), 0, envW );
++            envW = gpu;
++        }
++    }
++
+     newdirW.Buffer = NULL;
+     if (cur_dir)
+     {

@@ -246,6 +246,31 @@ static void read_properties( const uint32_t *props, const uint64_t *values, uint
     }
 }
 
+/* The mode the monitor is lit with (by the firmware, the boot screen or an
+ * earlier dwm.exe) stands for its own size and Hz in the list: the
+ * preferred mode's timings may differ from the lit one's (a laptop panel's
+ * from the video BIOS, not EDID), and setting those switches the panel off
+ * and on for a second where nothing had to change. */
+static void keep_lit_mode( struct kms_output *out )
+{
+    struct drm_mode_crtc crtc = { .crtc_id = out->crtc_id };
+    uint32_t refresh;
+
+    if (!out->crtc_id || ioctl( kms.fd, DRM_IOCTL_MODE_GETCRTC, &crtc ) || !crtc.mode_valid) return;
+    refresh = mode_refresh( &crtc.mode );
+    for (uint32_t k = 0; k < out->mode_count; k++)
+    {
+        struct kms_mode *m = &out->modes[k];
+
+        if (m->info.hdisplay != crtc.mode.hdisplay || m->info.vdisplay != crtc.mode.vdisplay ||
+            whole_hz( m->refresh ) != whole_hz( refresh )) continue;
+        crtc.mode.type = m->info.type;
+        m->info = crtc.mode;
+        m->refresh = refresh;
+        return;
+    }
+}
+
 /* A connected monitor as a new slot, not yet in kms.outputs. count_modes 0 on
  * the first call makes the kernel probe the connector again. */
 static bool read_connector( uint32_t id, struct kms_output *out )
@@ -308,6 +333,7 @@ static bool read_connector( uint32_t id, struct kms_output *out )
             /* the CRTC firmware lit it with, the first choice for it */
             if (enc.encoder_id == conn.encoder_id && enc.crtc_id) out->crtc_id = enc.crtc_id;
         }
+        keep_lit_mode( out );
         ok = out->mode_count && out->possible_crtcs;
         if (!ok)
         {
@@ -1066,6 +1092,34 @@ restore:
 undo:
     for (i = 0; i < KMS_MAX_OUTPUTS; i++) if (next[i].new_fb) destroy_fb( &next[i].fb );
     return false;
+}
+
+/* Windows' "turn off the display" (the power policy, docs/power.md): the
+ * connectors' DPMS, which atomic drivers turn into their CRTC's ACTIVE. The
+ * monitor keeps its mode and what it showed. */
+bool kms_set_power( bool on )
+{
+    static const char *const dpms_name[] = { "DPMS" };
+    bool ok = true;
+
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        struct kms_output *out = &kms.outputs[i];
+        struct drm_mode_connector_set_property set = { .connector_id = out->connector_id };
+        uint32_t prop = 0;
+
+        if (!out->connector_id || !out->enabled) continue;
+        object_properties( out->connector_id, DRM_MODE_OBJECT_CONNECTOR, dpms_name, 1, &prop, NULL );
+        if (!prop) continue;
+        set.prop_id = prop;
+        set.value = on ? DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF;
+        if (ioctl( kms.fd, DRM_IOCTL_MODE_SETPROPERTY, &set ))
+        {
+            WARN( "%s: DPMS %s: %s\n", out->name, on ? "on" : "off", strerror( errno ) );
+            ok = false;
+        }
+    }
+    return ok;
 }
 
 void kms_flush( struct kms_output *out )

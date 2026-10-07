@@ -22,6 +22,7 @@
 #include <linux/dm-ioctl.h>
 #include <linux/fs.h>
 #include <linux/loop.h>
+#include <linux/suspend_ioctls.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -34,10 +35,12 @@
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <sys/sysmacros.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include "bootanim.h"
+#include "hiberfil.h"
 #include "stop.h"
 
 #define NEWROOT "/newroot"
@@ -931,6 +934,7 @@ static void update_screen(const char *what, int percent)
 }
 
 #define INSTALLING "Робота з оновленнями"
+static int update_left_at; /* the update screen stays at this percent for arctic-init */
 #define UNDOING "Скасування змін, внесених до комп’ютера"
 
 static void restart_now(void)
@@ -1184,6 +1188,9 @@ static void install_update(const char *dev)
     }
     say("update: installing%s%s%s", up.host ? " host.sqfs" : "", up.boot ? " Boot" : "",
         up.windows ? " Windows" : "");
+    /* a new host brings a new Wine, whose registry arctic-init brings up
+     * next, under the same screen from 50% (one update, as in Windows) */
+    int top = up.host ? 50 : 100;
     update_screen(INSTALLING, 0);
     remove_tree(PREVIOUS_DIR);
     mkdir(PREVIOUS_DIR, 0755);
@@ -1203,22 +1210,25 @@ static void install_update(const char *dev)
         bootanim_send(anim, "boot");
         return;
     }
-    update_screen(INSTALLING, 30);
+    update_screen(INSTALLING, top * 30 / 100);
     if (up.windows)
         install_windows();
     remove_tree(UPDATE_DIR);
     sync();
-    update_screen(INSTALLING, 60);
+    update_screen(INSTALLING, top * 60 / 100);
     if (!up.boot) { /* the kernel stays: the start goes on with the new files */
-        update_screen(INSTALLING, 100);
+        update_screen(INSTALLING, top);
         sleep(1);
-        bootanim_send(anim, "boot");
+        if (!up.host) /* else arctic-init goes on with the screen */
+            bootanim_send(anim, "boot");
+        else
+            update_left_at = top;
         return;
     }
     copy_kernel();
     sync();
     write_esp(dev);
-    update_screen(INSTALLING, 100);
+    update_screen(INSTALLING, top);
     restart_now();
 }
 
@@ -1284,11 +1294,152 @@ static void keep_tool_log(void)
 }
 
 /* A stick or a disk: C: is the partition */
+/* reads len bytes at a file offset of hiberfil.sys, through its extents */
+static int read_mapped(int disk, const struct hib_extent *ext, uint32_t count, uint64_t off, uint8_t *buf, size_t len)
+{
+    while (len) {
+        uint32_t i = 0;
+        while (i < count && !(off >= ext[i].file_offset && off < ext[i].file_offset + ext[i].length))
+            i++;
+        if (i == count)
+            return -1;
+        size_t piece = (size_t)(ext[i].file_offset + ext[i].length - off);
+        if (piece > len)
+            piece = len;
+        if (pread(disk, buf, piece, (off_t)(ext[i].disk_offset + off - ext[i].file_offset)) != (ssize_t)piece)
+            return -1;
+        off += piece;
+        buf += piece;
+        len -= piece;
+    }
+    return 0;
+}
+
+/* A C: asleep (fast startup, docs/hibernation.md): Windows 10 could not
+ * mount it, its partition type said so. It gets its type back whatever
+ * happens next. The image is taken once, and only when everything about it
+ * holds: the same kernel, the same C:, every checksum; otherwise the start
+ * goes on as after a power cut (C: is checked), as Windows deletes its
+ * restoration data. Returns only when the machine did not wake. */
+static void wake_or_forget(const char *dev)
+{
+    char disk[32], path[64];
+    int num, gpt, raw = -1, snap = -1;
+    uint64_t start;
+    uint8_t type[16], *area = NULL, *buf = NULL;
+    struct hib_where where;
+    struct utsname un;
+    const char *why = NULL;
+
+    if (hib_partition_disk(strrchr(dev, '/') + 1, disk, sizeof(disk), &num, &start))
+        return;
+    snprintf(path, sizeof(path), "/dev/%s", disk);
+    if ((gpt = open(path, O_RDWR | O_CLOEXEC)) < 0)
+        return;
+    if (hib_gpt_get_type(gpt, num, type) || memcmp(type, hib_type_asleep, 16)) {
+        close(gpt);
+        return; /* not asleep: the usual start */
+    }
+    say("C: is asleep (fast startup)");
+
+    if ((raw = open(path, O_RDWR | O_DIRECT | O_CLOEXEC)) < 0 || posix_memalign((void **)&area, 4096, HIB_HEADER_AREA))
+        why = "no disk";
+    else if (live || strstr(cmdline, "arctic.rollback=1"))
+        why = "a start from the menu";
+    else if (hib_efi_mount() || hib_efi_read(&where))
+        why = "no EFI variable";
+    else if (strcasecmp(where.partuuid, root_partuuid))
+        why = "the EFI variable names another C:";
+    else if (pread(raw, area, HIB_HEADER_AREA, (off_t)where.header_disk_offset) != HIB_HEADER_AREA)
+        why = "the header cannot be read";
+
+    struct hib_header *h = (struct hib_header *)area;
+    if (!why) {
+        uint32_t crc = h->area_crc;
+        h->area_crc = 0;
+        uname(&un);
+        char kernel[sizeof(h->kernel)];
+        snprintf(kernel, sizeof(kernel), "%s %s", un.release, un.version);
+        if (memcmp(h->magic, HIB_MAGIC, 8))
+            why = memcmp(h->magic, HIB_USED, 8) ? "no image" : "the image was used already";
+        else if (h->version != HIB_VERSION || hib_crc32c(0, area, HIB_HEADER_AREA) != crc)
+            why = "the header is damaged";
+        else if (strncmp(h->kernel, kernel, sizeof(h->kernel)))
+            why = "another kernel made it";
+        else if (strcasecmp(h->partuuid, root_partuuid))
+            why = "it is another C:'s";
+        else if (!h->extent_count || h->extent_count > HIB_MAX_EXTENTS || !h->chunk_count ||
+                 h->chunk_count > HIB_MAX_CHUNKS ||
+                 ((struct hib_extent *)(area + HIB_EXTENTS_AT))->disk_offset != where.header_disk_offset)
+            why = "the header is damaged";
+        h->area_crc = crc;
+    }
+    /* once only: used before anything is taken from it */
+    if (!why) {
+        uint8_t *page = NULL;
+        if (posix_memalign((void **)&page, 4096, 4096) == 0) {
+            memcpy(page, area, 4096);
+            memcpy(page, HIB_USED, 8);
+            if (pwrite(raw, page, 4096, (off_t)where.header_disk_offset) != 4096 || fdatasync(raw))
+                why = "the header cannot be marked used";
+            free(page);
+        }
+    }
+    if (hib_gpt_set_type(gpt, num, hib_type_basic_data))
+        say("C:'s partition type could not be set back");
+    close(gpt);
+
+    if (!why) {
+        uint32_t count = h->extent_count, chunks = h->chunk_count;
+        const struct hib_extent *ext = (const struct hib_extent *)(area + HIB_EXTENTS_AT);
+        const uint32_t *crcs = (const uint32_t *)(area + HIB_CRCS_AT);
+        uint64_t left = h->image_bytes, at = HIB_HEADER_AREA;
+
+        if (posix_memalign((void **)&buf, 4096, HIB_CHUNK) || (snap = open("/dev/snapshot", O_WRONLY | O_CLOEXEC)) < 0 ||
+            ioctl(snap, SNAPSHOT_FREEZE, 0)) {
+            why = "no /dev/snapshot";
+        } else {
+            say("waking: %llu MB", (unsigned long long)(h->image_bytes >> 20));
+            for (uint32_t c = 0; c < chunks && !why; c++) {
+                size_t len = left < HIB_CHUNK ? (size_t)left : HIB_CHUNK, padded = (len + 4095) & ~(size_t)4095;
+                if (read_mapped(raw, ext, count, at, buf, padded))
+                    why = "the image cannot be read";
+                else if (hib_crc32c(0, buf, len) != crcs[c])
+                    why = "the image is damaged";
+                for (size_t done = 0; !why && done < len;) {
+                    ssize_t n = write(snap, buf + done, len - done);
+                    if (n <= 0)
+                        why = "the kernel does not take the image";
+                    else
+                        done += (size_t)n;
+                }
+                at += padded;
+                left -= len;
+            }
+            if (!why && left)
+                why = "the image is short";
+            if (!why) {
+                ioctl(snap, SNAPSHOT_ATOMIC_RESTORE, 0); /* returns only when it failed */
+                why = strerror(errno);
+            }
+            ioctl(snap, SNAPSHOT_UNFREEZE, 0);
+        }
+    }
+    say("no wake (%s): a full start", why);
+    if (snap >= 0)
+        close(snap);
+    if (raw >= 0)
+        close(raw);
+    free(area);
+    free(buf);
+}
+
 static void partition_c_drive(void)
 {
     char dev[300];
 
     find_root(dev, sizeof(dev));
+    wake_or_forget(dev);
     if (live) {
         say("live: the changes to C: stay in memory");
         snapshot_c(dev, "C:");
@@ -1430,7 +1581,10 @@ int main(void)
     snprintf(animenv, sizeof(animenv), "ARCTIC_BOOTANIM=%d:%d", anim, (int)anim_pid);
     char *argv[] = {"/usr/bin/arctic-init", NULL};
     /* arctic-init keeps logs and shuts down by whether C: keeps what is written */
-    char *envp[] = {"PATH=/usr/bin", animenv, !root_partuuid[0] || live ? "ARCTIC_C=memory" : on_stick ? "ARCTIC_C=stick" : "ARCTIC_C=disk", NULL};
+    char percentenv[40];
+    snprintf(percentenv, sizeof(percentenv), "ARCTIC_UPDATE_PERCENT=%d", update_left_at);
+    char *envp[] = {"PATH=/usr/bin", animenv, !root_partuuid[0] || live ? "ARCTIC_C=memory" : on_stick ? "ARCTIC_C=stick" : "ARCTIC_C=disk",
+                    percentenv, NULL};
     say("handing over to arctic-init");
     execve(argv[0], argv, envp);
     fatal("CRITICAL_PROCESS_DIED", "arctic-init", "exec arctic-init");

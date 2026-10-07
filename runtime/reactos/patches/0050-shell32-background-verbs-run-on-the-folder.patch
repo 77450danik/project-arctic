@@ -1,0 +1,82 @@
+diff --git a/dll/win32/shell32/CDefaultContextMenu.cpp b/dll/win32/shell32/CDefaultContextMenu.cpp
+--- a/dll/win32/shell32/CDefaultContextMenu.cpp
++++ b/dll/win32/shell32/CDefaultContextMenu.cpp
+@@ -1511,6 +1511,8 @@
+ 
+     WCHAR wszPath[MAX_PATH];
+     BOOL bHasPath = SHGetPathFromIDListW(pidlFull, wszPath);
++    /* Arctic: no item (a verb of the background) runs in the folder itself */
++    const BOOL bBackground = !pidl || ILIsEmpty(pidl);
+ 
+     WCHAR wszDir[MAX_PATH];
+ 
+@@ -1532,7 +1534,8 @@
+     else if (bHasPath)
+     {
+         wcscpy(wszDir, wszPath);
+-        PathRemoveFileSpec(wszDir);
++        if (!bBackground)
++            PathRemoveFileSpec(wszDir);
+     }
+     else
+     {
+@@ -1645,6 +1648,13 @@
+         InvokePidl(lpcmi, m_apidl[i], pEntry);
+     }
+ 
++    /* Arctic: a verb of the background (Directory\Background\shell, Shift's
++     * "Open PowerShell window here" among them) has no item to run on: as in
++     * Windows it runs on the folder itself, %V being the folder. It ran on
++     * nothing and silently did nothing. */
++    if (!m_cidl && m_pidlFolder)
++        return InvokePidl(lpcmi, NULL, pEntry);
++
+     return S_OK;
+ }
+ 
+diff --git a/dll/win32/shell32/shlexec.cpp b/dll/win32/shell32/shlexec.cpp
+--- a/dll/win32/shell32/shlexec.cpp
++++ b/dll/win32/shell32/shlexec.cpp
+@@ -1031,6 +1031,24 @@
+  *              command (it'll be used afterwards for more information
+  *              on the operation)
+  */
++/* Arctic: the class a verb on a directory comes from: Directory when it has
++ * the verb (shell\cmd, shell\Powershell...), as in Windows, else Folder.
++ * Folder alone fell back to opening the folder with explorer. */
++static LPCWSTR SHELL_DirectoryClass(LPCWSTR lpVerb)
++{
++    WCHAR szKey[MAX_PATH];
++    HKEY hKey;
++
++    if (lpVerb && *lpVerb &&
++        SUCCEEDED(StringCchPrintfW(szKey, _countof(szKey), L"Directory\\shell\\%s\\command", lpVerb)) &&
++        RegOpenKeyExW(HKEY_CLASSES_ROOT, szKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
++    {
++        RegCloseKey(hKey);
++        return L"Directory";
++    }
++    return L"Folder";
++}
++
+ static UINT SHELL_FindExecutable(LPCWSTR lpPath, LPCWSTR lpFile, LPCWSTR lpVerb,
+                                  LPWSTR lpResult, DWORD resultLen, LPWSTR key, WCHAR **env, LPITEMIDLIST pidl, LPCWSTR args)
+ {
+@@ -1106,7 +1124,7 @@
+     attribs = GetFileAttributesW(lpFile);
+     if (attribs != INVALID_FILE_ATTRIBUTES && (attribs & FILE_ATTRIBUTE_DIRECTORY))
+     {
+-        wcscpy(classname, L"Folder");
++        wcscpy(classname, SHELL_DirectoryClass(lpVerb));
+     }
+     else
+     {
+@@ -2016,7 +2034,7 @@
+             attribs = GetFileAttributesW(buffer);
+             if (attribs != INVALID_FILE_ATTRIBUTES &&
+                     (attribs & FILE_ATTRIBUTE_DIRECTORY) &&
+-                    HCR_GetExecuteCommandW(0, L"Folder",
++                    HCR_GetExecuteCommandW(0, SHELL_DirectoryClass(sei->lpVerb),
+                                            sei->lpVerb,
+                                            buffer, sizeof(buffer))) {
+                 SHELL_ArgifyW(wszApplicationName, dwApplicationNameLen,

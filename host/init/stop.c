@@ -322,6 +322,20 @@ void boot_text(struct screen *s, int big, const char *text, double baseline, dou
     text_bg = BLUE;
 }
 
+double boot_text_width(int big, const char *text, double f)
+{
+    return boot_font_loaded ? text_width(&boot_font.set[boot_set(big)], text, f) : 0;
+}
+
+void boot_text_at(struct screen *s, int big, const char *text, double x, double baseline, double f, uint32_t bg)
+{
+    if (!boot_font_loaded)
+        return;
+    text_bg = bg;
+    draw_text(s, &boot_font, boot_set(big), text, strlen(text), x, baseline, f);
+    text_bg = BLUE;
+}
+
 void stop_screen(int drm_fd, const char *font_path, const char *code, const char *what, int dev_mode)
 {
     static const int steps[] = {0, 10, 25, 40, 55, 70, 85, 100};

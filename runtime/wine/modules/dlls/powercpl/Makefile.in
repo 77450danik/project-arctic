@@ -1,0 +1,20 @@
+MODULE    = powercpl.dll
+IMPORTS   = uuid comctl32 comdlg32 version powrprof shell32 shlwapi user32 gdi32 advapi32 ole32
+DELAYIMPORTS =
+
+VER_FILEDESCRIPTION_STR = "Power Options Control Panel"
+
+SOURCES = \
+	advanced.c \
+	folder.c \
+	main.c \
+	page_battery.c \
+	page_create.c \
+	page_edit.c \
+	page_graphics.c \
+	page_plans.c \
+	page_system.c \
+	power.ico \
+	powercpl.rc \
+	schemes.c \
+	view.c

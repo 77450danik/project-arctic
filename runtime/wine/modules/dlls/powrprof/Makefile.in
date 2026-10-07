@@ -1,0 +1,11 @@
+MODULE    = powrprof.dll
+UNIXLIB   = powrprof.so
+IMPORTLIB = powrprof
+IMPORTS   = rpcrt4 user32 advapi32
+
+VER_FILEDESCRIPTION_STR = "Power Profile Helper DLL"
+
+SOURCES = \
+	powrprof.c \
+	powrprof.rc \
+	unix.c

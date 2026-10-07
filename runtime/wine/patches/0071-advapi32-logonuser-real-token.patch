@@ -1,0 +1,55 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 7 Oct 2026 00:30:00 +0200
+Subject: [PATCH] advapi32: LogonUser hands out a real token.
+
+The stub gave 0xdeadbeef. Chrome Remote Desktop's daemon logs on
+LocalService to run its workers under a restricted token; that token failed
+on the invalid handle and the daemon stopped itself (a CHECK, exception
+0x80000003) a second after the service started, so remote access never came
+up. Wine runs everything as one user: the token is a copy of the process's
+own, primary, or an impersonation token for a network logon.
+---
+diff --git a/dlls/advapi32/advapi.c b/dlls/advapi32/advapi.c
+--- a/dlls/advapi32/advapi.c
++++ b/dlls/advapi32/advapi.c
+@@ -258,14 +258,37 @@
+     return ret;
+ }
+ 
++#ifndef LOGON32_LOGON_NETWORK
++#define LOGON32_LOGON_NETWORK 3
++#endif
++
++/* Arctic: the token of a logon is a real one. Wine runs everything as one
++ * user, so it is a copy of this process's token: a primary token, as Windows
++ * hands out, an impersonation token for a network logon. The 0xdeadbeef of
++ * the stub broke whoever used it: Chrome Remote Desktop's daemon logs on
++ * LocalService for its workers, its restricted token then failed on an invalid
++ * handle and the daemon stopped itself at once. Passwords are not checked. */
+ BOOL WINAPI LogonUserW( LPCWSTR lpszUsername, LPCWSTR lpszDomain, LPCWSTR lpszPassword,
+                         DWORD dwLogonType, DWORD dwLogonProvider, PHANDLE phToken )
+ {
+-    FIXME("%s %s %p 0x%08lx 0x%08lx %p - stub\n", debugstr_w(lpszUsername),
++    TOKEN_TYPE type = dwLogonType == LOGON32_LOGON_NETWORK ? TokenImpersonation : TokenPrimary;
++    HANDLE process_token;
++    BOOL ret;
++
++    FIXME("%s %s %p 0x%08lx 0x%08lx %p - semi-stub: a copy of this process's token\n", debugstr_w(lpszUsername),
+           debugstr_w(lpszDomain), lpszPassword, dwLogonType, dwLogonProvider, phToken);
+ 
+-    *phToken = (HANDLE *)0xdeadbeef;
+-    return TRUE;
++    if (!phToken)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    *phToken = NULL;
++    if (!OpenProcessToken( GetCurrentProcess(), TOKEN_ALL_ACCESS, &process_token ))
++        return FALSE;
++    ret = DuplicateTokenEx( process_token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, type, phToken );
++    CloseHandle( process_token );
++    return ret;
+ }
+ 
+ typedef UINT (WINAPI *fnMsiProvideComponentFromDescriptor)(LPCWSTR,LPWSTR,DWORD*,DWORD*);
