@@ -393,7 +393,7 @@ BOOL WINAPI ArcticOpenPowerOptions( const WCHAR *page )
     static const WCHAR path[] = L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}"
                                 L"\\::{025A5937-A6BE-4686-A844-36FE4BEC8B6D}";
     SHELLEXECUTEINFOW info = { sizeof(info) };
-    ITEMIDLIST *pidl, *full = NULL;
+    ITEMIDLIST *pidl;
     enum page which = PAGE_PLANS;
     BOOL ok;
 
@@ -401,19 +401,44 @@ BOOL WINAPI ArcticOpenPowerOptions( const WCHAR *page )
     else if (page && !wcsicmp( page, L"graphics" )) which = PAGE_GRAPHICS;
     CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
     if (FAILED(SHParseDisplayName( path, NULL, &pidl, 0, NULL ))) return FALSE;
-    if (which != PAGE_PLANS)
-    {
-        ITEMIDLIST *item = page_item_create( which, NULL, FALSE );
-        if (item) full = ILCombine( pidl, item );
-        CoTaskMemFree( item );
-    }
+    /* File Explorer opened on the ID list of a page showed Power Options
+     * itself: it opens there, and the window goes to the page as its links do */
+    start_page_set( which );
     info.fMask = SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI;
-    info.lpIDList = full ? full : pidl;
+    info.lpIDList = pidl;
     info.nShow = SW_SHOWNORMAL;
     ok = ShellExecuteExW( &info );
-    ILFree( full );
     ILFree( pidl );
     return ok;
+}
+
+void start_page_set( enum page page )
+{
+    DWORD value[2] = { page, GetTickCount() };
+    HKEY key;
+
+    if (RegCreateKeyExW( HKEY_CURRENT_USER, START_PAGE_KEY, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &key,
+                         NULL ))
+        return;
+    if (page == PAGE_PLANS) RegDeleteValueW( key, L"StartPage" );
+    else RegSetValueExW( key, L"StartPage", 0, REG_BINARY, (BYTE *)value, sizeof(value) );
+    RegCloseKey( key );
+}
+
+/* asked for within the last few seconds: a window opened later by hand is not sent anywhere */
+enum page start_page_take(void)
+{
+    DWORD value[2], size = sizeof(value);
+    enum page page = PAGE_PLANS;
+    HKEY key;
+
+    if (RegOpenKeyExW( HKEY_CURRENT_USER, START_PAGE_KEY, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &key )) return PAGE_PLANS;
+    if (!RegQueryValueExW( key, L"StartPage", NULL, NULL, (BYTE *)value, &size ) && size == sizeof(value) &&
+        GetTickCount() - value[1] < 15000 && value[0] < PAGE_COUNT)
+        page = value[0];
+    RegDeleteValueW( key, L"StartPage" );
+    RegCloseKey( key );
+    return page;
 }
 
 HRESULT folder_create( enum page page, const GUID *scheme, BOOL creating, REFIID riid, void **out )

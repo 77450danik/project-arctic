@@ -86,6 +86,8 @@ struct view
     BOOL in_row;
 };
 
+#define WM_APP_START_PAGE (WM_APP + 40)
+
 static HFONT fonts[STYLE_BIG + 1];
 static HFONT font_link_hot;
 static HBRUSH white_brush;
@@ -769,6 +771,9 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     case WM_NCCREATE:
         SetWindowLongPtrW( hwnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTW *)lp)->lpCreateParams );
         break;
+    case WM_APP_START_PAGE:
+        if (view && wp != PAGE_PLANS) view_navigate( view, wp, NULL, FALSE );
+        return 0;
     case WM_SIZE:
         if (view && view->content)
         {
@@ -955,6 +960,8 @@ static HRESULT WINAPI view_CreateViewWindow( IShellView *iface, IShellView *prev
     build( view );
     ShowWindow( view->hwnd, SW_SHOWNA );
     *hwnd = view->hwnd;
+    /* "control powercfg.cpl,,battery": on to that page once the window is up */
+    if (view->state.page == PAGE_PLANS) PostMessageW( view->hwnd, WM_APP_START_PAGE, start_page_take(), 0 );
     return S_OK;
 }
 

@@ -271,6 +271,10 @@ void view_nav_see_also( struct view *view, const WCHAR *text, link_proc proc, UI
 void view_layout( struct view *view );
 void view_rebuild( struct view *view );
 void view_navigate( struct view *view, enum page page, const GUID *scheme, BOOL creating );
+/* the page "control powercfg.cpl,,battery" asked for, once, for the window that opens */
+#define START_PAGE_KEY L"Software\\Arctic\\PowerOptions"
+void start_page_set( enum page page );
+enum page start_page_take(void);
 void view_back( struct view *view );
 void view_set_timer( struct view *view, UINT ms );
 HWND view_window( struct view *view );

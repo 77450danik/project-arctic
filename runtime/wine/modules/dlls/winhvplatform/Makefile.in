@@ -1,0 +1,9 @@
+MODULE    = winhvplatform.dll
+UNIXLIB   = winhvplatform.so
+IMPORTLIB = winhvplatform
+
+VER_FILEDESCRIPTION_STR = "Windows Hypervisor Platform"
+
+SOURCES = \
+	main.c \
+	unix.c
