@@ -3192,6 +3192,23 @@ static NTSTATUS dwm_set_config( void *args )
            STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
+/* a display lit again (or gone dark) shows a frame composed from nothing:
+ * no window is taken as shown directly, nothing as already on screen */
+static void compose_afresh(void)
+{
+    struct output *output;
+
+    wl_list_for_each( output, &outputs, link )
+    {
+        output->direct_hwnd = 0;
+        output->needs_frame = true;
+    }
+    dirty = true;
+}
+
+static uint32_t relight;
+static bool relight_known;
+
 static NTSTATUS dwm_set_options( void *args )
 {
     const struct dwm_set_options_params *params = args;
@@ -3205,7 +3222,18 @@ static NTSTATUS dwm_set_options( void *args )
         monitors_off = !!params->monitors_off;
         MESSAGE( "dwm: display %s\n", monitors_off ? "turned off" : "turned on" );
         kms_set_power( !monitors_off );
+        /* dark, no window is shown directly either: the pointer moving
+         * meanwhile is not taken for a card without a cursor plane */
+        compose_afresh();
     }
+    else if (relight_known && params->relight != relight && !monitors_off)
+    {
+        MESSAGE( "dwm: the monitors are set up again (Ctrl+Alt+Del)\n" );
+        kms_set_power( true );
+        compose_afresh();
+    }
+    relight = params->relight;
+    relight_known = true;
     damage();
     return STATUS_SUCCESS;
 }

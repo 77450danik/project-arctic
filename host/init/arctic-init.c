@@ -619,6 +619,56 @@ static void log_memory(void)
     say("%s", text);
 }
 
+/* When memory runs out the kernel kills the largest process, then the next:
+ * Windows has nothing of the kind, its own processes never go. The ones of
+ * the NT world without which the session is lost (the server, the
+ * compositor, the window server, logon) are kept out of it, the shell
+ * nearly; what they start inherits that and is put back within seconds. */
+static void protect_system_processes(void)
+{
+    static const struct { const char *name; const char *adj; } keep[] = {
+        {"wineserver", "-1000"}, {"dwm.exe", "-1000"},      {"csrss.exe", "-1000"},   {"winlogon.exe", "-1000"},
+        {"wininit.exe", "-1000"}, {"services.exe", "-900"}, {"explorer.exe", "-500"},
+    };
+    DIR *proc = opendir("/proc");
+
+    if (!proc)
+        return;
+    for (struct dirent *de; (de = readdir(proc));) {
+        char path[300], comm[32] = "", adj[16] = "";
+        const char *want = "0";
+        struct stat st;
+        int pid = atoi(de->d_name);
+        FILE *f;
+
+        if (pid <= 1)
+            continue;
+        snprintf(path, sizeof(path), "/proc/%d", pid);
+        if (stat(path, &st) || st.st_uid != nt_uid)
+            continue;
+        snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+        if ((f = fopen(path, "re"))) {
+            if (fgets(comm, sizeof(comm), f))
+                comm[strcspn(comm, "\n")] = 0;
+            fclose(f);
+        }
+        snprintf(path, sizeof(path), "/proc/%d/oom_score_adj", pid);
+        if ((f = fopen(path, "re"))) {
+            if (fgets(adj, sizeof(adj), f))
+                adj[strcspn(adj, "\n")] = 0;
+            fclose(f);
+        }
+        for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]); i++)
+            if (!strcmp(comm, keep[i].name))
+                want = keep[i].adj;
+        /* the others only when they inherited a protection */
+        if (!strcmp(adj, want) || (!strcmp(want, "0") && atoi(adj) >= 0))
+            continue;
+        write_sysfs(path, want);
+    }
+    closedir(proc);
+}
+
 /* Memory compression, as Windows 10 has it: a swap on zram, which keeps
  * what goes there compressed in RAM. Without any swap, when memory runs
  * out the kernel kills the biggest program at once; with it, rarely used
@@ -1485,11 +1535,24 @@ static void serve_ejects(void)
     closedir(dir);
 }
 
+/* the names in a directory, renamed or new, on the disk */
+static void sync_dir(const char *path)
+{
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+
+    if (fd >= 0) {
+        fsync(fd);
+        close(fd);
+    }
+}
+
 /* A C: that keeps what is written keeps the logs of the last few starts:
- * host.log is this one, host.1.log the one before, up to host.4.log */
+ * host.log is this one, host.1.log the one before, up to host.4.log. The
+ * kernel's too: a session that ended with the power button left its
+ * kernel.log to be overwritten by the next start's, the very one wanted. */
 static void rotate_c_logs(void)
 {
-    static const char *const logs[] = {"host", "nt"};
+    static const char *const logs[] = {"host", "nt", "kernel"};
     char from[PATH_MAX], to[PATH_MAX];
 
     for (size_t i = 0; i < sizeof(logs) / sizeof(logs[0]); i++)
@@ -1501,6 +1564,7 @@ static void rotate_c_logs(void)
             snprintf(to, sizeof(to), LOG_DIR "/%s.%d.log", logs[i], n + 1);
             rename(from, to);
         }
+    sync_dir(LOG_DIR);
 }
 
 static void open_logs(void)
@@ -2149,13 +2213,23 @@ static int wifi_power_save(int on)
 /* Sleep (Windows' "Сон"): suspend to memory, S3 where the firmware has it,
  * s2idle otherwise. NVIDIA's driver keeps the video memory itself. The
  * real-time clock holds local time, which the kernel takes for UTC on
- * waking: the clock is set again, then the network's time. */
+ * waking: the clock is set again, then the network's time. WSL's
+ * distributions stop first and start again after, as for hibernation: their
+ * disks (qemu-nbd on a file of a Windows drive) came back from a sleep with
+ * I/O errors, and bash.exe with them, until the next start. */
 static int sleep_to_memory(void)
 {
     char *redraw[] = {"/usr/bin/udevadm", "trigger", "--action=change", "--subsystem-match=drm", NULL};
-    int nvidia, ok;
+    char *lxss[] = {"/usr/bin/arctic-lxss", NULL};
+    int nvidia, ok, had_lxss = lxss_pid > 0;
 
     announce("sleep");
+    if (had_lxss) {
+        kill(lxss_pid, SIGTERM);
+        for (int i = 0; i < 600 && waitpid(lxss_pid, NULL, WNOHANG) == 0; i++)
+            usleep(100000);
+        lxss_pid = 0;
+    }
     sync();
     nvidia = !write_sysfs("/proc/driver/nvidia/suspend", "suspend");
     ok = !write_sysfs("/sys/power/state", "mem");
@@ -2168,6 +2242,8 @@ static int sleep_to_memory(void)
     sync_time();
     run(redraw, 0, hostlog, 10);
     grant_power_knobs();
+    if (had_lxss && !access(lxss[0], X_OK))
+        lxss_pid = spawn(lxss, 0, hostlog);
     return ok;
 }
 
@@ -2466,6 +2542,12 @@ int main(void)
                 if (!hardware_written++)
                     write_hardware(LOG_DIR);
                 write_kernel_log(LOG_DIR);
+                /* on the disk every half minute: a session that hangs and is
+                 * ended with the power button keeps its logs to the end */
+                if (hostlog >= 0)
+                    fsync(hostlog);
+                if (ntlog >= 0)
+                    fsync(ntlog);
                 /* a desktop up for a minute with its shell: the registry works */
                 if (!hives_backed_up && arctic_registry && !stopped && desktop_at && uptime() > desktop_at + 60 &&
                     shell_pid) {
@@ -2477,6 +2559,8 @@ int main(void)
         /* a USB network adapter plugged in, a udhcpc that ended */
         if (tick % 10 == 0)
             serve_wired();
+        if (tick % 15 == 5)
+            protect_system_processes();
         usleep(200000);
     }
 }

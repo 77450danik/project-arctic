@@ -145,6 +145,9 @@ static void update_options(void)
     /* the power policy's "turn off the display" (winlogon, docs/power.md) */
     size = sizeof(params.monitors_off);
     if (display_power) RegQueryValueExW( display_power, L"MonitorsOff", NULL, NULL, (BYTE *)&params.monitors_off, &size );
+    /* csrss.exe on Ctrl+Alt+Del */
+    size = sizeof(params.relight);
+    if (display_power) RegQueryValueExW( display_power, L"Relight", NULL, NULL, (BYTE *)&params.relight, &size );
     WINE_UNIX_CALL( unix_dwm_set_options, &params );
     if (display_power) RegNotifyChangeKeyValue( display_power, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
     if (gpu_preferences)

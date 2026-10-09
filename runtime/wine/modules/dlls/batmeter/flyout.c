@@ -419,8 +419,9 @@ static void on_click( enum hit hit )
     switch (hit)
     {
     case HIT_LINK:
+        /* the battery's page: the icon's own, as the user asked */
         flyout_hide();
-        open_power_options();
+        open_battery_panel();
         break;
     case HIT_TILE:
         battery_set_saver( !view.saver );

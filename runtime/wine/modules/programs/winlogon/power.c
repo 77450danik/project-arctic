@@ -22,6 +22,7 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 
 #include <windows.h>
@@ -204,7 +205,7 @@ static DWORD wanted_brightness(void)
     return min( level, 100 );
 }
 
-static void apply_brightness(void)
+static void apply_brightness( const char *why )
 {
     struct arctic_power_apply apply;
     DWORD level = wanted_brightness();
@@ -212,7 +213,11 @@ static void apply_brightness(void)
     if (level == ARCTIC_UNKNOWN || level == applied_brightness) return;
     memset( &apply, 0xff, sizeof(apply) );
     apply.brightness_percent = level;
-    if (ArcticPowerApply( &apply ) && !(apply.failed & (1 << 7))) applied_brightness = level;
+    if (ArcticPowerApply( &apply ) && !(apply.failed & (1 << 7)))
+    {
+        MESSAGE( "winlogon: power: brightness %lu%% (%s)\n", level, why );
+        applied_brightness = level;
+    }
 }
 
 static void apply_scheme(void)
@@ -243,8 +248,7 @@ static void apply_scheme(void)
     TRACE( "power: %s, epp %lu, %lu-%lu%%, boost %u, profile %u%s\n", on_mains() ? "mains" : "battery", epp,
            eff.proc_min, eff.proc_max, apply.boost, apply.profile, saver_on ? ", battery saver" : "" );
 
-    applied_brightness = ARCTIC_UNKNOWN;
-    apply_brightness();
+    apply_brightness( "the plan" );
 
     wifi = eff.wifi != ARCTIC_UNKNOWN ? eff.wifi != 0 : 0;
     if (saver_on) wifi = 1;
@@ -269,6 +273,7 @@ static void follow_brightness(void)
         base_brightness = applied_brightness = cpu.brightness_percent;
         return;
     }
+    MESSAGE( "winlogon: power: brightness set to %u%% by hand, was %lu%%\n", cpu.brightness_percent, applied_brightness );
     base_brightness = applied_brightness = cpu.brightness_percent;
     if (PowerGetActiveScheme( NULL, &scheme )) return;
     if (on_mains()) PowerWriteACValueIndex( NULL, scheme, &sub_video, &set_brightness, cpu.brightness_percent );
@@ -283,7 +288,7 @@ static void set_display( BOOL off )
 
     if (display_off == off) return;
     display_off = off;
-    TRACE( "power: display %s\n", off ? "off" : "on" );
+    MESSAGE( "winlogon: power: display %s\n", off ? "off" : "on" );
     if (!display_key)
         RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticDisplay", 0, NULL,
                          REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &display_key, NULL );
@@ -337,11 +342,13 @@ static DWORD WINAPI action_thread( void *arg )
     return 0;
 }
 
-static void act( DWORD action )
+static void act( DWORD action, const char *why )
 {
+    static const char *const names[] = { "nothing", "sleep", "hibernation", "shut down", "display off" };
     HANDLE thread;
 
     if (action == ACTION_NOTHING || acting) return;
+    MESSAGE( "winlogon: power: %s: %s\n", why, action < ARRAY_SIZE(names) ? names[action] : "?" );
     if (action == ACTION_DISPLAY_OFF)
     {
         set_display( TRUE );
@@ -355,6 +362,38 @@ static void act( DWORD action )
 /**********************************************************************
  *          Inactivity
  */
+
+/* who keeps the display or the machine on, in the log when it changes:
+ * "why did it not sleep", "why did it" */
+static void log_requests(void)
+{
+    static UINT64 logged;
+    UINT64 now = 0;
+
+    for (UINT i = 0; i < ARCTIC_EXECUTION_STATE_SLOTS; i++)
+        if (execution->slots[i].pid && (execution->slots[i].display > 0 || execution->slots[i].system > 0))
+            now = now * 31 + execution->slots[i].pid * 4 + (execution->slots[i].display > 0) * 2 +
+                  (execution->slots[i].system > 0);
+    if (now == logged) return;
+    logged = now;
+    if (!now) MESSAGE( "winlogon: power: no program keeps the display or the machine on\n" );
+    for (UINT i = 0; i < ARCTIC_EXECUTION_STATE_SLOTS; i++)
+    {
+        WCHAR path[MAX_PATH] = L"?", *name;
+        DWORD size = ARRAY_SIZE(path);
+        HANDLE process;
+
+        if (!execution->slots[i].pid || (execution->slots[i].display <= 0 && execution->slots[i].system <= 0)) continue;
+        if ((process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, execution->slots[i].pid )))
+        {
+            QueryFullProcessImageNameW( process, 0, path, &size );
+            CloseHandle( process );
+        }
+        name = wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path;
+        MESSAGE( "winlogon: power: %s (%04lx) keeps %s on\n", debugstr_w(name), execution->slots[i].pid,
+                 execution->slots[i].display > 0 ? "the display" : "the machine" );
+    }
+}
 
 static void requested( BOOL *display, BOOL *system )
 {
@@ -382,6 +421,7 @@ static void requested( BOOL *display, BOOL *system )
         }
         CloseHandle( process );
     }
+    log_requests();
 }
 
 /* inactivity since the last input, the last wake, or the last program that
@@ -419,29 +459,37 @@ static void check_idle(void)
         if (dimmed)
         {
             dimmed = FALSE;
-            apply_brightness();
+            apply_brightness( "input" );
         }
         KillTimer( policy_window, TIMER_IDLE );
         return;
     }
     if (!keep_display)
     {
-        if (eff.video_dim && idle >= eff.video_dim * 1000 && !dimmed && !display_off)
+        /* the display dims shortly before it turns off, as in Windows: with
+         * "turn off the display: never" it does not dim either */
+        if (eff.video_dim && eff.video_idle && eff.video_dim < eff.video_idle && idle >= eff.video_dim * 1000 &&
+            !dimmed && !display_off)
         {
             dimmed = TRUE;
-            apply_brightness();
+            MESSAGE( "winlogon: power: %lu s without input: dim\n", idle / 1000 );
+            apply_brightness( "dimmed" );
             SetTimer( policy_window, TIMER_IDLE, IDLE_MS, NULL );
         }
         if (eff.video_idle && idle >= eff.video_idle * 1000 && !display_off)
         {
+            MESSAGE( "winlogon: power: %lu s without input: the display goes off\n", idle / 1000 );
             set_display( TRUE );
             SetTimer( policy_window, TIMER_IDLE, IDLE_MS, NULL );
         }
     }
     if (!keep_system)
     {
-        if (eff.standby && idle >= eff.standby * 1000 && IsPwrSuspendAllowed()) act( ACTION_SLEEP );
-        else if (eff.hibernate && idle >= eff.hibernate * 1000 && IsPwrHibernateAllowed()) act( ACTION_HIBERNATE );
+        char why[64];
+
+        snprintf( why, sizeof(why), "%lu s without input", idle / 1000 );
+        if (eff.standby && idle >= eff.standby * 1000 && IsPwrSuspendAllowed()) act( ACTION_SLEEP, why );
+        else if (eff.hibernate && idle >= eff.hibernate * 1000 && IsPwrHibernateAllowed()) act( ACTION_HIBERNATE, why );
     }
 }
 
@@ -519,17 +567,18 @@ static void tick(void)
             MESSAGE( "winlogon: the battery is low (%u%%)\n", status.percent );
             if (eff.low_notify) warn_battery( 1 );
             PostMessageW( HWND_BROADCAST, WM_POWERBROADCAST, PBT_APMBATTERYLOW, 0 );
-            act( eff.low_action );
+            act( eff.low_action, "low battery" );
         }
         if (crossed( eff.crit_level ))
         {
             WARN( "power: the battery is at its critical level (%u%%)\n", status.percent );
-            act( eff.crit_action == ACTION_HIBERNATE && !IsPwrHibernateAllowed() ? ACTION_SHUT_DOWN : eff.crit_action );
+            act( eff.crit_action == ACTION_HIBERNATE && !IsPwrHibernateAllowed() ? ACTION_SHUT_DOWN : eff.crit_action,
+                 "critical battery" );
         }
     }
 
     if (status.lid_present && have_last && before.lid_closed != status.lid_closed && status.lid_closed)
-        act( eff.lid );
+        act( eff.lid, "lid closed" );
 
     follow_brightness();
     sample_history();
@@ -544,6 +593,9 @@ static void tick(void)
 /* someone changed the scheme, the slider or battery saver */
 static void reread(void)
 {
+    static BOOL applied;
+    struct effective before = eff;
+    BOOL saver_before = saver_on;
     DWORD saver = 0, size = sizeof(saver);
 
     RegGetValueW( power_key, NULL, ARCTIC_ENERGY_SAVER_ON, RRF_RT_REG_DWORD, NULL, &saver, &size );
@@ -554,7 +606,17 @@ static void reread(void)
         saver_on = !!saver;
         PostMessageW( HWND_BROADCAST, WM_POWERBROADCAST, PBT_APMPOWERSTATUSCHANGE, 0 );
     }
-    apply_scheme();
+    /* the policy's own writes land under the same key (the display's state,
+     * the graphics cards, the brightness followed): the plan is applied again
+     * only when something of it changed */
+    read_effective( on_mains() );
+    if (!applied || memcmp( &before, &eff, sizeof(eff) ) || saver_before != saver_on)
+    {
+        MESSAGE( "winlogon: power: the plan is applied (%s%s)\n", on_mains() ? "mains" : "battery",
+                 saver_on ? ", battery saver" : "" );
+        apply_scheme();
+        applied = TRUE;
+    }
     RegNotifyChangeKeyValue( power_key, TRUE, REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME, power_changed, TRUE );
 }
 
@@ -732,6 +794,8 @@ static LRESULT WINAPI policy_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         dimmed = FALSE;
         set_display( FALSE );
         have_last = FALSE;
+        /* the firmware may have set its own brightness while asleep */
+        applied_brightness = ARCTIC_UNKNOWN;
         applied_wifi = ARCTIC_UNKNOWN;
         tick();
         apply_scheme();
@@ -785,7 +849,7 @@ static DWORD WINAPI policy_thread( void *arg )
             MESSAGE( "winlogon: %s button: %lu\n", ret == WAIT_OBJECT_0 + 2 ? "sleep" : "power", action );
             /* the press wakes the display too */
             idle_base = GetTickCount();
-            act( action );
+            act( action, ret == WAIT_OBJECT_0 + 2 ? "sleep button" : "power button" );
         }
         while (PeekMessageW( &msg, NULL, 0, 0, PM_REMOVE ))
         {

@@ -1,0 +1,28 @@
+diff --git a/dll/win32/browseui/shellbrowser.cpp b/dll/win32/browseui/shellbrowser.cpp
+--- a/dll/win32/browseui/shellbrowser.cpp
++++ b/dll/win32/browseui/shellbrowser.cpp
+@@ -1107,6 +1107,24 @@
+     // set site
+     hResult = IUnknown_SetSite(newShellView, static_cast<IDropTarget *>(this));
+ 
++    /* Arctic: the Control Panel and its pages have no navigation pane, as in
++     * Windows 10; any other folder brings it back (BrowseObject), unless it
++     * was hidden from the View menu */
++    if (IsEqualCLSID(CLSID_ExplorerBand, fCurrentVertBar))
++    {
++        PIDLIST_ABSOLUTE pidlControls = NULL;
++        if (SUCCEEDED(SHGetSpecialFolderLocation(NULL, CSIDL_CONTROLS, &pidlControls)))
++        {
++            if (ILIsEqual(pidlControls, absolutePIDL) || ILIsParent(pidlControls, absolutePIDL, FALSE))
++            {
++                IUnknown_ShowDW(fClientBars[BIVerticalBaseBar].clientBar.p, FALSE);
++                memset(&fCurrentVertBar, 0, sizeof(fCurrentVertBar));
++                FireCommandStateChangeAll();
++            }
++            ILFree(pidlControls);
++        }
++    }
++
+     // update folder and view
+     saveCurrentShellFolder = fCurrentShellFolder;
+     saveCurrentShellView = fCurrentShellView;

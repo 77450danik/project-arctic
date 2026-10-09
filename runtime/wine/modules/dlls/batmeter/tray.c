@@ -6,8 +6,9 @@
  * leaf of battery saver, and Windows' tip ("3 год. 20 хв. (94%) залишилось",
  * "94% доступно (підключено до електромережі)"). Without a battery there is
  * no icon, as on a desktop PC; one plugged in later shows it. A click opens
- * the flyout (flyout.c); the menu has Power Options and the page of the
- * batteries and graphics cards (Windows' Mobility Center). The power
+ * the flyout (flyout.c), whose link opens the battery's page of Power
+ * Options, as a double click does; the menu has that page first (in bold),
+ * Power Options and Windows' Mobility Center (the same page). The power
  * policy's low and reserve battery warnings become Windows' notifications.
  *
  * This library is free software; you can redistribute it and/or
@@ -27,6 +28,7 @@
 
 #define MENU_POWER_OPTIONS   1
 #define MENU_MOBILITY_CENTER 2
+#define MENU_BATTERY         3
 
 static HANDLE thread;
 static HWND tray_hwnd;
@@ -37,6 +39,7 @@ static HICON current_icon;
 static WCHAR current_glyph;
 static WCHAR current_tip[128];
 static BOOL shown;
+static BOOL double_clicked;
 static int icon_size;
 
 void tray_update(void)
@@ -96,6 +99,9 @@ static void show_menu( HWND hwnd )
     HMENU menu = CreatePopupMenu();
     POINT pt;
 
+    /* the battery's page first, in bold: what the icon is about */
+    AppendMenuW( menu, MF_STRING, MENU_BATTERY, load_string( IDS_MENU_BATTERY ) );
+    SetMenuDefaultItem( menu, MENU_BATTERY, FALSE );
     AppendMenuW( menu, MF_STRING, MENU_POWER_OPTIONS, load_string( IDS_MENU_POWER_OPTIONS ) );
     AppendMenuW( menu, MF_STRING, MENU_MOBILITY_CENTER, load_string( IDS_MENU_MOBILITY_CENTER ) );
     GetCursorPos( &pt );
@@ -105,6 +111,7 @@ static void show_menu( HWND hwnd )
     case MENU_POWER_OPTIONS:
         open_power_options();
         break;
+    case MENU_BATTERY:
     case MENU_MOBILITY_CENTER:
         open_battery_panel();
         break;
@@ -150,7 +157,14 @@ static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         switch (LOWORD( lp ))
         {
         case WM_LBUTTONUP:
-            flyout_toggle( hwnd, ICON_ID );
+            /* the button going up after a double click opens nothing more */
+            if (double_clicked) double_clicked = FALSE;
+            else flyout_toggle( hwnd, ICON_ID );
+            break;
+        case WM_LBUTTONDBLCLK:
+            double_clicked = TRUE;
+            flyout_hide();
+            open_battery_panel();
             break;
         case WM_RBUTTONUP:
             flyout_hide();

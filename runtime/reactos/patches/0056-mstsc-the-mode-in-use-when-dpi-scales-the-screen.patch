@@ -1,0 +1,38 @@
+Subject: [PATCH] mstsc: the mode in use when DPI scales the screen.
+
+Arctic: mstsc.exe (Remote Desktop Connection, also the window of a test VM,
+docs/remote-desktop.md) looked for the current mode by the size
+GetDeviceCaps gives, which for a program unaware of DPI is the scaled one:
+no mode matched, the Display page dereferenced NULL in WM_INITDIALOG and no
+window ever showed.
+---
+--- a/base/applications/mstsc/connectdialog.c
++++ b/base/applications/mstsc/connectdialog.c
+@@ -492,6 +492,27 @@
+         iMode++;
+     }
+ 
++    /* Arctic: for a program unaware of DPI, GetDeviceCaps gives the screen
++     * scaled (1536x864 of a 1920x1080 at 125 %), which is no mode: the mode
++     * in use, else the largest. Without one the Display page crashed and
++     * mstsc.exe never showed a window. */
++    if (*CurrentSettings == NULL && Settings != NULL)
++    {
++        DEVMODEW in_use;
++
++        in_use.dmSize = (WORD)sizeof(in_use);
++        in_use.dmDriverExtra = 0;
++        EnumDisplaySettingsExW(lpDeviceName, ENUM_CURRENT_SETTINGS, &in_use, dwFlags);
++        for (Current = Settings; Current != NULL; Current = Current->Flink)
++        {
++            if (Current->dmPelsWidth == in_use.dmPelsWidth && Current->dmPelsHeight == in_use.dmPelsHeight &&
++                Current->dmBitsPerPel == in_use.dmBitsPerPel)
++                *CurrentSettings = Current;
++            if (*CurrentSettings == NULL && Current->Flink == NULL)
++                *CurrentSettings = Current;
++        }
++    }
++
+     *pSettingsCount = NbSettings;
+     return Settings;
+ }

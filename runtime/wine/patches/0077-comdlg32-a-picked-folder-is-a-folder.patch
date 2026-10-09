@@ -1,0 +1,26 @@
+Subject: [PATCH] comdlg32: a picked folder is a folder.
+
+Arctic: the Common Item Dialog made the ID list of what was typed or
+selected from its name alone (SHSimpleIDListFromPath), which carries no
+attributes. ReactOS' shell32 answers SFGAO_FOLDER from the ID list itself,
+so FOS_PICKFOLDERS refused every folder: "The selection contains a
+non-folder object" in any program that chooses a folder. The ID list now
+comes from SHParseDisplayName where the path exists.
+---
+--- a/dlls/comdlg32/itemdlg.c
++++ b/dlls/comdlg32/itemdlg.c
+@@ -702,7 +702,13 @@
+             filter = fn_iter;
+         }
+ 
+-        pidla[i] = SHSimpleIDListFromPath(canon_filename);
++        /* Arctic: the ID list of what is there, read from the disk. One made
++         * from the name alone says nothing of a folder, and ReactOS' shell32
++         * took it for a file: "The selection contains a non-folder object"
++         * on every folder picked. The name alone stays for what is not there
++         * yet, the file a Save dialog makes. */
++        if (FAILED(SHParseDisplayName(canon_filename, NULL, &pidla[i], 0, NULL)))
++            pidla[i] = SHSimpleIDListFromPath(canon_filename);
+ 
+         if(psf_parent && !(open_action == ONOPEN_BROWSE))
+             IShellFolder_Release(psf_parent);

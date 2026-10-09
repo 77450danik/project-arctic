@@ -21,6 +21,7 @@
 #include "winternl.h"
 #include "wingdi.h"
 #include "winuser.h"
+#include "winreg.h"
 #include "ntuser.h"
 #include "wine/server.h"
 #include "wine/debug.h"
@@ -364,6 +365,40 @@ static void open_start_menu(void)
 
 static BOOL windows_key_alone;  /* down, and nothing else pressed since */
 static BOOL clip_key_down;      /* the S of Win+Shift+S, kept from programs */
+static BOOL sas_key_down;       /* the Del of Ctrl+Alt+Del, kept from programs */
+static DWORD last_sas;
+
+/* Ctrl+Alt+Del, the secure attention sequence: winlogon's security options.
+ * It goes from here, the thread every key passes first, straight to
+ * winlogon's thread for it through an event: no hot key, no window message,
+ * so neither a program in full screen nor a shell that hangs nor a busy
+ * winlogon window keeps it. Pressed again within ten seconds, the screen
+ * itself is set up again (dwm.exe): whatever was left on it, the security
+ * options show. */
+static void secure_attention(void)
+{
+    DWORD now = GetTickCount();
+    HANDLE event;
+    HKEY key;
+
+    if ((event = OpenEventW( EVENT_MODIFY_STATE, FALSE, L"Global\\ArcticSecureAttention" )))
+    {
+        MESSAGE( "csrss: Ctrl+Alt+Del\n" );
+        SetEvent( event );
+        CloseHandle( event );
+    }
+    else ERR( "Ctrl+Alt+Del: no winlogon to take it (%lu)\n", GetLastError() );
+
+    if (last_sas && now - last_sas < 10000 &&
+        !RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticDisplay", 0, NULL,
+                          REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &key, NULL ))
+    {
+        MESSAGE( "csrss: Ctrl+Alt+Del again: the monitors are set up again\n" );
+        RegSetValueExW( key, L"Relight", 0, REG_DWORD, (BYTE *)&now, sizeof(now) );
+        RegCloseKey( key );
+    }
+    last_sas = now;
+}
 
 /* The Windows key's chords that are the system's. TRUE: the key goes to no
  * program, as a hotkey's does not. */
@@ -382,6 +417,22 @@ static BOOL windows_key_chord( UINT key, int value )
         return FALSE;
     }
     if (value) windows_key_alone = FALSE;
+
+    /* Ctrl+Alt+Del, with the Del of the keypad too, as in Windows */
+    if (key == KEY_DELETE || key == KEY_KPDOT)
+    {
+        if (value == 1 && GetAsyncKeyState( VK_CONTROL ) < 0 && GetAsyncKeyState( VK_MENU ) < 0)
+        {
+            sas_key_down = TRUE;
+            secure_attention();
+            return TRUE;
+        }
+        if (sas_key_down)
+        {
+            if (!value) sas_key_down = FALSE;
+            return TRUE;
+        }
+    }
 
     /* Win+Shift+S: screen snipping, the overlay of the Snipping Tool */
     if (key == KEY_S)

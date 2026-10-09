@@ -202,7 +202,7 @@ void battery_set_position( struct battery_view *view, int position )
     view->position = ac ? position : position + 1;
 }
 
-/* Control Panel's Power Options, and its page of the batteries and graphics cards */
+/* Control Panel's Power Options, and its page of the battery ("Акумулятор") */
 void open_power_options(void)
 {
     ShellExecuteW( NULL, NULL, L"control.exe", L"powercfg.cpl", NULL, SW_SHOWNORMAL );

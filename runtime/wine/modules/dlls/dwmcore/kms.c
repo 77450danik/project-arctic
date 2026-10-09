@@ -1095,29 +1095,50 @@ undo:
 }
 
 /* Windows' "turn off the display" (the power policy, docs/power.md): the
- * connectors' DPMS, which atomic drivers turn into their CRTC's ACTIVE. The
- * monitor keeps its mode and what it showed. */
+ * CRTCs go off, and every buffer they showed goes back. They light again
+ * with a modeset to our own frame, as after a mode change, and the next
+ * frame is composed afresh. DPMS alone kept the planes on what they showed:
+ * a video in full screen, shown directly, could free its buffer while the
+ * display was dark, and the kernel lets go of a CRTC whose buffer goes; lit
+ * again, the display showed only the pointer, Ctrl+Alt+Del included.
+ * Lighting a display that is on sets it up again the same way: Ctrl+Alt+Del
+ * does it (csrss.exe), whatever state the screen was left in. */
 bool kms_set_power( bool on )
 {
-    static const char *const dpms_name[] = { "DPMS" };
     bool ok = true;
 
+    wait_flips();
     for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
     {
         struct kms_output *out = &kms.outputs[i];
-        struct drm_mode_connector_set_property set = { .connector_id = out->connector_id };
-        uint32_t prop = 0;
+        const struct drm_mode_modeinfo *mode;
 
-        if (!out->connector_id || !out->enabled) continue;
-        object_properties( out->connector_id, DRM_MODE_OBJECT_CONNECTOR, dpms_name, 1, &prop, NULL );
-        if (!prop) continue;
-        set.prop_id = prop;
-        set.value = on ? DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF;
-        if (ioctl( kms.fd, DRM_IOCTL_MODE_SETPROPERTY, &set ))
+        if (!out->connector_id || !out->enabled || !out->crtc_id) continue;
+        if (!on)
         {
-            WARN( "%s: DPMS %s: %s\n", out->name, on ? "on" : "off", strerror( errno ) );
-            ok = false;
+            kms_show_cursor( out, false, 0, 0 );
+            if (!set_crtc( out->crtc_id, 0, 0, NULL ))
+                WARN( "%s: cannot turn off: %s\n", out->name, strerror( errno ) );
+            drop_scanout( out );
+            out->front_fb = 0;
+            continue;
         }
+        mode = &out->modes[out->mode].info;
+        drop_scanout( out );
+        if (!out->fbs[0].fb_id && !create_fb( mode->hdisplay, mode->vdisplay, &out->fbs[0] ))
+        {
+            ERR( "%s: no framebuffer to light it with: %s\n", out->name, strerror( errno ) );
+            ok = false;
+            continue;
+        }
+        if (!set_crtc( out->crtc_id, out->connector_id, out->fbs[0].fb_id, mode ))
+        {
+            ERR( "%s: cannot light %ux%u: %s\n", out->name, mode->hdisplay, mode->vdisplay, strerror( errno ) );
+            ok = false;
+            continue;
+        }
+        out->front_fb = out->fbs[0].fb_id;
+        read_crtc_state( out );
     }
     return ok;
 }

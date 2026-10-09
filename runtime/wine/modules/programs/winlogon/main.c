@@ -99,6 +99,11 @@ void run_userinit(void)
     }
 }
 
+/* Ctrl+Alt+Del comes from csrss.exe, the thread every key passes first
+ * (winsrv), through an event that this thread waits for with its messages:
+ * no hot key, which a program could take or a full-screen one keep. */
+static HANDLE secure_attention;
+
 static LRESULT WINAPI sas_window_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
     WCHAR taskmgr[] = L"taskmgr.exe";
@@ -150,6 +155,8 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
 {
     MSG msg;
 
+    if (!(secure_attention = CreateEventW( NULL, FALSE, FALSE, L"Global\\ArcticSecureAttention" )))
+        ERR( "no Ctrl+Alt+Del event: %lu\n", GetLastError() );
     create_sas_window();
     start_power_policy();
     run_userinit();
@@ -157,10 +164,19 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
      * now (Wine patch 0072), never while wineboot still sets the system up */
     SetEvent( CreateEventW( NULL, TRUE, FALSE, L"Global\\__arctic_session_started" ) );
 
-    while (GetMessageW( &msg, 0, 0, 0 ))
+    for (;;)
     {
-        TranslateMessage( &msg );
-        DispatchMessageW( &msg );
+        if (MsgWaitForMultipleObjects( !!secure_attention, &secure_attention, FALSE, INFINITE, QS_ALLINPUT ) ==
+            WAIT_OBJECT_0 && secure_attention)
+        {
+            MESSAGE( "winlogon: security options\n" );
+            show_security_options();
+        }
+        while (PeekMessageW( &msg, 0, 0, 0, PM_REMOVE ))
+        {
+            if (msg.message == WM_QUIT) return msg.wParam;
+            TranslateMessage( &msg );
+            DispatchMessageW( &msg );
+        }
     }
-    return 0;
 }

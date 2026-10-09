@@ -1,0 +1,68 @@
+Subject: [PATCH] mstsc: TLS data already read is read.
+
+Arctic: mstsc.exe asked select() whether the socket had data before reading
+the next packet. With TLS, one read from the socket can hold several
+packets, decrypted and kept in the connection: select() says nothing is
+there, and the session stopped right after the capabilities (an xrdp or a
+Windows server alike).
+---
+--- a/base/applications/mstsc/proto.h
++++ b/base/applications/mstsc/proto.h
+@@ -221,6 +221,7 @@
+ RD_BOOL tcp_is_connected(void);
+ void tcp_reset_state(void);
+ RD_BOOL tcp_tls_connect(void);
++RD_BOOL tcp_tls_pending(void);
+ RD_BOOL tcp_tls_get_server_pubkey(STREAM s);
+ void tcp_run_ui(RD_BOOL run);
+ 
+--- a/base/applications/mstsc/tcp.c
++++ b/base/applications/mstsc/tcp.c
+@@ -70,6 +70,18 @@
+ static netconn_t *g_ssl = NULL;
+ #endif /* WITH_SSL */
+ static int g_sock;
++
++/* TLS data already taken from the socket and not yet read: select() on the
++ * socket does not see it */
++RD_BOOL
++tcp_tls_pending(void)
++{
++#ifdef WITH_SSL
++	return g_ssl && (g_ssl->peek_len || g_ssl->extra_len);
++#else
++	return False;
++#endif
++}
+ static struct stream g_in;
+ static struct stream g_out[STREAM_COUNT];
+ int g_tcp_port_rdp = TCP_PORT_RDP;
+--- a/base/applications/mstsc/win32.c
++++ b/base/applications/mstsc/win32.c
+@@ -110,16 +110,19 @@
+     FD_SET((unsigned int)g_tcp_sck, &rfds);
+     ZeroMemory(&tm, sizeof(tm));
+     count = select(g_tcp_sck + 1, &rfds, 0, 0, &tm);
+-    if (count > 0)
++    /* with TLS, what one read took from the socket may hold more than one
++     * packet: they are read too, or the session waits for data that came */
++    if (count > 0 || tcp_tls_pending())
+     {
+-      if (ui_read_wire())
++      do
+       {
++        if (!ui_read_wire())
++        {
++          PostQuitMessage(0);
++          break;
++        }
+         rv = 1;
+-      }
+-      else
+-      {
+-        PostQuitMessage(0);
+-      }
++      } while (tcp_tls_pending());
+     }
+     g_block = 0;
+   }

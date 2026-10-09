@@ -40,6 +40,7 @@
 /* the menu and the warnings (stobject.dll.mui) */
 #define IDS_MENU_POWER_OPTIONS     200
 #define IDS_MENU_MOBILITY_CENTER   201
+#define IDS_MENU_BATTERY           290
 #define IDS_LOW_TITLE              202
 #define IDS_LOW_TEXT               203
 #define IDS_RESERVE_TITLE          204
