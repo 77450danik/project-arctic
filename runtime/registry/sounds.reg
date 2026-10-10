@@ -1,0 +1,477 @@
+REGEDIT4
+
+; Windows' sound events and its default sound scheme (tools/make-sounds.py, from a
+; Windows 10 default profile): what the Sound panel's Sounds page lists and winmm plays
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default]
+@="Windows"
+"DispFileName"="@mmsys.cpl,-5856"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\.Default]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\.Default\.Current]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\.Default\.Default]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\AppGPFault]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\AppGPFault\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\AppGPFault\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\ChangeTheme]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\ChangeTheme\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\ChangeTheme\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Close]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Close\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Close\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\CriticalBatteryAlarm]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\CriticalBatteryAlarm\.Current]
+@="C:\\Windows\\Media\\Windows Foreground.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\CriticalBatteryAlarm\.Default]
+@="C:\\Windows\\Media\\Windows Foreground.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceConnect]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceConnect\.Current]
+@="C:\\Windows\\Media\\Windows Hardware Insert.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceConnect\.Default]
+@="C:\\Windows\\Media\\Windows Hardware Insert.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceDisconnect]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceDisconnect\.Current]
+@="C:\\Windows\\Media\\Windows Hardware Remove.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceDisconnect\.Default]
+@="C:\\Windows\\Media\\Windows Hardware Remove.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceFail]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceFail\.Current]
+@="C:\\Windows\\Media\\Windows Hardware Fail.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\DeviceFail\.Default]
+@="C:\\Windows\\Media\\Windows Hardware Fail.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\FaxBeep]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\FaxBeep\.Current]
+@="C:\\Windows\\Media\\Windows Notify Email.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\FaxBeep\.Default]
+@="C:\\Windows\\Media\\Windows Notify Email.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\LowBatteryAlarm]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\LowBatteryAlarm\.Current]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\LowBatteryAlarm\.Default]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MailBeep]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MailBeep\.Current]
+@="C:\\Windows\\Media\\Windows Notify Email.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MailBeep\.Default]
+@="C:\\Windows\\Media\\Windows Notify Email.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Maximize]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Maximize\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Maximize\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MenuCommand]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MenuCommand\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MenuCommand\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MenuPopup]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MenuPopup\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MenuPopup\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MessageNudge]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MessageNudge\.Current]
+@="C:\\Windows\\Media\\Windows Message Nudge.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\MessageNudge\.Default]
+@="C:\\Windows\\Media\\Windows Message Nudge.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Minimize]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Minimize\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Minimize\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Default]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Default\.Current]
+@="C:\\Windows\\Media\\Windows Notify System Generic.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Default\.Default]
+@="C:\\Windows\\Media\\Windows Notify System Generic.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.IM]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.IM\.Current]
+@="C:\\Windows\\Media\\Windows Notify Messaging.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.IM\.Default]
+@="C:\\Windows\\Media\\Windows Notify Messaging.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Mail]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Mail\.Current]
+@="C:\\Windows\\Media\\Windows Notify Email.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Mail\.Default]
+@="C:\\Windows\\Media\\Windows Notify Email.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Proximity]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Proximity\.Current]
+@="C:\\Windows\\Media\\Windows Proximity Notification.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Proximity\.Default]
+@="C:\\Windows\\Media\\Windows Proximity Notification.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Reminder]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Reminder\.Current]
+@="C:\\Windows\\Media\\Windows Notify Calendar.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Reminder\.Default]
+@="C:\\Windows\\Media\\Windows Notify Calendar.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.SMS]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.SMS\.Current]
+@="C:\\Windows\\Media\\Windows Notify Messaging.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.SMS\.Default]
+@="C:\\Windows\\Media\\Windows Notify Messaging.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Open]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Open\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Open\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\PrintComplete]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\PrintComplete\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\PrintComplete\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\ProximityConnection]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\ProximityConnection\.Current]
+@="C:\\Windows\\Media\\Windows Proximity Connection.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\ProximityConnection\.Default]
+@="C:\\Windows\\Media\\Windows Proximity Connection.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\RestoreDown]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\RestoreDown\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\RestoreDown\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\RestoreUp]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\RestoreUp\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\RestoreUp\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemAsterisk]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemAsterisk\.Current]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemAsterisk\.Default]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemExclamation]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemExclamation\.Current]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemExclamation\.Default]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemExit]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemExit\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemExit\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemHand]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemHand\.Current]
+@="C:\\Windows\\Media\\Windows Foreground.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemHand\.Default]
+@="C:\\Windows\\Media\\Windows Foreground.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemNotification]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemNotification\.Current]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemNotification\.Default]
+@="C:\\Windows\\Media\\Windows Background.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemQuestion]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemQuestion\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\SystemQuestion\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsLogoff]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsLogoff\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsLogoff\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsLogon]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsLogon\.Current]
+@="C:\\Windows\\Media\\Windows Logon.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsLogon\.Default]
+@="C:\\Windows\\Media\\Windows Logon.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsUAC]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsUAC\.Current]
+@="C:\\Windows\\Media\\Windows User Account Control.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsUAC\.Default]
+@="C:\\Windows\\Media\\Windows User Account Control.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsUnlock]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsUnlock\.Current]
+@="C:\\Windows\\Media\\Windows Unlock.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\WindowsUnlock\.Default]
+@="C:\\Windows\\Media\\Windows Unlock.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\Explorer]
+@="File Explorer"
+"DispFileName"="@mmsys.cpl,-5854"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\Explorer\EmptyRecycleBin]
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\Explorer\EmptyRecycleBin\.Current]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\Explorer\EmptyRecycleBin\.Default]
+@=""
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\.Default]
+@="Default Beep"
+"DispFileName"="@mmsys.cpl,-5824"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\AppGPFault]
+@="Program Error"
+"DispFileName"="@mmsys.cpl,-5825"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\ChangeTheme]
+@="Change Theme"
+"DispFileName"="@mmsys.cpl,-5860"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Close]
+@="Close Program"
+"DispFileName"="@mmsys.cpl,-5826"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\CriticalBatteryAlarm]
+@="Critical Battery Alarm"
+"DispFileName"="@mmsys.cpl,-5827"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\DeviceConnect]
+@="Device Connect"
+"DispFileName"="@mmsys.cpl,-5828"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\DeviceDisconnect]
+@="Device Disconnect"
+"DispFileName"="@mmsys.cpl,-5829"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\DeviceFail]
+@="Device Failed to Connect"
+"DispFileName"="@mmsys.cpl,-5830"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\EmptyRecycleBin]
+@="Empty Recycle Bin"
+"DispFileName"="@mmsys.cpl,-5831"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\FaxBeep]
+@="New Fax Notification"
+"DispFileName"="@mmsys.cpl,-5858"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\LowBatteryAlarm]
+@="Low Battery Alarm"
+"DispFileName"="@mmsys.cpl,-5832"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\MailBeep]
+@="Desktop Mail Notification"
+"DispFileName"="@mmsys.cpl,-5837"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Maximize]
+@="Maximize"
+"DispFileName"="@mmsys.cpl,-5833"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\MenuCommand]
+@="Menu Command"
+"DispFileName"="@mmsys.cpl,-5834"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\MenuPopup]
+@="Menu Pop-up"
+"DispFileName"="@mmsys.cpl,-5835"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\MessageNudge]
+@="Message Nudge"
+"DispFileName"="@mmsys.cpl,-5866"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Minimize]
+@="Minimize"
+"DispFileName"="@mmsys.cpl,-5836"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Notification.Default]
+@="Notification"
+"DispFileName"="@mmsys.cpl,-5865"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Notification.IM]
+@="Instant Message Notification"
+"DispFileName"="@mmsys.cpl,-5863"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Notification.Mail]
+@="New Mail Notification"
+"DispFileName"="@mmsys.cpl,-5861"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Notification.Proximity]
+@="NFP Completion"
+"DispFileName"="@mmsys.cpl,-5868"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Notification.Reminder]
+@="Calendar Reminder"
+"DispFileName"="@mmsys.cpl,-5864"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Notification.SMS]
+@="New Text Message Notification"
+"DispFileName"="@mmsys.cpl,-5862"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Open]
+@="Open Program"
+"DispFileName"="@mmsys.cpl,-5839"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\PrintComplete]
+@="Print Complete"
+"DispFileName"="@mmsys.cpl,-5840"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\ProximityConnection]
+@="NFP Connection"
+"DispFileName"="@mmsys.cpl,-5867"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\RestoreDown]
+@="Restore Down"
+"DispFileName"="@mmsys.cpl,-5841"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\RestoreUp]
+@="Restore Up"
+"DispFileName"="@mmsys.cpl,-5842"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\SystemAsterisk]
+@="Asterisk"
+"DispFileName"="@mmsys.cpl,-5843"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\SystemExclamation]
+@="Exclamation"
+"DispFileName"="@mmsys.cpl,-5845"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\SystemExit]
+@="Exit Windows"
+"DispFileName"="@mmsys.cpl,-5846"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\SystemHand]
+@="Critical Stop"
+"DispFileName"="@mmsys.cpl,-5847"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\SystemNotification]
+@="System Notification"
+"DispFileName"="@mmsys.cpl,-5848"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\SystemQuestion]
+@="Question"
+"DispFileName"="@mmsys.cpl,-5849"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\WindowsLogoff]
+@="Windows Logoff"
+"DispFileName"="@mmsys.cpl,-5852"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\WindowsLogon]
+@="Windows Logon"
+"DispFileName"="@mmsys.cpl,-5853"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\WindowsUAC]
+@="Windows User Account Control"
+"DispFileName"="@mmsys.cpl,-5859"
+
+[HKEY_CURRENT_USER\AppEvents\EventLabels\WindowsUnlock]
+@="Windows Unlock"
+"DispFileName"="@mmsys.cpl,-5869"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes]
+@=".Default"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Names\.Default]
+@="@mmsys.cpl,-800"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Names\.None]
+@="@mmsys.cpl,-801"

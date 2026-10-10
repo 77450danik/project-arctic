@@ -1,0 +1,5 @@
+@ stdcall -private DllCanUnloadNow()
+@ stdcall -private DllGetClassObject(ptr ptr ptr)
+@ stdcall ShowNetworkCenter(ptr ptr str long)
+@ stdcall ShowConnectionStatusW(ptr ptr wstr long)
+@ stdcall ShowConnectionPropertiesW(ptr ptr wstr long)

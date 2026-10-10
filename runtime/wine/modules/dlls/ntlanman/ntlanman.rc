@@ -1,0 +1,125 @@
+/*
+ * Microsoft Windows Network: resources
+ *
+ * The dialogs and their texts are Windows' own (netplwiz.dll.mui, uk-UA,
+ * written by tools/res2rc.py; ntlanman.dll.mui): Map Network Drive is its
+ * wizard page with the heading above, Disconnect Network Drives as it is.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "commctrl.h"
+#include "ntlanman.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+BEGIN
+    IDS_PROVIDER         "Microsoft Windows Network"
+    IDS_CONNECT_TO       "Enter your credentials to connect to: "
+    IDS_ENTER_PASSWORD   "Enter network credentials"
+    IDS_MAP_TITLE        "Map Network Drive"
+    IDS_NOT_FOUND        "The network path %s could not be found."
+    IDS_CANNOT_CONNECT   "The mapped network drive could not be created because the following error has occurred:\n\n%s"
+    IDS_BROWSE_TITLE     "Select a shared network folder"
+    IDS_DISCONNECT_NONE  "You have no network drives to disconnect."
+    IDS_NETWORK_DRIVE    "Disconnect Network Drives"
+    IDS_VERB_MAP         "Map &network drive..."
+    IDS_VERB_DISCONNECT  "Dis&connect network drive..."
+    IDS_FORGET_TITLE     "Network passwords"
+    IDS_FORGET_ASK       "The user names and passwords remembered for %u network computers will be forgotten. The next time you open their folders you will be asked again.\n\nForget them?"
+    IDS_FORGET_NONE      "No network passwords are remembered."
+END
+
+IDD_MAP_DRIVE DIALOGEX 0, 0, 353, 196
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Map Network Drive"
+FONT 9, "Segoe UI", 0, 0, 0x0
+BEGIN
+    LTEXT "What network folder would you like to map?", IDC_BANNER, 11, 9, 330, 16
+    LTEXT "Specify the drive letter for the connection and the folder that you want to connect to:", -1, 11, 36, 330, 16
+    LTEXT "&Drive:", -1, 11, 59, 30, 8
+    COMBOBOX IDC_DRIVE, 43, 56, 102, 300, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "F&older:", -1, 11, 75, 31, 8
+    COMBOBOX IDC_FOLDER, 43, 72, 168, 73, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON "&Browse...", IDC_BROWSE, 215, 72, 50, 14
+    LTEXT "Example: \\\\server\\share", -1, 43, 90, 300, 8
+    AUTOCHECKBOX "&Reconnect at sign-in", IDC_RECONNECT, 43, 102, 219, 10
+    AUTOCHECKBOX "Connect using different &credentials", IDC_OTHER_USER, 43, 116, 222, 10
+    CONTROL "", -1, "Static", SS_ETCHEDHORZ, 0, 166, 353, 1
+    DEFPUSHBUTTON "&Finish", IDOK, 241, 174, 50, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 295, 174, 50, 14
+END
+
+IDD_DISCONNECT DIALOGEX 0, 0, 313, 200
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Disconnect Network Drives"
+FONT 9, "Segoe UI", 0, 0, 0x0
+BEGIN
+    LTEXT "Select the network drive(s) you want to disconnect, then click OK.", -1, 7, 7, 286, 16
+    LTEXT "&Network Drives:", -1, 7, 23, 286, 8
+    CONTROL "", IDC_DRIVES, "SysListView32", LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS | WS_BORDER | WS_TABSTOP, 7, 33, 300, 140
+    DEFPUSHBUTTON "OK", IDOK, 202, 179, 50, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 257, 179, 50, 14
+END
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+BEGIN
+    IDS_PROVIDER         "Microsoft Windows Network"
+    IDS_CONNECT_TO       "Введіть облікові дані для підключення до: "
+    IDS_ENTER_PASSWORD   "Введення мережевих облікових даних"
+    IDS_MAP_TITLE        "Підключення мережевого диска"
+    IDS_NOT_FOUND        "Не вдається знайти мережевий шлях %s."
+    IDS_CANNOT_CONNECT   "Не вдалося виконати зіставлення мережевого диска через таку помилку:\n\n%s"
+    IDS_BROWSE_TITLE     "Виберіть спільну мережеву папку"
+    IDS_DISCONNECT_NONE  "Відключення неможливе, тому що немає підключених мережевих дисків."
+    IDS_NETWORK_DRIVE    "Відключення мережевих дисків"
+    IDS_VERB_MAP         "Підключити &мережевий диск..."
+    IDS_VERB_DISCONNECT  "Від&ключити мережевий диск..."
+    IDS_FORGET_TITLE     "Мережеві паролі"
+    IDS_FORGET_ASK       "Імена користувачів і паролі, збережені для комп’ютерів мережі (%u), буде забуто. Наступного разу, коли ви відкриєте їхні папки, їх буде запитано знову.\n\nЗабути їх?"
+    IDS_FORGET_NONE      "Збережених мережевих паролів немає."
+END
+
+IDD_MAP_DRIVE DIALOGEX 0, 0, 353, 196
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Підключення мережевого диска"
+FONT 9, "Segoe UI", 0, 0, 0x0
+BEGIN
+    LTEXT "Яку мережеву папку слід підключити?", IDC_BANNER, 11, 9, 330, 16
+    LTEXT "Укажіть букву диска для підключення та папку, до якої слід підключитися:", -1, 11, 36, 330, 16
+    LTEXT "Д&иск:", -1, 11, 59, 30, 8
+    COMBOBOX IDC_DRIVE, 43, 56, 102, 300, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "&Папка:", -1, 11, 75, 31, 8
+    COMBOBOX IDC_FOLDER, 43, 72, 168, 73, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON "Огл&яд...", IDC_BROWSE, 215, 72, 50, 14
+    LTEXT "Приклад: \\\\сервер\\папка", -1, 43, 90, 300, 8
+    AUTOCHECKBOX "Під&ключатися під час входу", IDC_RECONNECT, 43, 102, 219, 10
+    AUTOCHECKBOX "Підключитися, використовуючи інші &облікові дані", IDC_OTHER_USER, 43, 116, 222, 10
+    CONTROL "", -1, "Static", SS_ETCHEDHORZ, 0, 166, 353, 1
+    DEFPUSHBUTTON "&Готово", IDOK, 241, 174, 50, 14
+    PUSHBUTTON "Скасувати", IDCANCEL, 295, 174, 50, 14
+END
+
+IDD_DISCONNECT DIALOGEX 0, 0, 313, 200
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Відключення мережевих дисків"
+FONT 9, "Segoe UI", 0, 0, 0x0
+BEGIN
+    LTEXT "Виберіть мережеві диски, зв’язок із якими потрібно розірвати, а потім натисніть кнопку OK.", -1, 7, 7, 286, 16
+    LTEXT "&Мережеві диски:", -1, 7, 23, 286, 8
+    CONTROL "", IDC_DRIVES, "SysListView32", LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS | WS_BORDER | WS_TABSTOP, 7, 33, 300, 140
+    DEFPUSHBUTTON "OK", IDOK, 202, 179, 50, 14
+    PUSHBUTTON "Скасувати", IDCANCEL, 257, 179, 50, 14
+END

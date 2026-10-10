@@ -1,0 +1,297 @@
+/*
+ * Network and Sharing Center: resources
+ *
+ * The dialogs are Windows' own (tcpipcfg.dll.mui, netshell.dll.mui, uk-UA:
+ * dialogs_uk.rcinc, written by tools/res2rc.py), the icons netcenter.dll's.
+ * The texts are Windows' where it has them (netcenter, tcpipcfg, netshell);
+ * Windows 7's map and tasks, and what Arctic adds, are Arctic's.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "commctrl.h"
+#include "netcenter.h"
+
+/* @makedep: nc1.ico */
+IDI_NETCENTER ICON nc1.ico
+/* @makedep: nc6.ico */
+IDI_COMPUTER ICON nc6.ico
+/* @makedep: nc7.ico */
+IDI_INTERNET ICON nc7.ico
+/* @makedep: nc8.ico */
+IDI_NETWORK ICON nc8.ico
+/* @makedep: nc14.ico */
+14 ICON nc14.ico
+/* @makedep: nc15.ico */
+15 ICON nc15.ico
+/* @makedep: nc16.ico */
+16 ICON nc16.ico
+/* @makedep: nc17.ico */
+17 ICON nc17.ico
+/* @makedep: nc18.ico */
+18 ICON nc18.ico
+/* @makedep: nc19.ico */
+19 ICON nc19.ico
+/* @makedep: nc22.ico */
+IDI_NEW_CONNECTION ICON nc22.ico
+/* @makedep: nc27.ico */
+IDI_TROUBLESHOOT ICON nc27.ico
+/* @makedep: nc28.ico */
+IDI_ETHERNET ICON nc28.ico
+
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+#include "dialogs_uk.rcinc"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                     "Control Panel Home"
+    0xf001                     "See also"
+    IDS_NETCENTER              "Network and Sharing Center"
+    IDS_NETCENTER_TIP          "Check network status, change network settings and set preferences for sharing files and printers."
+    IDS_INTERNET               "Internet"
+    IDS_PUBLIC_NETWORK         "Public network"
+    IDS_PRIVATE_NETWORK        "Private network"
+    IDS_ACCESS_INTERNET        "Internet"
+    IDS_ACCESS_NO_INTERNET     "No Internet access"
+    IDS_ACCESS_NO_NETWORK      "No network access"
+    IDS_CHANGE_ADAPTER         "Change adapter settings"
+    IDS_CHANGE_SHARING         "Change advanced sharing settings"
+    IDS_ACTIVE_NETWORKS        "View your active networks"
+    IDS_TITLE                  "View your basic network information and set up connections"
+    IDS_NOT_CONNECTED          "You are currently not connected to any networks."
+    IDS_CHANGE_SETTINGS        "Change your networking settings"
+    IDS_NEW_CONNECTION         "Set up a new connection or network"
+    IDS_NEW_CONNECTION_TIP     "Set up a broadband, dial-up, or VPN connection; or set up a router or access point."
+    IDS_TROUBLESHOOT           "Troubleshoot problems"
+    IDS_TROUBLESHOOT_TIP       "Diagnose and repair network problems, or get troubleshooting information."
+    IDS_ACCESS_TYPE            "Access type:"
+    IDS_HOMEGROUP              "HomeGroup:"
+    IDS_CONNECTIONS            "Connections:"
+    IDS_MANAGE_WIRELESS        "Manage wireless networks"
+    IDS_CONNECT_TO             "Connect to a network"
+    IDS_CONNECT_TO_TIP         "Connect or reconnect to a wireless, wired, dial-up, or VPN network connection."
+    IDS_THIS_COMPUTER          "(This computer)"
+    IDS_FULL_MAP               "See full map"
+    IDS_NETWORK                "Network"
+    IDS_SEE_HOMEGROUP          "HomeGroup"
+    IDS_SEE_FIREWALL           "Windows Firewall"
+    IDS_SEE_INTERNET_OPTIONS   "Internet Options"
+    IDS_LAN_CONNECTION         "Local Area Connection"
+    IDS_WIRELESS_CONNECTION    "Wireless Network Connection"
+    IDS_HOMEGROUP_SHARING      "Choose homegroup and sharing options"
+    IDS_HOMEGROUP_SHARING_TIP  "Access files and printers located on other network computers, or change sharing settings."
+    IDS_STATUS_TITLE           "%1 Status"
+    IDS_PROPERTIES_TITLE       "%1 Properties"
+    IDS_GENERAL                "General"
+    IDS_NETWORKING             "Networking"
+    IDS_CONNECTED              "Enabled"
+    IDS_DISCONNECTED           "Media disconnected"
+    IDS_DISABLED               "Disabled"
+    IDS_ENABLE                 "&Enable"
+    IDS_DISABLE                "&Disable"
+    IDS_MBPS                   "%u.%u Mbps"
+    IDS_GBPS                   "%u.%u Gbps"
+    IDS_NO_ACCESS              "No network access"
+    IDS_INTERNET_ACCESS        "Internet"
+    IDS_NO_INTERNET            "No Internet access"
+    IDS_NO_NETWORK             "No network access"
+    IDS_DETAILS_PROPERTY       "Property"
+    IDS_DETAILS_VALUE          "Value"
+    IDS_DET_SUFFIX             "Connection-specific DNS Suffix"
+    IDS_DET_DESCRIPTION        "Description"
+    IDS_DET_PHYSICAL           "Physical Address"
+    IDS_DET_DHCP               "DHCP Enabled"
+    IDS_DET_IPV4               "IPv4 Address"
+    IDS_DET_MASK               "IPv4 Subnet Mask"
+    IDS_DET_GATEWAY4           "IPv4 Default Gateway"
+    IDS_DET_DNS4               "IPv4 DNS Server"
+    IDS_DET_IPV6               "IPv6 Address"
+    IDS_DET_LINK_LOCAL         "Link-local IPv6 Address"
+    IDS_DET_GATEWAY6           "IPv6 Default Gateway"
+    IDS_DET_DNS6               "IPv6 DNS Server"
+    IDS_DET_NETBIOS            "NetBIOS over Tcpip Enabled"
+    IDS_YES                    "Yes"
+    IDS_NO                     "No"
+    IDS_IPV4_PROPERTIES        "Internet Protocol Version 4 (TCP/IPv4) Properties"
+    IDS_IPV6_PROPERTIES        "Internet Protocol Version 6 (TCP/IPv6) Properties"
+    IDS_ADVANCED_TITLE         "Advanced TCP/IP Settings"
+    IDS_IP_SETTINGS            "IP Settings"
+    IDS_DHCP_ENABLED           "DHCP Enabled"
+    IDS_AUTOMATIC              "Automatic"
+    IDS_ADDRESS_COLUMN         "IP address"
+    IDS_MASK_COLUMN            "Subnet mask"
+    IDS_GATEWAY_COLUMN         "Gateway"
+    IDS_METRIC_COLUMN          "Metric"
+    IDS_PREFIX_COLUMN          "Subnet prefix length"
+    IDS_BAD_ADDRESS            "The IP address you entered is not valid."
+    IDS_BAD_MASK               "The subnet mask you entered is not valid."
+    IDS_BAD_GATEWAY            "The default gateway you entered is not valid."
+    IDS_BAD_DNS                "The DNS server address you entered is not valid."
+    IDS_APPLY_FAILED           "The settings could not be applied: this version of Arctic's host does not take network settings yet. Restart the computer after the update."
+    IDS_ADD                    "&Add"
+    IDS_COMP_CLIENT            "Client for Microsoft Networks"
+    IDS_COMP_CLIENT_TIP        "Allows your computer to access resources on a Microsoft network."
+    IDS_COMP_QOS               "QoS Packet Scheduler"
+    IDS_COMP_QOS_TIP           "Quality of Service Packet Scheduler. Provides network traffic control, including rate-of-flow and prioritization services."
+    IDS_COMP_SHARING           "File and Printer Sharing for Microsoft Networks"
+    IDS_COMP_SHARING_TIP       "Allows other computers to access resources on your computer using a Microsoft network."
+    IDS_COMP_IPV6              "Internet Protocol Version 6 (TCP/IPv6)"
+    IDS_COMP_IPV6_TIP          "The latest version of the internet protocol that provides communication across diverse interconnected networks."
+    IDS_COMP_IPV4              "Internet Protocol Version 4 (TCP/IPv4)"
+    IDS_COMP_IPV4_TIP          "Transmission Control Protocol/Internet Protocol. The default wide area network protocol that provides communication across diverse interconnected networks."
+    IDS_COMP_LLTD_MAPPER       "Link-Layer Topology Discovery Mapper I/O Driver"
+    IDS_COMP_LLTD_MAPPER_TIP   "Used to discover and locate other PCs, devices, and network infrastructure components on the network. Also used to determine network bandwidth."
+    IDS_COMP_LLTD_RESPONDER    "Link-Layer Topology Discovery Responder"
+    IDS_COMP_LLTD_RESPONDER_TIP "Allows this PC to be discovered and located on the network."
+    IDS_DAYS                   "d."
+    IDS_SHARING_PAGE           "Advanced sharing settings"
+    IDS_SHARING_TITLE          "Change sharing options for different network profiles"
+    IDS_SHARING_INTRO          "These settings are used on every network this computer connects to."
+    IDS_DISCOVERY              "Network discovery"
+    IDS_DISCOVERY_TEXT         "When network discovery is on, this computer can see other network computers and devices: they appear in Network in File Explorer."
+    IDS_DISCOVERY_ON           "Turn on network discovery"
+    IDS_DISCOVERY_OFF          "Turn off network discovery"
+    IDS_FILE_SHARING           "File and printer sharing"
+    IDS_FILE_SHARING_TEXT      "Arctic opens the folders that other computers share. It does not share its own folders and printers with them yet, and other computers do not see it on the network."
+    IDS_DRIVES_PASSWORDS       "Network drives and passwords"
+    IDS_DRIVES_PASSWORDS_TEXT  "A shared folder can be a drive of this computer. The user names and passwords you chose to remember for network computers are kept in the Credential Manager."
+    IDS_MAP_DRIVE              "Map network drive..."
+    IDS_DISCONNECT_DRIVE       "Disconnect network drive..."
+    IDS_FORGET_PASSWORDS       "Forget the remembered network passwords"
+    IDS_SAVE_CHANGES           "Save changes"
+    IDS_CANCEL                 "Cancel"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                     "Домашня сторінка панелі керування"
+    0xf001                     "Див. також"
+    IDS_NETCENTER              "Центр мережевих підключень і спільного доступу"
+    IDS_NETCENTER_TIP          "Перевірити стан мережі, змінити параметри мережі та задати параметри спільного доступу до файлів і принтерів."
+    IDS_INTERNET               "Інтернет"
+    IDS_PUBLIC_NETWORK         "Загальнодоступна мережа"
+    IDS_PRIVATE_NETWORK        "Приватна мережа"
+    IDS_ACCESS_INTERNET        "Інтернет"
+    IDS_ACCESS_NO_INTERNET     "Немає доступу до Інтернету"
+    IDS_ACCESS_NO_NETWORK      "Немає доступу до мережі"
+    IDS_CHANGE_ADAPTER         "Змінити настройки адаптера"
+    IDS_CHANGE_SHARING         "Змінити додаткові параметри спільного доступу"
+    IDS_ACTIVE_NETWORKS        "Переглянути активні мережі"
+    IDS_TITLE                  "Переглянути основні відомості про мережу та настроїти підключення"
+    IDS_NOT_CONNECTED          "Ви не підключені до жодної мережі."
+    IDS_CHANGE_SETTINGS        "Змінити параметри мережі"
+    IDS_NEW_CONNECTION         "Настроїти нове підключення або мережу"
+    IDS_NEW_CONNECTION_TIP     "Установити широкосмугове, комутоване підключення чи підключення VPN або настроїти маршрутизатор чи точку доступу."
+    IDS_TROUBLESHOOT           "Виправити неполадки"
+    IDS_TROUBLESHOOT_TIP       "Діагностувати та виправити неполадки мережі або отримати відомості про виправлення неполадки."
+    IDS_ACCESS_TYPE            "Тип доступу:"
+    IDS_HOMEGROUP              "Домашня група:"
+    IDS_CONNECTIONS            "Підключення:"
+    IDS_MANAGE_WIRELESS        "Керування бездротовими мережами"
+    IDS_CONNECT_TO             "Підключитися до мережі"
+    IDS_CONNECT_TO_TIP         "Підключення або повторне підключення до бездротової, дротової, комутованої мережі чи мережі VPN."
+    IDS_THIS_COMPUTER          "(цей комп’ютер)"
+    IDS_FULL_MAP               "Переглянути повну схему"
+    IDS_NETWORK                "Мережа"
+    IDS_SEE_HOMEGROUP          "Домашня група"
+    IDS_SEE_FIREWALL           "Брандмауер Windows"
+    IDS_SEE_INTERNET_OPTIONS   "Властивості браузера"
+    IDS_LAN_CONNECTION         "Підключення по локальній мережі"
+    IDS_WIRELESS_CONNECTION    "Бездротове мережне підключення"
+    IDS_HOMEGROUP_SHARING      "Вибрати параметри домашньої групи та спільного доступу"
+    IDS_HOMEGROUP_SHARING_TIP  "Доступ до файлів і принтерів на інших комп’ютерах мережі або змінення параметрів спільного доступу."
+    IDS_STATUS_TITLE           "Стан: %1"
+    IDS_PROPERTIES_TITLE       "Властивості: %1"
+    IDS_GENERAL                "Загальні"
+    IDS_NETWORKING             "Мережа"
+    IDS_CONNECTED              "Увімкнуто"
+    IDS_DISCONNECTED           "Носій відключено"
+    IDS_DISABLED               "Вимкнуто"
+    IDS_ENABLE                 "&Увімкнути"
+    IDS_DISABLE                "&Вимкнути"
+    IDS_MBPS                   "%u,%u Мбіт/с"
+    IDS_GBPS                   "%u,%u Гбіт/с"
+    IDS_NO_ACCESS              "Немає доступу до мережі"
+    IDS_INTERNET_ACCESS        "Інтернет"
+    IDS_NO_INTERNET            "Немає доступу до Інтернету"
+    IDS_NO_NETWORK             "Немає доступу до мережі"
+    IDS_DETAILS_PROPERTY       "Властивість"
+    IDS_DETAILS_VALUE          "Значення"
+    IDS_DET_SUFFIX             "DNS-суфікс підключення"
+    IDS_DET_DESCRIPTION        "Опис"
+    IDS_DET_PHYSICAL           "Фізична адреса"
+    IDS_DET_DHCP               "DHCP увімкнено"
+    IDS_DET_IPV4               "IPv4-адреса"
+    IDS_DET_MASK               "Маска підмережі IPv4"
+    IDS_DET_GATEWAY4           "Основний шлюз IPv4"
+    IDS_DET_DNS4               "DNS-сервер IPv4"
+    IDS_DET_IPV6               "IPv6-адреса"
+    IDS_DET_LINK_LOCAL         "Локальна IPv6-адреса посилання"
+    IDS_DET_GATEWAY6           "Основний шлюз IPv6"
+    IDS_DET_DNS6               "DNS-сервер IPv6"
+    IDS_DET_NETBIOS            "NetBIOS через Tcpip увімкнуто"
+    IDS_YES                    "Так"
+    IDS_NO                     "Ні"
+    IDS_IPV4_PROPERTIES        "Властивості: IP версії 4 (TCP/IPv4)"
+    IDS_IPV6_PROPERTIES        "Властивості: IP версії 6 (TCP/IPv6)"
+    IDS_ADVANCED_TITLE         "Додаткові параметри TCP/IP"
+    IDS_IP_SETTINGS            "Параметри IP"
+    IDS_DHCP_ENABLED           "DHCP увімкнуто"
+    IDS_AUTOMATIC              "Автоматично"
+    IDS_ADDRESS_COLUMN         "IP-адреса"
+    IDS_MASK_COLUMN            "Маска підмережі"
+    IDS_GATEWAY_COLUMN         "Шлюз"
+    IDS_METRIC_COLUMN          "Показник"
+    IDS_PREFIX_COLUMN          "Довжина префіксу підмережі"
+    IDS_BAD_ADDRESS            "Введена IP-адреса неприпустима."
+    IDS_BAD_MASK               "Введена маска підмережі неприпустима."
+    IDS_BAD_GATEWAY            "Введений основний шлюз неприпустимий."
+    IDS_BAD_DNS                "Введена адреса DNS-сервера неприпустима."
+    IDS_APPLY_FAILED           "Не вдалося застосувати параметри: ця версія хоста Arctic ще не приймає параметрів мережі. Перезавантажте комп’ютер після оновлення."
+    IDS_ADD                    "&Додати"
+    IDS_COMP_CLIENT            "Клієнт для мереж Microsoft"
+    IDS_COMP_CLIENT_TIP        "Дає змогу цьому комп’ютеру отримувати доступ до ресурсів у мережі Microsoft."
+    IDS_COMP_QOS               "Планувальник пакетів QoS"
+    IDS_COMP_QOS_TIP           "Планувальник пакетів якості обслуговування. Керує мережевим трафіком, зокрема швидкістю потоку та пріоритетністю."
+    IDS_COMP_SHARING           "Спільний доступ до файлів і принтерів у мережах Microsoft"
+    IDS_COMP_SHARING_TIP       "Дає змогу іншим комп’ютерам отримувати доступ до ресурсів цього комп’ютера в мережі Microsoft."
+    IDS_COMP_IPV6              "IP версії 6 (TCP/IPv6)"
+    IDS_COMP_IPV6_TIP          "Найновіша версія протоколу Інтернету, що забезпечує зв’язок між різноманітними взаємопов’язаними мережами."
+    IDS_COMP_IPV4              "IP версії 4 (TCP/IPv4)"
+    IDS_COMP_IPV4_TIP          "Протокол керування передаванням/протокол Інтернету. Стандартний протокол глобальних мереж, що забезпечує зв’язок між різноманітними взаємопов’язаними мережами."
+    IDS_COMP_LLTD_MAPPER       "Драйвер вводу-виводу для відображення топології канального рівня"
+    IDS_COMP_LLTD_MAPPER_TIP   "Використовується для виявлення та пошуку інших комп’ютерів, пристроїв і компонентів мережевої інфраструктури, а також для визначення пропускної здатності мережі."
+    IDS_COMP_LLTD_RESPONDER    "Відповідач для виявлення топології канального рівня"
+    IDS_COMP_LLTD_RESPONDER_TIP "Дає змогу виявляти й знаходити цей комп’ютер у мережі."
+    IDS_DAYS                   "дн."
+    IDS_SHARING_PAGE           "Додаткові параметри спільного доступу"
+    IDS_SHARING_TITLE          "Змінення параметрів спільного доступу для різних мережевих профілів"
+    IDS_SHARING_INTRO          "Ці параметри діють у кожній мережі, до якої підключається цей комп’ютер."
+    IDS_DISCOVERY              "Мережеве виявлення"
+    IDS_DISCOVERY_TEXT         "Якщо мережеве виявлення ввімкнуто, цей комп’ютер бачить інші комп’ютери та пристрої в мережі: вони з’являються в папці «Мережа» Провідника."
+    IDS_DISCOVERY_ON           "Увімкнути мережеве виявлення"
+    IDS_DISCOVERY_OFF          "Вимкнути мережеве виявлення"
+    IDS_FILE_SHARING           "Спільний доступ до файлів і принтерів"
+    IDS_FILE_SHARING_TEXT      "Arctic відкриває папки, до яких надали спільний доступ інші комп’ютери. Власні папки та принтери він іншим комп’ютерам поки не надає, і в мережі його не видно."
+    IDS_DRIVES_PASSWORDS       "Мережеві диски та паролі"
+    IDS_DRIVES_PASSWORDS_TEXT  "Спільну папку можна підключити як диск цього комп’ютера. Імена користувачів і паролі, які ви вирішили запам’ятати для комп’ютерів мережі, зберігаються в диспетчері облікових даних."
+    IDS_MAP_DRIVE              "Підключити мережевий диск..."
+    IDS_DISCONNECT_DRIVE       "Відключити мережевий диск..."
+    IDS_FORGET_PASSWORDS       "Забути збережені мережеві паролі"
+    IDS_SAVE_CHANGES           "Зберегти зміни"
+    IDS_CANCEL                 "Скасувати"
+}

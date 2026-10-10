@@ -1,0 +1,46 @@
+REGEDIT4
+
+; Microsoft Windows Network: the network provider that mpr.dll asks who is on
+; the network and what they share (ntlanman.dll, with the host's arctic-smb;
+; docs/M5-network.md). The names are those of Windows.
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order]
+"ProviderOrder"="LanmanWorkstation"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\NetworkProvider\HwOrder]
+"ProviderOrder"="LanmanWorkstation"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\NetworkProvider]
+"Name"="Microsoft Windows Network"
+"ProviderPath"="C:\\Windows\\System32\\ntlanman.dll"
+"DeviceName"="\\Device\\LanmanRedirector"
+
+; At logon the network drives are drives again, and the host learns the
+; passwords kept in the Credential Manager
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run]
+"RestoreConnections"="rundll32.exe ntlanman.dll,RestoreConnections"
+
+; "Map network drive..." and "Disconnect network drive..." on This PC and on
+; Network, as in Windows
+[HKEY_CLASSES_ROOT\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\connectNetworkDrive]
+"MUIVerb"="@C:\\Windows\\System32\\ntlanman.dll,-20"
+
+[HKEY_CLASSES_ROOT\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\connectNetworkDrive\command]
+@="rundll32.exe ntlanman.dll,MapNetworkDrive"
+
+[HKEY_CLASSES_ROOT\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\disconnectNetworkDrive]
+"MUIVerb"="@C:\\Windows\\System32\\ntlanman.dll,-21"
+
+[HKEY_CLASSES_ROOT\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\disconnectNetworkDrive\command]
+@="rundll32.exe ntlanman.dll,DisconnectNetworkDrives"
+
+[HKEY_CLASSES_ROOT\CLSID\{208D2C60-3AEA-1069-A2D7-08002B30309D}\shell\connectNetworkDrive]
+"MUIVerb"="@C:\\Windows\\System32\\ntlanman.dll,-20"
+
+[HKEY_CLASSES_ROOT\CLSID\{208D2C60-3AEA-1069-A2D7-08002B30309D}\shell\connectNetworkDrive\command]
+@="rundll32.exe ntlanman.dll,MapNetworkDrive"
+
+[HKEY_CLASSES_ROOT\CLSID\{208D2C60-3AEA-1069-A2D7-08002B30309D}\shell\disconnectNetworkDrive]
+"MUIVerb"="@C:\\Windows\\System32\\ntlanman.dll,-21"
+
+[HKEY_CLASSES_ROOT\CLSID\{208D2C60-3AEA-1069-A2D7-08002B30309D}\shell\disconnectNetworkDrive\command]
+@="rundll32.exe ntlanman.dll,DisconnectNetworkDrives"

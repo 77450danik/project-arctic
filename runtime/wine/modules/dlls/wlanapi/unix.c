@@ -327,6 +327,15 @@ static BOOL write_psk_file( const char *ssid, const char *passphrase )
         return FALSE;
     }
     fprintf( f, "[Security]\nPassphrase=%s\n", passphrase );
+    /* the addresses set by hand in the adapter's TCP/IP properties
+     * (netcenter.dll keeps iwd's sections of them there) */
+    {
+        FILE *sections = fopen( "/run/arctic/network/wifi.iwd", "r" );
+        char line[512];
+
+        while (sections && fgets( line, sizeof(line), sections )) fputs( line, f );
+        if (sections) fclose( sections );
+    }
     fclose( f );
     chmod( tmp, 0600 );
     return !rename( tmp, path );

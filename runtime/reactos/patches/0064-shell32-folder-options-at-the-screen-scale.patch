@@ -1,0 +1,22 @@
+diff --git a/dll/win32/shell32/dialogs/folder_options.cpp b/dll/win32/shell32/dialogs/folder_options.cpp
+--- a/dll/win32/shell32/dialogs/folder_options.cpp
++++ b/dll/win32/shell32/dialogs/folder_options.cpp
+@@ -136,6 +136,18 @@
+     HPROPSHEETPAGE hpage;
+     UINT num_pages = 0;
+ 
++    /* Arctic: the dialog draws at the screen's scale, as in Windows: from
++       rundll32 (Control Panel's "File Explorer Options"), which is not DPI
++       aware, dwm stretched it, blurred, from 96 DPI */
++    {
++        typedef HANDLE (WINAPI *PFN_SETTHREADDPI)(HANDLE);
++        PFN_SETTHREADDPI pSetThreadDpi =
++            (PFN_SETTHREADDPI)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
++
++        if (pSetThreadDpi)
++            pSetThreadDpi((HANDLE)(LONG_PTR)-2 /* DPI_AWARENESS_CONTEXT_SYSTEM_AWARE */);
++    }
++
+     // the stub window to hide taskbar button
+     DWORD style = WS_DISABLED | WS_CLIPSIBLINGS | WS_CAPTION;
+     DWORD exstyle = WS_EX_WINDOWEDGE | WS_EX_TOOLWINDOW;

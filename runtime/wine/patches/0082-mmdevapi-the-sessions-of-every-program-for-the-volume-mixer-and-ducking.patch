@@ -1,0 +1,601 @@
+mmdevapi: the sessions of every program, for the Volume Mixer, and ducking
+
+Every session that plays has a row in a shared section (wine/arctic_audio.h):
+SndVol.exe shows it with its program, its level and its meter, and the
+volume and mute it sets there are the session's. A program that asked for the
+communications endpoint and records, or plays a communications stream, is in
+a call; the other programs then duck as the Communications tab says.
+
+diff --git a/dlls/mmdevapi/Makefile.in b/dlls/mmdevapi/Makefile.in
+--- a/dlls/mmdevapi/Makefile.in
++++ b/dlls/mmdevapi/Makefile.in
+@@ -10,4 +10,5 @@
+ 	main.c \
+ 	mmdevapi_classes.idl \
+ 	session.c \
++	sharedsession.c \
+ 	spatialaudio.c
+diff --git a/dlls/mmdevapi/audiovolume.c b/dlls/mmdevapi/audiovolume.c
+--- a/dlls/mmdevapi/audiovolume.c
++++ b/dlls/mmdevapi/audiovolume.c
+@@ -274,10 +274,11 @@
+     return powf( channel % 2 ? right : left, TAPER_DB / 20.f );
+ }
+ 
++/* the endpoints' changes and the mixer's (sharedsession.c) */
+ LONG endpoint_volume_serial(void)
+ {
+     struct endpoint_volume_shared *shared = get_shared();
+-    return shared ? ReadAcquire( &shared->serial ) : 0;
++    return (shared ? ReadAcquire( &shared->serial ) : 0) + shared_sessions_serial();
+ }
+ 
+ /* what the endpoint's volume and mute make of a sample's amplitude */
+diff --git a/dlls/mmdevapi/client.c b/dlls/mmdevapi/client.c
+--- a/dlls/mmdevapi/client.c
++++ b/dlls/mmdevapi/client.c
+@@ -43,7 +43,8 @@
+ } LANGANDCODEPAGE;
+ 
+ /* the session's volume times the endpoint's, which is the whole system's
+- * (audiovolume.c) */
++ * (audiovolume.c); the Volume Mixer sets the session's too, and a call of
++ * another program turns it down (sharedsession.c) */
+ void set_stream_volumes(struct audio_client *This)
+ {
+     MMDevice *device = CONTAINING_RECORD(This->parent, MMDevice, IMMDevice_iface);
+@@ -52,9 +53,12 @@
+     UINT32 i;
+ 
+     This->endpoint_serial  = endpoint_volume_serial();
++    if (This->shared) shared_session_take(This->session);
+     params.stream          = This->stream;
+     params.master_volume   = (This->session->mute ? 0.0f : This->session->master_vol) *
+                              (This->loopback ? 1.f : endpoint_volume_amplitude(&device->devguid, This->dataflow));
++    if (!This->loopback && This->dataflow == eRender && !This->communications)
++        params.master_volume *= shared_duck_factor();
+     params.volumes         = This->vols;
+     params.session_volumes = This->session->channel_vols;
+     /* the endpoint's balance, channel by channel */
+@@ -539,6 +543,15 @@
+         client->stream = stream;
+         client->channel_count = channel_count;
+         client->loopback = !!(flags & AUDCLNT_STREAMFLAGS_LOOPBACK);
++        client->sample_bytes = fmt->wBitsPerSample / 8;
++        client->sample_float = fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
++                               (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
++                                IsEqualGUID(&((const WAVEFORMATEXTENSIBLE *)fmt)->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT));
++        if (client->dataflow == eRender && !client->loopback) {
++            MMDevice *device = CONTAINING_RECORD(client->parent, MMDevice, IMMDevice_iface);
++            shared_session_attach(client->session, &device->devguid);
++            client->shared = TRUE;
++        }
+         set_stream_volumes(client);
+     }
+ 
+@@ -722,8 +735,10 @@
+         if (This->session) {
+             sessions_lock();
+             list_remove(&This->entry);
++            if (This->shared) shared_session_detach(This->session);
+             sessions_unlock();
+         }
++        if (This->in_call) shared_call(FALSE);
+ 
+         free(This->vols);
+ 
+@@ -966,6 +981,14 @@
+     params.stream = This->stream;
+     wine_unix_call(start, &params);
+ 
++    /* a call: the microphone of a program that asked for the communications
++     * endpoint, or a stream it said is one */
++    if (SUCCEEDED(params.result) && !This->in_call &&
++        ((This->dataflow == eCapture && !This->loopback && communications_role) || This->communications)) {
++        This->in_call = TRUE;
++        shared_call(TRUE);
++    }
++
+     sessions_unlock();
+ 
+     return params.result;
+@@ -985,6 +1008,11 @@
+ 
+     wine_unix_call(stop, &params);
+ 
++    if (This->in_call) {
++        This->in_call = FALSE;
++        shared_call(FALSE);
++    }
++
+     return params.result;
+ }
+ 
+@@ -1145,6 +1173,8 @@
+     if (legacy_prop->bIsOffload)
+         return AUDCLNT_E_ENDPOINT_OFFLOAD_NOT_CAPABLE;
+ 
++    This->communications = legacy_prop->eCategory == AudioCategory_Communications;
++
+     return S_OK;
+ }
+ 
+@@ -1508,6 +1538,7 @@
+     params.data   = data;
+ 
+     wine_unix_call(get_render_buffer, &params);
++    This->render_data = SUCCEEDED(params.result) ? *data : NULL;
+ 
+     return params.result;
+ }
+@@ -1527,6 +1558,9 @@
+     params.written_frames = written_frames;
+     params.flags          = flags;
+ 
++    if (This->shared && written_frames && !(flags & AUDCLNT_BUFFERFLAGS_SILENT))
++        shared_session_peak(This, This->render_data, written_frames);
++
+     wine_unix_call(release_render_buffer, &params);
+ 
+     return params.result;
+diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
+--- a/dlls/mmdevapi/devenum.c
++++ b/dlls/mmdevapi/devenum.c
+@@ -1231,6 +1231,10 @@
+ 
+     *device = NULL;
+ 
++    /* Arctic: the program makes calls (sharedsession.c) */
++    if (role == eCommunications)
++        communications_role = TRUE;
++
+     if(!drvs.module_name[0])
+         return E_NOTFOUND;
+ 
+diff --git a/dlls/mmdevapi/mmdevapi_private.h b/dlls/mmdevapi/mmdevapi_private.h
+--- a/dlls/mmdevapi/mmdevapi_private.h
++++ b/dlls/mmdevapi/mmdevapi_private.h
+@@ -42,6 +42,9 @@
+     WCHAR *icon_path;
+     GUID grouping_param;
+ 
++    int shared_row;         /* its row of the mixer's (sharedsession.c), + 1 */
++    LONG shared_changed;    /* of the row's volume, as the session has it */
++
+     struct list entry;
+ };
+ 
+@@ -82,6 +85,12 @@
+     char *device_name;
+     LONG endpoint_serial;   /* of the endpoint volume it plays at */
+     BOOL loopback;          /* records what a render endpoint plays: before its volume */
++    BOOL shared;            /* its session is in the mixer's rows */
++    BOOL communications;    /* AudioCategory_Communications: a call */
++    BOOL in_call;
++    UINT32 sample_bytes;    /* the format, for the mixer's meter */
++    BOOL sample_float;
++    BYTE *render_data;
+ };
+ 
+ extern HRESULT MMDevEnum_Create(REFIID riid, void **ppv);
+@@ -125,6 +134,17 @@
+ extern float endpoint_volume_amplitude(const GUID *device, EDataFlow flow);
+ extern float endpoint_volume_channel(const GUID *device, EDataFlow flow, UINT channel, UINT count);
+ extern LONG endpoint_volume_serial(void);
++extern WCHAR *get_application_name(void);
++extern BOOL communications_role;
++extern LONG shared_sessions_serial(void);
++extern void shared_session_attach(struct audio_session *session, const GUID *device);
++extern void shared_session_detach(struct audio_session *session);
++extern void shared_session_describe(struct audio_session *session);
++extern void shared_session_set(struct audio_session *session);
++extern void shared_session_take(struct audio_session *session);
++extern void shared_session_peak(struct audio_client *client, const BYTE *data, UINT32 frames);
++extern void shared_call(BOOL begin);
++extern float shared_duck_factor(void);
+ extern HRESULT AudioSessionManager_Create(IMMDevice *device, IAudioSessionManager2 **ppv);
+ extern HRESULT SpatialAudioClient_Create(IMMDevice *device, ISpatialAudioClient **out);
+ 
+diff --git a/dlls/mmdevapi/session.c b/dlls/mmdevapi/session.c
+--- a/dlls/mmdevapi/session.c
++++ b/dlls/mmdevapi/session.c
+@@ -182,6 +182,7 @@
+ 
+     free(session->display_name);
+     session->display_name = wcsdup(name);
++    shared_session_describe(session);
+ 
+     return S_OK;
+ }
+@@ -215,6 +216,7 @@
+ 
+     free(session->icon_path);
+     session->icon_path = wcsdup(path);
++    shared_session_describe(session);
+ 
+     return S_OK;
+ }
+@@ -587,6 +589,8 @@
+     LIST_FOR_EACH_ENTRY(client, &session->clients, struct audio_client, entry)
+         set_stream_volumes(client);
+ 
++    shared_session_set(session);
++
+     sessions_unlock();
+ 
+     return S_OK;
+@@ -626,6 +630,8 @@
+     LIST_FOR_EACH_ENTRY(client, &session->clients, struct audio_client, entry)
+         set_stream_volumes(client);
+ 
++    shared_session_set(session);
++
+     sessions_unlock();
+ 
+     return S_OK;
+diff --git a/dlls/mmdevapi/sharedsession.c b/dlls/mmdevapi/sharedsession.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/mmdevapi/sharedsession.c
+@@ -0,0 +1,306 @@
++/*
++ * Arctic: the sessions of every process, for the Volume Mixer, and ducking
++ * (include/wine/arctic_audio.h)
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#define COBJMACROS
++
++#include <stdarg.h>
++#include <math.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winnls.h"
++#include "winreg.h"
++#include "wine/debug.h"
++#include "wine/list.h"
++
++#include "ole2.h"
++#include "mmdeviceapi.h"
++#include "mmsystem.h"
++#include "audioclient.h"
++#include "audiopolicy.h"
++#include "ks.h"
++#include "ksmedia.h"
++
++#include "mmdevapi_private.h"
++#include "wine/arctic_audio.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
++
++/* the process asked for the communications endpoint: its microphone is a call */
++BOOL communications_role;
++static LONG process_calls;
++
++static struct arctic_audio_sessions *get_sessions(void)
++{
++    static struct arctic_audio_sessions *shared;
++    struct arctic_audio_sessions *view;
++    HANDLE mapping;
++
++    if (shared) return shared;
++    if (!(mapping = CreateFileMappingW( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(*view),
++                                        ARCTIC_AUDIO_SESSIONS_SECTION )))
++        return NULL;
++    if (!(view = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*view) )))
++    {
++        CloseHandle( mapping );
++        return NULL;
++    }
++    /* the handle stays open, as for the endpoints' section */
++    InterlockedCompareExchange( (LONG *)&view->version, ARCTIC_AUDIO_SESSIONS_VERSION, 0 );
++    if (view->version != ARCTIC_AUDIO_SESSIONS_VERSION)
++    {
++        UnmapViewOfFile( view );
++        CloseHandle( mapping );
++        return NULL;
++    }
++    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL ))
++    {
++        UnmapViewOfFile( view );
++        CloseHandle( mapping );
++    }
++    return shared;
++}
++
++static HANDLE lock_sessions(void)
++{
++    HANDLE mutex = CreateMutexW( NULL, FALSE, ARCTIC_AUDIO_SESSIONS_MUTEX );
++
++    if (mutex) WaitForSingleObject( mutex, INFINITE );
++    return mutex;
++}
++
++static void unlock_sessions( HANDLE mutex )
++{
++    if (!mutex) return;
++    ReleaseMutex( mutex );
++    CloseHandle( mutex );
++}
++
++static BOOL process_alive( DWORD pid )
++{
++    HANDLE process;
++    DWORD code = 0;
++
++    if (pid == GetCurrentProcessId()) return TRUE;
++    if (!(process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid ))) return FALSE;
++    GetExitCodeProcess( process, &code );
++    CloseHandle( process );
++    return code == STILL_ACTIVE;
++}
++
++LONG shared_sessions_serial(void)
++{
++    struct arctic_audio_sessions *shared = get_sessions();
++    return shared ? ReadAcquire( &shared->serial ) : 0;
++}
++
++static struct arctic_audio_session *session_row( struct audio_session *session )
++{
++    struct arctic_audio_sessions *shared = get_sessions();
++
++    if (!shared || !session->shared_row) return NULL;
++    return &shared->rows[session->shared_row - 1];
++}
++
++/* the row's name and icon: what the program gave the session, or its own */
++static void describe( struct audio_session *session, struct arctic_audio_session *row )
++{
++    WCHAR *name;
++
++    if (session->display_name && session->display_name[0] && session->display_name[0] != '@')
++        lstrcpynW( row->name, session->display_name, ARRAY_SIZE(row->name) );
++    else if ((name = get_application_name()))
++    {
++        lstrcpynW( row->name, name, ARRAY_SIZE(row->name) );
++        free( name );
++    }
++    if (session->icon_path && session->icon_path[0])
++        lstrcpynW( row->icon, session->icon_path, ARRAY_SIZE(row->icon) );
++    else
++        GetModuleFileNameW( NULL, row->icon, ARRAY_SIZE(row->icon) );
++}
++
++void shared_session_attach( struct audio_session *session, const GUID *device )
++{
++    struct arctic_audio_sessions *shared = get_sessions();
++    struct arctic_audio_session *row = NULL;
++    DWORD pid = GetCurrentProcessId();
++    HANDLE mutex;
++    int i, free_row = -1;
++
++    if (!shared) return;
++    mutex = lock_sessions();
++    if ((row = session_row( session ))) row->clients++;
++    else
++    {
++        for (i = 0; i < ARCTIC_AUDIO_SESSIONS; i++)
++        {
++            struct arctic_audio_session *r = &shared->rows[i];
++
++            if (r->pid && !process_alive( r->pid )) r->pid = 0;
++            if (!r->pid)
++            {
++                if (free_row < 0) free_row = i;
++                continue;
++            }
++            if (r->pid == pid && IsEqualGUID( &r->session, &session->guid ) && IsEqualGUID( &r->device, device ))
++            {
++                row = r;
++                break;
++            }
++        }
++        if (!row && free_row >= 0)
++        {
++            row = &shared->rows[free_row];
++            memset( row, 0, sizeof(*row) );
++            row->session = session->guid;
++            row->device = *device;
++            row->volume = session->master_vol;
++            row->mute = session->mute;
++            describe( session, row );
++            row->pid = pid;
++        }
++        if (row)
++        {
++            row->clients++;
++            session->shared_row = row - shared->rows + 1;
++            session->shared_changed = row->changed;
++        }
++    }
++    InterlockedIncrement( &shared->serial );
++    unlock_sessions( mutex );
++}
++
++void shared_session_detach( struct audio_session *session )
++{
++    struct arctic_audio_sessions *shared = get_sessions();
++    struct arctic_audio_session *row = session_row( session );
++    HANDLE mutex;
++
++    if (!row) return;
++    /* the mixer shows the session while its program runs, as Windows does */
++    mutex = lock_sessions();
++    if (row->clients > 0) row->clients--;
++    InterlockedIncrement( &shared->serial );
++    unlock_sessions( mutex );
++}
++
++void shared_session_describe( struct audio_session *session )
++{
++    struct arctic_audio_session *row = session_row( session );
++    HANDLE mutex;
++
++    if (!row) return;
++    mutex = lock_sessions();
++    describe( session, row );
++    unlock_sessions( mutex );
++}
++
++/* the program set its own volume */
++void shared_session_set( struct audio_session *session )
++{
++    struct arctic_audio_sessions *shared = get_sessions();
++    struct arctic_audio_session *row = session_row( session );
++    HANDLE mutex;
++
++    if (!row) return;
++    mutex = lock_sessions();
++    row->volume = session->master_vol;
++    row->mute = session->mute;
++    session->shared_changed = ++row->changed;
++    InterlockedIncrement( &shared->serial );
++    unlock_sessions( mutex );
++}
++
++/* the mixer set it: the session takes it */
++void shared_session_take( struct audio_session *session )
++{
++    struct arctic_audio_session *row = session_row( session );
++
++    if (!row || row->changed == session->shared_changed) return;
++    session->master_vol = max( 0.f, min( 1.f, row->volume ) );
++    session->mute = !!row->mute;
++    session->shared_changed = row->changed;
++}
++
++void shared_session_peak( struct audio_client *client, const BYTE *data, UINT32 frames )
++{
++    struct arctic_audio_session *row = session_row( client->session );
++    UINT32 i, count = frames * client->channel_count;
++    float peak = 0.f, scale;
++
++    if (!row || !data || !count || !client->sample_bytes) return;
++    /* every fourth sample is enough for a meter */
++    for (i = 0; i < count; i += 4)
++    {
++        const BYTE *p = data + i * client->sample_bytes;
++        float v;
++
++        if (client->sample_float) v = fabsf( *(const float *)p );
++        else if (client->sample_bytes == 2) v = abs( *(const INT16 *)p ) / 32768.f;
++        else if (client->sample_bytes == 3) v = abs( (INT32)((p[0] << 8) | (p[1] << 16) | (p[2] << 24)) >> 8 ) / 8388608.f;
++        else if (client->sample_bytes == 4) v = fabsf( (float)*(const INT32 *)p ) / 2147483648.f;
++        else v = (abs( (int)p[0] - 128 )) / 128.f;
++        if (v > peak) peak = v;
++    }
++    scale = client->session->mute ? 0.f : client->session->master_vol;
++    peak = min( 1.f, peak * scale );
++    if (peak > row->peak) row->peak = peak;
++}
++
++/* a call begins and ends: the other programs duck */
++void shared_call( BOOL begin )
++{
++    struct arctic_audio_sessions *shared = get_sessions();
++    DWORD pid = GetCurrentProcessId();
++    HANDLE mutex;
++    int i;
++
++    if (!shared) return;
++    if (begin ? InterlockedIncrement( &process_calls ) != 1 : InterlockedDecrement( &process_calls ) != 0) return;
++    mutex = lock_sessions();
++    for (i = 0; i < ARCTIC_AUDIO_CALLS; i++)
++    {
++        if (begin && !shared->calls[i]) { shared->calls[i] = pid; break; }
++        if (!begin && shared->calls[i] == pid) shared->calls[i] = 0;
++    }
++    InterlockedIncrement( &shared->serial );
++    unlock_sessions( mutex );
++    TRACE( "call %s\n", begin ? "begins" : "ends" );
++}
++
++/* what the Communications tab asks of the other sounds while a call is on */
++float shared_duck_factor(void)
++{
++    struct arctic_audio_sessions *shared = get_sessions();
++    DWORD pid = GetCurrentProcessId(), preference = 1, size = sizeof(preference);
++    BOOL call = FALSE;
++    int i;
++
++    if (!shared || process_calls) return 1.f;
++    for (i = 0; i < ARCTIC_AUDIO_CALLS; i++)
++    {
++        DWORD other = shared->calls[i];
++
++        if (!other || other == pid) continue;
++        if (process_alive( other )) call = TRUE;
++        else InterlockedCompareExchange( (LONG *)&shared->calls[i], 0, other );
++    }
++    if (!call) return 1.f;
++    RegGetValueW( HKEY_CURRENT_USER, L"Software\\Microsoft\\Multimedia\\Audio", L"UserDuckingPreference",
++                  RRF_RT_REG_DWORD, NULL, &preference, &size );
++    switch (preference)
++    {
++    case 0: return 0.f;     /* mute all other sounds */
++    case 1: return 0.2f;    /* reduce by 80 % */
++    case 2: return 0.5f;    /* reduce by 50 % */
++    default: return 1.f;    /* do nothing */
++    }
++}
+diff --git a/include/wine/arctic_audio.h b/include/wine/arctic_audio.h
+new file mode 100644
+--- /dev/null
++++ b/include/wine/arctic_audio.h
+@@ -0,0 +1,50 @@
++/*
++ * The audio sessions of every process, for the Volume Mixer
++ *
++ * In Windows the audio service knows every program's session: the Volume
++ * Mixer (SndVol.exe) shows each with its own level and mute, and turns the
++ * other programs down while a call is on (the Communications tab). In Arctic
++ * mmdevapi keeps a row here for each session that plays, and takes back the
++ * volume and mute that SndVol.exe sets in it (a row stays while its process
++ * lives, as Windows lists a session); a process with a call running
++ * is in calls[]. serial moves after every change, and the audio clients of
++ * every process look at it before each buffer.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#ifndef __WINE_ARCTIC_AUDIO_H
++#define __WINE_ARCTIC_AUDIO_H
++
++#define ARCTIC_AUDIO_SESSIONS_SECTION  L"Global\\__arctic_audio_sessions"
++#define ARCTIC_AUDIO_SESSIONS_MUTEX    L"Global\\__arctic_audio_sessions_lock"
++#define ARCTIC_AUDIO_SESSIONS_VERSION  1
++#define ARCTIC_AUDIO_SESSIONS          64
++#define ARCTIC_AUDIO_CALLS             16
++
++struct arctic_audio_session
++{
++    DWORD pid;                  /* 0: a free row */
++    GUID  session;              /* the session's GUID, GUID_NULL for the process's own */
++    GUID  device;               /* the endpoint it plays on */
++    LONG  clients;              /* its audio clients */
++    float volume;               /* the session's master volume, 0-1 */
++    LONG  mute;
++    LONG  changed;              /* moves when the volume or mute is set */
++    float peak;                 /* the loudest sample since the mixer last looked, 0-1 */
++    WCHAR name[64];             /* the session's display name, or the program's */
++    WCHAR icon[260];            /* the session's icon, or the program's file */
++};
++
++struct arctic_audio_sessions
++{
++    UINT32 version;
++    volatile LONG serial;
++    struct arctic_audio_session rows[ARCTIC_AUDIO_SESSIONS];
++    DWORD calls[ARCTIC_AUDIO_CALLS];  /* processes with a communications stream running */
++};
++
++#endif

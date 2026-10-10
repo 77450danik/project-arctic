@@ -22,6 +22,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <linux/fiemap.h>
 #include <linux/genetlink.h>
@@ -77,7 +80,7 @@ static double desktop_at; /* the boot screen ends then, a little after the deskt
 static int fast_startup(int restart);
 static uid_t nt_uid;
 static gid_t nt_gid;
-static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid, lxss_pid;
+static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid, lxss_pid, smb_pid;
 
 static double uptime(void)
 {
@@ -183,7 +186,466 @@ static pid_t dbus_pid, iwd_pid;
 static struct {
     char name[32];
     pid_t pid;
+    int manual; /* its IPv4 is set by hand, or the connection is off: no DHCP */
+    char repair[32]; /* the last "Діагностика" of its status: DHCP once more */
 } wired[8];
+
+static int run(char *const argv[], int as_nt, int out, int timeout_s);
+static char computer_name[64];
+static int is_wired(const char *name);
+
+/* The TCP/IP settings of an interface, as the Windows side keeps them for an
+ * adapter (netcenter.dll: the properties of a connection, of IPv4 and of
+ * IPv6): one file each, NETCFG_DIR/<interface>.conf, lines of key=value.
+ * Windows applies an adapter's settings at once; here they apply as the file
+ * changes. A wired port without a file gets everything by DHCP and SLAAC;
+ * Wi-Fi's addresses are iwd's (netcenter.dll writes them into its network
+ * files), but the name servers and IPv6 are set here for it too. */
+#define NETCFG_DIR "/run/arctic/network"
+static int netcfg_watch = -1;
+
+struct netcfg {
+    int enabled;              /* enabled=0: the connection is turned off */
+    int static4;              /* ipv4=static */
+    int ipv4_off;             /* ipv4=off: the protocol unticked */
+    int ipv6;                 /* ipv6=auto 0, static 1, off 2 */
+    char addr4[4][48], gw4[48], addr6[4][80], gw6[80];
+    char repair[32];
+    int n4, n6;
+    /* Windows' alternate configuration: what the adapter takes when DHCP
+     * gives it nothing. alt_addr empty: an automatic private address */
+    char alt_addr[48], alt_gw[48], alt_dns[100];
+};
+
+static void netcfg_read(const char *ifname, struct netcfg *cfg)
+{
+    char path[PATH_MAX], line[512];
+    FILE *f;
+
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->enabled = 1;
+    snprintf(path, sizeof(path), NETCFG_DIR "/%s.conf", ifname);
+    if (!(f = fopen(path, "re")))
+        return;
+    while (fgets(line, sizeof(line), f)) {
+        char *value = strchr(line, '='), *end;
+
+        if (!value || line[0] == '#')
+            continue;
+        *value++ = 0;
+        if ((end = strpbrk(value, "\r\n")))
+            *end = 0;
+        /* an address is digits, dots, colons, a slash: nothing to hand a shell */
+        if (!strcmp(line, "alternate")) {
+            /* "user ADDRESS MASK GATEWAY DNS1 DNS2" with "-" for none, or "apipa ..." */
+            char mode[16] = "", ip[48] = "", mask[48] = "", gw[48] = "", dns1[48] = "", dns2[48] = "";
+            struct in_addr a, m;
+
+            sscanf(value, "%15s %47s %47s %47s %47s %47s", mode, ip, mask, gw, dns1, dns2);
+            if (!strcmp(mode, "user") && inet_pton(AF_INET, ip, &a) == 1) {
+                int prefix = inet_pton(AF_INET, mask, &m) == 1 ? __builtin_popcount(m.s_addr) : 24;
+                snprintf(cfg->alt_addr, sizeof(cfg->alt_addr), "%s/%d", ip, prefix);
+                if (inet_pton(AF_INET, gw, &a) == 1)
+                    snprintf(cfg->alt_gw, sizeof(cfg->alt_gw), "%s", gw);
+                if (inet_pton(AF_INET, dns1, &a) == 1)
+                    snprintf(cfg->alt_dns, sizeof(cfg->alt_dns), "%s", dns1);
+                if (inet_pton(AF_INET, dns2, &a) == 1)
+                    snprintf(cfg->alt_dns + strlen(cfg->alt_dns), sizeof(cfg->alt_dns) - strlen(cfg->alt_dns),
+                             " %s", dns2);
+            }
+            continue;
+        }
+        if (strspn(value, "0123456789abcdefABCDEF.:/ ") != strlen(value) && strcmp(line, "ipv4") &&
+            strcmp(line, "ipv6"))
+            continue;
+        if (!strcmp(line, "enabled"))
+            cfg->enabled = atoi(value) != 0;
+        else if (!strcmp(line, "ipv4"))
+            cfg->static4 = !strcmp(value, "static"), cfg->ipv4_off = !strcmp(value, "off");
+        else if (!strcmp(line, "ipv6"))
+            cfg->ipv6 = !strcmp(value, "static") ? 1 : !strcmp(value, "off") ? 2 : 0;
+        else if (!strcmp(line, "address") && cfg->n4 < 4 && *value)
+            snprintf(cfg->addr4[cfg->n4++], sizeof(cfg->addr4[0]), "%s", value);
+        else if (!strcmp(line, "gateway"))
+            snprintf(cfg->gw4, sizeof(cfg->gw4), "%s", value);
+        else if (!strcmp(line, "address6") && cfg->n6 < 4 && *value)
+            snprintf(cfg->addr6[cfg->n6++], sizeof(cfg->addr6[0]), "%s", value);
+        else if (!strcmp(line, "gateway6"))
+            snprintf(cfg->gw6, sizeof(cfg->gw6), "%s", value);
+        else if (!strcmp(line, "repair"))
+            snprintf(cfg->repair, sizeof(cfg->repair), "%s", value);
+    }
+    fclose(f);
+}
+
+static void ip_cmd(const char *a, const char *b, const char *c, const char *d, const char *e, const char *f,
+                   const char *g, const char *h, const char *i)
+{
+    char *argv[] = {"/usr/bin/busybox", "ip", (char *)a, (char *)b, (char *)c, (char *)d, (char *)e,
+                    (char *)f, (char *)g, (char *)h, (char *)i, NULL};
+    run(argv, 0, hostlog, 10);
+}
+
+static void set_ipv6_sysctl(const char *ifname, const char *name, const char *value)
+{
+    char path[PATH_MAX];
+
+    snprintf(path, sizeof(path), "/proc/sys/net/ipv6/conf/%s/%s", ifname, name);
+    write_sysfs(path, value);
+}
+
+/* IPv6 of any interface: on with SLAAC, by hand, or off. Done again only when
+ * those settings change: it drops the interface's IPv6 for a moment */
+static struct {
+    char name[32];
+    struct netcfg cfg;
+} ipv6_applied[16];
+
+static int ipv6_same(const struct netcfg *a, const struct netcfg *b)
+{
+    return a->enabled == b->enabled && a->ipv6 == b->ipv6 && a->n6 == b->n6 &&
+           !memcmp(a->addr6, b->addr6, sizeof(a->addr6)) && !strcmp(a->gw6, b->gw6);
+}
+
+static void netcfg_apply_ipv6(const char *ifname, const struct netcfg *cfg)
+{
+    int slot = -1, i;
+
+    for (i = 0; i < (int)(sizeof(ipv6_applied) / sizeof(ipv6_applied[0])); i++) {
+        if (!strcmp(ipv6_applied[i].name, ifname)) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 && !ipv6_applied[i].name[0])
+            slot = i;
+    }
+    if (slot >= 0 && !strcmp(ipv6_applied[slot].name, ifname) && ipv6_same(&ipv6_applied[slot].cfg, cfg))
+        return;
+    /* nothing set by hand, never changed: SLAAC as the kernel does it already */
+    if (slot >= 0 && !ipv6_applied[slot].name[0] && cfg->enabled && !cfg->ipv6) {
+        snprintf(ipv6_applied[slot].name, sizeof(ipv6_applied[slot].name), "%s", ifname);
+        ipv6_applied[slot].cfg = *cfg;
+        return;
+    }
+    if (slot >= 0) {
+        snprintf(ipv6_applied[slot].name, sizeof(ipv6_applied[slot].name), "%s", ifname);
+        ipv6_applied[slot].cfg = *cfg;
+    }
+
+    /* off and on again: addresses set by hand go, SLAAC asks the routers at once */
+    set_ipv6_sysctl(ifname, "disable_ipv6", "1");
+    if (cfg->ipv6 == 2 || !cfg->enabled)
+        return;
+    set_ipv6_sysctl(ifname, "accept_ra", cfg->ipv6 == 1 && cfg->gw6[0] ? "0" : "1");
+    set_ipv6_sysctl(ifname, "autoconf", cfg->ipv6 == 1 ? "0" : "1");
+    set_ipv6_sysctl(ifname, "disable_ipv6", "0");
+    if (cfg->ipv6 == 1) {
+        for (i = 0; i < cfg->n6; i++)
+            ip_cmd("-6", "addr", "add", cfg->addr6[i], "dev", ifname, NULL, NULL, NULL);
+        if (cfg->gw6[0])
+            ip_cmd("-6", "route", "replace", "default", "via", cfg->gw6, "dev", ifname, NULL);
+    }
+}
+
+static int wired_slot(const char *ifname)
+{
+    for (int i = 0; i < (int)(sizeof(wired) / sizeof(wired[0])); i++)
+        if (!strcmp(wired[i].name, ifname))
+            return i;
+    return -1;
+}
+
+static void resolv_update(void)
+{
+    char *argv[] = {"/usr/bin/resolvconf", "-u", NULL};
+    run(argv, 0, hostlog, 10);
+}
+
+/* a wired port: DHCP, or its addresses by hand, or nothing when it is off */
+static void netcfg_apply_wired(const char *ifname, const struct netcfg *cfg)
+{
+    int slot = wired_slot(ifname);
+    char path[PATH_MAX], since[PATH_MAX];
+
+    if (slot < 0)
+        return;
+    int manual = !cfg->enabled || cfg->static4 || cfg->ipv4_off;
+
+    /* DHCP stays as it is when only the name servers changed: arctic-resolv
+     * takes those of the settings. Leaving DHCP, udhcpc ends releasing its
+     * lease; back to DHCP, serve_wired starts it again */
+    if ((manual || strcmp(cfg->repair, wired[slot].repair)) && wired[slot].pid) {
+        kill(wired[slot].pid, SIGTERM);
+        wired[slot].pid = 0;
+    }
+    snprintf(wired[slot].repair, sizeof(wired[slot].repair), "%s", cfg->repair);
+    wired[slot].manual = manual;
+    ip_cmd("link", "set", "dev", ifname, cfg->enabled ? "up" : "down", NULL, NULL, NULL, NULL);
+    snprintf(path, sizeof(path), "/run/arctic/resolv.d/%s", ifname);
+    snprintf(since, sizeof(since), "/run/arctic/resolv.d/.since-%s", ifname);
+    if (manual) {
+        ip_cmd("-4", "addr", "flush", "dev", ifname, NULL, NULL, NULL, NULL);
+        unlink(path);
+        unlink(since);
+    }
+    if (cfg->enabled && cfg->static4) {
+        for (int i = 0; i < cfg->n4; i++)
+            ip_cmd("addr", "add", cfg->addr4[i], "dev", ifname, NULL, NULL, NULL, NULL);
+        if (cfg->gw4[0])
+            ip_cmd("route", "replace", "default", "via", cfg->gw4, "dev", ifname, "metric", "100");
+        /* the name servers by hand: arctic-resolv reads them from the settings */
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        if (fd >= 0)
+            close(fd);
+        /* connected since now, as arctic-resolv notes it for DHCP */
+        struct timespec now;
+        FILE *f;
+        if (!clock_gettime(CLOCK_BOOTTIME, &now) && (f = fopen(since, "we"))) {
+            fprintf(f, "%lld\n", (long long)now.tv_sec);
+            fclose(f);
+        }
+    }
+    say("network %s: %s, IPv4 %s, IPv6 %s", ifname, cfg->enabled ? "on" : "off",
+        cfg->ipv4_off ? "off" : cfg->static4 ? "by hand" : "DHCP",
+        cfg->ipv6 == 2 ? "off" : cfg->ipv6 == 1 ? "by hand" : "auto");
+}
+
+static void netcfg_apply(const char *ifname)
+{
+    char path[PATH_MAX];
+    struct netcfg cfg;
+
+    snprintf(path, sizeof(path), "/sys/class/net/%s", ifname);
+    if (strchr(ifname, '/') || ifname[0] == '.' || access(path, F_OK))
+        return;
+    netcfg_read(ifname, &cfg);
+    netcfg_apply_wired(ifname, &cfg);
+    netcfg_apply_ipv6(ifname, &cfg);
+    resolv_update();
+}
+
+/* The alternate configuration, as Windows has it: an adapter that is
+ * connected and gets no address from DHCP for a while takes the address set
+ * for that case ("Альтернативна конфігурація" of IPv4's properties), or an
+ * automatic private one, 169.254.x.y from its hardware address. DHCP goes on
+ * asking; when it answers, its address takes over. Wired ports (udhcpc, whose
+ * lease flushes the others) and Wi-Fi (iwd, whose lease comes beside). */
+static struct {
+    char name[32];
+    double waiting_since;     /* connected, without an address */
+    char addr[48];            /* the alternate address it has now */
+    int own_dns;              /* its name servers are the alternate's */
+} alternate[8];
+
+static int ipv4_addresses(const char *ifname, const char *ours, int *has_ours)
+{
+    struct ifaddrs *list, *ifa;
+    char text[48], want[48] = "";
+    int count = 0;
+
+    *has_ours = 0;
+    if (ours)
+        snprintf(want, sizeof(want), "%.*s", (int)strcspn(ours, "/"), ours);
+    if (getifaddrs(&list))
+        return 0;
+    for (ifa = list; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET || strcmp(ifa->ifa_name, ifname))
+            continue;
+        count++;
+        inet_ntop(AF_INET, &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr, text, sizeof(text));
+        if (want[0] && !strcmp(text, want))
+            *has_ours = 1;
+    }
+    freeifaddrs(list);
+    return count;
+}
+
+static int interface_connected(const char *ifname, int wireless)
+{
+    char path[PATH_MAX], text[16] = "";
+    int fd;
+
+    /* Wi-Fi is up when iwd has joined a network; a wired port when the cable carries */
+    snprintf(path, sizeof(path), "/sys/class/net/%s/%s", ifname, wireless ? "operstate" : "carrier");
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0)
+        return 0;
+    if (read(fd, text, sizeof(text) - 1) < 0)
+        text[0] = 0;
+    close(fd);
+    return wireless ? !strncmp(text, "up", 2) : text[0] == '1';
+}
+
+static void alternate_drop(int slot, int connected)
+{
+    char path[PATH_MAX];
+
+    if (!alternate[slot].addr[0])
+        return;
+    ip_cmd("addr", "del", alternate[slot].addr, "dev", alternate[slot].name, NULL, NULL, NULL, NULL);
+    if (alternate[slot].own_dns && !connected) {
+        snprintf(path, sizeof(path), "/run/arctic/resolv.d/%s", alternate[slot].name);
+        unlink(path);
+        snprintf(path, sizeof(path), "/run/arctic/resolv.d/.since-%s", alternate[slot].name);
+        unlink(path);
+        resolv_update();
+    }
+    say("network %s: the alternate address %s goes", alternate[slot].name, alternate[slot].addr);
+    alternate[slot].addr[0] = 0;
+    alternate[slot].own_dns = 0;
+}
+
+static void alternate_apply(int slot, const struct netcfg *cfg)
+{
+    const char *ifname = alternate[slot].name;
+    char path[PATH_MAX], mac[32] = "";
+    int fd;
+
+    if (cfg->alt_addr[0]) {
+        snprintf(alternate[slot].addr, sizeof(alternate[slot].addr), "%s", cfg->alt_addr);
+        ip_cmd("addr", "add", alternate[slot].addr, "dev", ifname, NULL, NULL, NULL, NULL);
+        if (cfg->alt_gw[0])
+            ip_cmd("route", "replace", "default", "via", cfg->alt_gw, "dev", ifname, "metric", "200");
+        if (cfg->alt_dns[0]) {
+            FILE *f;
+
+            snprintf(path, sizeof(path), "/run/arctic/resolv.d/%s", ifname);
+            if ((f = fopen(path, "we"))) {
+                char servers[100], *server, *save;
+
+                snprintf(servers, sizeof(servers), "%s", cfg->alt_dns);
+                for (server = strtok_r(servers, " ", &save); server; server = strtok_r(NULL, " ", &save))
+                    fprintf(f, "nameserver %s\n", server);
+                fclose(f);
+                alternate[slot].own_dns = 1;
+                resolv_update();
+            }
+        }
+    } else {
+        /* 169.254.1.0 - 169.254.254.255, the same every time for the adapter */
+        unsigned int b[6] = {0};
+
+        snprintf(path, sizeof(path), "/sys/class/net/%s/address", ifname);
+        if ((fd = open(path, O_RDONLY | O_CLOEXEC)) >= 0) {
+            if (read(fd, mac, sizeof(mac) - 1) < 0)
+                mac[0] = 0;
+            close(fd);
+        }
+        sscanf(mac, "%x:%x:%x:%x:%x:%x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]);
+        snprintf(alternate[slot].addr, sizeof(alternate[slot].addr), "169.254.%u.%u/16", 1 + (b[4] ^ b[2]) % 254,
+                 b[5] ^ b[3]);
+        ip_cmd("addr", "add", alternate[slot].addr, "dev", ifname, "scope", "link", NULL, NULL);
+    }
+    say("network %s: no answer from DHCP, the alternate address %s", ifname, alternate[slot].addr);
+}
+
+static void serve_alternate(void)
+{
+    DIR *dir = opendir("/sys/class/net");
+    struct dirent *de;
+
+    while (dir && (de = readdir(dir))) {
+        char path[PATH_MAX];
+        struct netcfg cfg;
+        int wireless, slot = -1, free_slot = -1, count, has_ours, connected;
+
+        if (de->d_name[0] == '.' || strlen(de->d_name) >= sizeof(alternate[0].name))
+            continue;
+        snprintf(path, sizeof(path), "/sys/class/net/%s/wireless", de->d_name);
+        wireless = !access(path, F_OK);
+        if (!wireless && !is_wired(de->d_name))
+            continue;
+        for (int i = 0; i < (int)(sizeof(alternate) / sizeof(alternate[0])); i++) {
+            if (!strcmp(alternate[i].name, de->d_name))
+                slot = i;
+            else if (free_slot < 0 && !alternate[i].name[0])
+                free_slot = i;
+        }
+        if (slot < 0) {
+            if ((slot = free_slot) < 0)
+                continue;
+            memset(&alternate[slot], 0, sizeof(alternate[slot]));
+            snprintf(alternate[slot].name, sizeof(alternate[slot].name), "%s", de->d_name);
+        }
+        netcfg_read(de->d_name, &cfg);
+        connected = cfg.enabled && !cfg.static4 && !cfg.ipv4_off && interface_connected(de->d_name, wireless);
+        count = ipv4_addresses(de->d_name, alternate[slot].addr[0] ? alternate[slot].addr : NULL, &has_ours);
+        if (alternate[slot].addr[0]) {
+            if (!has_ours) {
+                /* the lease of udhcpc flushed it, or the settings did */
+                alternate[slot].addr[0] = 0;
+                alternate[slot].own_dns = 0;
+            } else if (!connected || count > 1) {
+                alternate_drop(slot, connected);
+            }
+            alternate[slot].waiting_since = 0;
+            continue;
+        }
+        if (!connected || count) {
+            alternate[slot].waiting_since = 0;
+            continue;
+        }
+        if (!alternate[slot].waiting_since)
+            alternate[slot].waiting_since = uptime();
+        else if (uptime() - alternate[slot].waiting_since > 15)
+            alternate_apply(slot, &cfg);
+    }
+    if (dir)
+        closedir(dir);
+}
+
+/* the settings changed: those of each interface whose file was written */
+static void serve_netcfg(void)
+{
+    char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+    ssize_t n;
+
+    if (netcfg_watch < 0)
+        return;
+    while ((n = read(netcfg_watch, buf, sizeof(buf))) > 0) {
+        for (char *p = buf; p < buf + n;) {
+            struct inotify_event *ev = (struct inotify_event *)p;
+            size_t len;
+
+            if (ev->len && (len = strlen(ev->name)) > 5 && !strcmp(ev->name + len - 5, ".conf")) {
+                char ifname[64];
+                snprintf(ifname, sizeof(ifname), "%.*s", (int)(len - 5), ev->name);
+                netcfg_apply(ifname);
+            }
+            p += sizeof(*ev) + ev->len;
+        }
+    }
+}
+
+static void start_netcfg(void)
+{
+    const char *dir = c_on_disk ? HOST_STATE "/network" : NETCFG_DIR;
+    DIR *d;
+    struct dirent *de;
+
+    mkdir(NETCFG_DIR, 0755);
+    if (mkdir(dir, 0755) && errno != EEXIST)
+        say("network settings folder: %s", strerror(errno));
+    if (!c_on_disk && chown(dir, nt_uid, nt_gid))
+        say("network settings folder: %s", strerror(errno));
+    if (c_on_disk && mount(dir, NETCFG_DIR, NULL, MS_BIND, NULL))
+        say("network settings folder: %s", strerror(errno));
+    netcfg_watch = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (netcfg_watch >= 0 && inotify_add_watch(netcfg_watch, NETCFG_DIR, IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE) < 0) {
+        close(netcfg_watch);
+        netcfg_watch = -1;
+    }
+    /* IPv6 of the interfaces there are now; wired ports take theirs as they come */
+    if ((d = opendir("/sys/class/net"))) {
+        while ((de = readdir(d))) {
+            struct netcfg cfg;
+            if (de->d_name[0] == '.' || !strcmp(de->d_name, "lo"))
+                continue;
+            netcfg_read(de->d_name, &cfg);
+            netcfg_apply_ipv6(de->d_name, &cfg);
+        }
+        closedir(d);
+    }
+}
 
 static void network_child_exited(pid_t pid)
 {
@@ -238,16 +700,66 @@ static void serve_wired(void)
         }
         if (i < (int)(sizeof(wired) / sizeof(wired[0])))
             slot = i;
-        if (slot < 0 || wired[slot].pid)
+        if (slot < 0 || wired[slot].pid || wired[slot].manual)
             continue;
+        /* a port seen for the first time: its settings decide */
+        if (!wired[slot].name[0]) {
+            struct netcfg cfg;
+
+            snprintf(wired[slot].name, sizeof(wired[slot].name), "%s", de->d_name);
+            netcfg_read(de->d_name, &cfg);
+            snprintf(wired[slot].repair, sizeof(wired[slot].repair), "%s", cfg.repair);
+            if (!cfg.enabled || cfg.static4 || cfg.ipv4_off) {
+                netcfg_apply(de->d_name);
+                continue;
+            }
+            netcfg_apply_ipv6(de->d_name, &cfg);
+        }
         snprintf(wired[slot].name, sizeof(wired[slot].name), "%s", de->d_name);
+        char hostname_option[80];
+        snprintf(hostname_option, sizeof(hostname_option), "hostname:%s", computer_name);
         char *udhcpc[] = {"/usr/bin/busybox", "udhcpc", "-f", "-S", "-R", "-i", wired[slot].name,
-                          "-s", "/usr/lib/arctic/udhcpc.script", "-x", "hostname:arctic", NULL};
+                          "-s", "/usr/lib/arctic/udhcpc.script", "-x", hostname_option, NULL};
         wired[slot].pid = spawn(udhcpc, 0, hostlog);
         say("wired network %s: DHCP", wired[slot].name);
     }
     if (dir)
         closedir(dir);
+}
+
+/* The computer's name is the registry's, as in Windows: what System
+ * Properties' "Ім'я комп'ютера" set (SetComputerNameEx writes Hostname of
+ * Tcpip\Parameters) is the host's name from the next start on. Wine takes its
+ * computer name from the host's as it starts, so the name is read here, from
+ * the hive as wineserver keeps it, in text. "arctic" until one is given. */
+static char computer_name[64] = "arctic"; /* set_computer_name */
+
+static void set_computer_name(void)
+{
+    FILE *f = fopen(REG_DIR "/system.reg", "re");
+    char line[1024];
+    int in_key = 0;
+
+    while (f && fgets(line, sizeof(line), f)) {
+        if (line[0] == '[') {
+            in_key = strstr(line, "\\Services\\Tcpip\\Parameters]") != NULL;
+            continue;
+        }
+        if (in_key && !strncmp(line, "\"Hostname\"=\"", 12)) {
+            char name[64];
+            size_t n = strcspn(line + 12, "\"");
+
+            if (n && n < sizeof(name) && strspn(line + 12, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") == n) {
+                memcpy(name, line + 12, n);
+                name[n] = 0;
+                snprintf(computer_name, sizeof(computer_name), "%s", name);
+            }
+            break;
+        }
+    }
+    if (f)
+        fclose(f);
+    sethostname(computer_name, strlen(computer_name));
 }
 
 /* 127.0.0.1: programs talk to their own parts over it (Steam to its UI) */
@@ -289,6 +801,7 @@ static void start_network(void)
     for (int i = 0; i < 100 && access("/run/dbus/system_bus_socket", F_OK); i++)
         usleep(50000);
     iwd_pid = spawn(iwd, 0, hostlog);
+    start_netcfg();
     serve_wired();
 }
 
@@ -880,6 +1393,9 @@ static void child_exited(pid_t pid, int status)
     if (pid == lxss_pid) {
         say("arctic-lxss exited (status %d)", status);
         lxss_pid = 0;
+    } else if (pid == smb_pid) {
+        say("arctic-smb exited (status %d)", status);
+        smb_pid = 0;
     } else if (pid == wineserver_pid) {
         say("wineserver exited (status %d)", status);
         wineserver_pid = 0;
@@ -2356,7 +2872,7 @@ int main(void)
      * drive letter here; mountmgr.sys watches the descriptions */
     mkdir("/run/arctic/drives", 0755);
     mkdir("/run/arctic/volumes", 0755);
-    sethostname("arctic", 6);
+    set_computer_name();
 
     console = open("/dev/console", O_WRONLY | O_NOCTTY | O_CLOEXEC);
     kmsg = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
@@ -2439,6 +2955,13 @@ int main(void)
     char *lxss[] = {"/usr/bin/arctic-lxss", NULL};
     if (!access(lxss[0], X_OK))
         lxss_pid = spawn(lxss, 0, hostlog);
+
+    /* Network folders: \\server\share is mounted when a program names it,
+     * the computers and their shares are found by ntlanman.dll
+     * (docs/M5-network.md) */
+    char *smb[] = {"/usr/bin/arctic-smb", NULL};
+    if (!access(smb[0], X_OK))
+        smb_pid = spawn(smb, 0, hostlog);
 
     /* A Wine newer than what C:'s registry was made with (an update) makes
      * wineboot bring it up to date: Windows' "getting ready" after updates.
@@ -2559,6 +3082,9 @@ int main(void)
         /* a USB network adapter plugged in, a udhcpc that ended */
         if (tick % 10 == 0)
             serve_wired();
+        serve_netcfg();
+        if (tick % 15 == 7)
+            serve_alternate();
         if (tick % 15 == 5)
             protect_system_processes();
         usleep(200000);

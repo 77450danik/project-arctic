@@ -490,6 +490,13 @@ void open_connections(void)
                    L"\\::{7007ACC7-3202-11D1-AAD2-00805FC1270E}", NULL, SW_SHOWNORMAL );
 }
 
+/* the Network and Sharing Center of the Control Panel (netcenter.dll) */
+void open_network_center(void)
+{
+    flyout_hide();
+    ShellExecuteW( NULL, NULL, L"rundll32.exe", L"netcenter.dll,ShowNetworkCenter", NULL, SW_SHOWNORMAL );
+}
+
 static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
     if (msg == taskbar_created && taskbar_created)
@@ -509,16 +516,20 @@ static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
     case WM_TRAY_ICON:
         if (lp == WM_LBUTTONUP) flyout_toggle();
-        else if (lp == WM_RBUTTONUP && connections_folder_exists())
+        else if (lp == WM_RBUTTONUP)
         {
+            /* the menu of Windows 7's icon */
             HMENU menu = CreatePopupMenu();
             POINT pt;
+            UINT cmd;
 
-            AppendMenuW( menu, MF_STRING, 1, load_string( IDS_OPEN_CONNECTIONS ) );
+            AppendMenuW( menu, MF_STRING, 2, load_string( IDS_OPEN_NETWORK_CENTER ) );
+            if (connections_folder_exists()) AppendMenuW( menu, MF_STRING, 1, load_string( IDS_OPEN_CONNECTIONS ) );
             GetCursorPos( &pt );
             SetForegroundWindow( hwnd );
-            if (TrackPopupMenu( menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL ) == 1)
-                open_connections();
+            cmd = TrackPopupMenu( menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL );
+            if (cmd == 1) open_connections();
+            if (cmd == 2) open_network_center();
             DestroyMenu( menu );
         }
         return 0;

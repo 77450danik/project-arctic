@@ -1,0 +1,185 @@
+/*
+ * Sound of the Control Panel: resources
+ *
+ * The dialogs are Windows' own (mmsys.cpl.mui, uk-UA: dialogs_uk.rcinc,
+ * written by tools/res2rc.py), the icons mmres.dll's, the names of the
+ * sound events mmres.dll.mui's (events.rcinc, tools/make-sounds.py). The
+ * Ukrainian texts are Windows' where it has them.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "commctrl.h"
+#include "mmsys.h"
+
+/* @makedep: mm3004.ico */
+IDI_SOUND ICON mm3004.ico
+/* @makedep: mm3010.ico */
+IDI_SPEAKERS ICON mm3010.ico
+/* @makedep: mm3011.ico */
+IDI_HEADPHONES ICON mm3011.ico
+/* @makedep: mm3012.ico */
+IDI_LINE ICON mm3012.ico
+/* @makedep: mm3013.ico */
+IDI_DIGITAL ICON mm3013.ico
+/* @makedep: mm3014.ico */
+IDI_MICROPHONE ICON mm3014.ico
+/* @makedep: mm3015.ico */
+IDI_HEADSET ICON mm3015.ico
+/* @makedep: mm3017.ico */
+IDI_DISPLAY ICON mm3017.ico
+/* @makedep: mm3018.ico */
+IDI_SOUND_CARD ICON mm3018.ico
+/* @makedep: mm3052.ico */
+IDI_COMMUNICATIONS ICON mm3052.ico
+
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+#include "dialogs_uk.rcinc"
+
+#include "events.rcinc"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_SOUND              "Sound"
+    IDS_SOUND_TIP          "Configure your audio devices or change the sound scheme for your computer."
+    IDS_TEST               "&Test"
+    IDS_STOP               "&Stop"
+    IDS_GENERAL            "General"
+    IDS_LEVELS             "Levels"
+    IDS_ADVANCED           "Advanced"
+    IDS_LISTEN             "Listen"
+    320                    "Lowest Quality"
+    321                    "Telephone Quality"
+    322                    "Dictation Quality"
+    323                    "Tape Recorder Quality"
+    324                    "AM Radio Quality"
+    325                    "FM Radio Quality"
+    326                    "CD Quality"
+    327                    "DVD Quality"
+    328                    "Studio Quality"
+    IDS_USE_DEVICE         "Use this device (enable)"
+    IDS_DONT_USE_DEVICE    "Don't use this device (disable)"
+    IDS_READY              "Ready"
+    IDS_NOT_PLUGGED        "Not plugged in"
+    IDS_UNAVAILABLE        "Unavailable"
+    IDS_DISABLED_STATE     "Disabled"
+    IDS_ENABLE_DEVICE      "Enable"
+    IDS_FORMAT_CHANNELS    "%d channel, %d bit, %d Hz (%s)"
+    IDS_FORMAT_PLAIN       "%d bit, %d Hz (%s)"
+    370                    "L"
+    371                    "R"
+    372                    "C"
+    373                    "Sub"
+    374                    "RL"
+    375                    "RR"
+    376                    "FLC"
+    377                    "FRC"
+    378                    "RC"
+    379                    "SL"
+    380                    "SR"
+    IDS_NONE               "(None)"
+    IDS_MASTER             "Master Volume"
+    IDS_NO_DEVICES         "No audio devices are installed"
+    IDS_CHANGED            "%s (modified)"
+    IDS_BROWSE_TITLE       "Browse for new %s sound."
+    IDS_CHANGE_SCHEME      "Change Scheme"
+    IDS_SCHEME_EXISTS      "This scheme name is already in use. Do you want to overwrite the existing scheme?"
+    IDS_DELETE_SCHEME_Q    "Are you sure you want to remove the %s sound scheme?"
+    IDS_FORMAT_ERROR       "Format not supported by the device."
+    IDS_DEFAULT_DEVICE     "Default Device"
+    IDS_DEFAULT_PLAYBACK   "Default Playback Device"
+    IDS_DEFAULT_COMM       "Default Communications Device"
+    IDS_DEFAULT_MULTIMEDIA "Default Multimedia Device"
+    IDS_SPEAKERS           "Speakers"
+    IDS_HEADPHONES         "Headphones"
+    IDS_DIGITAL_OUTPUT     "Digital Output"
+    IDS_DIGITAL_DISPLAY    "Digital Display"
+    IDS_MICROPHONE         "Microphone"
+    IDS_LINE_IN            "Line In"
+    IDS_SET_DEFAULT_COMM   "Set as Default Communication Device"
+    IDS_SET_DEFAULT        "Set as Default Device"
+    IDS_DISABLE_DEVICE     "Disable"
+    IDS_PROPERTIES         "Properties"
+    IDS_PROPERTIES_TITLE   "%s Properties"
+    IDS_WAV_FILES          "Wave Files (*.wav)"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_SOUND              "Звук"
+    IDS_SOUND_TIP          "Настройте аудіопристрої або змініть звукову схему комп’ютера."
+    IDS_TEST               "&Перевірити"
+    IDS_STOP               "&Зупинити"
+    IDS_GENERAL            "Загальні"
+    IDS_LEVELS             "Рівні"
+    IDS_ADVANCED           "Додатково"
+    IDS_LISTEN             "Слухати"
+    320                    "Найнижча якість"
+    321                    "Якість телефонної лінії"
+    322                    "Якість диктування"
+    323                    "Якість запису на касету"
+    324                    "Якість AM-радіо"
+    325                    "Якість FM-радіо"
+    326                    "Якість компакт-диска"
+    327                    "Якість DVD-диска"
+    328                    "Студійна якість"
+    IDS_USE_DEVICE         "Використовувати цей пристрій (увімк.)"
+    IDS_DONT_USE_DEVICE    "Не використовувати цей пристрій (вимкнути)"
+    IDS_READY              "Готово"
+    IDS_NOT_PLUGGED        "Не підключено"
+    IDS_UNAVAILABLE        "Недоступний"
+    IDS_DISABLED_STATE     "Вимкнуто"
+    IDS_ENABLE_DEVICE      "Увімкнути"
+    IDS_FORMAT_CHANNELS    "%d канал, %d біт, %d Гц (%s)"
+    IDS_FORMAT_PLAIN       "%d біт, %d Гц (%s)"
+    370                    "Л"
+    371                    "П"
+    372                    "Ц"
+    373                    "НЧ"
+    374                    "ТЛ"
+    375                    "ТП"
+    376                    "ФЛЦ"
+    377                    "ФПЦ"
+    378                    "ТЦ"
+    379                    "БЛ"
+    380                    "БП"
+    IDS_NONE               "(Немає)"
+    IDS_MASTER             "Основна гучність"
+    IDS_NO_DEVICES         "Немає інстальованих аудіопристроїв"
+    IDS_CHANGED            "%s (змінено)"
+    IDS_BROWSE_TITLE       "Пошук нових звукових файлів %s."
+    IDS_CHANGE_SCHEME      "Змінити схему"
+    IDS_SCHEME_EXISTS      "Схема з таким ім’ям уже існує. Замінити наявну схему?"
+    IDS_DELETE_SCHEME_Q    "Дійсно видалити звукову схему %s?"
+    IDS_FORMAT_ERROR       "Формат не підтримується цим пристроєм"
+    IDS_DEFAULT_DEVICE     "Пристрій за замовчуванням"
+    IDS_DEFAULT_PLAYBACK   "Пристрій відтворення за замовчуванням"
+    IDS_DEFAULT_COMM       "Комунікаційний пристрій за замовчуванням"
+    IDS_DEFAULT_MULTIMEDIA "Пристрій мультимедіа за замовчуванням"
+    IDS_SPEAKERS           "Динаміки"
+    IDS_HEADPHONES         "Навушники"
+    IDS_DIGITAL_OUTPUT     "Цифровий вихід"
+    IDS_DIGITAL_DISPLAY    "Цифровий дисплей"
+    IDS_MICROPHONE         "Мікрофон"
+    IDS_LINE_IN            "Лінійний вхід"
+    IDS_SET_DEFAULT_COMM   "Використовувати як пристрій зв’язку за замовчуванням"
+    IDS_SET_DEFAULT        "Використовувати за замовчуванням"
+    IDS_DISABLE_DEVICE     "Вимкнути"
+    IDS_PROPERTIES         "Властивості"
+    IDS_PROPERTIES_TITLE   "Властивості: %s"
+    IDS_WAV_FILES          "Звукові файли (*.wav)"
+}

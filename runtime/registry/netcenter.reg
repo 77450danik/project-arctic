@@ -1,0 +1,23 @@
+REGEDIT4
+
+; Windows 7's Network and Sharing Center (netcenter.dll): a shell folder of
+; the Control Panel that Explorer browses into, as {8E908FC9-...} is in Windows
+[HKEY_CLASSES_ROOT\CLSID\{8E908FC9-BECC-40f6-915B-F4CA0E70D03D}]
+@="Network and Sharing Center"
+"LocalizedString"="@C:\\Windows\\System32\\netcenter.dll,-1"
+"InfoTip"="@C:\\Windows\\System32\\netcenter.dll,-2"
+"System.ApplicationName"="Microsoft.NetworkAndSharingCenter"
+"System.ControlPanel.Category"="3"
+
+[HKEY_CLASSES_ROOT\CLSID\{8E908FC9-BECC-40f6-915B-F4CA0E70D03D}\DefaultIcon]
+@="C:\\Windows\\System32\\netcenter.dll,-1"
+
+[HKEY_CLASSES_ROOT\CLSID\{8E908FC9-BECC-40f6-915B-F4CA0E70D03D}\InProcServer32]
+@="C:\\Windows\\System32\\netcenter.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\CLSID\{8E908FC9-BECC-40f6-915B-F4CA0E70D03D}\ShellFolder]
+"Attributes"=dword:28000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{8E908FC9-BECC-40f6-915B-F4CA0E70D03D}]
+@="Network and Sharing Center"

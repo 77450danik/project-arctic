@@ -1,0 +1,176 @@
+diff --git a/dll/cpl/sysdm/advanced.c b/dll/cpl/sysdm/advanced.c
+--- a/dll/cpl/sysdm/advanced.c
++++ b/dll/cpl/sysdm/advanced.c
+@@ -126,6 +126,10 @@
+     switch (uMsg)
+     {
+         case WM_INITDIALOG:
++            /* Arctic: Windows 7's page has neither: one is ReactOS's own
++               setting, the other needs its error reporting */
++            ShowWindow(GetDlgItem(hwndDlg, IDC_SYSSETTINGS), SW_HIDE);
++            ShowWindow(GetDlgItem(hwndDlg, IDC_ERRORREPORT), SW_HIDE);
+             break;
+ 
+         case WM_COMMAND:
+diff --git a/dll/cpl/sysdm/hardware.c b/dll/cpl/sysdm/hardware.c
+--- a/dll/cpl/sysdm/hardware.c
++++ b/dll/cpl/sysdm/hardware.c
+@@ -17,7 +17,8 @@
+ {
+ /* Hack for ROS to start our devmgmt until we have MMC */
+ #ifdef __REACTOS__
+-    return ((INT_PTR)ShellExecuteW(NULL, L"open", L"devmgmt.exe", NULL, NULL, SW_SHOWNORMAL) > 32);
++    /* Arctic: the Device Manager of devmgr.dll, which Arctic has */
++    return ((INT_PTR)ShellExecuteW(NULL, L"open", L"rundll32.exe", L"devmgr.dll,DeviceManager_ExecuteW", NULL, SW_SHOWNORMAL) > 32);
+ #else
+     HMODULE hDll;
+     PDEVMGREXEC DevMgrExec;
+@@ -75,6 +76,8 @@
+     switch (uMsg)
+     {
+         case WM_INITDIALOG:
++            /* Arctic: no Add Hardware wizard: the kernel finds the hardware */
++            EnableWindow(GetDlgItem(hwndDlg, IDC_HARDWARE_WIZARD), FALSE);
+             break;
+ 
+         case WM_COMMAND:
+diff --git a/dll/cpl/sysdm/lang/en-US.rc b/dll/cpl/sysdm/lang/en-US.rc
+--- a/dll/cpl/sysdm/lang/en-US.rc
++++ b/dll/cpl/sysdm/lang/en-US.rc
+@@ -349,6 +349,7 @@
+ STRINGTABLE
+ BEGIN
+     IDS_CPLSYSTEMNAME "System"
++    IDS_SYSTEMPROPERTIES "System Properties"
+     IDS_CPLSYSTEMDESCRIPTION "See information about your computer and change various system and hardware settings."
+     IDS_PERFORMANCEOPTIONS "Performance Options"
+     IDS_MEGABYTE "MB of RAM"
+diff --git a/dll/cpl/sysdm/lang/uk-UA.rc b/dll/cpl/sysdm/lang/uk-UA.rc
+--- a/dll/cpl/sysdm/lang/uk-UA.rc
++++ b/dll/cpl/sysdm/lang/uk-UA.rc
+@@ -357,6 +357,7 @@
+ STRINGTABLE
+ BEGIN
+     IDS_CPLSYSTEMNAME "Система"
++    IDS_SYSTEMPROPERTIES "Властивості системи"
+     IDS_CPLSYSTEMDESCRIPTION "Перегляд відомостей про систему комп'ютера та зміна параметрів обладнання, швидкодії, автоматичних оновлень."
+     IDS_PERFORMANCEOPTIONS "Performance Options"
+     IDS_MEGABYTE "Мб ОЗП"
+diff --git a/dll/cpl/sysdm/resource.h b/dll/cpl/sysdm/resource.h
+--- a/dll/cpl/sysdm/resource.h
++++ b/dll/cpl/sysdm/resource.h
+@@ -16,6 +16,7 @@
+ 
+ #define IDS_PERFORMANCEOPTIONS 35
+ 
++#define IDS_SYSTEMPROPERTIES              1599 /* Arctic */
+ #define IDS_CPLSYSTEMNAME        60
+ #define IDS_CPLSYSTEMDESCRIPTION 61
+ 
+diff --git a/dll/cpl/sysdm/sysdm.c b/dll/cpl/sysdm/sysdm.c
+--- a/dll/cpl/sysdm/sysdm.c
++++ b/dll/cpl/sysdm/sysdm.c
+@@ -172,17 +172,19 @@
+ 
+     ZeroMemory(&psh, sizeof(PROPSHEETHEADER));
+     psh.dwSize = sizeof(PROPSHEETHEADER);
+-    psh.dwFlags =  PSH_PROPTITLE | PSH_USEICONID | PSH_USECALLBACK;
++    psh.dwFlags =  PSH_USEICONID | PSH_USECALLBACK;
+     psh.hwndParent = hwnd;
+     psh.hInstance = hApplet;
+     psh.pszIcon = MAKEINTRESOURCEW(IDI_CPLSYSTEM);
+-    psh.pszCaption = MAKEINTRESOURCE(IDS_CPLSYSTEMNAME);
++    psh.pszCaption = MAKEINTRESOURCE(IDS_SYSTEMPROPERTIES); /* Arctic: Windows 7's title */
+     psh.nPages = 0;
+     psh.nStartPage = 0;
+     psh.phpage = hpsp;
+     psh.pfnCallback = PropSheetProc;
+ 
+-    InitPropSheetPage(&psh, IDD_PROPPAGEGENERAL, GeneralPageProc);
++    /* Arctic: the pages of Windows 7, in its order: Computer Name, Hardware,
++       Advanced ("control sysdm.cpl,,2"). What ReactOS's General page told is
++       the System page's of the Control Panel (systemcpl.dll). */
+     hNetIdDll = AddNetIdPage(&psh);
+     InitPropSheetPage(&psh, IDD_PROPPAGEHARDWARE, HardwarePageProc);
+     InitPropSheetPage(&psh, IDD_PROPPAGEADVANCED, AdvancedPageProc);
+diff --git a/dll/win32/netid/lang/en-US.rc b/dll/win32/netid/lang/en-US.rc
+--- a/dll/win32/netid/lang/en-US.rc
++++ b/dll/win32/netid/lang/en-US.rc
+@@ -6,7 +6,7 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON IDI_COMPNAME, IDC_STATIC, 4, 3, 26, 24, SS_ICON
+-    LTEXT "ReactOS uses the following information to identify your computer on the network.", IDC_STATIC, 40, 5, 204, 20
++    LTEXT "Windows uses the following information to identify your computer on the network.", IDC_STATIC, 40, 5, 204, 20
+     LTEXT "Computer Description:", IDC_STATIC, 7, 40, 90, 9
+     EDITTEXT IDC_COMPDESC, 98, 38, 146, 13, WS_CHILD | WS_VISIBLE | WS_TABSTOP
+     LTEXT "Full computer name:", IDC_STATIC, 7, 68, 85, 9
+diff --git a/dll/win32/netid/lang/uk-UA.rc b/dll/win32/netid/lang/uk-UA.rc
+--- a/dll/win32/netid/lang/uk-UA.rc
++++ b/dll/win32/netid/lang/uk-UA.rc
+@@ -14,7 +14,7 @@
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+     ICON IDI_COMPNAME, IDC_STATIC, 4, 3, 26, 24, SS_ICON
+-    LTEXT "ReactOS використовує наступну інформацію для ідентифікації комп'ютера в мережі.", IDC_STATIC, 40, 5, 204, 20
++    LTEXT "Windows використовує наведені нижче відомості для ідентифікації цього комп'ютера в мережі.", IDC_STATIC, 40, 5, 204, 20
+     LTEXT "Опис:", IDC_STATIC, 7, 40, 70, 9
+     EDITTEXT IDC_COMPDESC, 98, 38, 146, 13, WS_CHILD | WS_VISIBLE | WS_TABSTOP
+     LTEXT "Повне ім'я:", IDC_STATIC, 7, 68, 64, 9
+@@ -27,7 +27,7 @@
+     PUSHBUTTON "&Змінити...", IDC_NETWORK_PROPERTY, 190, 149, 60, 15
+     LTEXT "", IDC_MESSAGETEXT, 7, 179, 242, 46
+     ICON IDI_WARNINGICO, IDC_RESTARTICON, 7, 194, 20, 20, SS_ICON | SS_REALSIZEIMAGE
+-    LTEXT "Changes will take effect after you restart this computer.", IDC_RESTARTTEXT, 25, 195, 209, 8
++    LTEXT "Зміни набудуть сили після перезавантаження комп'ютера.", IDC_RESTARTTEXT, 25, 195, 209, 8
+ END
+ 
+ IDD_PROPPAGECOMPNAMECHENGE DIALOGEX 0, 0, 232, 222
+diff --git a/dll/win32/netid/netid.c b/dll/win32/netid/netid.c
+--- a/dll/win32/netid/netid.c
++++ b/dll/win32/netid/netid.c
+@@ -120,6 +120,19 @@
+                          (LPBYTE)&pNetIdData->szOldDomainName,
+                          &dwSize);
+ 
++        /* Arctic: Wine keeps one Hostname, which a rename changes at once
++           (the host takes it at the next start), and the computer's name of
++           this session apart: the two differ until the restart */
++        if (!pNetIdData->szHostName[0])
++            wcscpy(pNetIdData->szHostName, pNetIdData->szOldHostName);
++        {
++            WCHAR szActive[MAX_COMPUTERNAME_LENGTH + 1];
++            DWORD cchActive = ARRAYSIZE(szActive);
++
++            if (GetComputerNameW(szActive, &cchActive))
++                wcscpy(pNetIdData->szOldHostName, szActive);
++        }
++
+         dwSize = sizeof(pNetIdData->bSyncDomainWithMembership);
+         if (RegQueryValueExW(KeyHandle,
+                              L"SyncDomainWithMembership",
+@@ -367,7 +380,11 @@
+ {
+     WCHAR szFullComputerName[512];
+ 
+-    wsprintf(szFullComputerName, L"%s.%s", pNetIdData->szHostName, pNetIdData->szDomainName);
++    /* Arctic: a computer with no domain has no dot after its name */
++    if (pNetIdData->szDomainName[0])
++        wsprintf(szFullComputerName, L"%s.%s", pNetIdData->szHostName, pNetIdData->szDomainName);
++    else
++        wsprintf(szFullComputerName, L"%s", pNetIdData->szHostName);
+     SetDlgItemText(hDlg, uId, szFullComputerName);
+ }
+ 
+@@ -383,7 +400,10 @@
+ 
+     GetWindowText(GetDlgItem(hDlg, 1002), szHostName, ARRAYSIZE(szHostName));
+ 
+-    wsprintf(szFullComputerName, L"%s.%s", szHostName, pNetIdData->szDomainName);
++    if (pNetIdData->szDomainName[0])
++        wsprintf(szFullComputerName, L"%s.%s", szHostName, pNetIdData->szDomainName);
++    else
++        wsprintf(szFullComputerName, L"%s", szHostName);
+     SetDlgItemText(hDlg, uId, szFullComputerName);
+ }
+ 

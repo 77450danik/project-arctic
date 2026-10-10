@@ -1,0 +1,182 @@
+From 42be337c967f145e79037f2e59ea702c1dd10381 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 10 Oct 2026 16:50:12 +0200
+Subject: [PATCH] user32: Scroll bars of a frame are the visual style's, the
+ arrows the size of arrows.
+
+SetScrollInfo, EnableScrollBar and the like redrew a scroll bar of a
+frame in the classic look right away, over the visual style's: it is
+now painted again by the style (WM_NCPAINT), as in Windows. Classic
+drawing stays for the frames DefWindowProc itself paints.
+
+GetScrollBarInfo gave the thumb's size as dxyLineButton, the size of an
+arrow button in Windows: ReactOS's uxtheme drew the arrows that large,
+and a long thumb stretched them over the whole bar.
+---
+ dlls/user32/defwnd.c       | 57 ++++++++++++++++++++++++++++++++++++--
+ dlls/user32/user_main.c    | 18 ++++++++++++
+ dlls/user32/user_private.h |  1 +
+ dlls/win32u/scroll.c       | 13 ++++++---
+ 4 files changed, 83 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/user32/defwnd.c b/dlls/user32/defwnd.c
+index 67c7915..76a93f9 100644
+--- a/dlls/user32/defwnd.c
++++ b/dlls/user32/defwnd.c
+@@ -79,6 +79,53 @@ static void default_ime_compositionA( HWND hwnd, WPARAM wparam, LPARAM lparam )
+     HeapFree( GetProcessHeap(), 0, buf );
+ }
+ 
++/* Arctic: while DefWindowProc itself paints a frame (no visual style took
++   it), its scroll bars are drawn in the classic look; anywhere else a scroll
++   bar on a frame is the visual style's to draw (User32DrawScrollBar) */
++static DWORD classic_frame_tls = TLS_OUT_OF_INDEXES;
++
++static BOOL is_classic_frame_message( UINT msg, WPARAM wparam )
++{
++    switch (msg)
++    {
++    case WM_NCPAINT:
++    case WM_NCACTIVATE:
++    case WM_PRINT:
++        return TRUE;
++    case WM_SYSCOMMAND:
++        return (wparam & 0xfff0) == SC_VSCROLL || (wparam & 0xfff0) == SC_HSCROLL;
++    }
++    return FALSE;
++}
++
++static DWORD get_classic_frame_tls(void)
++{
++    if (classic_frame_tls == TLS_OUT_OF_INDEXES)
++    {
++        DWORD index = TlsAlloc();
++        if (InterlockedCompareExchange( (LONG *)&classic_frame_tls, index, TLS_OUT_OF_INDEXES ) != TLS_OUT_OF_INDEXES)
++            TlsFree( index );
++    }
++    return classic_frame_tls;
++}
++
++BOOL in_classic_frame_painting(void)
++{
++    return classic_frame_tls != TLS_OUT_OF_INDEXES && TlsGetValue( classic_frame_tls );
++}
++
++static LRESULT classic_frame_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, BOOL ansi )
++{
++    DWORD index = get_classic_frame_tls();
++    ULONG_PTR depth = (ULONG_PTR)TlsGetValue( index );
++    LRESULT result;
++
++    TlsSetValue( index, (void *)(depth + 1) );
++    result = NtUserMessageCall( hwnd, msg, wparam, lparam, 0, NtUserDefWindowProc, ansi );
++    TlsSetValue( index, (void *)depth );
++    return result;
++}
++
+ /***********************************************************************
+  *              USER_DefWindowProcA
+  *
+@@ -128,7 +175,10 @@ LRESULT WINAPI USER_DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
+     }
+ 
+     default:
+-        result = NtUserMessageCall( hwnd, msg, wParam, lParam, 0, NtUserDefWindowProc, TRUE );
++        if (is_classic_frame_message( msg, wParam ))
++            result = classic_frame_message( hwnd, msg, wParam, lParam, TRUE );
++        else
++            result = NtUserMessageCall( hwnd, msg, wParam, lParam, 0, NtUserDefWindowProc, TRUE );
+         break;
+     }
+ 
+@@ -192,7 +242,10 @@ LRESULT WINAPI USER_DefWindowProcW(
+     }
+ 
+     default:
+-        result = NtUserMessageCall( hwnd, msg, wParam, lParam, 0, NtUserDefWindowProc, FALSE );
++        if (is_classic_frame_message( msg, wParam ))
++            result = classic_frame_message( hwnd, msg, wParam, lParam, FALSE );
++        else
++            result = NtUserMessageCall( hwnd, msg, wParam, lParam, 0, NtUserDefWindowProc, FALSE );
+         break;
+     }
+     SPY_ExitMessage( SPY_RESULT_DEFWND, hwnd, msg, result, wParam, lParam );
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index 18f554c..457ad2a 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -54,6 +54,24 @@ static NTSTATUS WINAPI User32DrawScrollBar( void *args, ULONG size )
+ {
+     const struct draw_scroll_bar_params *params = args;
+     RECT rect = params->rect;
++
++    /* Arctic: SetScrollInfo, EnableScrollBar and the like redraw a scroll bar
++       of a frame right away. When the visual style paints the frames, that
++       part of the frame is painted again by it, as in Windows; drawn here,
++       the bar came out in the classic look over the style's */
++    if ((params->bar == SB_VERT || params->bar == SB_HORZ) && get_theme_api_hook() &&
++        !in_classic_frame_painting())
++    {
++        WINDOWINFO info = { sizeof(info) };
++
++        if (GetWindowInfo( params->hwnd, &info ))
++        {
++            OffsetRect( &rect, info.rcWindow.left - info.rcClient.left,
++                        info.rcWindow.top - info.rcClient.top );
++            NtUserRedrawWindow( params->hwnd, &rect, 0, RDW_INVALIDATE | RDW_FRAME | RDW_NOCHILDREN );
++        }
++        return STATUS_SUCCESS;
++    }
+     user_api->pScrollBarDraw( params->hwnd, params->hdc, params->bar, params->hit_test,
+                               &params->tracking_info, params->arrows, params->interior,
+                               &rect, params->enable_flags, params->arrow_size, params->thumb_pos,
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index 5f4a2a2..4f6c266 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -167,6 +167,7 @@ extern struct user_api_hook *user_api;
+ 
+ extern LRESULT WINAPI USER_DefWindowProcA(HWND,UINT,WPARAM,LPARAM);
+ extern LRESULT WINAPI USER_DefWindowProcW(HWND,UINT,WPARAM,LPARAM);
++extern BOOL in_classic_frame_painting(void);
+ LRESULT WINAPI USER_DefDlgProc(HWND, UINT, WPARAM, LPARAM, BOOL);
+ LRESULT WINAPI USER_ScrollBarProc(HWND, UINT, WPARAM, LPARAM, BOOL);
+ void WINAPI USER_NonClientButtonDraw(HWND, HDC, enum NONCLIENT_BUTTON_TYPE, RECT, BOOL, BOOL);
+diff --git a/dlls/win32u/scroll.c b/dlls/win32u/scroll.c
+index e864b27..ef7924f 100644
+--- a/dlls/win32u/scroll.c
++++ b/dlls/win32u/scroll.c
+@@ -1048,7 +1048,7 @@ done:
+ static BOOL get_scroll_bar_info( HWND hwnd, LONG id, SCROLLBARINFO *info )
+ {
+     struct scroll_info *scroll;
+-    int bar, dummy;
++    int bar, arrow_size = 0, thumb_size = 0;
+     DWORD style = get_window_long( hwnd, GWL_STYLE );
+     BOOL pressed;
+     RECT rect;
+@@ -1064,13 +1064,18 @@ static BOOL get_scroll_bar_info( HWND hwnd, LONG id, SCROLLBARINFO *info )
+     /* handle invalid data structure */
+     if (info->cbSize != sizeof(*info)) return FALSE;
+ 
+-    get_scroll_bar_rect( hwnd, bar, &info->rcScrollBar, &dummy,
+-                         &info->dxyLineButton, &info->xyThumbTop );
++    /* Arctic: dxyLineButton is the size of an arrow button, as in Windows,
++       not the thumb's: a visual style draws the arrows that large, and a
++       long thumb made them as long as the whole bar */
++    info->xyThumbTop = 0;
++    get_scroll_bar_rect( hwnd, bar, &info->rcScrollBar, &arrow_size,
++                         &thumb_size, &info->xyThumbTop );
+     /* rcScrollBar needs to be in screen coordinates */
+     get_window_rect( hwnd, &rect, get_thread_dpi() );
+     OffsetRect( &info->rcScrollBar, rect.left, rect.top );
+ 
+-    info->xyThumbBottom = info->xyThumbTop + info->dxyLineButton;
++    info->dxyLineButton = arrow_size;
++    info->xyThumbBottom = info->xyThumbTop + thumb_size;
+ 
+     if (!(scroll = get_scroll_info_ptr( hwnd, bar, TRUE ))) return FALSE;
+ 
+-- 
+2.56.0
+

@@ -1,0 +1,11 @@
+MODULE    = systemcpl.dll
+IMPORTS   = uuid comctl32 shell32 shlwapi user32 gdi32 advapi32 ole32
+
+VER_FILEDESCRIPTION_STR = "System Control Panel"
+
+SOURCES = \
+	cpanel.c \
+	cpfolder.c \
+	main.c \
+	page_system.c \
+	systemcpl.rc

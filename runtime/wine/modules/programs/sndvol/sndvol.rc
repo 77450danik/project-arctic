@@ -1,0 +1,112 @@
+/*
+ * Volume Mixer: resources
+ *
+ * The dialogs are Windows' own (SndVol.exe.mui, uk-UA, written by
+ * tools/res2rc.py), with buttons where Windows has one-button toolbars; the
+ * icons are mmres.dll's.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "commctrl.h"
+#include "sndvol.h"
+
+/* @makedep: sound.ico */
+IDI_SNDVOL ICON sound.ico
+/* @makedep: speakers.ico */
+IDI_SPEAKERS ICON speakers.ico
+/* @makedep: headphones.ico */
+IDI_HEADPHONES ICON headphones.ico
+/* @makedep: digital.ico */
+IDI_DIGITAL ICON digital.ico
+/* @makedep: display.ico */
+IDI_DISPLAY ICON display.ico
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+BEGIN
+    IDS_TITLE          "Volume Mixer"
+    IDS_TITLE_DEVICE   "Volume Mixer - %s"
+    IDS_SYSTEM_SOUNDS  "System Sounds"
+    IDS_MUTE           "Mute"
+    IDS_UNMUTE         "Unmute"
+    IDS_SPEAKERS       "Speakers"
+    IDS_HEADPHONES     "Headphones"
+    IDS_DIGITAL_OUTPUT "Digital Output"
+    IDS_DIGITAL_DISPLAY "Digital Display"
+END
+
+IDD_MIXER DIALOGEX 0, 0, 270, 166
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN
+CAPTION "Volume Mixer"
+FONT 9, "Segoe UI", 0, 0, 0x0
+BEGIN
+    LTEXT "No audio devices are installed", IDC_NO_DEVICE, 4, 4, 300, 12, NOT WS_VISIBLE
+    CONTROL "", IDC_DEVICE_ICON, "Button", BS_ICON | BS_FLAT | WS_TABSTOP, 25, 16, 25, 20
+    CTEXT "Speakers", IDC_DEVICE_NAME, 9, 38, 57, 16, SS_NOPREFIX
+    CONTROL "", IDC_SLIDER, "msctls_trackbar32", TBS_VERT | TBS_BOTH | TBS_NOTICKS | WS_TABSTOP, 28, 55, 17, 75
+    CONTROL "", IDC_MUTE, "Button", BS_ICON | BS_FLAT | WS_TABSTOP, 26, 132, 24, 22
+    CONTROL "", IDC_APPS_AREA, "Static", SS_BLACKFRAME | NOT WS_VISIBLE, 73, 18, 189, 139
+    GROUPBOX "Applications", IDC_APPS, 71, 6, 193, 153
+    GROUPBOX "D&evice", IDC_DEVICE, 6, 6, 64, 153
+END
+
+IDD_APP DIALOGEX 0, 0, 63, 131
+STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_VISIBLE
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    CONTROL "", IDC_APP_ICON, "Static", SS_ICON | SS_CENTERIMAGE, 22, 2, 18, 17
+    CTEXT "", IDC_APP_NAME, 3, 20, 58, 16, SS_NOPREFIX | SS_ENDELLIPSIS
+    CONTROL "", IDC_SLIDER, "msctls_trackbar32", TBS_VERT | TBS_BOTH | TBS_NOTICKS | WS_TABSTOP, 21, 37, 17, 75
+    CONTROL "", IDC_MUTE, "Button", BS_ICON | BS_FLAT | WS_TABSTOP, 19, 113, 24, 22
+END
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+BEGIN
+    IDS_TITLE          "Мікшер гучності"
+    IDS_TITLE_DEVICE   "Мікшер гучності – %s"
+    IDS_SYSTEM_SOUNDS  "Системні звуки"
+    IDS_MUTE           "Вимкнути звук"
+    IDS_UNMUTE         "Увімкнути звук"
+    IDS_SPEAKERS       "Динаміки"
+    IDS_HEADPHONES     "Навушники"
+    IDS_DIGITAL_OUTPUT "Цифровий вихід"
+    IDS_DIGITAL_DISPLAY "Цифровий дисплей"
+END
+
+IDD_MIXER DIALOGEX 0, 0, 270, 166
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN
+CAPTION "Мікшер гучності"
+FONT 9, "Segoe UI", 0, 0, 0x0
+BEGIN
+    LTEXT "Звукові пристрої не встановлено", IDC_NO_DEVICE, 4, 4, 300, 12, NOT WS_VISIBLE
+    CONTROL "", IDC_DEVICE_ICON, "Button", BS_ICON | BS_FLAT | WS_TABSTOP, 25, 16, 25, 20
+    CTEXT "Динаміки", IDC_DEVICE_NAME, 9, 38, 57, 16, SS_NOPREFIX
+    CONTROL "", IDC_SLIDER, "msctls_trackbar32", TBS_VERT | TBS_BOTH | TBS_NOTICKS | WS_TABSTOP, 28, 55, 17, 75
+    CONTROL "", IDC_MUTE, "Button", BS_ICON | BS_FLAT | WS_TABSTOP, 26, 132, 24, 22
+    CONTROL "", IDC_APPS_AREA, "Static", SS_BLACKFRAME | NOT WS_VISIBLE, 73, 18, 189, 139
+    GROUPBOX "Програми", IDC_APPS, 71, 6, 193, 153
+    GROUPBOX "При&стрій", IDC_DEVICE, 6, 6, 64, 153
+END
+
+IDD_APP DIALOGEX 0, 0, 63, 131
+STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_VISIBLE
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    CONTROL "", IDC_APP_ICON, "Static", SS_ICON | SS_CENTERIMAGE, 22, 2, 18, 17
+    CTEXT "", IDC_APP_NAME, 3, 20, 58, 16, SS_NOPREFIX | SS_ENDELLIPSIS
+    CONTROL "", IDC_SLIDER, "msctls_trackbar32", TBS_VERT | TBS_BOTH | TBS_NOTICKS | WS_TABSTOP, 21, 37, 17, 75
+    CONTROL "", IDC_MUTE, "Button", BS_ICON | BS_FLAT | WS_TABSTOP, 19, 113, 24, 22
+END

@@ -1,0 +1,32 @@
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -828,7 +828,8 @@
+             SHFindComputer(NULL, NULL);
+             break;
+         case IDHK_SYS_PROPERTIES:
+-            ShellExecuteW(m_hWnd, NULL, L"sysdm.cpl", NULL, NULL, SW_NORMAL);
++            /* Arctic: Win+Pause shows the System page, as in Windows 7 */
++            ShellExecuteW(m_hWnd, NULL, L"rundll32.exe", L"systemcpl.dll,ShowSystem", NULL, SW_NORMAL);
+             break;
+         case IDHK_NEXT_TASK:
+             break;
+diff --git a/dll/win32/shell32/wine/shellord.c b/dll/win32/shell32/wine/shellord.c
+--- a/dll/win32/shell32/wine/shellord.c
++++ b/dll/win32/shell32/wine/shellord.c
+@@ -1684,6 +1684,15 @@
+     WCHAR parameters[MAX_PATH] = L"shell32.dll,Control_RunDLL ";
+     if (!commandLine)
+         return FALSE;
++    /* Arctic: as in Windows 7, the properties of This PC and of the Network
++       are pages of the Control Panel, System and the Network and Sharing
++       Center, not the System Properties sheet and Network Connections */
++    if (!_wcsicmp(commandLine, L"sysdm.cpl"))
++        return ((INT_PTR)ShellExecuteW(parent, L"open", L"rundll32.exe", L"systemcpl.dll,ShowSystem", NULL,
++                                       SW_SHOWNORMAL) > 32);
++    if (!_wcsicmp(commandLine, L"ncpa.cpl"))
++        return ((INT_PTR)ShellExecuteW(parent, L"open", L"rundll32.exe", L"netcenter.dll,ShowNetworkCenter", NULL,
++                                       SW_SHOWNORMAL) > 32);
+     wcscat(parameters, commandLine);
+     return ((INT_PTR)ShellExecuteW(parent, L"open", L"rundll32.exe", parameters, NULL, SW_SHOWNORMAL) > 32);
+ }

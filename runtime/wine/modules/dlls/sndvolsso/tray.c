@@ -158,7 +158,7 @@ static void show_menu( HWND hwnd )
         ShellExecuteW( NULL, NULL, L"control.exe", L"mmsys.cpl", NULL, SW_SHOWNORMAL );
         break;
     case MENU_MIXER:
-        ShellExecuteW( NULL, NULL, L"sndvol32.exe", NULL, NULL, SW_SHOWNORMAL );
+        ShellExecuteW( NULL, NULL, L"sndvol.exe", NULL, NULL, SW_SHOWNORMAL );
         break;
     case MENU_SOUNDS:
         ShellExecuteW( NULL, NULL, L"control.exe", L"mmsys.cpl,,1", NULL, SW_SHOWNORMAL );

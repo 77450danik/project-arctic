@@ -58,6 +58,10 @@ void audio_set_level( float level );
 void audio_set_mute( BOOL mute );
 void audio_set_default( const WCHAR *id );
 
+/* listen.c: "Listen to this device" of the Sound control panel */
+void listen_start(void);
+void listen_stop(void);
+
 /* glyph.c: the speaker of Segoe MDL2 Assets, drawn */
 int px( int n );
 HFONT shell_font( int height, int weight );

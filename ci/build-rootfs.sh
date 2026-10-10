@@ -58,6 +58,8 @@ gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"
 # WSL in Arctic: the distributions of D:\WSL, for wsl.exe and bash.exe (docs/updates.md)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-lxss" "$ROOT/host/init/arctic-lxss.c"
+# Network folders: \\server\share mounted on demand (docs/M5-network.md)
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-smb" "$ROOT/host/init/arctic-smb.c" -lpthread
 # Networking: name servers of every interface in one resolv.conf on /run
 # (iwd and the wired DHCP script call resolvconf), names resolved by glibc
 gcc -O2 -Wall -o "$RFS/usr/bin/resolvconf" "$ROOT/host/init/arctic-resolv.c"

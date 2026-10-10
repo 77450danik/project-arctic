@@ -41,6 +41,7 @@
 #define IDS_CONNECTED_OPEN       128
 #define IDS_WIRED_NONE           129
 #define IDS_AUTOCONNECT          130
+#define IDS_OPEN_NETWORK_CENTER  131
 
 /* the notification area's pictures of a wired network */
 #define IDI_NETWORK_OK           300
@@ -80,6 +81,7 @@ void read_wifi( struct state *state );
 UINT quality_bars( UINT quality );
 BOOL connections_folder_exists(void);
 void open_connections(void);
+void open_network_center(void);
 
 /* flyout.c: the flyout of Windows 10 */
 void flyout_toggle(void);

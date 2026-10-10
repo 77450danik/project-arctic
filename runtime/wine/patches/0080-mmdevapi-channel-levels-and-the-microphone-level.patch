@@ -1,0 +1,440 @@
+From 7bf709d01ad3900edb62a07629acc30af7833746 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sat, 10 Oct 2026 17:43:15 +0200
+Subject: [PATCH] mmdevapi: Every channel of an endpoint has its level; the
+ microphone's level and the default format apply.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Sound panel's balance sets the channels of an endpoint apart, as
+Windows keeps them: the master volume is the loudest channel's and moves
+them all, and the audio clients of every process scale each channel of
+what they play by its part (left and right, the centre and the bass
+between them). They are kept with the volume in HKCU\Software\Arctic\
+Audio.
+
+A microphone's level only muted it: winealsa now scales what it records
+by the stream's volumes, and a capture client takes a level changed by
+another process as a render client does. Loopback records what an
+endpoint plays before its volume.
+
+The default format the panel's Advanced page chooses is the mix format
+programs get in shared mode (HKCU\Software\Arctic\Audio\{GUID}\Format);
+ALSA's plug converts it for the device.
+
+An endpoint the panel turned off ("Не використовувати цей пристрій") is
+DEVICE_STATE_DISABLED, and the name it was given there is its
+description, for every program.
+---
+ dlls/mmdevapi/audiovolume.c      | 112 +++++++++++++++++++++++++++----
+ dlls/mmdevapi/client.c           |  44 +++++++++++-
+ dlls/mmdevapi/devenum.c          |  19 ++++++
+ dlls/mmdevapi/mmdevapi_private.h |   2 +
+ dlls/winealsa.drv/alsa.c         |   3 +
+ 5 files changed, 167 insertions(+), 13 deletions(-)
+
+diff --git a/dlls/mmdevapi/audiovolume.c b/dlls/mmdevapi/audiovolume.c
+index d53296a..3519ab4 100644
+--- a/dlls/mmdevapi/audiovolume.c
++++ b/dlls/mmdevapi/audiovolume.c
+@@ -51,7 +51,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
+ #define AUDIO_SECTION     L"Global\\__arctic_audio"
+ #define AUDIO_MUTEX       L"Global\\__arctic_audio_lock"
+ #define AUDIO_KEY         L"Software\\Arctic\\Audio"
+-#define AUDIO_VERSION     1
++#define AUDIO_VERSION     2
+ #define AUDIO_ENDPOINTS   64
+ #define TAPER_DB          33.22f
+ #define MIN_DB            -96.f
+@@ -61,9 +61,10 @@ WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
+ struct endpoint_volume
+ {
+     GUID  device;
+-    float level;                   /* 0-1 */
++    float level;                   /* 0-1: the loudest channel's */
+     LONG  mute;
+     GUID  context;                 /* of the last change */
++    float balance[CHANNELS];       /* each channel against the loudest, 0-1 (Windows' "Баланс") */
+ };
+ 
+ struct endpoint_volume_shared
+@@ -136,12 +137,20 @@ static HKEY open_endpoint_key( const GUID *device, REGSAM access )
+ 
+ static void save_entry( const struct endpoint_volume *entry )
+ {
+-    DWORD level = (DWORD)(entry->level * 100000.f + 0.5f), mute = !!entry->mute;
++    DWORD level = (DWORD)(entry->level * 100000.f + 0.5f), mute = !!entry->mute, balance;
++    WCHAR name[16];
+     HKEY key;
++    int i;
+ 
+     if (!(key = open_endpoint_key( &entry->device, KEY_SET_VALUE ))) return;
+     RegSetValueExW( key, L"Volume", 0, REG_DWORD, (BYTE *)&level, sizeof(level) );
+     RegSetValueExW( key, L"Mute", 0, REG_DWORD, (BYTE *)&mute, sizeof(mute) );
++    for (i = 0; i < CHANNELS; i++)
++    {
++        balance = (DWORD)(entry->balance[i] * 100000.f + 0.5f);
++        swprintf( name, ARRAY_SIZE(name), L"Balance%d", i );
++        RegSetValueExW( key, name, 0, REG_DWORD, (BYTE *)&balance, sizeof(balance) );
++    }
+     RegCloseKey( key );
+ }
+ 
+@@ -153,7 +162,18 @@ static void load_entry( struct endpoint_volume *entry, EDataFlow flow )
+ 
+     entry->level = flow == eCapture ? 1.f : 0.5f;
+     entry->mute = FALSE;
++    for (int i = 0; i < CHANNELS; i++) entry->balance[i] = 1.f;
+     if (!(key = open_endpoint_key( &entry->device, KEY_QUERY_VALUE ))) return;
++    for (int i = 0; i < CHANNELS; i++)
++    {
++        WCHAR name[16];
++
++        swprintf( name, ARRAY_SIZE(name), L"Balance%d", i );
++        size = sizeof(value);
++        if (!RegQueryValueExW( key, name, NULL, NULL, (BYTE *)&value, &size ) && size == sizeof(value))
++            entry->balance[i] = min( value, 100000 ) / 100000.f;
++    }
++    size = sizeof(value);
+     if (!RegQueryValueExW( key, L"Volume", NULL, NULL, (BYTE *)&value, &size ) && size == sizeof(value))
+         entry->level = min( value, 100000 ) / 100000.f;
+     size = sizeof(value);
+@@ -199,6 +219,7 @@ static void change_entry( const GUID *device, EDataFlow flow, const float *level
+ 
+     if (!entry) return;
+     mutex = lock_shared();
++    /* the master volume moves every channel, keeping the balance */
+     if (level) entry->level = max( 0.f, min( 1.f, *level ) );
+     if (mute) entry->mute = !!*mute;
+     entry->context = context ? *context : GUID_NULL;
+@@ -207,6 +228,52 @@ static void change_entry( const GUID *device, EDataFlow flow, const float *level
+     unlock_shared( mutex );
+ }
+ 
++/* a channel's level, as Windows keeps them: the master volume is the loudest
++ * channel's, and each channel is a part of it */
++static void change_channel( const GUID *device, EDataFlow flow, UINT channel, float level, const GUID *context )
++{
++    struct endpoint_volume_shared *shared = get_shared();
++    struct endpoint_volume *entry = find_entry( device, flow );
++    float levels[CHANNELS], loudest = 0.f;
++    HANDLE mutex;
++    UINT i;
++
++    if (!entry || channel >= CHANNELS) return;
++    mutex = lock_shared();
++    for (i = 0; i < CHANNELS; i++) levels[i] = entry->level * entry->balance[i];
++    levels[channel] = max( 0.f, min( 1.f, level ) );
++    for (i = 0; i < CHANNELS; i++) loudest = max( loudest, levels[i] );
++    if (loudest > 0.f)
++    {
++        entry->level = loudest;
++        for (i = 0; i < CHANNELS; i++) entry->balance[i] = levels[i] / loudest;
++    }
++    else entry->level = 0.f;
++    entry->context = context ? *context : GUID_NULL;
++    save_entry( entry );
++    InterlockedIncrement( &shared->serial );
++    unlock_shared( mutex );
++}
++
++static float channel_level( const struct endpoint_volume *entry, UINT channel )
++{
++    return entry->level * entry->balance[channel < CHANNELS ? channel : 0];
++}
++
++/* the balance's part in a channel of a stream: left and right as they are,
++ * the centre and the bass between them, the back and the sides on their side */
++float endpoint_volume_channel( const GUID *device, EDataFlow flow, UINT channel, UINT count )
++{
++    struct endpoint_volume *entry = find_entry( device, flow );
++    float left, right;
++
++    if (!entry || count < 2) return 1.f;
++    left = entry->balance[0];
++    right = entry->balance[1];
++    if (count > 2 && (channel == 2 || channel == 3)) return powf( (left + right) / 2.f, TAPER_DB / 20.f );
++    return powf( channel % 2 ? right : left, TAPER_DB / 20.f );
++}
++
+ LONG endpoint_volume_serial(void)
+ {
+     struct endpoint_volume_shared *shared = get_shared();
+@@ -233,6 +300,7 @@ typedef struct AEVImpl {
+     UINT callback_count;
+     float notified_level;
+     BOOL notified_mute;
++    float notified_balance[CHANNELS];
+     struct list entry;             /* in watched, while it has callbacks */
+ } AEVImpl;
+ 
+@@ -262,7 +330,7 @@ static void notify_callbacks( AEVImpl *This, const struct endpoint_volume *entry
+     data->bMuted = !!entry->mute;
+     data->fMasterVolume = entry->level;
+     data->nChannels = CHANNELS;
+-    for (i = 0; i < CHANNELS; i++) data->afChannelVolumes[i] = entry->level;
++    for (i = 0; i < CHANNELS; i++) data->afChannelVolumes[i] = channel_level( entry, i );
+     for (i = 0; i < This->callback_count; i++)
+         IAudioEndpointVolumeCallback_OnNotify( This->callbacks[i], data );
+     free( data );
+@@ -287,9 +355,12 @@ static DWORD WINAPI watch_proc( void *arg )
+         {
+             struct endpoint_volume *entry = find_entry( &aev->device, aev->flow );
+ 
+-            if (!entry || (entry->level == aev->notified_level && !!entry->mute == aev->notified_mute)) continue;
++            if (!entry || (entry->level == aev->notified_level && !!entry->mute == aev->notified_mute &&
++                           !memcmp( entry->balance, aev->notified_balance, sizeof(entry->balance) )))
++                continue;
+             aev->notified_level = entry->level;
+             aev->notified_mute = !!entry->mute;
++            memcpy( aev->notified_balance, entry->balance, sizeof(entry->balance) );
+             IAudioEndpointVolumeEx_AddRef( &aev->IAudioEndpointVolumeEx_iface );
+             notify_callbacks( aev, entry );
+             IAudioEndpointVolumeEx_Release( &aev->IAudioEndpointVolumeEx_iface );
+@@ -370,6 +441,7 @@ static HRESULT WINAPI AEV_RegisterControlChangeNotify(IAudioEndpointVolumeEx *if
+         {
+             This->notified_level = entry->level;
+             This->notified_mute = !!entry->mute;
++            memcpy( This->notified_balance, entry->balance, sizeof(entry->balance) );
+         }
+         list_add_tail( &watched, &This->entry );
+     }
+@@ -478,41 +550,57 @@ static HRESULT WINAPI AEV_GetMasterVolumeLevelScalar(IAudioEndpointVolumeEx *ifa
+     return S_OK;
+ }
+ 
+-/* the channels follow the master volume: there is one level per endpoint */
++/* each channel has its level: the balance of the Sound panel's Levels */
+ static HRESULT WINAPI AEV_SetChannelVolumeLevel(IAudioEndpointVolumeEx *iface, UINT chan, float leveldb, const GUID *ctx)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++
+     TRACE("(%p)->(%u,%f,%s)\n", iface, chan, leveldb, debugstr_guid(ctx));
+-    if (chan >= CHANNELS)
++    if (chan >= CHANNELS || leveldb < MIN_DB || leveldb > 0.f)
+         return E_INVALIDARG;
+-    return AEV_SetMasterVolumeLevel(iface, leveldb, ctx);
++    change_channel( &This->device, This->flow, chan, level_from_db( leveldb ), ctx );
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_SetChannelVolumeLevelScalar(IAudioEndpointVolumeEx *iface, UINT chan, float level, const GUID *ctx)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++
+     TRACE("(%p)->(%u,%f,%s)\n", iface, chan, level, debugstr_guid(ctx));
+-    if (chan >= CHANNELS)
++    if (chan >= CHANNELS || level < 0.f || level > 1.f)
+         return E_INVALIDARG;
+-    return AEV_SetMasterVolumeLevelScalar(iface, level, ctx);
++    change_channel( &This->device, This->flow, chan, level, ctx );
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_GetChannelVolumeLevel(IAudioEndpointVolumeEx *iface, UINT chan, float *leveldb)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    struct endpoint_volume *entry;
++
+     TRACE("(%p)->(%u,%p)\n", iface, chan, leveldb);
+     if (!leveldb)
+         return E_POINTER;
+     if (chan >= CHANNELS)
+         return E_INVALIDARG;
+-    return AEV_GetMasterVolumeLevel(iface, leveldb);
++    entry = find_entry( &This->device, This->flow );
++    *leveldb = db_from_level( entry ? channel_level( entry, chan ) : 1.f );
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_GetChannelVolumeLevelScalar(IAudioEndpointVolumeEx *iface, UINT chan, float *level)
+ {
++    AEVImpl *This = impl_from_IAudioEndpointVolumeEx(iface);
++    struct endpoint_volume *entry;
++
+     TRACE("(%p)->(%u,%p)\n", iface, chan, level);
+     if (!level)
+         return E_POINTER;
+     if (chan >= CHANNELS)
+         return E_INVALIDARG;
+-    return AEV_GetMasterVolumeLevelScalar(iface, level);
++    entry = find_entry( &This->device, This->flow );
++    *level = entry ? channel_level( entry, chan ) : 1.f;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI AEV_SetMute(IAudioEndpointVolumeEx *iface, BOOL mute, const GUID *ctx)
+diff --git a/dlls/mmdevapi/client.c b/dlls/mmdevapi/client.c
+index beaa837..9058a7b 100644
+--- a/dlls/mmdevapi/client.c
++++ b/dlls/mmdevapi/client.c
+@@ -48,13 +48,22 @@ void set_stream_volumes(struct audio_client *This)
+ {
+     MMDevice *device = CONTAINING_RECORD(This->parent, MMDevice, IMMDevice_iface);
+     struct set_volumes_params params;
++    float vols[32];
++    UINT32 i;
+ 
+     This->endpoint_serial  = endpoint_volume_serial();
+     params.stream          = This->stream;
+     params.master_volume   = (This->session->mute ? 0.0f : This->session->master_vol) *
+-                             endpoint_volume_amplitude(&device->devguid, This->dataflow);
++                             (This->loopback ? 1.f : endpoint_volume_amplitude(&device->devguid, This->dataflow));
+     params.volumes         = This->vols;
+     params.session_volumes = This->session->channel_vols;
++    /* the endpoint's balance, channel by channel */
++    if (!This->loopback && This->channel_count <= ARRAY_SIZE(vols))
++    {
++        for (i = 0; i < This->channel_count; i++)
++            vols[i] = This->vols[i] * endpoint_volume_channel(&device->devguid, This->dataflow, i, This->channel_count);
++        params.volumes = vols;
++    }
+ 
+     wine_unix_call(set_volumes, &params);
+ }
+@@ -529,6 +538,7 @@ exit:
+         list_add_tail(&client->session->clients, &client->entry);
+         client->stream = stream;
+         client->channel_count = channel_count;
++        client->loopback = !!(flags & AUDCLNT_STREAMFLAGS_LOOPBACK);
+         set_stream_volumes(client);
+     }
+ 
+@@ -592,6 +602,14 @@ static HRESULT WINAPI capture_GetBuffer(IAudioCaptureClient *iface, BYTE **data,
+     if (!This->stream)
+         return AUDCLNT_E_NOT_INITIALIZED;
+ 
++    /* the microphone's level was changed, maybe by another process */
++    if (This->endpoint_serial != endpoint_volume_serial())
++    {
++        sessions_lock();
++        set_stream_volumes(This);
++        sessions_unlock();
++    }
++
+     params.stream = This->stream;
+     params.data   = data;
+     params.frames = frames;
+@@ -865,6 +883,23 @@ static HRESULT WINAPI client_IsFormatSupported(IAudioClient3 *iface, AUDCLNT_SHA
+ 
+ }
+ 
++/* Arctic: the default format the Sound panel chose for the endpoint
++ * (Advanced; HKCU\\Software\\Arctic\\Audio\\{GUID}, FormatRate): the sample
++ * rate programs mix at in shared mode, as Windows' audio engine has it. The
++ * samples stay what the driver mixes, floats; ALSA's plug converts them for
++ * the device. 0: the driver's own rate. */
++static DWORD chosen_rate(struct audio_client *This)
++{
++    MMDevice *device = CONTAINING_RECORD(This->parent, MMDevice, IMMDevice_iface);
++    WCHAR key[80] = L"Software\\Arctic\\Audio\\";
++    DWORD rate = 0, size = sizeof(rate);
++
++    if (This->dataflow != device->flow) return 0; /* loopback */
++    StringFromGUID2(&device->devguid, key + wcslen(key), 39);
++    if (RegGetValueW(HKEY_CURRENT_USER, key, L"FormatRate", RRF_RT_REG_DWORD, NULL, &rate, &size)) return 0;
++    return rate >= 8000 && rate <= 384000 ? rate : 0;
++}
++
+ static HRESULT WINAPI client_GetMixFormat(IAudioClient3 *iface, WAVEFORMATEX **pwfx)
+ {
+     struct audio_client *This = impl_from_IAudioClient3(iface);
+@@ -883,9 +918,16 @@ static HRESULT WINAPI client_GetMixFormat(IAudioClient3 *iface, WAVEFORMATEX **p
+     if (!params.fmt)
+         return E_OUTOFMEMORY;
+ 
++
+     wine_unix_call(get_mix_format, &params);
+ 
+     if (SUCCEEDED(params.result)) {
++        DWORD rate = chosen_rate(This);
++
++        if (rate) {
++            params.fmt->Format.nSamplesPerSec = rate;
++            params.fmt->Format.nAvgBytesPerSec = rate * params.fmt->Format.nBlockAlign;
++        }
+         *pwfx = &params.fmt->Format;
+         dump_fmt(*pwfx);
+     } else
+diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
+index 51561d8..85d1392 100644
+--- a/dlls/mmdevapi/devenum.c
++++ b/dlls/mmdevapi/devenum.c
+@@ -446,6 +446,9 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+     HKEY key, root;
+     MMDevice *device, *cur = NULL;
+     WCHAR guidstr[39];
++    /* Arctic: what the Sound panel set for the endpoint */
++    WCHAR arctic_key[80] = L"Software\\Arctic\\Audio\\", arctic_name[128];
++    DWORD arctic_value, arctic_size;
+ 
+     static const PROPERTYKEY deviceinterface_key = {
+         {0x233164c8, 0x1b2c, 0x4c7d, {0xbc, 0x68, 0xb6, 0x71, 0x68, 0x7a, 0x25, 0x67}}, 1
+@@ -485,6 +488,14 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+ 
+     StringFromGUID2(&cur->devguid, guidstr, ARRAY_SIZE(guidstr));
+ 
++    /* Arctic: "Не використовувати цей пристрій (вимкнути)" of its properties */
++    lstrcatW(arctic_key, guidstr);
++    arctic_size = sizeof(arctic_value);
++    if (state == DEVICE_STATE_ACTIVE &&
++        !RegGetValueW(HKEY_CURRENT_USER, arctic_key, L"Disabled", RRF_RT_REG_DWORD, NULL, &arctic_value, &arctic_size) &&
++        arctic_value)
++        cur->state = state = DEVICE_STATE_DISABLED;
++
+     if (flow == eRender)
+         root = key_render;
+     else
+@@ -533,6 +544,14 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+                 pv.pwszVal = type = (WCHAR *)(flow == eCapture ? L"Microphone" : L"Speakers");
+                 MMDevice_SetPropValue(id, flow, (const PROPERTYKEY*)&DEVPKEY_Device_DeviceDesc, &pv);
+             }
++            /* Arctic: the name it was given in its properties, as Windows renames an endpoint */
++            arctic_size = sizeof(arctic_name);
++            if (!RegGetValueW(HKEY_CURRENT_USER, arctic_key, L"Name", RRF_RT_REG_SZ, NULL, arctic_name, &arctic_size) &&
++                arctic_name[0])
++            {
++                pv.pwszVal = type = arctic_name;
++                MMDevice_SetPropValue(id, flow, (const PROPERTYKEY*)&DEVPKEY_Device_DeviceDesc, &pv);
++            }
+ 
+             len = (wcslen(type) + wcslen(cur->drv_id) + wcslen(L" ()") + 1);
+             pv.vt = VT_LPWSTR;
+diff --git a/dlls/mmdevapi/mmdevapi_private.h b/dlls/mmdevapi/mmdevapi_private.h
+index 87f2eb1..3cec4a2 100644
+--- a/dlls/mmdevapi/mmdevapi_private.h
++++ b/dlls/mmdevapi/mmdevapi_private.h
+@@ -81,6 +81,7 @@ struct audio_client {
+     struct list entry;
+     char *device_name;
+     LONG endpoint_serial;   /* of the endpoint volume it plays at */
++    BOOL loopback;          /* records what a render endpoint plays: before its volume */
+ };
+ 
+ extern HRESULT MMDevEnum_Create(REFIID riid, void **ppv);
+@@ -122,6 +123,7 @@ static inline void wine_unix_call(const unsigned int code, void *args)
+ extern HRESULT AudioClient_Create(GUID *guid, IMMDevice *device, IAudioClient **out);
+ extern HRESULT AudioEndpointVolume_Create(MMDevice *parent, IAudioEndpointVolumeEx **ppv);
+ extern float endpoint_volume_amplitude(const GUID *device, EDataFlow flow);
++extern float endpoint_volume_channel(const GUID *device, EDataFlow flow, UINT channel, UINT count);
+ extern LONG endpoint_volume_serial(void);
+ extern HRESULT AudioSessionManager_Create(IMMDevice *device, IAudioSessionManager2 **ppv);
+ extern HRESULT SpatialAudioClient_Create(IMMDevice *device, ISpatialAudioClient **out);
+diff --git a/dlls/winealsa.drv/alsa.c b/dlls/winealsa.drv/alsa.c
+index 968ac52..b3729c6 100644
+--- a/dlls/winealsa.drv/alsa.c
++++ b/dlls/winealsa.drv/alsa.c
+@@ -1693,6 +1693,9 @@ static void alsa_read_data(struct alsa_stream *stream)
+         }
+     }
+ 
++    /* Arctic: the level of the microphone, as on Windows, not only its mute */
++    adjust_buffer_volume(stream, stream->local_buffer + pos * stream->fmt->nBlockAlign, nread);
++
+     for(i = 0; i < stream->fmt->nChannels; i++)
+         if(stream->vols[i] != 0.0f)
+             break;
+-- 
+2.56.0
+

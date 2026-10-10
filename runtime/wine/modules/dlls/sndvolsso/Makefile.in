@@ -7,6 +7,7 @@ SOURCES = \
 	audio.c \
 	flyout.c \
 	glyph.c \
+	listen.c \
 	main.c \
 	media.c \
 	osd.c \

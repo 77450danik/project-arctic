@@ -946,7 +946,7 @@ static void activate( enum hit what, int index )
         break;
     case HIT_LINK:
         ShowWindow( flyout, SW_HIDE );
-        open_connections();
+        open_network_center();
         break;
     case HIT_TILE:
         if (index == TILE_WIFI)

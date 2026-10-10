@@ -1,0 +1,40 @@
+diff --git a/dll/shellext/netshell/shfldr_netconnect.cpp b/dll/shellext/netshell/shfldr_netconnect.cpp
+--- a/dll/shellext/netshell/shfldr_netconnect.cpp
++++ b/dll/shellext/netshell/shfldr_netconnect.cpp
+@@ -667,6 +667,22 @@
+ }
+ 
+ 
++/* Arctic: the status and the properties of a connection are Windows 7's,
++ * those of the Network and Sharing Center (netcenter.dll): Windows' dialogs
++ * with IPv4, IPv6 and DNS that the host applies */
++static HRESULT
++ShowNetCenterDialog(PCUITEMID_CHILD pidl, LPCWSTR pszEntry)
++{
++    PNETCONIDSTRUCT pdata = ILGetConnData(pidl);
++    WCHAR szGuid[40], szArgs[128];
++
++    if (!pdata || !StringFromGUID2(pdata->guidId, szGuid, _countof(szGuid)))
++        return E_FAIL;
++    _snwprintf(szArgs, _countof(szArgs), L"netcenter.dll,%s %s", pszEntry, szGuid);
++    szArgs[_countof(szArgs) - 1] = L'\0';
++    return (INT_PTR)ShellExecuteW(NULL, NULL, L"rundll32.exe", szArgs, NULL, SW_SHOWNORMAL) > 32 ? S_OK : E_FAIL;
++}
++
+ /**************************************************************************
+ * ISF_NetConnect_IContextMenu_InvokeCommand()
+ */
+@@ -712,10 +728,9 @@
+             return S_OK;
+         }
+         case IDS_NET_STATUS:
+-        {
+-            // TODO: Windows does not display this with an owner window
+-            return ShowNetConnectionStatus(m_lpOleCmd, m_pidl, lpcmi->hwnd);
+-        }
++            return ShowNetCenterDialog(m_pidl, L"ShowConnectionStatus");
++        case IDS_NET_PROPERTIES:
++            return ShowNetCenterDialog(m_pidl, L"ShowConnectionProperties");
+         case IDS_NET_REPAIR:
+         case IDS_NET_CREATELINK:
+         case IDS_NET_DELETE:

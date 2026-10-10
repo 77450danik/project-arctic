@@ -1,0 +1,72 @@
+diff --git a/dll/win32/browseui/aclistisf.cpp b/dll/win32/browseui/aclistisf.cpp
+--- a/dll/win32/browseui/aclistisf.cpp
++++ b/dll/win32/browseui/aclistisf.cpp
+@@ -26,10 +26,22 @@
+     , m_iNextLocation(LT_DIRECTORY)
+     , m_fShowHidden(FALSE)
+ {
++    InitializeCriticalSection(&m_cs);
+ }
+ 
+ CACListISF::~CACListISF()
+ {
++    DeleteCriticalSection(&m_cs);
++}
++
++namespace
++{
++    struct CLock
++    {
++        CRITICAL_SECTION *m_pcs;
++        CLock(CRITICAL_SECTION *pcs) : m_pcs(pcs) { EnterCriticalSection(m_pcs); }
++        ~CLock() { LeaveCriticalSection(m_pcs); }
++    };
+ }
+ 
+ HRESULT CACListISF::NextLocation()
+@@ -154,6 +166,8 @@
+ {
+     TRACE("(%p, %p)\n", this, pidlChild);
+     pszChild.Free();
++    if (!m_pShellFolder)
++        return E_FAIL;
+ 
+     STRRET StrRet;
+     DWORD dwFlags = SHGDN_INFOLDER | SHGDN_FORPARSING | SHGDN_FORADDRESSBAR;
+@@ -210,6 +224,7 @@
+ STDMETHODIMP CACListISF::Next(ULONG celt, LPOLESTR *rgelt, ULONG *pceltFetched)
+ {
+     TRACE("(%p, %d, %p, %p)\n", this, celt, rgelt, pceltFetched);
++    CLock lock(&m_cs);
+ 
+     if (celt == 0)
+         return S_OK;
+@@ -280,6 +295,7 @@
+ STDMETHODIMP CACListISF::Reset()
+ {
+     TRACE("(%p)\n", this);
++    CLock lock(&m_cs);
+ 
+     m_iNextLocation = LT_DIRECTORY;
+     m_szRawPath = L"";
+@@ -321,6 +337,7 @@
+ STDMETHODIMP CACListISF::Expand(LPCOLESTR pszExpand)
+ {
+     TRACE("(%p, %ls)\n", this, pszExpand);
++    CLock lock(&m_cs);
+ 
+     m_szRawPath = pszExpand;
+     m_iNextLocation = LT_DIRECTORY;
+diff --git a/dll/win32/browseui/aclistisf.h b/dll/win32/browseui/aclistisf.h
+--- a/dll/win32/browseui/aclistisf.h
++++ b/dll/win32/browseui/aclistisf.h
+@@ -50,6 +50,9 @@
+     CComPtr<IEnumIDList> m_pEnumIDList;
+     CComPtr<IShellFolder> m_pShellFolder;
+     CComPtr<IBrowserService> m_pBrowserService;
++    /* Arctic: the autocomplete's thread enumerates while the window's thread
++     * moves to another folder (Expand, Reset): one at a time */
++    CRITICAL_SECTION m_cs;
+ 
+ public:
+     CACListISF();

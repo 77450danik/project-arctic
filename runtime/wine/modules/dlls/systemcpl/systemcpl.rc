@@ -1,0 +1,140 @@
+/*
+ * System of the Control Panel: resources
+ *
+ * The Ukrainian texts are Windows' (systemcpl.dll.mui, uk-UA) where it has
+ * them; Windows 7's rating line, the build and the activation are Arctic's.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "systemcpl.h"
+
+/* @makedep: system.ico */
+IDI_SYSTEM ICON system.ico
+
+/* tools/make-system-logo.py */
+/* @makedep: logo_100.bmp */
+IDB_LOGO_100 BITMAP logo_100.bmp
+/* @makedep: logo_125.bmp */
+IDB_LOGO_125 BITMAP logo_125.bmp
+/* @makedep: logo_150.bmp */
+IDB_LOGO_150 BITMAP logo_150.bmp
+/* @makedep: logo_200.bmp */
+IDB_LOGO_200 BITMAP logo_200.bmp
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                     "Control Panel Home"
+    0xf001                     "See also"
+    IDS_SYSTEM                 "System"
+    IDS_SYSTEM_TIP             "View information about your computer system settings, and change settings for hardware, performance and remote connections."
+    IDS_RATING_UNAVAILABLE     "System rating is not available"
+    IDS_WORKGROUP_LABEL        "Workgroup:"
+    IDS_WORKGROUP_DEFAULT      "WORKGROUP"
+    IDS_PEN_TOUCH              "Pen and Touch:"
+    IDS_PROCESSOR_SPEED        "%1   %2"
+    IDS_PROCESSORS_SPEED       "%1   %2  (%3 processors)"
+    IDS_MEMORY_AVAILABLE       "%s (%s usable)"
+    IDS_NO_PEN_TOUCH           "No Pen or Touch Input is available for this Display"
+    IDS_PEN                    "Pen Support"
+    IDS_PEN_TOUCH_POINTS       "Pen and Touch Support with %1 Touch Points"
+    IDS_PEN_SINGLE_TOUCH       "Pen and Single Touch Support"
+    IDS_TOUCH_POINTS           "Touch Support with %1 Touch Points"
+    IDS_SINGLE_TOUCH           "Single Touch Support"
+    IDS_TYPE_32_X86            "32-bit Operating System"
+    IDS_TYPE_32_X64            "32-bit Operating System, x64-based processor"
+    IDS_TYPE_64_X64            "64-bit Operating System"
+    IDS_TYPE_32_ARM            "32-bit Operating System, ARM-based processor"
+    IDS_TYPE_64_ARM            "64-bit Operating System, ARM-based processor"
+    IDS_DEVICE_MANAGER         "Device Manager"
+    IDS_REMOTE_SETTINGS        "Remote settings"
+    IDS_SYSTEM_PROTECTION      "System protection"
+    IDS_ADVANCED_SETTINGS      "Advanced system settings"
+    IDS_WINDOWS_UPDATE         "Windows Update"
+    IDS_ACTION_CENTER          "Action Center"
+    IDS_TITLE                  "View basic information about your computer"
+    IDS_EDITION                "Edition"
+    IDS_SYSTEM_GROUP           "System"
+    IDS_NAME_GROUP             "Computer name, domain, and workgroup settings"
+    IDS_CHANGE_SETTINGS        "Change settings"
+    IDS_COMPUTER_NAME          "Computer name:"
+    IDS_FULL_NAME              "Full computer name:"
+    IDS_DESCRIPTION            "Computer description:"
+    IDS_ACTIVATION             "Activation"
+    IDS_PRODUCT_ID             "Product ID:"
+    IDS_UNAVAILABLE            "Not Available"
+    IDS_PROCESSOR              "Processor:"
+    IDS_MEMORY                 "Installed memory (RAM):"
+    IDS_SYSTEM_TYPE            "System type:"
+    IDS_RATING                 "Rating:"
+    IDS_COPYRIGHT              "Copyright © %1 Project Arctic. All rights reserved."
+    IDS_BUILD                  "Build %1 of %2"
+    IDS_ACTIVATION_NOT_NEEDED  "Arctic is free software: it needs no activation"
+    IDS_PERFORMANCE_TOOLS      "Performance Information and Tools"
+    IDS_GHZ                    "%s GHz"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                     "Домашня сторінка панелі керування"
+    0xf001                     "Див. також"
+    IDS_SYSTEM                 "Система"
+    IDS_SYSTEM_TIP             "Перегляд відомостей про систему та змінення параметрів устаткування, швидкодії й віддалених з’єднань."
+    IDS_RATING_UNAVAILABLE     "Оцінка продуктивності системи недоступна"
+    IDS_WORKGROUP_LABEL        "Робоча група:"
+    IDS_WORKGROUP_DEFAULT      "WORKGROUP"
+    IDS_PEN_TOUCH              "Перо та дотик:"
+    IDS_PROCESSOR_SPEED        "%1   %2"
+    IDS_PROCESSORS_SPEED       "%1   %2  (%3 процесори)"
+    IDS_MEMORY_AVAILABLE       "%s (доступно %s)"
+    IDS_NO_PEN_TOUCH           "Ввід за допомогою пера та сенсорний ввід недоступні на цьому дисплеї"
+    IDS_PEN                    "Підтримка пера"
+    IDS_PEN_TOUCH_POINTS       "Підтримка пера та підтримка сенсорного вводу за допомогою точок дотику: %1"
+    IDS_PEN_SINGLE_TOUCH       "Підтримка пера та однодотикового вводу"
+    IDS_TOUCH_POINTS           "Підтримка сенсорного вводу за допомогою точок дотику: %1"
+    IDS_SINGLE_TOUCH           "Підтримка однодотикового вводу"
+    IDS_TYPE_32_X86            "32-розрядна операційна система на базі процесора x86"
+    IDS_TYPE_32_X64            "32-розрядна операційна система на базі процесора x64"
+    IDS_TYPE_64_X64            "64-розрядна операційна система на базі процесора x64"
+    IDS_TYPE_32_ARM            "32-розрядна операційна система на базі процесора ARM"
+    IDS_TYPE_64_ARM            "64-розрядна операційна система на базі процесора ARM"
+    IDS_DEVICE_MANAGER         "Диспетчер пристроїв"
+    IDS_REMOTE_SETTINGS        "Настройки віддаленого підключення"
+    IDS_SYSTEM_PROTECTION      "Захист системи"
+    IDS_ADVANCED_SETTINGS      "Додаткові настройки системи"
+    IDS_WINDOWS_UPDATE         "Windows Update"
+    IDS_ACTION_CENTER          "Центр підтримки"
+    IDS_TITLE                  "Перегляд загальних відомостей про комп’ютер"
+    IDS_EDITION                "Випуск"
+    IDS_SYSTEM_GROUP           "Система"
+    IDS_NAME_GROUP             "Настройки імені комп’ютера, домену та робочої групи"
+    IDS_CHANGE_SETTINGS        "Змінити настройки"
+    IDS_COMPUTER_NAME          "Ім’я комп’ютера:"
+    IDS_FULL_NAME              "Повне ім’я комп’ютера:"
+    IDS_DESCRIPTION            "Опис комп’ютера:"
+    IDS_ACTIVATION             "Активація"
+    IDS_PRODUCT_ID             "Номер продукту:"
+    IDS_UNAVAILABLE            "Недоступно"
+    IDS_PROCESSOR              "Процесор:"
+    IDS_MEMORY                 "Установлена оперативна пам’ять (ОЗП):"
+    IDS_SYSTEM_TYPE            "Тип системи:"
+    IDS_RATING                 "Оцінка:"
+    IDS_COPYRIGHT              "© Project Arctic, %1. Усі права захищено."
+    IDS_BUILD                  "Збірка %1 від %2"
+    IDS_ACTIVATION_NOT_NEEDED  "Arctic — вільна система: активація не потрібна"
+    IDS_PERFORMANCE_TOOLS      "Лічильники та засоби продуктивності"
+    IDS_GHZ                    "%s ГГц"
+}

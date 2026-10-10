@@ -114,8 +114,10 @@ static HRESULT WINAPI tray_Exec( IOleCommandTarget *iface, const GUID *group, DW
     {
     case OLECMDID_NEW:
         tray_start();
+        listen_start();
         return S_OK;
     case OLECMDID_SAVE:
+        listen_stop();
         tray_stop();
         return S_OK;
     }

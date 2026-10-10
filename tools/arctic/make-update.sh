@@ -76,6 +76,18 @@ if [ "$WINDOWS" = 1 ]; then
             done
         fi
     done < <(find "$SRC" -type f -print0)
+    # What ReactOS built once and Wine builds now (the Sound panel): the copy
+    # on C: is ReactOS's still, a native file that Wine would load before its
+    # own and that wineboot leaves alone. Wine's goes in its place.
+    for name in mmsys.cpl; do
+        wine_file="$BUILD/wine/usr/lib/wine/x86_64-windows/$name"
+        [ -f "$wine_file" ] && [ ! -e "$SRC/System32/$name" ] && [ -f "$C/Windows/System32/$name" ] || continue
+        if ! grep -qa "Wine builtin DLL" "$C/Windows/System32/$name" && ! cmp -s "$wine_file" "$C/Windows/System32/$name"; then
+            changed+=("System32/$name")
+            mkdir -p "$U/Windows/System32"
+            cp "$wine_file" "$U/Windows/System32/$name"
+        fi
+    done
     echo "C:\\Windows: ${#changed[@]} files differ"
     printf '  %s\n' "${changed[@]}"
     if [ ${#changed[@]} -gt 0 ] && [ "$LIVE" = 1 ]; then

@@ -1,0 +1,28 @@
+REGEDIT4
+
+; Windows 7's System page of the Control Panel (systemcpl.dll): a shell folder
+; Explorer browses into, as {BB06C0E4-...} is in Windows
+[HKEY_CLASSES_ROOT\CLSID\{BB06C0E4-D293-4f75-8A90-CB05B6477EEE}]
+@="System"
+"LocalizedString"="@C:\\Windows\\System32\\systemcpl.dll,-1"
+"InfoTip"="@C:\\Windows\\System32\\systemcpl.dll,-2"
+"System.ApplicationName"="Microsoft.System"
+"System.ControlPanel.Category"="5"
+
+[HKEY_CLASSES_ROOT\CLSID\{BB06C0E4-D293-4f75-8A90-CB05B6477EEE}\DefaultIcon]
+@="C:\\Windows\\System32\\systemcpl.dll,-1"
+
+[HKEY_CLASSES_ROOT\CLSID\{BB06C0E4-D293-4f75-8A90-CB05B6477EEE}\InProcServer32]
+@="C:\\Windows\\System32\\systemcpl.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\CLSID\{BB06C0E4-D293-4f75-8A90-CB05B6477EEE}\ShellFolder]
+"Attributes"=dword:28000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{BB06C0E4-D293-4f75-8A90-CB05B6477EEE}]
+@="System"
+
+; System Properties (sysdm.cpl) opens from the System page ("control sysdm.cpl,,2"):
+; the Control Panel lists the page, not the applet as well
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\don't load]
+"sysdm.cpl"="no"

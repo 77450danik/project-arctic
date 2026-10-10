@@ -1,0 +1,11 @@
+MODULE    = ntlanman.dll
+IMPORTS   = comctl32 shell32 user32 gdi32 advapi32 ole32 iphlpapi ws2_32 bcrypt credui
+
+VER_FILEDESCRIPTION_STR = "Microsoft Windows Network"
+
+SOURCES = \
+	dialogs.c \
+	discover.c \
+	main.c \
+	ntlanman.rc \
+	smb2.c
