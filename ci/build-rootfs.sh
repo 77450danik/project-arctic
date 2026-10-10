@@ -138,6 +138,10 @@ if [ -d "$REACTOS/Windows" ]; then
     rm -f "$PFX/drive_c/windows/system32/explorer.exe" "$RFS"/usr/lib/wine/*-windows/explorer.exe
     rm -f "$RFS"/usr/lib/wine/*-windows/desk.cpl
     # into Wine's resources	hemes, which holds aero: C: shows one Resources folder
+    if [ -d "$REACTOS/Windows/Media" ]; then
+        mkdir -p "$PFX/drive_c/windows/Media"
+        cp -a "$REACTOS/Windows/Media/." "$PFX/drive_c/windows/Media/"
+    fi
     if [ -d "$REACTOS/Windows/Resources/Themes" ]; then
         mkdir -p "$PFX/drive_c/windows/resources/themes"
         cp -a "$REACTOS/Windows/Resources/Themes/." "$PFX/drive_c/windows/resources/themes/"

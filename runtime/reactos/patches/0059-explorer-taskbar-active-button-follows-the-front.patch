@@ -1,0 +1,136 @@
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -33,6 +33,9 @@
+ #define TIMER_ID_ICON_RETRY 6
+ #define ICON_RETRY_INTERVAL 1000
+ #define ICON_RETRY_MAX_COUNT 20
++/* Arctic: the active button follows the window in front */
++#define TIMER_ID_FOREGROUND 7
++#define FOREGROUND_INTERVAL 500
+ #define VALIDATE_RUDE_INTERVAL 1000
+ #define VALIDATE_RUDE_MAX_COUNT 5
+ 
+@@ -481,6 +484,7 @@
+     BOOL m_bFull;
+     BOOL m_bRebuilding;
+     UINT m_nIconRetries;
++    HWND m_hwndForeground;
+ 
+     /* Arctic: ITaskbarList3 of Windows 7 */
+     UINT m_uButtonCreatedMsg;
+@@ -505,7 +509,8 @@
+         m_nRudeAppValidationCounter(0),
+         m_bFull(FALSE),
+         m_bRebuilding(FALSE),
+-        m_nIconRetries(0)
++        m_nIconRetries(0),
++        m_hwndForeground(NULL)
+     {
+         ZeroMemory(&m_ButtonSize, sizeof(m_ButtonSize));
+         m_uHardErrorMsg = RegisterWindowMessageW(L"HardError");
+@@ -1477,6 +1482,27 @@
+         }
+ 
+         TaskItem = FindTaskItem(hWnd);
++
++        /* Arctic: a dialog shows the button of the window it belongs to, as
++           in Windows; the desktop none; the taskbar, the Start menu and the
++           flyouts of this shell leave the button as it is, and the windows
++           of explorer's folders are no "other window" of it */
++        if (TaskItem == NULL)
++        {
++            HWND hwndOwner = ::GetAncestor(hWnd, GA_ROOTOWNER);
++            if (hwndOwner != NULL && hwndOwner != hWnd)
++                TaskItem = FindTaskItem(hwndOwner);
++        }
++        if (TaskItem == NULL)
++        {
++            DWORD dwProcessId = 0;
++
++            if (hWnd == ::GetShellWindow() || ::GetAncestor(hWnd, GA_ROOT) == ::GetShellWindow())
++                return ActivateTaskItem(NULL);
++            if (::GetWindowThreadProcessId(hWnd, &dwProcessId) && dwProcessId == GetCurrentProcessId())
++                return FALSE;
++        }
++
+         if (TaskItem == NULL)
+         {
+             TaskItem = FindOtherTaskItem(hWnd);
+@@ -1491,6 +1517,16 @@
+         return ActivateTaskItem(TaskItem);
+     }
+ 
++    /* Arctic: the shell hook does not tell every change of the window in
++       front (a hidden window that had it goes, and the one before comes
++       back): the button that looks active was then that of none, or of a
++       window behind. What is in front decides, as in Windows. */
++    VOID FollowForeground(IN HWND hWnd)
++    {
++        m_hwndForeground = hWnd;
++        ActivateTask(hWnd);
++    }
++
+     BOOL DeleteTask(IN HWND hWnd)
+     {
+         PTASK_ITEM TaskItem;
+@@ -1829,6 +1865,8 @@
+         m_WinMMDevChgMsg = RegisterWindowMessageW(L"winmm_devicechange");
+         m_Mixer.Initialize();
+ 
++        SetTimer(TIMER_ID_FOREGROUND, FOREGROUND_INTERVAL, NULL);
++
+         return TRUE;
+     }
+ 
+@@ -1837,6 +1875,7 @@
+         m_IsDestroying = TRUE;
+ 
+         KillTimer(TIMER_ID_VALIDATE_RUDE_APP);
++        KillTimer(TIMER_ID_FOREGROUND);
+ 
+         /* Unregister the shell hook */
+         RegisterShellHook(m_hWnd, FALSE);
+@@ -1954,7 +1993,7 @@
+ 
+         case HSHELL_WINDOWACTIVATED:
+             OnWindowActivated((HWND)lParam);
+-            ActivateTask((HWND)lParam);
++            FollowForeground((HWND)lParam);
+             break;
+ 
+         case HSHELL_FLASH:
+@@ -2338,15 +2377,16 @@
+         {
+             ASSERT(TaskItem != NULL);
+ 
+-            /* Arctic: the icon is drawn after the button */
+-            Ret |= CDRF_NOTIFYPOSTPAINT;
++            /* Arctic: the icon is drawn after the button; the label of the
++               active one stays where it is, as in Windows 10 */
++            Ret |= CDRF_NOTIFYPOSTPAINT | TBCDRF_NOOFFSET;
+ 
+             if (TaskItem != NULL && ::IsWindow(TaskItem->hWnd))
+             {
+                 /* Make the entire button flashing if necessary */
+                 if (nmtbcd->nmcd.uItemState & CDIS_MARKED)
+                 {
+-                    Ret = TBCDRF_NOBACKGROUND | CDRF_NOTIFYPOSTPAINT;
++                    Ret = TBCDRF_NOBACKGROUND | CDRF_NOTIFYPOSTPAINT | TBCDRF_NOOFFSET;
+                     if (!m_Theme)
+                     {
+                         SelectObject(nmtbcd->nmcd.hdc, GetSysColorBrush(COLOR_HIGHLIGHT));
+@@ -2771,6 +2811,13 @@
+                     SetTimer(wParam, VALIDATE_RUDE_INTERVAL, NULL);
+                 break;
+             }
++            case TIMER_ID_FOREGROUND:
++            {
++                HWND hwndForeground = ::GetForegroundWindow();
++                if (hwndForeground != m_hwndForeground)
++                    FollowForeground(hwndForeground);
++                break;
++            }
+             case TIMER_ID_ICON_RETRY:
+             {
+                 KillTimer(wParam);

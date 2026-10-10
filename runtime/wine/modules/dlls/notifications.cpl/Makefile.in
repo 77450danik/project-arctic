@@ -1,0 +1,10 @@
+MODULE    = notifications.cpl
+IMPORTS   = uxtheme comctl32 shell32 user32 gdi32 advapi32
+
+VER_FILEDESCRIPTION_STR = "Notifications Control Panel Applet"
+
+SOURCES = \
+	main.c \
+	notifications.rc \
+	senders.c \
+	toggle.c

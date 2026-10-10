@@ -1,0 +1,15 @@
+diff --git a/base/shell/explorer/notifyiconscust.cpp b/base/shell/explorer/notifyiconscust.cpp
+--- a/base/shell/explorer/notifyiconscust.cpp
++++ b/base/shell/explorer/notifyiconscust.cpp
+@@ -44,7 +44,10 @@
+     return TRUE;
+ }
+ 
++/* Arctic: the notification settings are in one place, the Control Panel's
++   "Сповіщення" (notifications.cpl); ReactOS's dialog was an empty stub */
+ VOID ShowCustomizeNotifyIcons(HINSTANCE hInst, HWND hExplorer)
+ {
+-    DialogBoxW(hInst, MAKEINTRESOURCEW(IDD_NOTIFICATIONS_CUSTOMIZE), hExplorer, CustomizeNotifyIconsProc);
++    if ((INT_PTR)ShellExecuteW(hExplorer, NULL, L"control.exe", L"notifications.cpl", NULL, SW_SHOWNORMAL) <= 32)
++        DialogBoxW(hInst, MAKEINTRESOURCEW(IDD_NOTIFICATIONS_CUSTOMIZE), hExplorer, CustomizeNotifyIconsProc);
+ }

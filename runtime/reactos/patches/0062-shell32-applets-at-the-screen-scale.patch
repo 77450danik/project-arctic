@@ -1,0 +1,22 @@
+diff --git a/dll/win32/shell32/wine/control.c b/dll/win32/shell32/wine/control.c
+--- a/dll/win32/shell32/wine/control.c
++++ b/dll/win32/shell32/wine/control.c
+@@ -1186,6 +1186,18 @@
+     list_init( &panel.applets );
+ #endif
+ 
++    /* Arctic: an applet draws at the screen's scale, as in Windows: the
++       thread that runs it is aware of the system DPI. rundll32 and control
++       are not, and dwm stretched every applet, blurred, from 96 DPI. */
++    {
++        typedef HANDLE (WINAPI *PFN_SETTHREADDPI)(HANDLE);
++        PFN_SETTHREADDPI pSetThreadDpi =
++            (PFN_SETTHREADDPI)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
++
++        if (pSetThreadDpi)
++            pSetThreadDpi((HANDLE)(LONG_PTR)-2 /* DPI_AWARENESS_CONTEXT_SYSTEM_AWARE */);
++    }
++
+     if (!cmd || !*cmd) {
+         Control_DoWindow(&panel, hWnd, hInst);
+     } else {

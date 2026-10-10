@@ -1,0 +1,11 @@
+REGEDIT4
+
+; The sound of a notification (notifications.cpl, explorer's toasts): Windows 10's
+[HKEY_CURRENT_USER\AppEvents\EventLabels\Notification.Default]
+@="Notification"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Default\.Current]
+@="C:\\Windows\\Media\\Windows Notify System Generic.wav"
+
+[HKEY_CURRENT_USER\AppEvents\Schemes\Apps\.Default\Notification.Default\.Default]
+@="C:\\Windows\\Media\\Windows Notify System Generic.wav"

@@ -1,0 +1,338 @@
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -62,6 +62,7 @@
+ #define TOAST_FRAME_MS      15
+ #define TOAST_BLUR          ArcticDpiScale(30)   /* the acrylic's blur */
+ #define WM_TOAST_CLICKED    (WM_USER + 300) /* to the pager; wParam: closed with its X */
++#define WM_TOAST_SETTINGS   (WM_USER + 301) /* to the pager: its settings button */
+ 
+ enum TOAST_ANIMATION
+ {
+@@ -772,9 +773,12 @@
+ 
+         if (m_animation == TOAST_DECAYED || m_animation == TOAST_ACTIVATED)
+             return 0;
+-        /* its settings would open the notification settings, which are not there yet */
++        /* Arctic: its settings open the settings of the program's notifications */
+         if (PtInRect(&m_rcSettings, pt))
++        {
++            ::PostMessageW(m_hwndNotify, WM_TOAST_SETTINGS, 0, 0);
+             return 0;
++        }
+         ::PostMessageW(m_hwndNotify, WM_TOAST_CLICKED, PtInRect(&m_rcClose, pt), 0);
+         return 0;
+     }
+@@ -909,6 +913,133 @@
+     }
+ }
+ 
++/*
++ * Arctic: the notification settings (notifications.cpl), kept where Windows
++ * keeps them. Each program that sends a notification gets a key under
++ * Notifications\Settings, named by its path with '/' for '\': its name and
++ * icon for the applet, when it last sent one, and what the user allows it.
++ * A notification shows only when notifications are on, the program's are,
++ * with their banners, and focus assist lets it through: off, priority only
++ * (the program on its list) or alarms only (none), by hand or while a
++ * program covers the screen. Then its sound, and its rank in the queue.
++ */
++#define NOTIFY_PUSH_KEY     L"Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications"
++#define NOTIFY_SETTINGS_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings"
++#define NOTIFY_FOCUS_KEY    L"Software\\Arctic\\FocusAssist"
++
++static DWORD NotifyDword(LPCWSTR pszPath, LPCWSTR pszName, DWORD dwDefault)
++{
++    DWORD dwValue, cb = sizeof(dwValue);
++
++    if (RegGetValueW(HKEY_CURRENT_USER, pszPath, pszName, RRF_RT_REG_DWORD, NULL, &dwValue, &cb) != ERROR_SUCCESS)
++        return dwDefault;
++    return dwValue;
++}
++
++/* the program of a window; explorer's own windows are explorer's */
++static void ToastSenderPath(HWND hwnd, LPWSTR pszPath, DWORD cch)
++{
++    typedef BOOL (WINAPI *QUERY_FN)(HANDLE, DWORD, LPWSTR, PDWORD);
++    QUERY_FN pQuery = (QUERY_FN)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "QueryFullProcessImageNameW");
++    DWORD pid = 0, cchPath = cch;
++    HANDLE hProcess;
++    BOOL ok = FALSE;
++
++    if (pQuery && hwnd && GetWindowThreadProcessId(hwnd, &pid) && pid != GetCurrentProcessId() &&
++        (hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)))
++    {
++        ok = pQuery(hProcess, 0, pszPath, &cchPath);
++        CloseHandle(hProcess);
++    }
++    if (!ok && !GetModuleFileNameW(NULL, pszPath, cch))
++        pszPath[0] = UNICODE_NULL;
++}
++
++/* a program in front covers its monitor: a video, a game, a presentation */
++static BOOL ToastFullScreenInFront()
++{
++    HWND hwnd = GetForegroundWindow();
++    MONITORINFO mi = { sizeof(mi) };
++    DWORD pid = 0;
++    RECT rc;
++
++    if (!hwnd || GetAncestor(hwnd, GA_ROOT) == GetShellWindow() ||
++        !GetWindowThreadProcessId(hwnd, &pid) || pid == GetCurrentProcessId() ||
++        (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_MAXIMIZE) || !GetWindowRect(hwnd, &rc) ||
++        !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi))
++        return FALSE;
++    return rc.left <= mi.rcMonitor.left && rc.top <= mi.rcMonitor.top &&
++           rc.right >= mi.rcMonitor.right && rc.bottom >= mi.rcMonitor.bottom;
++}
++
++/* the program's key, made or brought up to date; whether its notification shows */
++static BOOL ToastPolicy(LPCWSTR pszSender, LPCWSTR pszName, LPCWSTR pszIcon, BOOL *pbSound, DWORD *pdwRank)
++{
++    WCHAR szKey[MAX_PATH + 96];
++    size_t cchPrefix = wcslen(NOTIFY_SETTINGS_KEY) + 1;
++    DWORD dwMode;
++    FILETIME ft;
++    HKEY hKey;
++
++    *pbSound = FALSE;
++    *pdwRank = 0;
++    if (!pszSender[0])
++        return TRUE;
++    StringCchPrintfW(szKey, _countof(szKey), L"%s\\%s", NOTIFY_SETTINGS_KEY, pszSender);
++    for (WCHAR *p = szKey + cchPrefix; *p; p++)
++        if (*p == L'\\')
++            *p = L'/';
++    if (RegCreateKeyExW(HKEY_CURRENT_USER, szKey, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS)
++    {
++        LPCWSTR pszFile = PathFindFileNameW(pszSender);
++        WCHAR szName[MAX_PATH];
++
++        if (pszName && pszName[0])
++            StringCchCopyW(szName, _countof(szName), pszName);
++        else
++        {
++            StringCchCopyW(szName, _countof(szName), pszFile);
++            PathRemoveExtensionW(szName);
++        }
++        RegSetValueExW(hKey, L"DisplayName", 0, REG_SZ, (const BYTE *)szName, (wcslen(szName) + 1) * sizeof(WCHAR));
++        if (!pszIcon || !pszIcon[0])
++            pszIcon = pszSender;
++        RegSetValueExW(hKey, L"IconPath", 0, REG_SZ, (const BYTE *)pszIcon, (wcslen(pszIcon) + 1) * sizeof(WCHAR));
++        GetSystemTimeAsFileTime(&ft);
++        RegSetValueExW(hKey, L"LastNotification", 0, REG_QWORD, (const BYTE *)&ft, sizeof(ft));
++        RegCloseKey(hKey);
++    }
++
++    if (!NotifyDword(NOTIFY_PUSH_KEY, L"ToastEnabled", 1) ||
++        !NotifyDword(szKey, L"Enabled", 1) || !NotifyDword(szKey, L"ShowBanner", 1))
++        return FALSE;
++    dwMode = NotifyDword(NOTIFY_FOCUS_KEY, L"Mode", 0);
++    if (!dwMode && ToastFullScreenInFront())
++        dwMode = NotifyDword(NOTIFY_FOCUS_KEY, L"FullScreen", 2);
++    if (dwMode >= 2 || (dwMode == 1 && !NotifyDword(szKey, L"Priority", 0)))
++        return FALSE;
++    *pbSound = NotifyDword(NOTIFY_SETTINGS_KEY, L"NOC_GLOBAL_SETTING_ALLOW_NOTIFICATION_SOUND", 1) &&
++               NotifyDword(szKey, L"PlaySound", 1);
++    *pdwRank = NotifyDword(szKey, L"Rank", 0);
++    return TRUE;
++}
++
++/* Windows 10's sound of a notification (runtime/registry/notifications.reg) */
++static void ToastPlaySound()
++{
++    typedef BOOL (WINAPI *PLAYSOUND_FN)(LPCWSTR, HMODULE, DWORD);
++    static PLAYSOUND_FN pPlaySound;
++
++    if (!pPlaySound)
++    {
++        HMODULE hWinmm = LoadLibraryW(L"winmm.dll");
++        pPlaySound = hWinmm ? (PLAYSOUND_FN)GetProcAddress(hWinmm, "PlaySoundW") : NULL;
++    }
++    /* SND_ALIAS | SND_ASYNC | SND_NODEFAULT */
++    if (pPlaySound)
++        pPlaySound(L"Notification.Default", NULL, 0x00010000 | 0x0001 | 0x0002);
++}
++
+ class CBalloonQueue
+ {
+ public:
+@@ -936,6 +1067,11 @@
+         WCHAR szAttribution[64];
+         WCHAR szImage[MAX_PATH];
+         BOOL bImageCircle;
++        /* Arctic: the program that sent it, and what its settings say */
++        WCHAR szSender[MAX_PATH];
++        BOOL bNoSound;
++        BOOL bSound;
++        DWORD dwRank;
+ 
+         Info(const arctic_toast *toast)
+         {
+@@ -953,6 +1089,9 @@
+             StringCchCopyNW(szAttribution, _countof(szAttribution), toast->attribution, _countof(toast->attribution));
+             StringCchCopyNW(szImage, _countof(szImage), toast->image, _countof(toast->image));
+             bImageCircle = toast->image_circle;
++            ToastSenderPath(hwndReply, szSender, _countof(szSender));
++            bNoSound = bSound = FALSE;
++            dwRank = 0;
+         }
+ 
+         Info(InternalIconData * source)
+@@ -984,6 +1123,10 @@
+             dwToastId = dwDuration = 0;
+             szIcon[0] = szAttribution[0] = szImage[0] = UNICODE_NULL;
+             bImageCircle = FALSE;
++            ToastSenderPath(source->hWnd, szSender, _countof(szSender));
++            bNoSound = (source->dwInfoFlags & NIIF_NOSOUND) != 0;
++            bSound = FALSE;
++            dwRank = 0;
+         }
+     };
+ 
+@@ -1007,6 +1150,9 @@
+     DWORD m_dwAppToastId;
+     HICON m_hAppIcon;
+ 
++    /* Arctic: the program of the notification shown now */
++    WCHAR m_szSender[MAX_PATH];
++
+ public:
+     CBalloonQueue();
+ 
+@@ -1020,8 +1166,11 @@
+     void OnToastClicked(BOOL bClose);
+     void ShowAppToast(const arctic_toast *toast);
+     void HideAppToast(HWND hwndReply, DWORD dwId);
++    void OnToastSettings();
+ 
+ private:
++    BOOL Allow(Info& info);
++    void Queue(Info& info);
+     void CloseAppToast(UINT uReason);
+ 
+     int IndexOf(InternalIconData * pdata);
+@@ -1144,9 +1293,16 @@
+         return 0;
+     }
+ 
++    LRESULT OnToastSettings(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_BalloonQueue.OnToastSettings();
++        return 0;
++    }
++
+     BEGIN_MSG_MAP(CSysPagerWnd)
+         MESSAGE_HANDLER(WM_CREATE, OnCreate)
+         MESSAGE_HANDLER(WM_TOAST_CLICKED, OnToastClicked)
++        MESSAGE_HANDLER(WM_TOAST_SETTINGS, OnToastSettings)
+         MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
+         MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBackground)
+         MESSAGE_HANDLER(WM_COMMAND, OnCommand)
+@@ -1407,6 +1563,7 @@
+     m_dwAppToastId(0),
+     m_hAppIcon(NULL)
+ {
++    m_szSender[0] = UNICODE_NULL;
+ }
+ 
+ void CBalloonQueue::Init(HWND hwndParent, CNotifyToolbar * toolbar, CTooltips * balloons)
+@@ -1468,10 +1625,18 @@
+     {
+         Info info(notifyItem);
+ 
++        /* Arctic: what the notification settings do not let through goes, as if timed out */
++        if (!Allow(info))
++        {
++            if (m_current != notifyItem)
++                m_toolbar->SendNotifyCallback(notifyItem, NIN_BALLOONTIMEOUT);
++            return;
++        }
++
+         // If m_current == notifyItem, we want to replace the previous balloon even if there is a queue.
+         if (m_current != notifyItem && (m_current != NULL || m_bAppToast || !m_queue.IsEmpty()))
+         {
+-            m_queue.AddTail(info);
++            Queue(info);
+         }
+         else
+         {
+@@ -1527,12 +1692,60 @@
+ {
+     Info info(toast);
+ 
++    if (!Allow(info))
++    {
++        ::PostMessageW(info.hwndReply, RegisterWindowMessageW(ARCTIC_TOAST_EVENT), info.dwToastId, ARCTIC_TOAST_TIMED_OUT);
++        return;
++    }
+     if (m_current != NULL || m_bAppToast || !m_queue.IsEmpty())
+-        m_queue.AddTail(info);
++        Queue(info);
+     else
+         Show(info);
+ }
+ 
++/* Arctic: the notification settings of the program that sent it */
++BOOL CBalloonQueue::Allow(Info& info)
++{
++    WCHAR szName[64];
++
++    StringCchCopyW(szName, _countof(szName), info.szApp);
++    if (!szName[0] && !info.hwndReply)
++        LoadStringW(GetModuleHandleW(NULL), IDS_TOAST_APP, szName, _countof(szName));
++    if (!ToastPolicy(info.szSender, szName, info.szIcon, &info.bSound, &info.dwRank))
++        return FALSE;
++    if (info.bNoSound)
++        info.bSound = FALSE;
++    return TRUE;
++}
++
++/* in turn, those of a higher rank before the others */
++void CBalloonQueue::Queue(Info& info)
++{
++    for (POSITION pos = m_queue.GetHeadPosition(); pos;)
++    {
++        POSITION current = pos;
++        if (m_queue.GetNext(pos).dwRank < info.dwRank)
++        {
++            m_queue.InsertBefore(current, info);
++            return;
++        }
++    }
++    m_queue.AddTail(info);
++}
++
++/* its settings button: the program's notification settings, and it goes */
++void CBalloonQueue::OnToastSettings()
++{
++    WCHAR szParams[MAX_PATH + 32];
++
++    if (m_szSender[0])
++    {
++        StringCchPrintfW(szParams, _countof(szParams), L"notifications.cpl,,\"%s\"", m_szSender);
++        ShellExecuteW(NULL, NULL, L"control.exe", szParams, NULL, SW_SHOWNORMAL);
++    }
++    OnToastClicked(TRUE);
++}
++
+ /* the program took it back (ToastNotifier.Hide) */
+ void CBalloonQueue::HideAppToast(HWND hwndReply, DWORD dwId)
+ {
+@@ -1597,7 +1810,15 @@
+     /* as long as Windows 10 shows a notification, whatever the balloon asks:
+      * SPI_GETMESSAGEDURATION, 5 seconds */
+     ULONG duration = 5;
+-    SystemParametersInfoW(SPI_GETMESSAGEDURATION, 0, &duration, 0);
++    /* Arctic: where Windows keeps it, when the system has no SPI for it */
++    if (!SystemParametersInfoW(SPI_GETMESSAGEDURATION, 0, &duration, 0))
++        duration = NotifyDword(L"Control Panel\\Accessibility", L"MessageDuration", 5);
++    if (!duration)
++        duration = 5;
++
++    StringCchCopyW(m_szSender, _countof(m_szSender), info.szSender);
++    if (info.bSound)
++        ToastPlaySound();
+ 
+     if (info.hwndReply)
+     {

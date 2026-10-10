@@ -1,0 +1,58 @@
+diff --git a/dll/win32/comctl32/tab.c b/dll/win32/comctl32/tab.c
+--- a/dll/win32/comctl32/tab.c
++++ b/dll/win32/comctl32/tab.c
+@@ -1127,6 +1127,11 @@
+   RECT*       rcItem;
+   INT         iIndex;
+   INT         icon_width = 0;
++#ifdef __REACTOS__
++  HFONT       hThemeFont = NULL;
++  HTHEME      theme = GetWindowTheme (infoPtr->hwnd);
++  LOGFONTW    lfTheme;
++#endif
+ 
+   /*
+    * We need to get text information so we need a DC and we need to select
+@@ -1136,6 +1141,16 @@
+ 
+   hFont = infoPtr->hFont ? infoPtr->hFont : GetStockObject (SYSTEM_FONT);
+   hOldFont = SelectObject (hdc, hFont);
++#ifdef __REACTOS__
++  /* Arctic: DrawThemeText draws a label in the theme's font when it has
++     one (Mizu's Source Sans Pro 9): the tab is measured in that one. In
++     the dialog's font the tabs of a property sheet at 150 % came out
++     narrower than their labels. */
++  if (theme && !(infoPtr->dwStyle & TCS_BUTTONS) &&
++      SUCCEEDED(GetThemeFont (theme, hdc, TABP_TABITEM, TIS_NORMAL, TMT_FONT, &lfTheme)) &&
++      (hThemeFont = CreateFontIndirectW (&lfTheme)))
++    SelectObject (hdc, hThemeFont);
++#endif
+ 
+   /*
+    * We will base the rectangle calculations on the client rectangle
+@@ -1473,6 +1488,10 @@
+ 
+   /* Cleanup */
+   SelectObject (hdc, hOldFont);
++#ifdef __REACTOS__
++  if (hThemeFont)
++    DeleteObject (hThemeFont);
++#endif
+   ReleaseDC (infoPtr->hwnd, hdc);
+ }
+ 
+@@ -1774,6 +1793,14 @@
+     /* get the rectangle that the text fits in */
+     if (item->pszText)
+     {
++#ifdef __REACTOS__
++      /* Arctic: in the theme's font, the one DrawThemeText draws it in */
++      HTHEME hTextTheme = GetWindowTheme (infoPtr->hwnd);
++
++      if (!hTextTheme || (infoPtr->dwStyle & TCS_BUTTONS) ||
++          FAILED(GetThemeTextExtent (hTextTheme, hdc, TABP_TABITEM, TIS_NORMAL, item->pszText, -1,
++                                     DT_SINGLELINE, NULL, &rcText)))
++#endif
+       DrawTextW(hdc, item->pszText, -1, &rcText, DT_CALCRECT);
+     }
+     /*

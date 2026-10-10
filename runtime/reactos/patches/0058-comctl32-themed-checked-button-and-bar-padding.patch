@@ -1,0 +1,49 @@
+diff --git a/dll/win32/comctl32/toolbar.c b/dll/win32/comctl32/toolbar.c
+--- a/dll/win32/comctl32/toolbar.c
++++ b/dll/win32/comctl32/toolbar.c
+@@ -138,6 +138,7 @@
+     SIZE     szPadding;       /* padding values around button */
+ #ifdef __REACTOS__
+     SIZE     szBarPadding;       /* padding values around the toolbar (NOT USED BUT STORED) */
++    BOOL     bBarPadSet;      /* Arctic: TB_SETMETRICS gave it: it is the top margin */
+     SIZE     szSpacing;       /* spacing values between buttons */
+     MARGINS  themeMargins;
+ #endif
+@@ -268,7 +269,7 @@
+ static inline int default_top_margin(const TOOLBAR_INFO *infoPtr)
+ {
+ #ifdef __REACTOS__
+-    if (infoPtr->iVersion == 6)
++    if (infoPtr->iVersion == 6 || infoPtr->bBarPadSet)
+         return infoPtr->szBarPadding.cy;
+ #endif
+     return (infoPtr->dwStyle & TBSTYLE_FLAT ? 0 : TOP_BORDER);
+@@ -1138,7 +1139,10 @@
+         (btnPtr->fsState & (TBSTATE_PRESSED | TBSTATE_CHECKED)))
+         OffsetRect(&rcText, 1, 1);
+ 
+-    if (!(tbcd.nmcd.uItemState & CDIS_HOT) && 
++    /* Arctic: a theme has a look of its own for a checked button, as in
++       Windows; the dither of the classic one under it made the taskbar's
++       active button a grey checkerboard with smudged text */
++    if (!theme && !(tbcd.nmcd.uItemState & CDIS_HOT) &&
+         ((tbcd.nmcd.uItemState & CDIS_CHECKED) || (tbcd.nmcd.uItemState & CDIS_INDETERMINATE)))
+         TOOLBAR_DrawPattern (&rc, &tbcd);
+ 
+@@ -5061,10 +5065,15 @@
+         changed = TRUE;
+     }
+ 
+-    if (pMetrics->dwMask & TBMF_PAD)
++    /* Arctic: TBMF_BARPAD, not TBMF_PAD a second time: the taskbar asks
++       for none, and its buttons sat 2 pixels low, the line of a running
++       program under the screen's edge */
++    if (pMetrics->dwMask & TBMF_BARPAD)
+     {
+         infoPtr->szBarPadding.cx = pMetrics->cxBarPad;
+         infoPtr->szBarPadding.cy = pMetrics->cyBarPad;
++        infoPtr->bBarPadSet = TRUE;
++        infoPtr->iTopMargin = default_top_margin(infoPtr);
+         changed = TRUE;
+     }
+ 

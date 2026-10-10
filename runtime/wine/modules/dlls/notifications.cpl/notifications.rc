@@ -1,0 +1,216 @@
+/*
+ * Notifications applet: resources
+ *
+ * The Ukrainian texts are Windows 10's (Windows.UI.SettingsAppThreshold
+ * and SettingsHandlers-nt, uk-UA) where it has them; what Arctic's applet
+ * has of its own (no action center, no lock screen) is Arctic's.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "commctrl.h"
+#include "notifications.h"
+
+/* @makedep: notifications.ico */
+IDI_NOTIFICATIONS ICON notifications.ico
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_NAME              "Notifications"
+    IDS_INFO              "Choose which programs can show notifications, whether they play sounds, and when they stay quiet."
+    IDS_CAPTION           "Notifications & actions"
+    IDS_CLOSE             "Close"
+    IDS_ON                "On"
+    IDS_OFF               "Off"
+    IDS_ON_BANNERS_SOUNDS "On: Banners, Sounds"
+    IDS_ON_BANNERS        "On: Banners"
+    IDS_ON_SOUNDS         "On: Sounds"
+    IDS_ON_NOTHING        "On"
+    IDS_RECENT            "Most recent"
+    IDS_BY_NAME           "Name"
+    IDS_COLUMN_SENDER     "Sender"
+    IDS_COLUMN_STATE      "Notifications"
+    IDS_5_SECONDS         "5 seconds"
+    IDS_7_SECONDS         "7 seconds"
+    IDS_15_SECONDS        "15 seconds"
+    IDS_30_SECONDS        "30 seconds"
+    IDS_1_MINUTE          "1 minute"
+    IDS_5_MINUTES         "5 minutes"
+    IDS_PRIORITY_ONLY     "Priority only"
+    IDS_ALARMS_ONLY       "Alarms only"
+    IDS_SENDER_CAPTION    "%s"
+}
+
+IDD_GENERAL DIALOGEX 0, 0, 252, 218
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Notifications"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "Notifications", IDC_TITLE, 7, 7, 238, 16
+    LTEXT "Get notifications from apps and other senders", IDC_TOASTS_LABEL, 7, 34, 238, 10
+    CONTROL "", IDC_TOASTS, "ArcticToggle", WS_TABSTOP, 7, 46, 100, 14
+    AUTOCHECKBOX "Allow notifications to play sounds", IDC_SOUNDS, 7, 70, 238, 12
+    LTEXT "Show notifications for", IDC_DURATION_LABEL, 7, 96, 238, 10
+    COMBOBOX IDC_DURATION, 7, 108, 100, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "Notifications go away after this time. One stays while the pointer is over it.", IDC_DURATION_TEXT, 7, 128, 238, 20
+}
+
+IDD_SENDERS DIALOGEX 0, 0, 252, 218
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Senders"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "Get notifications from these senders", IDC_TITLE, 7, 7, 238, 12
+    LTEXT "Select a sender to see more settings. Some senders might also have their own notification settings. If so, open the sender to change them.", IDC_SENDERS_TEXT, 7, 22, 238, 34
+    LTEXT "Sort by:", -1, 7, 60, 50, 10
+    COMBOBOX IDC_SORT, 60, 58, 90, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL "", IDC_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 7, 76, 238, 114
+    LTEXT "No notifications from any sender yet.", IDC_EMPTY, 7, 194, 170, 20
+    PUSHBUTTON "&Settings...", IDC_OPTIONS, 185, 196, 60, 14
+}
+
+IDD_FOCUS DIALOGEX 0, 0, 252, 218
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Focus assist"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "Focus assist", IDC_TITLE, 7, 7, 238, 12
+    LTEXT "Choose which notifications you want to see and hear so you can stay focused. The others won't show.", -1, 7, 22, 238, 18
+    AUTORADIOBUTTON "Off", IDC_F_OFF, 7, 44, 238, 10, WS_GROUP | WS_TABSTOP
+    LTEXT "Get all notifications from your apps and contacts.", -1, 19, 55, 226, 9
+    AUTORADIOBUTTON "Priority only", IDC_F_PRIORITY, 7, 67, 238, 10
+    LTEXT "See only selected notifications from the priority list.", -1, 19, 78, 226, 9
+    AUTORADIOBUTTON "Alarms only", IDC_F_ALARMS, 7, 90, 238, 10
+    LTEXT "Hide all notifications.", -1, 19, 101, 226, 9
+    LTEXT "Priority list", IDC_F_LIST_LABEL, 7, 116, 238, 10
+    CONTROL "", IDC_F_LIST, "SysListView32", LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP | WS_GROUP, 7, 127, 238, 46
+    GROUPBOX "Automatic rules", -1, 7, 177, 238, 36
+    AUTOCHECKBOX "When I'm using an app in full screen mode", IDC_F_FULLSCREEN, 14, 189, 140, 18, BS_MULTILINE | WS_TABSTOP
+    COMBOBOX IDC_F_FSMODE, 158, 191, 80, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+}
+
+IDD_SENDER DIALOGEX 0, 0, 240, 178
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION ""
+FONT 8, "MS Shell Dlg"
+{
+    ICON "", IDC_S_ICON, 10, 8, 20, 20, SS_CENTERIMAGE
+    LTEXT "", IDC_S_NAME, 38, 12, 194, 16, SS_ENDELLIPSIS
+    LTEXT "Notifications", IDC_S_LABEL, 10, 36, 220, 10
+    CONTROL "", IDC_S_ENABLED, "ArcticToggle", WS_TABSTOP, 10, 48, 100, 14
+    AUTOCHECKBOX "Show notification banners", IDC_S_BANNER, 10, 70, 220, 12
+    AUTOCHECKBOX "Play a sound when a notification arrives", IDC_S_SOUND, 10, 86, 220, 12
+    GROUPBOX "Priority of notifications", -1, 10, 104, 220, 50
+    AUTORADIOBUTTON "Top: shown before all others", IDC_S_TOP, 18, 116, 206, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "High: shown before normal ones", IDC_S_HIGH, 18, 128, 206, 10
+    AUTORADIOBUTTON "Normal", IDC_S_NORMAL, 18, 140, 206, 10
+    DEFPUSHBUTTON "OK", IDOK, 114, 158, 56, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 174, 158, 56, 14
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_NAME              "Сповіщення"
+    IDS_INFO              "Виберіть, які програми можуть показувати сповіщення, чи відтворювати їхні звуки і коли їх приховувати."
+    IDS_CAPTION           "Сповіщення й дії"
+    IDS_CLOSE             "Закрити"
+    IDS_ON                "Увімк."
+    IDS_OFF               "Вимк."
+    IDS_ON_BANNERS_SOUNDS "Увімк.: банери, звуки"
+    IDS_ON_BANNERS        "Увімк.: банери"
+    IDS_ON_SOUNDS         "Увімк.: звуки"
+    IDS_ON_NOTHING        "Увімк."
+    IDS_RECENT            "Найновіші"
+    IDS_BY_NAME           "Ім’я"
+    IDS_COLUMN_SENDER     "Відправник"
+    IDS_COLUMN_STATE      "Сповіщення"
+    IDS_5_SECONDS         "5 секунд"
+    IDS_7_SECONDS         "7 секунд"
+    IDS_15_SECONDS        "15 секунд"
+    IDS_30_SECONDS        "30 секунд"
+    IDS_1_MINUTE          "1 хвилина"
+    IDS_5_MINUTES         "5 хвилин"
+    IDS_PRIORITY_ONLY     "Лише пріоритетні"
+    IDS_ALARMS_ONLY       "Лише будильники"
+    IDS_SENDER_CAPTION    "%s"
+}
+
+IDD_GENERAL DIALOGEX 0, 0, 252, 218
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Сповіщення"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "Сповіщення", IDC_TITLE, 7, 7, 238, 16
+    LTEXT "Отримувати сповіщення від програм та інших відправників", IDC_TOASTS_LABEL, 7, 34, 238, 10
+    CONTROL "", IDC_TOASTS, "ArcticToggle", WS_TABSTOP, 7, 46, 100, 14
+    AUTOCHECKBOX "Дозволити відтворення звуку для сповіщень", IDC_SOUNDS, 7, 70, 238, 12
+    LTEXT "Виберіть тривалість відображення сповіщень", IDC_DURATION_LABEL, 7, 96, 238, 10
+    COMBOBOX IDC_DURATION, 7, 108, 100, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "Через цей час сповіщення зникає. Поки на ньому вказівник, воно лишається.", IDC_DURATION_TEXT, 7, 128, 238, 20
+}
+
+IDD_SENDERS DIALOGEX 0, 0, 252, 218
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Відправники"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "Отримувати сповіщення від цих відправників", IDC_TITLE, 7, 7, 238, 12
+    LTEXT "Виберіть відправника, щоб переглянути додаткові налаштування. Деякі відправники можуть також мати власні налаштування сповіщень. Якщо це так, відкрийте відправника, щоб змінити налаштування.", IDC_SENDERS_TEXT, 7, 22, 238, 34
+    LTEXT "Сортувати за:", -1, 7, 60, 52, 10
+    COMBOBOX IDC_SORT, 62, 58, 90, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL "", IDC_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 7, 76, 238, 114
+    LTEXT "Поки що немає сповіщень від жодного відправника.", IDC_EMPTY, 7, 194, 170, 20
+    PUSHBUTTON "&Налаштування...", IDC_OPTIONS, 181, 196, 64, 14
+}
+
+IDD_FOCUS DIALOGEX 0, 0, 252, 218
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Планувальник сповіщень"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "Планувальник сповіщень", IDC_TITLE, 7, 7, 238, 12
+    LTEXT "Виберіть сповіщення, які хочете переглядати і чути, щоб залишатися зосередженим. Інші сповіщення не з’являтимуться.", -1, 7, 22, 238, 18
+    AUTORADIOBUTTON "Вимкнуто", IDC_F_OFF, 7, 44, 238, 10, WS_GROUP | WS_TABSTOP
+    LTEXT "Отримувати всі сповіщення від програм і контактів.", -1, 19, 55, 226, 9
+    AUTORADIOBUTTON "Лише пріоритетні", IDC_F_PRIORITY, 7, 67, 238, 10
+    LTEXT "Показувати лише вибрані сповіщення зі списку пріоритетів.", -1, 19, 78, 226, 9
+    AUTORADIOBUTTON "Лише будильники", IDC_F_ALARMS, 7, 90, 238, 10
+    LTEXT "Приховувати всі сповіщення.", -1, 19, 101, 226, 9
+    LTEXT "Список пріоритетів", IDC_F_LIST_LABEL, 7, 116, 238, 10
+    CONTROL "", IDC_F_LIST, "SysListView32", LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP | WS_GROUP, 7, 127, 238, 46
+    GROUPBOX "Автоматичні правила Планувальника сповіщень", -1, 7, 177, 238, 36
+    AUTOCHECKBOX "Коли я використовую програму в повноекранному режимі", IDC_F_FULLSCREEN, 14, 189, 140, 18, BS_MULTILINE | WS_TABSTOP
+    COMBOBOX IDC_F_FSMODE, 158, 191, 80, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+}
+
+IDD_SENDER DIALOGEX 0, 0, 240, 178
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION ""
+FONT 8, "MS Shell Dlg"
+{
+    ICON "", IDC_S_ICON, 10, 8, 20, 20, SS_CENTERIMAGE
+    LTEXT "", IDC_S_NAME, 38, 12, 194, 16, SS_ENDELLIPSIS
+    LTEXT "Сповіщення", IDC_S_LABEL, 10, 36, 220, 10
+    CONTROL "", IDC_S_ENABLED, "ArcticToggle", WS_TABSTOP, 10, 48, 100, 14
+    AUTOCHECKBOX "Відображати банери зі сповіщеннями", IDC_S_BANNER, 10, 70, 220, 12
+    AUTOCHECKBOX "Подавати звуковий сигнал, коли надходить сповіщення", IDC_S_SOUND, 10, 86, 220, 12
+    GROUPBOX "Пріоритет сповіщень", -1, 10, 104, 220, 50
+    AUTORADIOBUTTON "Найвищий: показувати першими", IDC_S_TOP, 18, 116, 206, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Високий: показувати перед звичайними", IDC_S_HIGH, 18, 128, 206, 10
+    AUTORADIOBUTTON "Звичайний", IDC_S_NORMAL, 18, 140, 206, 10
+    DEFPUSHBUTTON "OK", IDOK, 114, 158, 56, 14
+    PUSHBUTTON "Скасувати", IDCANCEL, 174, 158, 56, 14
+}

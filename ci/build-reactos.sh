@@ -93,6 +93,9 @@ for kbd in $KEYBOARDS; do
     cp "$(find build/dll/keyboard -name "$kbd.dll" -print -quit)" "$OUT/Windows/System32/"
 done
 cp build/media/themes/Mizu/mizu.msstyles/mizu.msstyles "$OUT/Windows/Resources/Themes/Mizu/"
+# Windows 10's sounds the shell plays (a notification), from runtime/art/media
+mkdir -p "$OUT/Windows/Media"
+cp "$ROOT"/runtime/art/media/*.wav "$OUT/Windows/Media/"
 python3 "$ROOT/ci/fix-reactos-imports.py" "$OUT"/Windows/System32/*.dll "$OUT"/Windows/System32/*.cpl "$OUT"/Windows/*.exe
 # the debug files stay out of the image; they turn a crash address into a line
 if [ -d "$WORK/build/symbols" ]; then
