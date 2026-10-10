@@ -82,7 +82,9 @@ def dialog_rc(name, data):
         if isinstance(c_cls, int):
             c_cls = CLASSES.get(c_cls, f"#{c_cls}")
         cid = cid if cid < 0x80000000 else cid - 0x100000000
-        line = f"    CONTROL {quote(c_text)}, {cid}, {quote(c_cls)}, {c_style:#010x}, {cx_}, {cy_}, {cw}, {ch}"
+        # a CONTROL is visible unless it says otherwise, whatever its style says
+        hidden = "" if c_style & 0x10000000 else "NOT WS_VISIBLE | "
+        line = f"    CONTROL {quote(c_text)}, {cid}, {quote(c_cls)}, {hidden}{c_style:#010x}, {cx_}, {cy_}, {cw}, {ch}"
         if c_ex or c_help:
             line += f", {c_ex:#010x}"
         if c_help:

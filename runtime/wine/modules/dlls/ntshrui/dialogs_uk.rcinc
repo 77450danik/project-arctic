@@ -1,0 +1,162 @@
+/* The dialogs of Windows 10 (uk-UA), written by tools/res2rc.py from
+ * ntshrui.dll.mui (the Sharing page, Advanced Sharing, New Share, the two
+ * pages of the sharing wizard), aclui.dll.mui (the permissions page) and
+ * objsel.dll.mui (Select Users or Groups, Object Types, Locations).
+ *
+ * Changed by hand, and nothing else: the folder's picture is an icon and not
+ * a bitmap; the wizard's pages are children of Arctic's own wizard window;
+ * the names of Select Users or Groups are typed into an edit box (RICHEDIT50W
+ * there), its label is a text (a link to the help there) and its window is
+ * not resized; "Додатково..." of it is disabled, there is nothing to search;
+ * the help links of the permissions page and of the wizard are left out. */
+
+IDD_SHARING_PAGE DIALOGEX 0, 0, 227, 251
+STYLE 0x80c82048
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "Спільний доступ до мережевих файлів і папок", -1, "Button", 0x50000007, 6, 7, 215, 83
+    CONTROL "", 1021, "Static", 0x50000a03, 13, 21, 21, 20
+    CONTROL "Документи", 1058, "Static", 0x50020080, 43, 21, 171, 9
+    CONTROL "Спільний ресурс", 4407, "Static", 0x50020000, 43, 30, 171, 9
+    CONTROL "&Мережевий шлях:", -1, "Static", 0x50020000, 13, 46, 199, 8
+    CONTROL "", 4406, "Edit", 0x50000880, 13, 56, 199, 12
+    CONTROL "&Дозволити спільний доступ...", 1059, "Button", 0x50010000, 13, 69, 111, 14
+    CONTROL "Додаткові настройки спільного доступу", -1, "Button", 0x50000007, 6, 96, 215, 58
+    CONTROL "Встановлення особливих дозволів, створення кількох спільних ресурсів та встановлення інших додаткових параметрів спільного доступу.", -1, "Static", 0x50020000, 13, 108, 201, 25
+    CONTROL "Додаткові &настройки спільного доступу...", 1060, "Button", 0x50010000, 13, 134, 156, 14
+    CONTROL "Захист паролем", 1056, "Button", 0x50000007, 6, 160, 215, 85
+    CONTROL "", 1061, "SysLink", 0x50010000, 13, 169, 201, 71
+END
+
+IDD_ADVANCED DIALOGEX 0, 0, 234, 204
+STYLE 0x80c800c8
+CAPTION "Додаткові настройки спільного доступу"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "Дозво&лити спільний доступ до цієї папки", 1020, "Button", 0x50010003, 10, 10, 204, 8
+    CONTROL "Параметри", -1, "Button", 0x50000007, 10, 25, 214, 151
+    CONTROL "Спільний р&есурс:", 1003, "Static", 0x50020000, 22, 38, 61, 8
+    CONTROL "", 1001, "Edit", 0x50810080, 22, 49, 192, 12
+    CONTROL "", 1015, "ComboBox", 0x50210103, 22, 49, 192, 76
+    CONTROL "&Додати", 1017, "Button", 0x50010000, 22, 65, 42, 14
+    CONTROL "В&идалити", 1012, "Button", 0x50010000, 64, 65, 42, 14
+    CONTROL "&Обмеження кількості одночасних користувачів до:", 1016, "Static", 0x50020000, 22, 84, 147, 18
+    CONTROL "", 1011, "Edit", 0x50812080, 176, 84, 37, 12
+    CONTROL "", 1010, "msctls_updown32", 0x500000b6, 202, 84, 11, 12
+    CONTROL "&Примітки:", 1004, "Static", 0x50020000, 22, 105, 66, 8
+    CONTROL "", 1002, "Edit", 0x50810044, 22, 113, 192, 36
+    CONTROL "До&зволи", 1008, "Button", 0x50010000, 22, 153, 54, 14
+    CONTROL "&Кешування", 1019, "Button", 0x50010000, 79, 153, 54, 14
+    CONTROL "OK", 1, "Button", 0x50010001, 66, 183, 50, 14
+    CONTROL "Скасувати", 2, "Button", 0x50010000, 120, 183, 50, 14
+    CONTROL "Застосувати", 1024, "Button", 0x50010000, 174, 183, 50, 14
+END
+
+IDD_NEW_SHARE DIALOGEX 6, 18, 249, 83
+STYLE 0x90c800c0
+CAPTION "Новий спільний ресурс"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "Спільний р&есурс:", 1003, "Static", 0x50020000, 6, 8, 61, 8
+    CONTROL "", 1001, "Edit", 0x50810080, 68, 6, 118, 12
+    CONTROL "&Опис:", 1004, "Static", 0x50020000, 6, 22, 50, 8
+    CONTROL "", 1002, "Edit", 0x50810080, 68, 20, 118, 12
+    CONTROL "Гранична кількість користувачів", 1005, "Button", 0x50020007, 6, 37, 180, 42
+    CONTROL "м&аксимальна", 1006, "Button", 0x50030009, 12, 49, 116, 10
+    CONTROL "&не більше:", 1007, "Button", 0x50000009, 12, 62, 50, 10
+    CONTROL "", 1011, "Edit", 0x50812080, 64, 61, 43, 12
+    CONTROL "", 1010, "msctls_updown32", 0x500000b6, 81, 60, 6, 12
+    CONTROL "OK", 1, "Button", 0x50030001, 189, 6, 56, 14
+    CONTROL "Скасувати", 2, "Button", 0x50010000, 189, 23, 56, 14
+    CONTROL "&Дозволи", 1008, "Button", 0x50010000, 189, 40, 56, 14
+END
+
+IDD_WIZARD_PEOPLE DIALOGEX 0, 0, 317, 143
+STYLE 0x40000448
+FONT 9, "Segoe UI"
+BEGIN
+    CONTROL "", 4004, "SysLink", 0x50010000, 0, 0, 317, 27
+    CONTROL "", 4005, "ComboBox", 0x50210142, 0, 27, 241, 80
+    CONTROL "&Додати", 4015, "Button", 0x50010001, 244, 27, 50, 12
+    CONTROL "", 4006, "SysListView32", 0x5081000d, 0, 43, 294, 86
+    CONTROL "", 4016, "SysLink", 0x50010000, 0, 132, 317, 9
+END
+
+IDD_WIZARD_DONE DIALOGEX 0, 0, 317, 143
+STYLE 0x40000448
+FONT 9, "Segoe UI"
+BEGIN
+    CONTROL "", 4101, "SysLink", 0x50010000, 0, 0, 317, 27
+    CONTROL "", 4102, "SysListView32", 0x50810000, 0, 27, 317, 92
+    CONTROL "", 4103, "Static", 0x50000a03, 0, 122, 9, 9
+    CONTROL "", 4104, "SysLink", 0x50010000, 12, 122, 305, 9
+    CONTROL "", 4105, "SysLink", 0x50010000, 0, 134, 317, 9
+END
+
+IDD_PERMISSIONS DIALOGEX 0, 0, 227, 215
+STYLE 0x50c00040
+CAPTION "Безпека"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "Ім’я об’єкта:", 1014, "Static", NOT WS_VISIBLE | 0x48020000, 7, 7, 50, 8
+    CONTROL "", 1015, "Edit", NOT WS_VISIBLE | 0x48000880, 60, 7, 160, 8
+    CONTROL "", 1016, "Static", NOT WS_VISIBLE | 0x48000003, 7, 30, 8, 8
+    CONTROL "Не вдалося отримати або відобразити потрібні відомості про безпеку.", 1012, "Static", NOT WS_VISIBLE | 0x40020000, 20, 30, 199, 32
+    CONTROL "&Групи або користувачі:", 1013, "Static", 0x50020000, 7, 25, 213, 8
+    CONTROL "", 1000, "SysListView32", 0x50a1c01d, 7, 35, 213, 43
+    CONTROL "", 6040, "Edit", NOT WS_VISIBLE | 0x40a00804, 7, 35, 213, 43
+    CONTROL "Щоб змінити дозволи, натисніть кнопку ""Змінити"".", 6027, "Static", NOT WS_VISIBLE | 0x48020000, 7, 79, 108, 17
+    CONTROL "&Додати...", 1001, "Button", 0x50010000, 116, 81, 50, 14
+    CONTROL "В&идалити", 1002, "Button", 0x50010000, 170, 81, 50, 14
+    CONTROL "&Змінити...", 1003, "Button", NOT WS_VISIBLE | 0x48010000, 160, 81, 60, 14
+    CONTROL "Заборонити", 1010, "Static", 0x50020001, 176, 104, 43, 8
+    CONTROL "Дозволити", 1009, "Static", 0x50020001, 133, 104, 42, 8
+    CONTROL "", 6024, "Static", 0x50020000, 7, 96, 105, 16
+    CONTROL "", 1008, "Static", 0x50020000, 7, 104, 105, 8
+    CONTROL "", 1004, "CHECKLIST_ACLUI", 0x50800002, 7, 114, 213, 61, 0x00010000
+    CONTROL "Дод&атково", 1005, "Button", 0x50010000, 160, 179, 60, 14
+    CONTROL "Щоб установити особливі дозволи або додаткові параметри, натисніть кнопку ""Додатково"".", 6026, "Static", 0x50020000, 7, 179, 148, 24
+END
+
+IDD_SELECT_OBJECTS DIALOGEX 0, 0, 314, 135
+STYLE 0x80c800c0
+CAPTION "Вибір об'єктів"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "&Виберіть тип об'єкта:", 323, "Static", 0x50020000, 7, 7, 225, 8
+    CONTROL "", 231, "Edit", 0x50810880, 7, 17, 225, 14
+    CONTROL "&Типи об'єктів...", 230, "Button", 0x50010000, 238, 17, 70, 14
+    CONTROL "&У такому місці:", 324, "Static", 0x50020000, 7, 35, 225, 8
+    CONTROL "", 233, "Edit", 0x50810880, 7, 45, 225, 14
+    CONTROL "&Розташування...", 232, "Button", 0x50010000, 238, 45, 70, 14
+    CONTROL "Введіть імена об'єктів, що в&ибираються:", 126, "Static", 0x50020000, 7, 66, 225, 8
+    CONTROL "", 214, "Edit", 0x50a10044, 7, 76, 225, 31
+    CONTROL "&Перевірити імена", 235, "Button", 0x50010000, 238, 76, 70, 14
+    CONTROL "&Додатково...", 236, "Button", 0x58010000, 7, 114, 70, 14
+    CONTROL "OK", 1, "Button", 0x50010001, 202, 114, 50, 14
+    CONTROL "Скасувати", 2, "Button", 0x50010000, 256, 114, 50, 14
+END
+
+IDD_OBJECT_TYPES DIALOGEX 0, 0, 331, 159
+STYLE 0x80c800c0
+CAPTION "Типи об'єктів"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "Виберіть типи об'єктів, які потрібно знайти.", -1, "Static", 0x50020000, 7, 7, 317, 8
+    CONTROL "&Типи об'єктів:", -1, "Static", 0x50020000, 7, 26, 317, 8
+    CONTROL "", 239, "SysListView32", 0x50814001, 7, 37, 317, 94
+    CONTROL "OK", 1, "Button", 0x50010001, 220, 138, 50, 14
+    CONTROL "Скасувати", 2, "Button", 0x50010000, 274, 138, 50, 14
+END
+
+IDD_LOCATIONS DIALOGEX 0, 0, 331, 159
+STYLE 0x80c800c0
+CAPTION "Розташування"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "Виберіть розташування, в якому слід виконати пошук.", -1, "Static", 0x50020000, 7, 7, 317, 8
+    CONTROL "&Розташування:", -1, "Static", 0x50020000, 7, 26, 317, 8
+    CONTROL "", 241, "SysTreeView32", 0x50810017, 7, 36, 317, 95
+    CONTROL "OK", 1, "Button", 0x50010001, 220, 138, 50, 14
+    CONTROL "Скасувати", 2, "Button", 0x50010000, 274, 138, 50, 14
+END

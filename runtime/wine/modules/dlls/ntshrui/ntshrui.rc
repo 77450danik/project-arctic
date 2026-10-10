@@ -1,0 +1,159 @@
+/*
+ * Sharing of folders: resources
+ *
+ * The dialogs and the Ukrainian texts are Windows 10's own (ntshrui.dll.mui,
+ * aclui.dll.mui, objsel.dll.mui of uk-UA: dialogs_uk.rcinc, written by
+ * tools/res2rc.py). Two windows are Arctic's: Offline Settings, which the
+ * Windows they were taken from does not have (cscui.dll is not in its
+ * edition), and the frame of the sharing wizard, an Aero wizard there.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "commctrl.h"
+#include "ntshrui.h"
+
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+#include "dialogs_uk.rcinc"
+
+IDD_CACHING DIALOGEX 0, 0, 268, 150
+STYLE DS_SHELLFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Автономні параметри"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT "Можна вибрати, які файли та програми (якщо такі є) доступні користувачам, що працюють автономно.", -1, 7, 7, 254, 18
+    CONTROL "&Лише файли та програми, указані користувачами, доступні в автономному режимі", IDC_CACHE_MANUAL, "Button", BS_AUTORADIOBUTTON | BS_MULTILINE | BS_TOP | WS_GROUP | WS_TABSTOP, 7, 30, 254, 18
+    CONTROL "&Файли та програми зі спільної папки недоступні в автономному режимі", IDC_CACHE_NONE, "Button", BS_AUTORADIOBUTTON | BS_MULTILINE | BS_TOP, 7, 52, 254, 18
+    CONTROL "&Усі файли та програми, які користувачі відкривають зі спільної папки, автоматично доступні в автономному режимі", IDC_CACHE_AUTO, "Button", BS_AUTORADIOBUTTON | BS_MULTILINE | BS_TOP, 7, 74, 254, 18
+    AUTOCHECKBOX "&Оптимізувати для швидкодії", IDC_CACHE_FAST, 19, 96, 242, 10, WS_GROUP | WS_TABSTOP
+    DEFPUSHBUTTON "OK", IDOK, 157, 129, 50, 14, WS_GROUP
+    PUSHBUTTON "Скасувати", IDCANCEL, 211, 129, 50, 14
+END
+
+IDD_WIZARD DIALOGEX 0, 0, 365, 218
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Доступ до мережі"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "", IDC_WIZARD_TITLE, 24, 10, 330, 18, SS_NOPREFIX
+    LTEXT "", IDC_WIZARD_PLACE, 24, 36, 317, 143, NOT WS_VISIBLE
+    LTEXT "", IDC_WIZARD_BAND, 0, 190, 365, 28, NOT WS_VISIBLE
+    DEFPUSHBUTTON "", IDOK, 190, 197, 114, 14
+    PUSHBUTTON "Скасувати", IDCANCEL, 308, 197, 50, 14
+END
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+BEGIN
+    IDS_GIVE_ACCESS         "&Give access to"
+    IDS_READ                "Read"
+    IDS_CHANGE              "Change"
+    IDS_FULL_CONTROL        "Full Control"
+    IDS_SHARE_PERMISSIONS   "Share Permissions"
+    IDS_BAD_CHARACTERS      "The share name cannot contain the following characters:\n\t %1"
+    IDS_SHARING             "Sharing"
+    IDS_SHARED              "Shared"
+    IDS_NOT_SHARED          "Not Shared"
+    IDS_NETWORK_ACCESS      "Network access"
+    IDS_CHOOSE_PEOPLE       "Choose people on your network to share with"
+    IDS_TYPE_A_NAME         "Type a name and then click Add, or click the arrow to find someone."
+    IDS_COLUMN_NAME         "Name"
+    IDS_COLUMN_LEVEL        "Permission Level"
+    IDS_NOT_FOUND           "Could not find %1"
+    IDS_SHARE_BUTTON        "S&hare"
+    IDS_FOLDER_SHARED       "Your folder is shared."
+    IDS_LINKS               "You can <A href=""EmailLinks"">e-mail</A> someone links to these shared items, or <A href=""CopyLinks"">copy</A> and paste the links into another program."
+    IDS_SHOW_SHARES         "<A href=""ShowShares"">Show me all the network shares on this computer.</A>"
+    IDS_SLEEP_NOTE          "<A href=""ShowPowerCPL"">Shared items aren't accessible when your computer is asleep.</A>"
+    IDS_DONE                "&Done"
+    IDS_LEVEL_READ          "Read"
+    IDS_LEVEL_WRITE         "Read/Write"
+    IDS_LEVEL_OWNER         "Owner"
+    IDS_MAIL_SUBJECT        "I've shared a folder with you"
+    IDS_MAIL_BODY           "I've shared some of my files or folders with you. To open them, just use the links below."
+    IDS_NO_PASSWORD         "People without a user account and password for this computer can access folders shared with everyone.\n\nTo change this setting, use the <a>Network and Sharing Center</a>."
+    IDS_PASSWORD            "People must have a user account and password for this computer to access shared folders.\n\nTo change this setting, use the <a>Network and Sharing Center</a>."
+    IDS_REMOVE_ACCESS       "Remove access"
+    IDS_SPECIFIC_PEOPLE     "Specific people..."
+    IDS_ROOT_NOT_SHARED     "The sharing wizard cannot share the root of a drive."
+    IDS_CANNOT_SHARE        "These items can't be shared."
+    IDS_EVERYONE            "Everyone"
+    IDS_PERMISSIONS_FOR     "Permissions for %s"
+    IDS_PERMISSIONS_OF      "&Permissions for %s"
+    IDS_PERMISSIONS         "Permissions"
+    IDS_DENY_WARNING        "You are setting a deny permissions entry. Deny entries take precedence over allow entries. This means that if a user is a member of two groups, one that is allowed a permission and another that is denied the same permission, the user is denied that permission.\nDo you want to continue?\n"
+    IDS_SECURITY            "Windows Security"
+    IDS_OBJECT_TYPES        ", or "
+    IDS_OBJECT_NOT_FOUND    "An object named ""%1"" cannot be found. Check the selected object types and location for accuracy and ensure that you typed the object name correctly, or remove this object from the selection."
+    IDS_NAME_NOT_FOUND      "Name Not Found"
+    IDS_TYPE_USERS          "Users"
+    IDS_TYPE_GROUPS         "Groups"
+    IDS_TYPE_BUILTIN        "Built-in security principals"
+    IDS_NAME_TAKEN          "The name ""%1"" is already the share name of another folder."
+    IDS_NAME_EMPTY          "Type a share name."
+    IDS_REMOVE_LEVEL        "Remove"
+END
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+BEGIN
+    IDS_GIVE_ACCESS         "&Надати доступ до"
+    IDS_READ                "Читання"
+    IDS_CHANGE              "Змінення"
+    IDS_FULL_CONTROL        "Повний доступ"
+    IDS_SHARE_PERMISSIONS   "Дозволи для спільного ресурсу"
+    IDS_BAD_CHARACTERS      "Ім’я спільного ресурсу не може містити такі символи:\n\t %1"
+    IDS_SHARING             "Спільний доступ"
+    IDS_SHARED              "Спільний ресурс"
+    IDS_NOT_SHARED          "Немає спільного доступу"
+    IDS_NETWORK_ACCESS      "Доступ до мережі"
+    IDS_CHOOSE_PEOPLE       "Виберіть користувачів мережі, яким слід надати спільний доступ"
+    IDS_TYPE_A_NAME         "Введіть ім’я та натисніть кнопку ""Додати"" або клацніть стрілку, щоб знайти кого-небудь."
+    IDS_COLUMN_NAME         "Ім'я"
+    IDS_COLUMN_LEVEL        "Рівень дозволу"
+    IDS_NOT_FOUND           "Не вдалося знайти %1"
+    IDS_SHARE_BUTTON        "Д&озволити спільний доступ"
+    IDS_FOLDER_SHARED       "Спільний доступ до папки відкрито."
+    IDS_LINKS               "Посилання на ці спільні елементи можна <A href=""EmailLinks""> надіслати електронною поштою</A> або <A href=""CopyLinks"">скопіювати</A> та вставити їх в іншу програму."
+    IDS_SHOW_SHARES         "<A href=""ShowShares"">Показати всі спільні мережеві папки на цьому комп’ютері.</A>"
+    IDS_SLEEP_NOTE          "<A href=""ShowPowerCPL"">Якщо комп’ютер перебуватиме в режимі сну, спільні елементи будуть недоступні</A>"
+    IDS_DONE                "&Готово"
+    IDS_LEVEL_READ          "Читання"
+    IDS_LEVEL_WRITE         "Читання/запис"
+    IDS_LEVEL_OWNER         "Власник"
+    IDS_MAIL_SUBJECT        "Вам надано спільний доступ до папки"
+    IDS_MAIL_BODY           "Вам надано спільний доступ до деяких моїх файлів чи папок. Щоб їх відкрити, слід скористатися нижченаведеними посиланнями."
+    IDS_NO_PASSWORD         "Користувачі без облікових записів користувачів і паролів для цього комп’ютера можуть отримати доступ до файлів, для яких відкритий спільний доступ для всіх користувачів.\n\nЩоб змінити цей параметр, скористайтеся <a>центром мережевих підключень і спільного доступу</a>."
+    IDS_PASSWORD            "Інші користувачі повинні мати обліковий запис користувача та пароль для цього комп’ютера, щоб отримати доступ до папок, для яких ви відкрили спільний доступ.\n\nЩоб змінити цей параметр, скористайтеся <a>центром мережевих підключень і спільного доступу</a>."
+    IDS_REMOVE_ACCESS       "Заборонити доступ"
+    IDS_SPECIFIC_PEOPLE     "Певні користувачі..."
+    IDS_ROOT_NOT_SHARED     "Майстру спільного доступу не вдалося відкрити спільний доступ до кореня пристрою."
+    IDS_CANNOT_SHARE        "Неможливо надати спільний доступ до цих елементів."
+    IDS_EVERYONE            "Усі"
+    IDS_PERMISSIONS_FOR     "Дозволи для %s"
+    IDS_PERMISSIONS_OF      "Дозво&ли для %s"
+    IDS_PERMISSIONS         "Дозволи"
+    IDS_DENY_WARNING        "Ви вказали запис заборони дозволів. Записи заборони мають вищий пріоритет, ніж записи допуску. Інакше кажучи, якщо користувач є членом двох груп, одна з яких має допуск до дозволу, а в іншій цей дозвіл заборонено, для користувача дозвіл буде заборонено.\nПродовжити?\n"
+    IDS_SECURITY            "Безпека у Windows"
+    IDS_OBJECT_TYPES        " або "
+    IDS_OBJECT_NOT_FOUND    "Не вдалося знайти об'єкт з ім'ям ""%1"". Перевірте, чи правильні вибрані типи об'єктів і розташування, а також введене ім'я об'єкта, або видаліть цей об'єкт зі списку вибраних."
+    IDS_NAME_NOT_FOUND      "Імені не знайдено"
+    IDS_TYPE_USERS          "Користувачі"
+    IDS_TYPE_GROUPS         "Групи"
+    IDS_TYPE_BUILTIN        "Вбудовані принципали безпеки"
+    IDS_NAME_TAKEN          "Ім’я «%1» уже є іменем спільного ресурсу іншої папки."
+    IDS_NAME_EMPTY          "Введіть ім’я спільного ресурсу."
+    IDS_REMOVE_LEVEL        "Видалити"
+END

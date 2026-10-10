@@ -1,0 +1,25 @@
+REGEDIT4
+
+; Sharing of folders (docs/M5-network.md): the Sharing page of a folder's and a
+; drive's Properties and "Give access to" of their menu are ntshrui.dll's, a
+; shell extension where Windows has its own
+[HKEY_CLASSES_ROOT\CLSID\{C4C92A37-23B6-415F-A2D9-F836716CC333}]
+@="Shell extensions for sharing"
+
+[HKEY_CLASSES_ROOT\CLSID\{C4C92A37-23B6-415F-A2D9-F836716CC333}\InProcServer32]
+@="C:\\Windows\\System32\\ntshrui.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\Directory\shellex\PropertySheetHandlers\Sharing]
+@="{C4C92A37-23B6-415F-A2D9-F836716CC333}"
+
+[HKEY_CLASSES_ROOT\Drive\shellex\PropertySheetHandlers\Sharing]
+@="{C4C92A37-23B6-415F-A2D9-F836716CC333}"
+
+[HKEY_CLASSES_ROOT\Directory\shellex\ContextMenuHandlers\Sharing]
+@="{C4C92A37-23B6-415F-A2D9-F836716CC333}"
+
+; At logon the host (arctic-smbd) is told the switches of "Change advanced
+; sharing settings" (netcenter.dll); they are the user's, not set here
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run]
+"SharingSettings"="rundll32.exe netcenter.dll,ApplySharingSettings"

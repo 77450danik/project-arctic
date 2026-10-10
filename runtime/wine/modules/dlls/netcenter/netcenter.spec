@@ -3,3 +3,5 @@
 @ stdcall ShowNetworkCenter(ptr ptr str long)
 @ stdcall ShowConnectionStatusW(ptr ptr wstr long)
 @ stdcall ShowConnectionPropertiesW(ptr ptr wstr long)
+@ stdcall ShowAdvancedSharing(ptr ptr str long)
+@ stdcall ApplySharingSettings(ptr ptr str long)

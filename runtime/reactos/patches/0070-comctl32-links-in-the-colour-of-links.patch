@@ -1,0 +1,16 @@
+diff --git a/dll/win32/comctl32/syslink.c b/dll/win32/comctl32/syslink.c
+--- a/dll/win32/comctl32/syslink.c
++++ b/dll/win32/comctl32/syslink.c
+@@ -1708,8 +1708,10 @@
+         infoPtr->HasFocus = FALSE;
+         infoPtr->MouseDownID = -1;
+         infoPtr->TextColor = comctl32_color.clrWindowText;
+-        infoPtr->LinkColor = comctl32_color.clrHighlight;
+-        infoPtr->VisitedColor = comctl32_color.clrHighlight;
++        /* Arctic: a link is drawn in the colour of links, as in Windows; the
++         * colour of the selection is light gray here, on a white page */
++        infoPtr->LinkColor = comctl32_color.clrHotTrackingColor;
++        infoPtr->VisitedColor = comctl32_color.clrHotTrackingColor;
+         infoPtr->BreakChar = ' ';
+         infoPtr->IgnoreReturn = infoPtr->Style & LWS_IGNORERETURN;
+         TRACE("SysLink Ctrl creation, hwnd=%p\n", hwnd);

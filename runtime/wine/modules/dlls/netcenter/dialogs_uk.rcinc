@@ -219,11 +219,11 @@ STYLE 0x40c00040
 CAPTION "Мережа"
 FONT 8, "MS Shell Dlg"
 BEGIN
-    CONTROL "Межа", -1, "Static", 0x40020000, 7, 18, 1, 1
+    CONTROL "Межа", -1, "Static", NOT WS_VISIBLE | 0x40020000, 7, 18, 1, 1
     CONTROL "", 15021, "Edit", 0x58800880, 7, 18, 213, 18
     CONTROL "Підключення через:", -1, "Static", 0x50020000, 7, 7, 84, 8
     CONTROL "", 15003, "Edit", 0x50000880, 28, 21, 182, 12
-    CONTROL "", 16006, "Static", 0x40000003, 12, 20, 12, 12
+    CONTROL "", 16006, "Static", NOT WS_VISIBLE | 0x40000003, 12, 20, 12, 12
     CONTROL "&Настроїти...", 15031, "Button", 0x50010000, 160, 39, 60, 14
     CONTROL "&Компоненти, які використовуються цим підключенням:", 16055, "Static", 0x50020000, 7, 54, 213, 8
     CONTROL "", 15007, "SysListView32", 0x5081c00d, 7, 66, 213, 86

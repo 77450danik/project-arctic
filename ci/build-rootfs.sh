@@ -60,6 +60,8 @@ gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-lxss" "$ROOT/host/init/arctic-lxss.c"
 # Network folders: \\server\share mounted on demand (docs/M5-network.md)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-smb" "$ROOT/host/init/arctic-smb.c" -lpthread
+# Sharing out of Arctic: \\ARCTIC\share served to the network (docs/M5-network.md)
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-smbd" "$ROOT/host/init/arctic-smbd.c" -lpthread
 # Networking: name servers of every interface in one resolv.conf on /run
 # (iwd and the wired DHCP script call resolvconf), names resolved by glibc
 gcc -O2 -Wall -o "$RFS/usr/bin/resolvconf" "$ROOT/host/init/arctic-resolv.c"

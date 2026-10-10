@@ -80,7 +80,7 @@ static double desktop_at; /* the boot screen ends then, a little after the deskt
 static int fast_startup(int restart);
 static uid_t nt_uid;
 static gid_t nt_gid;
-static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid, lxss_pid, smb_pid;
+static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid, lxss_pid, smb_pid, smbd_pid;
 
 static double uptime(void)
 {
@@ -1396,6 +1396,9 @@ static void child_exited(pid_t pid, int status)
     } else if (pid == smb_pid) {
         say("arctic-smb exited (status %d)", status);
         smb_pid = 0;
+    } else if (pid == smbd_pid) {
+        say("arctic-smbd exited (status %d)", status);
+        smbd_pid = 0;
     } else if (pid == wineserver_pid) {
         say("wineserver exited (status %d)", status);
         wineserver_pid = 0;
@@ -2962,6 +2965,13 @@ int main(void)
     char *smb[] = {"/usr/bin/arctic-smb", NULL};
     if (!access(smb[0], X_OK))
         smb_pid = spawn(smb, 0, hostlog);
+
+    /* Sharing out of Arctic: \\ARCTIC\share served to the network
+     * (docs/M5-network.md), the shares themselves set from the "Sharing"
+     * tab and the advanced sharing settings page */
+    char *smbd[] = {"/usr/bin/arctic-smbd", NULL};
+    if (!access(smbd[0], X_OK))
+        smbd_pid = spawn(smbd, 0, hostlog);
 
     /* A Wine newer than what C:'s registry was made with (an update) makes
      * wineboot bring it up to date: Windows' "getting ready" after updates.
