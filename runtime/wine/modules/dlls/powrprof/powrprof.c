@@ -351,11 +351,190 @@ BOOL WINAPI ArcticPowerStatus( struct arctic_power_status *status )
     return TRUE;
 }
 
+static void gpu_name( const struct arctic_gpu *gpu, WCHAR *name, DWORD count );
+
 BOOL WINAPI ArcticGpuList( struct arctic_gpu_list *list, BOOL with_users )
 {
     struct gpu_list_params params = { list, with_users };
 
     if (!init_unix() || WINE_UNIX_CALL( unix_gpu_list, &params )) return FALSE;
+    /* the PCI id database's name, or Windows' when the system has the device listed */
+    for (UINT i = 0; i < list->count; i++) gpu_name( &list->gpus[i], list->gpus[i].name, ARRAY_SIZE(list->gpus[i].name) );
+    return TRUE;
+}
+
+/**********************************************************************
+ *          The graphics card a program is given
+ */
+
+/* the card's name as Windows shows it: the display adapter's DeviceDesc */
+static void gpu_name( const struct arctic_gpu *gpu, WCHAR *name, DWORD count )
+{
+    WCHAR sub[128], dev[64], desc[256], want[32];
+    DWORD len, size;
+    HKEY key;
+
+    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Enum\\PCI", 0, KEY_READ, &key )) return;
+    swprintf( want, ARRAY_SIZE(want), L"VEN_%04X&DEV_%04X", gpu->vendor_id, gpu->device_id );
+    /* VEN_8086&DEV_591B&SUBSYS_00000000 may be there empty beside the one with the device */
+    for (DWORD i = 0; len = ARRAY_SIZE(sub), !RegEnumKeyExW( key, i, sub, &len, NULL, NULL, NULL, NULL ); i++)
+    {
+        HKEY hw;
+        BOOL found = FALSE;
+
+        if (wcsnicmp( sub, want, wcslen( want ) ) || RegOpenKeyExW( key, sub, 0, KEY_READ, &hw )) continue;
+        for (DWORD k = 0; len = ARRAY_SIZE(dev), !found && !RegEnumKeyExW( hw, k, dev, &len, NULL, NULL, NULL, NULL ); k++)
+        {
+            size = sizeof(desc);
+            if (!RegGetValueW( hw, dev, L"DeviceDesc", RRF_RT_REG_SZ, NULL, desc, &size ))
+            {
+                /* "@oem.inf,%name%;Intel(R) HD Graphics 630": the text after ';' */
+                WCHAR *semi = wcsrchr( desc, ';' );
+                lstrcpynW( name, semi ? semi + 1 : desc, count );
+                found = TRUE;
+            }
+        }
+        RegCloseKey( hw );
+        if (found) break;
+    }
+    RegCloseKey( key );
+}
+
+static void add_var( WCHAR *list, size_t *len, size_t max, const WCHAR *name, const WCHAR *value )
+{
+    int n = swprintf( list + *len, max - *len - 1, L"%s=%s", name, value );
+
+    if (n > 0) *len += n + 1;
+    list[*len] = 0;
+}
+
+static DWORD multi_size( const WCHAR *list )
+{
+    const WCHAR *p = list;
+
+    while (*p) p += wcslen( p ) + 1;
+    return (p - list + 1) * sizeof(WCHAR);
+}
+
+/* Vulkan's loader leaves out the drivers of the other cards' makers: their
+ * libraries are not even loaded, and their cards stay asleep */
+static void other_drivers( const struct arctic_gpu_list *list, const struct arctic_gpu *gpu, WCHAR *patterns, size_t max )
+{
+    static const WCHAR *const drivers[] = { NULL, L"*intel*", L"*radeon*,*amd*", L"*nvidia*" };
+    BOOL done[ARRAY_SIZE(drivers)] = { 0 };
+
+    patterns[0] = 0;
+    for (UINT i = 0; i < list->count; i++)
+    {
+        UINT vendor = list->gpus[i].vendor;
+
+        if (vendor == gpu->vendor || vendor >= ARRAY_SIZE(drivers) || !drivers[vendor] || done[vendor]) continue;
+        done[vendor] = TRUE;
+        if (patterns[0]) wcsncat( patterns, L",", max - wcslen( patterns ) - 1 );
+        wcsncat( patterns, drivers[vendor], max - wcslen( patterns ) - 1 );
+    }
+}
+
+/* what a program running on gpu needs in its environment, whatever the cards:
+ * Vulkan (DXVK and vkd3d-proton for Direct3D) and OpenGL through glvnd */
+static void gpu_vars( const struct arctic_gpu_list *list, const struct arctic_gpu *gpu, const struct arctic_gpu *display,
+                      WCHAR *vars, size_t max )
+{
+    WCHAR value[64];
+    size_t len = 0;
+
+    vars[0] = vars[1] = 0;
+    /* the loaders choose the card; a filter by name is not needed */
+    add_var( vars, &len, max, L"DXVK_FILTER_DEVICE_NAME", L"" );
+    add_var( vars, &len, max, L"VKD3D_FILTER_DEVICE_NAME", L"" );
+    other_drivers( list, gpu, value, ARRAY_SIZE(value) );
+    add_var( vars, &len, max, L"VK_LOADER_DRIVERS_DISABLE", value );
+    /* Mesa's layer shows only this card, whoever's driver it has */
+    swprintf( value, ARRAY_SIZE(value), L"%04x:%04x", gpu->vendor_id, gpu->device_id );
+    add_var( vars, &len, max, L"MESA_VK_DEVICE_SELECT", value );
+    add_var( vars, &len, max, L"MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE", L"1" );
+    if (gpu->vendor == ARCTIC_GPU_NVIDIA)
+    {
+        /* NVIDIA's PRIME render offload: its Vulkan layer shows only its card */
+        add_var( vars, &len, max, L"__NV_PRIME_RENDER_OFFLOAD", L"1" );
+        add_var( vars, &len, max, L"__VK_LAYER_NV_optimus", L"NVIDIA_only" );
+        add_var( vars, &len, max, L"DRI_PRIME", L"" );
+        add_var( vars, &len, max, L"__GLX_VENDOR_LIBRARY_NAME", L"nvidia" );
+        add_var( vars, &len, max, L"__EGL_VENDOR_LIBRARY_FILENAMES", L"/usr/share/glvnd/egl_vendor.d/10_nvidia.json" );
+    }
+    else
+    {
+        add_var( vars, &len, max, L"__NV_PRIME_RENDER_OFFLOAD", L"" );
+        add_var( vars, &len, max, L"__VK_LAYER_NV_optimus", L"" );
+        /* Mesa's OpenGL renders on another card than the monitors' with DRI_PRIME */
+        if (gpu != display)
+        {
+            WCHAR pci[32];
+
+            lstrcpynW( pci, gpu->pci, ARRAY_SIZE(pci) );
+            for (size_t k = 0; pci[k]; k++) if (pci[k] == ':' || pci[k] == '.') pci[k] = '_';
+            swprintf( value, ARRAY_SIZE(value), L"pci-%s", pci );
+            add_var( vars, &len, max, L"DRI_PRIME", value );
+        }
+        else add_var( vars, &len, max, L"DRI_PRIME", L"" );
+        /* glvnd would ask NVIDIA's OpenGL first, and it would wake its card */
+        add_var( vars, &len, max, L"__GLX_VENDOR_LIBRARY_NAME", L"mesa" );
+        add_var( vars, &len, max, L"__EGL_VENDOR_LIBRARY_FILENAMES", L"/usr/share/glvnd/egl_vendor.d/50_mesa.json" );
+    }
+}
+
+/* The cards a program can be given, for kernelbase's CreateProcess: wininit
+ * before the session starts, the power policy as cards come and go. The
+ * power saving card is the one the laptop's panel hangs on, the other the
+ * fast one; programs run by default on the card of the monitors. */
+BOOL WINAPI ArcticGpuPublish(void)
+{
+    static UINT published = ~0u;
+    static BOOL named;
+    struct arctic_gpu_list list;
+    const struct arctic_gpu *saving = NULL, *fast = NULL, *display = NULL;
+    WCHAR saving_name[256], fast_name[256], vars[2048], want[32];
+    HKEY key;
+
+    if (!ArcticGpuList( &list, FALSE )) return FALSE;
+    if (list.count == published && named) return TRUE;
+    published = list.count;
+    if (list.count < 2)
+    {
+        RegDeleteKeyW( HKEY_LOCAL_MACHINE, ARCTIC_GPU_KEY );
+        named = TRUE;
+        return TRUE;
+    }
+    for (UINT i = 0; i < list.count; i++) if (list.gpus[i].integrated && !saving) saving = &list.gpus[i];
+    if (!saving) saving = &list.gpus[0];
+    for (UINT i = 0; i < list.count; i++)
+        if (&list.gpus[i] != saving && (!fast || list.gpus[i].vendor == ARCTIC_GPU_NVIDIA)) fast = &list.gpus[i];
+    /* the monitors' card: the one with a monitor, the power saving one first */
+    if (saving->display) display = saving;
+    for (UINT i = 0; i < list.count && !display; i++) if (list.gpus[i].display) display = &list.gpus[i];
+    if (!display) display = saving;
+    if (!fast) return FALSE;
+
+    if (RegCreateKeyExW( HKEY_LOCAL_MACHINE, ARCTIC_GPU_KEY, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &key, NULL ))
+        return FALSE;
+    lstrcpynW( saving_name, saving->name, ARRAY_SIZE(saving_name) );
+    lstrcpynW( fast_name, fast->name, ARRAY_SIZE(fast_name) );
+    /* without the PCI id database, until the system has listed the devices: asked again */
+    swprintf( want, ARRAY_SIZE(want), L"%04X:%04X", saving->vendor_id, saving->device_id );
+    named = wcscmp( saving_name, want );
+    swprintf( want, ARRAY_SIZE(want), L"%04X:%04X", fast->vendor_id, fast->device_id );
+    named = named && wcscmp( fast_name, want );
+    RegSetValueExW( key, ARCTIC_GPU_POWER_SAVING_NAME, 0, REG_SZ, (BYTE *)saving_name, (wcslen( saving_name ) + 1) * sizeof(WCHAR) );
+    RegSetValueExW( key, ARCTIC_GPU_HIGH_PERF_NAME, 0, REG_SZ, (BYTE *)fast_name, (wcslen( fast_name ) + 1) * sizeof(WCHAR) );
+    gpu_vars( &list, display, display, vars, ARRAY_SIZE(vars) );
+    RegSetValueExW( key, ARCTIC_GPU_DEFAULT, 0, REG_MULTI_SZ, (BYTE *)vars, multi_size( vars ) );
+    gpu_vars( &list, saving, display, vars, ARRAY_SIZE(vars) );
+    RegSetValueExW( key, ARCTIC_GPU_POWER_SAVING, 0, REG_MULTI_SZ, (BYTE *)vars, multi_size( vars ) );
+    gpu_vars( &list, fast, display, vars, ARRAY_SIZE(vars) );
+    RegSetValueExW( key, ARCTIC_GPU_HIGH_PERF, 0, REG_MULTI_SZ, (BYTE *)vars, multi_size( vars ) );
+    RegCloseKey( key );
+    TRACE( "graphics cards %s (power saving), %s (high performance), programs on %s\n", debugstr_w(saving_name),
+           debugstr_w(fast_name), debugstr_w(display == fast ? fast_name : saving_name) );
     return TRUE;
 }
 

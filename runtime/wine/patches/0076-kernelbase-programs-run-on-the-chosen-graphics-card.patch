@@ -1,34 +1,39 @@
 Subject: [PATCH] kernelbase: programs run on the graphics card chosen for them.
 
 Arctic (docs/power.md): CreateProcess puts in the environment of a program
-what its choice in Windows' Graphics settings needs (PRIME offload,
-Mesa's device selection, DXVK's and vkd3d's filters), as the power
-policy works it out for the cards the machine has.
+what its choice in Windows' Graphics settings needs, as the power policy
+works it out for the cards the machine has: by default the card the
+monitors hang on (a laptop's own graphics), a game the fast card on the
+mains, as a laptop's graphics driver gives it in Windows.
 ---
 --- a/dlls/kernelbase/process.c
 +++ b/dlls/kernelbase/process.c
-@@ -26,6 +26,7 @@
+@@ -26,6 +26,8 @@
  #include "winbase.h"
  #include "winnls.h"
  #include "wincontypes.h"
 +#include "winreg.h"
++#include "shlwapi.h"
  #include "winternl.h"
  #include "processsnapshot.h"
  
-@@ -135,6 +136,84 @@
+@@ -135,6 +137,193 @@
  }
  
  
 +/* Arctic: the graphics card a program runs on, as Windows' "Graphics
 + * settings" choose it (HKCU\\Software\\Microsoft\\DirectX\\UserGpuPreferences,
 + * docs/power.md). The power policy keeps what each choice puts in the
-+ * environment in a volatile key, only on a machine with two cards; letting
-+ * Windows decide is the fast card on the mains and the power saving one on
-+ * battery. Windows' own programs are left on the card of the display. */
++ * environment in a volatile key, only on a machine with two cards: "Default"
++ * is the card the monitors hang on (a laptop's own graphics), where Windows'
++ * programs and all the others run; a game, when Windows decides, gets the
++ * fast card on the mains, as a laptop's graphics driver gives it in Windows.
++ * ntdll hands the variables to the drivers (the Unix environment). */
 +static const WCHAR *const gpu_variables[] =
 +{
 +    L"DXVK_FILTER_DEVICE_NAME", L"VKD3D_FILTER_DEVICE_NAME", L"__NV_PRIME_RENDER_OFFLOAD", L"__VK_LAYER_NV_optimus",
-+    L"MESA_VK_DEVICE_SELECT", L"DRI_PRIME", L"__GLX_VENDOR_LIBRARY_NAME", L"__EGL_VENDOR_LIBRARY_FILENAMES",
++    L"MESA_VK_DEVICE_SELECT", L"MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE", L"VK_LOADER_DRIVERS_DISABLE", L"DRI_PRIME",
++    L"__GLX_VENDOR_LIBRARY_NAME", L"__EGL_VENDOR_LIBRARY_FILENAMES",
 +};
 +
 +static BOOL is_gpu_variable( const WCHAR *entry )
@@ -41,10 +46,116 @@ policy works it out for the cards the machine has.
 +    return FALSE;
 +}
 +
++/* the folders game stores and launchers install games in */
++static const WCHAR *const game_folders[] =
++{
++    L"\\steamapps\\common\\", L"\\Epic Games\\", L"\\GOG Galaxy\\Games\\", L"\\GOG Games\\", L"\\XboxGames\\",
++    L"\\Riot Games\\", L"\\Ubisoft Game Launcher\\games\\", L"\\EA Games\\", L"\\Origin Games\\", L"\\itch\\apps\\",
++    L"\\Games\\",
++};
++
++/* what only games have beside them: engines, game store SDKs, upscalers */
++static const WCHAR *const game_files[] =
++{
++    L"UnityPlayer.dll", L"GameAssembly.dll", L"steam_api64.dll", L"steam_api.dll", L"EOSSDK-Win64-Shipping.dll",
++    L"EOSSDK-Win32-Shipping.dll", L"Galaxy64.dll", L"Galaxy.dll", L"bink2w64.dll", L"binkw64.dll", L"binkw32.dll",
++    L"nvngx_dlss.dll", L"libxess.dll", L"amd_fidelityfx_dx12.dll", L"fmod.dll", L"fmod64.dll",
++};
++
++/* and what only games import: Direct3D 8 and 9, XInput, DirectInput 8, XAudio2 */
++static BOOL game_import( const char *name )
++{
++    static const char *const prefixes[] = { "d3d9", "d3d8", "d3dx9_", "d3dx10_", "d3dx11_", "xinput", "dinput8", "xaudio2_", "x3daudio" };
++
++    for (UINT i = 0; i < ARRAY_SIZE(prefixes); i++)
++        if (!strnicmp( name, prefixes[i], strlen( prefixes[i] ) )) return TRUE;
++    return FALSE;
++}
++
++static BOOL read_at( HANDLE file, DWORD offset, void *buffer, DWORD size )
++{
++    LARGE_INTEGER pos = { .QuadPart = offset };
++    DWORD got;
++
++    return SetFilePointerEx( file, pos, NULL, FILE_BEGIN ) && ReadFile( file, buffer, size, &got, NULL ) && got == size;
++}
++
++static BOOL imports_game_dlls( const WCHAR *image )
++{
++    IMAGE_DOS_HEADER dos;
++    IMAGE_NT_HEADERS64 nt;
++    IMAGE_SECTION_HEADER sections[32];
++    IMAGE_IMPORT_DESCRIPTOR desc;
++    IMAGE_DATA_DIRECTORY dir;
++    UINT count, i, d;
++    BOOL ret = FALSE;
++    HANDLE file;
++
++    file = CreateFileW( image, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
++                        OPEN_EXISTING, 0, NULL );
++    if (file == INVALID_HANDLE_VALUE) return FALSE;
++    if (!read_at( file, 0, &dos, sizeof(dos) ) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
++        !read_at( file, dos.e_lfanew, &nt, sizeof(nt) ) || nt.Signature != IMAGE_NT_SIGNATURE)
++        goto done;
++    if (nt.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
++        dir = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
++    else
++        dir = ((IMAGE_NT_HEADERS32 *)&nt)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
++    count = min( nt.FileHeader.NumberOfSections, ARRAY_SIZE(sections) );
++    if (!dir.VirtualAddress ||
++        !read_at( file, dos.e_lfanew + FIELD_OFFSET( IMAGE_NT_HEADERS64, OptionalHeader ) + nt.FileHeader.SizeOfOptionalHeader,
++                  sections, count * sizeof(sections[0]) ))
++        goto done;
++
++    for (d = 0; d < 256 && !ret; d++)
++    {
++        DWORD rva = dir.VirtualAddress + d * sizeof(desc), offset = 0;
++        char name[32];
++
++        for (i = 0; i < count; i++)
++            if (rva >= sections[i].VirtualAddress && rva < sections[i].VirtualAddress + sections[i].SizeOfRawData)
++                offset = rva - sections[i].VirtualAddress + sections[i].PointerToRawData;
++        if (!offset || !read_at( file, offset, &desc, sizeof(desc) ) || !desc.Name) break;
++        for (i = 0, offset = 0; i < count; i++)
++            if (desc.Name >= sections[i].VirtualAddress && desc.Name < sections[i].VirtualAddress + sections[i].SizeOfRawData)
++                offset = desc.Name - sections[i].VirtualAddress + sections[i].PointerToRawData;
++        if (!offset || !read_at( file, offset, name, sizeof(name) )) continue;
++        name[sizeof(name) - 1] = 0;
++        ret = game_import( name );
++    }
++done:
++    CloseHandle( file );
++    return ret;
++}
++
++/* a game, as far as its files tell: where it lies, what it has beside it, what it imports */
++static BOOL is_game( const WCHAR *image )
++{
++    WCHAR path[MAX_PATH], *slash;
++    UINT i;
++
++    for (i = 0; i < ARRAY_SIZE(game_folders); i++)
++        if (StrStrIW( image, game_folders[i] ) && !StrStrIW( image, L"\\Epic Games\\Launcher\\" )) return TRUE;
++    if (StrStrIW( image, L"-Shipping.exe" ) || StrStrIW( image, L"\\Binaries\\Win64\\" )) return TRUE;
++
++    lstrcpynW( path, image, MAX_PATH );
++    if ((slash = wcsrchr( path, '\\' )))
++    {
++        for (i = 0; i < ARRAY_SIZE(game_files); i++)
++        {
++            slash[1] = 0;
++            if (lstrlenW( path ) + lstrlenW( game_files[i] ) >= MAX_PATH) continue;
++            lstrcatW( path, game_files[i] );
++            if (GetFileAttributesW( path ) != INVALID_FILE_ATTRIBUTES) return TRUE;
++        }
++    }
++    return imports_game_dlls( image );
++}
++
 +static WCHAR *gpu_environment( const WCHAR *image, const WCHAR *env )
 +{
 +    WCHAR windir[MAX_PATH], value[64], vars[2048], *result, *out;
-+    const WCHAR *source, *p, *choice;
++    const WCHAR *source, *p, *choice = L"Default";
 +    SYSTEM_BATTERY_STATE battery;
 +    DWORD size, pref = 0, len;
 +    SIZE_T total = 1;
@@ -52,8 +163,8 @@ policy works it out for the cards the machine has.
 +
 +    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticGpu", 0, KEY_READ, &key ))
 +        return NULL;
-+    vars[0] = vars[1] = 0;
 +    len = GetSystemWindowsDirectoryW( windir, MAX_PATH );
++    /* Windows' own programs stay on the card of the monitors */
 +    if (!len || wcsnicmp( image, windir, len ) || image[len] != '\\')
 +    {
 +        size = sizeof(value);
@@ -61,16 +172,16 @@ policy works it out for the cards the machine has.
 +                           RRF_RT_REG_SZ, NULL, value, &size ) && (p = wcsstr( value, L"GpuPreference=" )))
 +            pref = p[14] - '0';
 +        if (pref == 1) choice = L"PowerSaving";
-+        else if (pref == 2) choice = L"HighPerformanceGL";
-+        else if (!NtPowerInformation( SystemBatteryState, NULL, 0, &battery, sizeof(battery) ) &&
-+                 battery.BatteryPresent && !battery.AcOnLine)
-+            choice = L"PowerSaving";
-+        else choice = L"HighPerformance";
-+        size = sizeof(vars) - 2 * sizeof(WCHAR);
-+        if (RegGetValueW( key, NULL, choice, RRF_RT_REG_MULTI_SZ, NULL, vars, &size )) vars[0] = vars[1] = 0;
-+        TRACE( "%s: %s\n", debugstr_w(image), debugstr_w(choice) );
++        else if (pref == 2) choice = L"HighPerformance";
++        else if (is_game( image ) &&
++                 (NtPowerInformation( SystemBatteryState, NULL, 0, &battery, sizeof(battery) ) ||
++                  !battery.BatteryPresent || battery.AcOnLine))
++            choice = L"HighPerformance";
 +    }
++    size = sizeof(vars) - 2 * sizeof(WCHAR);
++    if (RegGetValueW( key, NULL, choice, RRF_RT_REG_MULTI_SZ, NULL, vars, &size )) vars[0] = vars[1] = 0;
 +    RegCloseKey( key );
++    TRACE( "%s: %s\n", debugstr_w(image), debugstr_w(choice) );
 +
 +    source = env ? env : GetEnvironmentStringsW();
 +    for (p = source; *p; p += lstrlenW( p ) + 1) total += lstrlenW( p ) + 1;
@@ -100,7 +211,7 @@ policy works it out for the cards the machine has.
  /***********************************************************************
   *           create_process_params
   */
-@@ -162,6 +241,16 @@
+@@ -162,6 +351,16 @@
              MultiByteToWideChar( CP_ACP, 0, env, e - (char *)env, envW, lenW );
      }
  

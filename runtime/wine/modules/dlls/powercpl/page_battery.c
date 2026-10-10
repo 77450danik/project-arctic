@@ -264,35 +264,10 @@ static void go_graphics( struct view *view, UINT_PTR param )
     view_navigate( view, PAGE_GRAPHICS, NULL, FALSE );
 }
 
-/* the card's name as Windows shows it (the policy keeps the two of a laptop) */
+/* the card's name as Windows shows it (powrprof: the adapter's DeviceDesc, else the PCI id database's) */
 static void gpu_title( const struct arctic_gpu *gpu, WCHAR *name, DWORD count )
 {
-    WCHAR path[128], sub[64], desc[256];
-    DWORD len, size;
-    HKEY key, dev;
-
-    swprintf( name, count, L"%04X:%04X", gpu->vendor_id, gpu->device_id );
-    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Enum\\PCI", 0, KEY_READ, &key )) return;
-    for (DWORD i = 0; len = ARRAY_SIZE(sub), !RegEnumKeyExW( key, i, sub, &len, NULL, NULL, NULL, NULL ); i++)
-    {
-        WCHAR want[32];
-
-        swprintf( want, ARRAY_SIZE(want), L"VEN_%04X&DEV_%04X", gpu->vendor_id, gpu->device_id );
-        if (wcsnicmp( sub, want, wcslen( want ) ) || RegOpenKeyExW( key, sub, 0, KEY_READ, &dev )) continue;
-        for (DWORD k = 0; len = ARRAY_SIZE(path), !RegEnumKeyExW( dev, k, path, &len, NULL, NULL, NULL, NULL ); k++)
-        {
-            size = sizeof(desc);
-            if (!RegGetValueW( dev, path, L"DeviceDesc", RRF_RT_REG_SZ, NULL, desc, &size ))
-            {
-                WCHAR *semi = wcsrchr( desc, ';' );
-                lstrcpynW( name, semi ? semi + 1 : desc, count );
-                break;
-            }
-        }
-        RegCloseKey( dev );
-        break;
-    }
-    RegCloseKey( key );
+    lstrcpynW( name, gpu->name, count );
 }
 
 void battery_build( struct view *view )

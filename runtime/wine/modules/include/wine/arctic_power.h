@@ -76,11 +76,13 @@ struct arctic_gpu_user
 struct arctic_gpu
 {
     WCHAR  pci[16];                /* 0000:01:00.0 */
+    WCHAR  name[128];              /* as Windows names it: the adapter's DeviceDesc, else the PCI id database's */
     WCHAR  driver[16];             /* i915, xe, amdgpu, nvidia, nouveau... */
     UINT32 vendor_id, device_id, subsys_vendor_id, subsys_id;
     UINT32 vendor;                 /* enum arctic_gpu_vendor */
     UINT32 integrated;             /* the one the firmware showed the boot on, and the laptop's panel */
     UINT32 active;                 /* awake (runtime PM active / D0); 0: asleep */
+    UINT32 display;                /* a monitor is connected to it */
     UINT32 power_mw;               /* ARCTIC_UNKNOWN */
     UINT32 temperature_mc;         /* millidegrees, ARCTIC_UNKNOWN */
     UINT32 busy_percent;           /* ARCTIC_UNKNOWN */
@@ -152,6 +154,8 @@ DWORD WINAPI PowerSetActiveOverlayScheme( GUID *overlay );
 /* exports of powrprof.dll */
 BOOL WINAPI ArcticPowerStatus( struct arctic_power_status *status );
 BOOL WINAPI ArcticGpuList( struct arctic_gpu_list *list, BOOL with_users );
+/* what each graphics card a program can be given needs in its environment (ARCTIC_GPU_KEY) */
+BOOL WINAPI ArcticGpuPublish(void);
 BOOL WINAPI ArcticCpuInfo( struct arctic_cpu_info *info );
 BOOL WINAPI ArcticPowerApply( struct arctic_power_apply *apply );
 /* "sleep", "hibernate" or "wifi-powersave on|off": asks the host, waits for its answer */
@@ -184,11 +188,13 @@ struct arctic_execution_state
  * 0 let Windows decide, 1 power saving, 2 high performance). The power policy
  * keeps here, volatile, what each choice puts in a program's environment
  * (REG_MULTI_SZ of NAME=VALUE; NAME= removes it) and the cards' names;
- * nothing when the machine has one card. kernelbase's CreateProcess adds it. */
+ * nothing when the machine has one card. kernelbase's CreateProcess adds it:
+ * "Default" (the card the monitors hang on) for Windows' programs and the
+ * others, the fast card for a game when Windows decides. */
 #define ARCTIC_GPU_KEY            L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticGpu"
+#define ARCTIC_GPU_DEFAULT        L"Default"
 #define ARCTIC_GPU_POWER_SAVING   L"PowerSaving"
 #define ARCTIC_GPU_HIGH_PERF      L"HighPerformance"
-#define ARCTIC_GPU_HIGH_PERF_GL   L"HighPerformanceGL"   /* added when the user chose it: OpenGL too */
 #define ARCTIC_GPU_POWER_SAVING_NAME L"PowerSavingName"
 #define ARCTIC_GPU_HIGH_PERF_NAME L"HighPerformanceName"
 

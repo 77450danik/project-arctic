@@ -44,6 +44,17 @@ static HANDLE start( const WCHAR *name )
     return pi.hProcess;
 }
 
+/* the graphics cards programs are given (powrprof, docs/power.md): before
+ * csrss.exe, whose desktop draws with them, and after dwm.exe, which waited
+ * for the cards' drivers; programs run on the card of the monitors */
+static void publish_gpus(void)
+{
+    HMODULE powrprof = LoadLibraryW( L"powrprof.dll" );
+    BOOL (WINAPI *publish)(void) = powrprof ? (void *)GetProcAddress( powrprof, "ArcticGpuPublish" ) : NULL;
+
+    if (!publish || !publish()) WARN( "the graphics cards are not published\n" );
+}
+
 /* the process sets the named event once it serves; FALSE if it ended first */
 static BOOL wait_ready( const WCHAR *event_name, HANDLE process, DWORD timeout )
 {
@@ -61,6 +72,7 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
     DWORD code;
 
     if (!(dwm = start( L"dwm.exe" )) || !wait_ready( L"__arctic_dwm_ready", dwm, 60000 )) return EXIT_DWM_FAILED;
+    publish_gpus();
     if (!(csrss = start( L"csrss.exe" )) || !wait_ready( L"__arctic_desktop_ready", csrss, 60000 ))
         return EXIT_CSRSS_ENDED;
     if (!(winlogon = start( L"winlogon.exe" ))) return EXIT_WINLOGON_ENDED;

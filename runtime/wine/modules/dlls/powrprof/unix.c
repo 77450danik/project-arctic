@@ -351,7 +351,9 @@ static NTSTATUS power_status( void *args )
  *          Graphics cards
  */
 
-/* NVIDIA's management library, from its driver, when that driver is there */
+/* NVIDIA's management library, from its driver, when that driver is there.
+ * Only the page of the batteries and cards asks it, and lets it go after
+ * each look: a process that keeps it open keeps the card awake. */
 typedef int nvml_return;
 typedef void *nvml_device;
 struct nvml_utilization { unsigned int gpu, memory; };
@@ -362,6 +364,7 @@ static struct
 {
     BOOL tried, ready;
     nvml_return (*init)(void);
+    nvml_return (*shutdown)(void);
     nvml_return (*by_pci)( const char *bus, nvml_device *device );
     nvml_return (*power)( nvml_device device, unsigned int *mw );
     nvml_return (*temperature)( nvml_device device, int sensor, unsigned int *celsius );
@@ -374,19 +377,115 @@ static BOOL nvml_load(void)
 {
     void *lib;
 
-    if (nvml.tried) return nvml.ready;
+    if (nvml.tried) return nvml.ready && !nvml.init();
     nvml.tried = TRUE;
     if (!(lib = dlopen( "libnvidia-ml.so.1", RTLD_NOW | RTLD_LOCAL ))) return FALSE;
     nvml.init = dlsym( lib, "nvmlInit_v2" );
+    nvml.shutdown = dlsym( lib, "nvmlShutdown" );
     nvml.by_pci = dlsym( lib, "nvmlDeviceGetHandleByPciBusId_v2" );
     nvml.power = dlsym( lib, "nvmlDeviceGetPowerUsage" );
     nvml.temperature = dlsym( lib, "nvmlDeviceGetTemperature" );
     nvml.utilization = dlsym( lib, "nvmlDeviceGetUtilizationRates" );
     nvml.memory = dlsym( lib, "nvmlDeviceGetMemoryInfo" );
     nvml.processes = dlsym( lib, "nvmlDeviceGetGraphicsRunningProcesses_v3" );
-    if (!nvml.init || !nvml.by_pci || nvml.init()) return FALSE;
+    if (!nvml.init || !nvml.shutdown || !nvml.by_pci || nvml.init()) return FALSE;
     nvml.ready = TRUE;
     return TRUE;
+}
+
+/* The card's model from the PCI id database, the way Linux distributions
+ * ship it ("GP107M [GeForce GTX 1050 Mobile]" is a GeForce GTX 1050
+ * Mobile); AMD's by chip and revision from libdrm's table, as its Windows
+ * driver names them. The same as dwm's names of the display adapter. */
+static BOOL pci_ids_name( unsigned int vendor, unsigned int device, char *name, size_t size )
+{
+    char line[256], *open, *close;
+    BOOL in_vendor = FALSE;
+    FILE *f;
+
+    if (!(f = fopen( "/usr/share/hwdata/pci.ids", "re" ))) return FALSE;
+    while (fgets( line, sizeof(line), f ))
+    {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        if (line[0] != '\t')
+        {
+            in_vendor = strtoul( line, NULL, 16 ) == vendor;
+            continue;
+        }
+        if (!in_vendor || line[1] == '\t' || strtoul( line + 1, NULL, 16 ) != device) continue;
+        if (!(open = strchr( line, ' ' ))) break;
+        while (*open == ' ') open++;
+        if ((close = strrchr( open, '\n' ))) *close = 0;
+        if ((close = strchr( open, '[' )) && strrchr( close, ']' ))
+        {
+            open = close + 1;
+            *strrchr( open, ']' ) = 0;
+        }
+        snprintf( name, size, "%s", open );
+        fclose( f );
+        return TRUE;
+    }
+    fclose( f );
+    return FALSE;
+}
+
+static BOOL amdgpu_ids_name( unsigned int device, unsigned int revision, char *name, size_t size )
+{
+    char line[256], *end, *text;
+    FILE *f;
+
+    if (!(f = fopen( "/usr/share/libdrm/amdgpu.ids", "re" ))) return FALSE;
+    while (fgets( line, sizeof(line), f ))
+    {
+        if (line[0] == '#' || strtoul( line, &end, 16 ) != device || *end != ',') continue;
+        if (strtoul( end + 1, &end, 16 ) != revision || *end != ',') continue;
+        for (text = end + 1; *text == ' ' || *text == '\t'; text++) ;
+        text[strcspn( text, "\r\n" )] = 0;
+        if (!*text) break;
+        snprintf( name, size, "%s", text );
+        fclose( f );
+        return TRUE;
+    }
+    fclose( f );
+    return FALSE;
+}
+
+static void gpu_model( const char *device, struct arctic_gpu *gpu )
+{
+    char model[96], name[128], buf[16];
+    unsigned int revision = read_str( device, "revision", buf, sizeof(buf) ) ? strtoul( buf, NULL, 16 ) : 0;
+    const char *maker = gpu->vendor == ARCTIC_GPU_NVIDIA ? "NVIDIA " : gpu->vendor == ARCTIC_GPU_INTEL ? "Intel(R) " :
+                        gpu->vendor == ARCTIC_GPU_AMD ? "AMD " : "";
+
+    if (gpu->vendor == ARCTIC_GPU_AMD && amdgpu_ids_name( gpu->device_id, revision, model, sizeof(model) ))
+        snprintf( name, sizeof(name), "%s", model );
+    else if (pci_ids_name( gpu->vendor_id, gpu->device_id, model, sizeof(model) ))
+        snprintf( name, sizeof(name), "%s%s", maker, model );
+    else
+        snprintf( name, sizeof(name), "%04X:%04X", gpu->vendor_id, gpu->device_id );
+    to_wide( gpu->name, ARRAY_SIZE(gpu->name), name );
+}
+
+/* a monitor is connected to the card: its connectors, card0-eDP-1 and the like */
+static BOOL drm_card_has_monitor( const char *card )
+{
+    char dir[PATH_MAX], status[32];
+    struct dirent *de;
+    BOOL ret = FALSE;
+    DIR *d;
+
+    snprintf( dir, sizeof(dir), "/sys/class/drm/%s", card );
+    if (!(d = opendir( dir ))) return FALSE;
+    while (!ret && (de = readdir( d )))
+    {
+        char path[PATH_MAX];
+
+        if (strncmp( de->d_name, card, strlen( card ) ) || de->d_name[strlen( card )] != '-') continue;
+        snprintf( path, sizeof(path), "%s/%s", dir, de->d_name );
+        ret = read_str( path, "status", status, sizeof(status) ) && !strcmp( status, "connected" );
+    }
+    closedir( d );
+    return ret;
 }
 
 /* energy counters (µJ) turned into power between two readings */
@@ -675,6 +774,8 @@ static NTSTATUS gpu_list( void *args )
         gpu->vendor = gpu->vendor_id == 0x8086 ? ARCTIC_GPU_INTEL : gpu->vendor_id == 0x1002 ? ARCTIC_GPU_AMD
                     : gpu->vendor_id == 0x10de ? ARCTIC_GPU_NVIDIA : ARCTIC_GPU_OTHER;
         gpu->integrated = read_num( device, "boot_vga" ) == 1;
+        gpu->display = drm_card_has_monitor( de->d_name );
+        gpu_model( device, gpu );
         gpu->power_mw = gpu->temperature_mc = gpu->busy_percent = ARCTIC_UNKNOWN;
         gpu->memory_used_mb = gpu->memory_total_mb = ARCTIC_UNKNOWN;
 
@@ -689,7 +790,7 @@ static NTSTATUS gpu_list( void *args )
         if ((value = read_num( device, "mem_info_vram_total" )) >= 0) gpu->memory_total_mb = clamp_u32( value >> 20 );
 
         /* a card asleep is not woken to be asked: NVML would wake it */
-        if (gpu->vendor == ARCTIC_GPU_NVIDIA && gpu->active && nvml_load())
+        if (gpu->vendor == ARCTIC_GPU_NVIDIA && gpu->active && params->with_users && nvml_load())
         {
             char bus[32];
             nvml_device handle;
@@ -720,6 +821,7 @@ static NTSTATUS gpu_list( void *args )
                     }
                 }
             }
+            nvml.shutdown();
         }
         /* the processor's own graphics: its share of the package (RAPL "uncore") */
         if (gpu->vendor == ARCTIC_GPU_INTEL && gpu->integrated && gpu->power_mw == ARCTIC_UNKNOWN)

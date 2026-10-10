@@ -1,0 +1,60 @@
+Subject: [PATCH] ntdll: the graphics card chosen for a program reaches its drivers.
+
+Arctic (docs/power.md): kernelbase puts the variables of the card a program
+runs on in its Windows environment; Vulkan's loader, glvnd and the drivers
+read the Unix one, which a new process inherited from its parent as it was.
+---
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -397,6 +397,43 @@
+ 
+ 
+ /***********************************************************************
++ *           set_gpu_environment
++ *
++ * Arctic: the graphics card chosen for a program (kernelbase, docs/power.md)
++ * is in its Windows environment; Vulkan's loader, glvnd and the drivers read
++ * the Unix one. In the new process it is what the Windows one says.
++ */
++static void set_gpu_environment( const WCHAR *env )
++{
++    static const char * const names[] =
++    {
++        "DXVK_FILTER_DEVICE_NAME", "VKD3D_FILTER_DEVICE_NAME", "__NV_PRIME_RENDER_OFFLOAD", "__VK_LAYER_NV_optimus",
++        "MESA_VK_DEVICE_SELECT", "MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE", "VK_LOADER_DRIVERS_DISABLE", "DRI_PRIME",
++        "__GLX_VENDOR_LIBRARY_NAME", "__EGL_VENDOR_LIBRARY_FILENAMES",
++    };
++    const WCHAR *p;
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(names); i++) unsetenv( names[i] );
++    if (!env) return;
++    for (p = env; *p; p += wcslen( p ) + 1)
++    {
++        for (i = 0; i < ARRAY_SIZE(names); i++)
++        {
++            size_t len = strlen( names[i] ), k;
++            char value[1024];
++
++            for (k = 0; k < len; k++) if (p[k] != (unsigned char)names[i][k]) break;
++            if (k < len || p[len] != '=' || !p[len + 1]) continue;
++            if (ntdll_wcstoumbs( p + len + 1, wcslen( p + len + 1 ) + 1, value, sizeof(value), FALSE ) > 0)
++                setenv( names[i], value, 1 );
++            break;
++        }
++    }
++}
++
++
++/***********************************************************************
+  *           spawn_process
+  */
+ static NTSTATUS spawn_process( const RTL_USER_PROCESS_PARAMETERS *params, int socketfd,
+@@ -434,6 +471,7 @@
+             if (stdout_fd != -1 && stdout_fd != 1) close( stdout_fd );
+ 
+             if (winedebug) putenv( winedebug );
++            set_gpu_environment( params->Environment );
+             if (unixdir != -1)
+             {
+                 fchdir( unixdir );

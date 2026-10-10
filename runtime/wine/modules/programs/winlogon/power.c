@@ -84,7 +84,6 @@ static const GUID set_wifi        = { 0x12bbebe6, 0x58d6, 0x4636, { 0x95, 0xbb, 
 static const GUID set_es_level    = { 0xe69653ca, 0xcf7f, 0x4f05, { 0xaa, 0x73, 0xcb, 0x83, 0x3f, 0xa9, 0x0a, 0xd4 } };
 static const GUID set_es_bright   = { 0x13d09884, 0xf74e, 0x474a, { 0xa8, 0x52, 0xb6, 0xbd, 0xe8, 0xad, 0x03, 0xa8 } };
 
-static void publish_gpus(void);
 
 enum action { ACTION_NOTHING, ACTION_SLEEP, ACTION_HIBERNATE, ACTION_SHUT_DOWN, ACTION_DISPLAY_OFF };
 
@@ -583,7 +582,7 @@ static void tick(void)
     follow_brightness();
     sample_history();
     /* a card that came late (its driver loads in the background) */
-    if (GetTickCount() - idle_base < 120000 || !(GetTickCount() / 1000 % 60)) publish_gpus();
+    if (GetTickCount() - idle_base < 120000 || !(GetTickCount() / 1000 % 60)) ArcticGpuPublish();
     check_idle();
     /* the next tick compares with this one */
     last = status;
@@ -618,150 +617,6 @@ static void reread(void)
         applied = TRUE;
     }
     RegNotifyChangeKeyValue( power_key, TRUE, REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME, power_changed, TRUE );
-}
-
-/**********************************************************************
- *          The graphics cards
- */
-
-/* the card's name as Windows shows it: the display adapter's DeviceDesc */
-static void gpu_name( const struct arctic_gpu *gpu, WCHAR *name, DWORD count )
-{
-    WCHAR path[128], sub[64], desc[256];
-    DWORD len, size;
-    HKEY key, dev;
-
-    swprintf( name, count, L"%04X:%04X", gpu->vendor_id, gpu->device_id );
-    swprintf( path, ARRAY_SIZE(path), L"SYSTEM\\CurrentControlSet\\Enum\\PCI" );
-    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &key )) return;
-    for (DWORD i = 0; len = ARRAY_SIZE(sub), !RegEnumKeyExW( key, i, sub, &len, NULL, NULL, NULL, NULL ); i++)
-    {
-        WCHAR want[32];
-
-        swprintf( want, ARRAY_SIZE(want), L"VEN_%04X&DEV_%04X", gpu->vendor_id, gpu->device_id );
-        if (wcsnicmp( sub, want, wcslen( want ) )) continue;
-        if (RegOpenKeyExW( key, sub, 0, KEY_READ, &dev )) continue;
-        for (DWORD k = 0; len = ARRAY_SIZE(path), !RegEnumKeyExW( dev, k, path, &len, NULL, NULL, NULL, NULL ); k++)
-        {
-            size = sizeof(desc);
-            if (!RegGetValueW( dev, path, L"DeviceDesc", RRF_RT_REG_SZ, NULL, desc, &size ))
-            {
-                /* "@oem.inf,%name%;Intel(R) HD Graphics 630": the text after ';' */
-                WCHAR *semi = wcsrchr( desc, ';' );
-                lstrcpynW( name, semi ? semi + 1 : desc, count );
-                break;
-            }
-        }
-        RegCloseKey( dev );
-        break;
-    }
-    RegCloseKey( key );
-}
-
-static DWORD multi_size( const WCHAR *list )
-{
-    const WCHAR *p = list;
-
-    while (*p) p += wcslen( p ) + 1;
-    return (p - list + 1) * sizeof(WCHAR);
-}
-
-static void add_var( WCHAR *list, size_t *len, size_t max, const WCHAR *name, const WCHAR *value )
-{
-    int n = swprintf( list + *len, max - *len - 1, L"%s=%s", name, value );
-
-    if (n > 0) *len += n + 1;
-    list[*len] = 0;
-}
-
-/* what a program running on gpu needs in its environment, whatever the cards */
-static void gpu_vars( const struct arctic_gpu_list *list, const struct arctic_gpu *gpu, const WCHAR *name, BOOL gl,
-                      WCHAR *vars, size_t max )
-{
-    BOOL nvidia_here = FALSE;
-    WCHAR value[64];
-    size_t len = 0;
-
-    vars[0] = vars[1] = 0;
-    for (UINT i = 0; i < list->count; i++) nvidia_here |= list->gpus[i].vendor == ARCTIC_GPU_NVIDIA;
-
-    /* DXVK and vkd3d-proton (Direct3D) take the card by its name */
-    add_var( vars, &len, max, L"DXVK_FILTER_DEVICE_NAME", name );
-    add_var( vars, &len, max, L"VKD3D_FILTER_DEVICE_NAME", name );
-    if (gpu->vendor == ARCTIC_GPU_NVIDIA)
-    {
-        /* NVIDIA's PRIME render offload: its Vulkan layer shows only its card */
-        add_var( vars, &len, max, L"__NV_PRIME_RENDER_OFFLOAD", L"1" );
-        add_var( vars, &len, max, L"__VK_LAYER_NV_optimus", L"NVIDIA_only" );
-        add_var( vars, &len, max, L"MESA_VK_DEVICE_SELECT", L"" );
-        add_var( vars, &len, max, L"DRI_PRIME", L"" );
-        if (gl)
-        {
-            add_var( vars, &len, max, L"__GLX_VENDOR_LIBRARY_NAME", L"nvidia" );
-            add_var( vars, &len, max, L"__EGL_VENDOR_LIBRARY_FILENAMES", L"/usr/share/glvnd/egl_vendor.d/10_nvidia.json" );
-        }
-    }
-    else
-    {
-        add_var( vars, &len, max, L"__NV_PRIME_RENDER_OFFLOAD", L"" );
-        add_var( vars, &len, max, L"__VK_LAYER_NV_optimus", nvidia_here ? L"non_NVIDIA_only" : L"" );
-        /* Mesa's device selection; DRI_PRIME moves OpenGL too */
-        swprintf( value, ARRAY_SIZE(value), L"%04x:%04x", gpu->vendor_id, gpu->device_id );
-        add_var( vars, &len, max, L"MESA_VK_DEVICE_SELECT", value );
-        if (!gpu->integrated)
-        {
-            WCHAR pci[32];
-            size_t k;
-
-            lstrcpynW( pci, gpu->pci, ARRAY_SIZE(pci) );
-            for (k = 0; pci[k]; k++) if (pci[k] == ':' || pci[k] == '.') pci[k] = '_';
-            swprintf( value, ARRAY_SIZE(value), L"pci-%s", pci );
-            add_var( vars, &len, max, L"DRI_PRIME", value );
-        }
-        else add_var( vars, &len, max, L"DRI_PRIME", L"" );
-        add_var( vars, &len, max, L"__GLX_VENDOR_LIBRARY_NAME", L"" );
-        add_var( vars, &len, max, L"__EGL_VENDOR_LIBRARY_FILENAMES", L"" );
-    }
-}
-
-static UINT published_gpus = ~0u;
-
-static void publish_gpus(void)
-{
-    struct arctic_gpu_list list;
-    const struct arctic_gpu *saving = NULL, *fast = NULL;
-    WCHAR saving_name[256], fast_name[256], vars[2048];
-    HKEY key;
-
-    if (!ArcticGpuList( &list, FALSE ) || list.count == published_gpus) return;
-    published_gpus = list.count;
-    if (list.count < 2)
-    {
-        RegDeleteKeyW( HKEY_LOCAL_MACHINE, ARCTIC_GPU_KEY );
-        return;
-    }
-    /* the power saving card is the one the panel hangs on; the other is the fast one */
-    for (UINT i = 0; i < list.count; i++) if (list.gpus[i].integrated && !saving) saving = &list.gpus[i];
-    if (!saving) saving = &list.gpus[0];
-    for (UINT i = 0; i < list.count; i++)
-        if (&list.gpus[i] != saving && (!fast || list.gpus[i].vendor == ARCTIC_GPU_NVIDIA)) fast = &list.gpus[i];
-    if (!fast) return;
-
-    if (RegCreateKeyExW( HKEY_LOCAL_MACHINE, ARCTIC_GPU_KEY, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &key, NULL ))
-        return;
-    gpu_name( saving, saving_name, ARRAY_SIZE(saving_name) );
-    gpu_name( fast, fast_name, ARRAY_SIZE(fast_name) );
-    RegSetValueExW( key, ARCTIC_GPU_POWER_SAVING_NAME, 0, REG_SZ, (BYTE *)saving_name, (wcslen( saving_name ) + 1) * sizeof(WCHAR) );
-    RegSetValueExW( key, ARCTIC_GPU_HIGH_PERF_NAME, 0, REG_SZ, (BYTE *)fast_name, (wcslen( fast_name ) + 1) * sizeof(WCHAR) );
-    gpu_vars( &list, saving, saving_name, TRUE, vars, ARRAY_SIZE(vars) );
-    RegSetValueExW( key, ARCTIC_GPU_POWER_SAVING, 0, REG_MULTI_SZ, (BYTE *)vars, multi_size( vars ) );
-    gpu_vars( &list, fast, fast_name, FALSE, vars, ARRAY_SIZE(vars) );
-    RegSetValueExW( key, ARCTIC_GPU_HIGH_PERF, 0, REG_MULTI_SZ, (BYTE *)vars, multi_size( vars ) );
-    gpu_vars( &list, fast, fast_name, TRUE, vars, ARRAY_SIZE(vars) );
-    RegSetValueExW( key, ARCTIC_GPU_HIGH_PERF_GL, 0, REG_MULTI_SZ, (BYTE *)vars, multi_size( vars ) );
-    RegCloseKey( key );
-    TRACE( "power: graphics cards %s (power saving), %s (high performance)\n", debugstr_w(saving_name),
-           debugstr_w(fast_name) );
 }
 
 /**********************************************************************
@@ -833,7 +688,7 @@ static DWORD WINAPI policy_thread( void *arg )
     policy_window = CreateWindowW( cls.lpszClassName, NULL, WS_POPUP, 0, 0, 0, 0, NULL, NULL, cls.hInstance, NULL );
     tick();
     reread();
-    publish_gpus();
+    ArcticGpuPublish();
     SetTimer( policy_window, TIMER_TICK, TICK_MS, NULL );
 
     for (;;)

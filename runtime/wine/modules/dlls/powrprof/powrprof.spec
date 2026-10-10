@@ -65,6 +65,7 @@
 # Arctic (wine/arctic_power.h)
 @ stdcall ArcticCpuInfo(ptr)
 @ stdcall ArcticGpuList(ptr long)
+@ stdcall ArcticGpuPublish()
 @ stdcall ArcticPowerApply(ptr)
 @ stdcall ArcticPowerRequest(str)
 @ stdcall ArcticPowerStatus(ptr)

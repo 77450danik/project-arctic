@@ -15,8 +15,11 @@
 - Нова сторінка «Акумулятор» (основна з трею: посилання флайаута, перший пункт меню жирним, подвійний клік): %, стан, час; вати + графік за
   годину; знос (проєктна/фактична ємність, цикли); відеокарти та програми
   на них.
-- «Дозволити Windows вирішувати»: від мережі — дискретна, від акумулятора —
-  вбудована.
+- «Дозволити Windows вирішувати» (з 2026-10-10): усе — dwm, програми
+  Windows, браузер, IDE — на карті моніторів (на ноутбуці вбудована),
+  дискретна спить; гра (визначається сама) — на дискретній від мережі, на
+  вбудованій від акумулятора. Вибір «Економія енергії» / «Висока
+  продуктивність» для програми діє завжди.
 - Схеми діють по-справжньому: екран (вимкнення, яскравість, приглушення),
   кришка/кнопки, критичний рівень, процесор, PCI/USB/Wi-Fi, «Економія
   заряду».
@@ -51,7 +54,9 @@
 | визначення параметрів і схем Windows 10, назви uk-UA | `runtime/registry/power.reg`, `dlls/powrprof/powrprof.rc` ← `tools/power/win10-power.py` |
 | політика живлення: застосування схеми, бездіяльність, кришка/кнопки, рівні заряду, економія заряду, історія, змінні відеокарт | `programs/winlogon/power.c` |
 | запити програм (відео не гасить екран): `SetThreadExecutionState`, `PowerSetRequest` | Wine-патч 0075 |
-| відеокарта програми при запуску | Wine-патч 0076 (kernelbase `CreateProcess`) |
+| відеокарта програми при запуску: вибір, визначення ігор | Wine-патч 0076 (kernelbase `CreateProcess`) |
+| змінні карти — до драйверів (Unix-оточення нового процесу) | Wine-патч 0078 (ntdll `spawn_process`) |
+| набори змінних для карт (`ArcticGpuPublish`): wininit до csrss, далі політика | powrprof `powrprof.c`; wininit `main.c` |
 | значок, підказка, флайаут, меню, сповіщення | модуль `dlls/batmeter`; гліфи ← `tools/power/mdl2-glyphs.py` |
 | stobject: служба живлення створює batmeter | ReactOS-патч 0053; `SysTray\Services` = 7 |
 | «Електроживлення» в Панелі керування (папка оболонки) і сторінки | модуль `dlls/powercpl` |
@@ -92,12 +97,36 @@
   → дія (гібернація, якщо ввімкнена, інакше завершення роботи).
 - Програмам: `WM_POWERBROADCAST` (`PBT_APMPOWERSTATUSCHANGE`, `PBT_APMSUSPEND`,
   `PBT_APMRESUME*`).
-- Відеокарти: `HKLM\...\Control\Power\ArcticGpu` (volatile) — набори змінних
-  для «енергозберігаючої» і «високопродуктивної» карти: DXVK/vkd3d-фільтри
-  за назвою, NVIDIA PRIME offload + шар Optimus (`NVIDIA_only` /
-  `non_NVIDIA_only`), Mesa `MESA_VK_DEVICE_SELECT`, `DRI_PRIME`; OpenGL — лише
-  для явного вибору «Висока продуктивність». Програми з `C:\Windows` не
-  чіпаються.
+- Відеокарти: `HKLM\...\Control\Power\ArcticGpu` (volatile, пише
+  powrprof `ArcticGpuPublish`: wininit — після dwm і до csrss, далі
+  winlogon) — набори змінних `Default` (карта, до якої під'єднано
+  монітори), `PowerSaving`, `HighPerformance`: Vulkan-loader не вантажить
+  драйвери інших виробників (`VK_LOADER_DRIVERS_DISABLE=*nvidia*` тощо —
+  чужа карта навіть не відкривається), шар Mesa показує лише цю карту
+  (`MESA_VK_DEVICE_SELECT` + `..._FORCE_DEFAULT_DEVICE`), NVIDIA — PRIME
+  offload + шар Optimus `NVIDIA_only`; OpenGL — glvnd лише Mesa
+  (`__EGL_VENDOR_LIBRARY_FILENAMES=50_mesa.json`, інакше glvnd бере NVIDIA
+  першою) або лише NVIDIA, `DRI_PRIME` для Mesa-карти без моніторів.
+  Програми з `C:\Windows` — завжди `Default`.
+- Вибір для програми (kernelbase): «Економія»/«Висока продуктивність» з
+  `UserGpuPreferences`; без вибору — `Default`, а гра — `HighPerformance`
+  від мережі. Гра: тека магазину/лаунчера (`steamapps\common`, `Epic
+  Games`, `GOG`, `XboxGames`, `Games`…), рушій або SDK поруч (UnityPlayer,
+  GameAssembly, steam_api, EOSSDK, bink, DLSS/XeSS/FSR), `-Shipping.exe`,
+  або імпорт Direct3D 8/9, XInput, DirectInput 8, XAudio2.
+- Змінні лягають у Windows-оточення; Vulkan-loader, glvnd і драйвери
+  читають Unix-оточення, яке новий процес раніше успадковував від батька
+  як є — тому вибір не діяв зовсім (Chrome з «Високою продуктивністю» і
+  без неї однаково відкривав обидві карти). Тепер ntdll перед `exec`
+  ставить ці змінні з Windows-оточення (0078).
+- Назва карти (`arctic_gpu.name`): DeviceDesc адаптера з `Enum\PCI`, коли
+  система його перелічила, інакше — з бази `pci.ids` (AMD — `amdgpu.ids`),
+  як у dwm; раніше на сторінці лишалося «8086:591B»: пошук зупинявся на
+  порожньому ключі `SUBSYS_00000000`, а NVIDIA, що не виводить картинку,
+  взагалі не має там DeviceDesc.
+- NVML (споживання, температура, процеси NVIDIA) — лише для сторінки
+  «Акумулятор», і після кожного погляду `nvmlShutdown`: відкритий NVML у
+  winlogon/explorer тримав карту.
 
 ## Випадки на ноутбуці
 
