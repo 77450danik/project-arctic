@@ -1,0 +1,37 @@
+REGEDIT4
+
+; User Account Control (docs/linux-gate.md): the Application Information
+; service, which is the one thing that puts the consent window on the screen.
+; It is a service DLL in svchost, as in Windows, so that the rest of
+; elevation can grow in it later; appinfo.dll and consent.exe are Arctic's
+; own (runtime/wine/modules/dlls/appinfo, .../programs/consent).
+;
+; Windows has this service on demand, started by the elevation API. Here the
+; host's arctic-lxss (root) is what asks for a window, over 127.0.0.1, and
+; root cannot ask the service manager to start anything: so it starts with
+; the system. Its name, group and ServiceDll are Windows'.
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Appinfo]
+"DisplayName"="Application Information"
+"ImagePath"="C:\\Windows\\System32\\svchost.exe -k netsvcs"
+"ObjectName"="LocalSystem"
+"Type"=dword:00000020
+"Start"=dword:00000002
+"ErrorControl"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Appinfo\Parameters]
+"ServiceDll"="C:\\Windows\\System32\\appinfo.dll"
+"ServiceDllUnloadOnStop"=dword:00000001
+
+; the group svchost.exe -k netsvcs loads: "Appinfo" as a REG_MULTI_SZ
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Svchost]
+"netsvcs"=hex(7):41,70,70,69,6e,66,6f,00,00
+
+; What Windows programs read to know that UAC is on and that it asks on the
+; secure desktop (installers look at EnableLUA). Arctic's own gate keeps its
+; switches in the protected gate.conf, not here; these are the Windows
+; policy defaults, which the elevation of Windows programs will use.
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\System]
+"EnableLUA"=dword:00000001
+"ConsentPromptBehaviorAdmin"=dword:00000002
+"ConsentPromptBehaviorUser"=dword:00000003
+"PromptOnSecureDesktop"=dword:00000001

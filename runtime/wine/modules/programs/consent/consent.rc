@@ -1,0 +1,66 @@
+/*
+ * consent.exe: resources
+ *
+ * The window of User Account Control as Windows 7 shows it, asking for the
+ * Linux subsystem (docs/linux-gate.md).
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winnls.h"
+#include "resource.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TITLE            "User Account Control"
+    IDS_HEADING          "Administrator rights are needed to confirm this action."
+    IDS_PROGRAM          "Program:"
+    IDS_PROGRAM_WSL      "Windows Subsystem for Linux"
+    IDS_PROGRAM_SETTINGS "User Account Control settings"
+    IDS_PUBLISHER        "Verified publisher:"
+    IDS_PUBLISHER_NAME   "Project Arctic"
+    IDS_REQUESTER        "Requested by:"
+    IDS_LOCATION         "Program location:"
+    IDS_COMMAND          "Command:"
+    IDS_SHOW_DETAILS     "Show details"
+    IDS_HIDE_DETAILS     "Hide details"
+    IDS_PASSWORD_PROMPT  "Type the password of the Linux subsystem, and then click Yes."
+    IDS_PASSWORD_CUE     "Password"
+    IDS_WRONG            "The password is incorrect."
+    IDS_WAIT             "Too many incorrect passwords. Try again in %d s."
+    IDS_YES              "&Yes"
+    IDS_NO               "&No"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TITLE            "Контроль облікових записів користувачів"
+    IDS_HEADING          "Для підтвердження цієї дії потрібні права адміністратора."
+    IDS_PROGRAM          "Програма:"
+    IDS_PROGRAM_WSL      "Підсистема Windows для Linux"
+    IDS_PROGRAM_SETTINGS "Параметри контролю облікових записів користувачів"
+    IDS_PUBLISHER        "Перевірений видавець:"
+    IDS_PUBLISHER_NAME   "Project Arctic"
+    IDS_REQUESTER        "Запит від:"
+    IDS_LOCATION         "Розташування програми:"
+    IDS_COMMAND          "Команда:"
+    IDS_SHOW_DETAILS     "Показати подробиці"
+    IDS_HIDE_DETAILS     "Приховати подробиці"
+    IDS_PASSWORD_PROMPT  "Введіть пароль підсистеми Linux і натисніть «Так»."
+    IDS_PASSWORD_CUE     "Пароль"
+    IDS_WRONG            "Неправильний пароль."
+    IDS_WAIT             "Забагато неправильних паролів. Спробуйте ще раз через %d с."
+    IDS_YES              "&Так"
+    IDS_NO               "&Ні"
+}

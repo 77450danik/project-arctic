@@ -1,6 +1,7 @@
 diff --git a/server/process.c b/server/process.c
---- a/server/process.c	2026-10-11 23:22:32.086540160 +0200
-+++ b/server/process.c	2026-10-11 23:22:32.183894281 +0200
+index f1a8c06..99228ba 100644
+--- a/server/process.c
++++ b/server/process.c
 @@ -32,6 +32,8 @@
  #include <sys/types.h>
  #include <sys/time.h>
@@ -10,7 +11,7 @@ diff --git a/server/process.c b/server/process.c
  #include <unistd.h>
  #include <poll.h>
  #ifdef HAVE_SYS_PARAM_H
-@@ -2048,3 +2050,154 @@
+@@ -2048,3 +2050,155 @@ DECL_HANDLER(list_processes)
          }
      }
  }
@@ -167,9 +168,10 @@ diff --git a/server/process.c b/server/process.c
 +    make_object_permanent( &sock->obj );
 +}
 diff --git a/server/process.h b/server/process.h
---- a/server/process.h	2026-10-11 23:22:32.088419580 +0200
-+++ b/server/process.h	2026-10-11 23:22:32.184119343 +0200
-@@ -104,6 +104,7 @@
+index dff766d..e889ec7 100644
+--- a/server/process.h
++++ b/server/process.h
+@@ -104,6 +104,7 @@ extern struct process *create_process( int fd, struct process *parent, unsigned
  extern data_size_t get_process_startup_info_size( struct process *process );
  extern struct thread *get_process_first_thread( struct process *process );
  extern struct process *get_process_from_id( process_id_t id );
@@ -178,13 +180,14 @@ diff --git a/server/process.h b/server/process.h
  extern struct debug_obj *get_debug_obj( struct process *process, obj_handle_t handle, unsigned int access );
  extern int process_set_debugger( struct process *process, struct thread *thread );
 diff --git a/server/request.c b/server/request.c
---- a/server/request.c	2026-10-11 23:22:32.090262075 +0200
-+++ b/server/request.c	2026-10-11 23:22:32.184338781 +0200
-@@ -816,6 +816,7 @@
+index 5135ed5..58492aa 100644
+--- a/server/request.c
++++ b/server/request.c
+@@ -816,6 +816,7 @@ static void acquire_lock(void)
          fatal_error( "out of memory\n" );
      set_fd_events( master_socket->fd, POLLIN );
      make_object_permanent( &master_socket->obj );
 +    open_arctic_ntree_socket();
  }
-
+ 
  /* open the master server socket and start waiting for new clients */

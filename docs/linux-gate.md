@@ -6,9 +6,15 @@ Arctic — система Windows. Linux у ній — ядро й драйве�
 System32, як у Windows 10), і щоразу з дозволу людини — вікном контролю
 облікових записів у стилі Windows 7 і, за замовчуванням, паролем.
 
-WSL тут — не віртуальна машина, а прямий доступ до ядра (root у
-дистрибутиві, `docs/updates.md`, етап 2), тому і захист — на рівні
-адміністратора.
+Гейт — це **один дистрибутив WSL**, а не весь WSL. Звичайні дистрибутиви,
+як і у Windows, живуть у віртуальній машині й нікого ні про що не питають;
+окремий, наперед установлений дистрибутив (`arctic-build`) — це двері до
+самого ядра хоста (root), і саме він за UAC і паролем. Яким має бути весь
+WSL — `docs/wsl.md`; тут — лише гейт.
+
+Доки звичайні дистрибутиви ще не у ВМ, вони теж root-chroot на хості
+(`docs/updates.md`, етап 2): тимчасовий обхід гейта, на який користувач
+погодився 2026-10-12.
 
 ## Вимоги (2026-10-11)
 
@@ -52,13 +58,27 @@ WSL тут — не віртуальна машина, а прямий дост�
   └─ wsl.exe / bash.exe ── TCP 127.0.0.1 ──► arctic-lxss (root)
                                                │ 1. хто це? /proc/net/tcp → pid → предки
                                                │ 2. у когось із предків є дозвіл? → виконати
-                                               │ 3. ні → consent.exe (UAC), чекати відповіді
+                                               │ 3. ні → служба Appinfo, чекати відповіді
                                                │      пароль цього завантаження ще не введено
                                                │      і пароль увімкнено → поле пароля
                                                │ 4. «Так» (+ правильний пароль) → дозвіл
                                                │      процесу-джерелу, виконати
                                                └ 5. «Ні» → «Операцію скасовано користувачем.»
+
+   arctic-lxss (root) ── TCP 127.0.0.1 ──► svchost.exe -k netsvcs
+                                             └ appinfo.dll (служба «Application
+                                               Information», брокер UAC)
+                                                 └ consent.exe (вікно UAC)
 ```
+
+**Вікно показує служба, а не root.** Як у Windows: єдине, що ставить вікно
+UAC на екран, — служба Appinfo (`appinfo.dll` у `svchost.exe`), а не той, хто
+просить прав. root сам не запускає жодної програми Windows: він стукає до
+служби на 127.0.0.1 і передає їй рядки протоколу. Служба нічого не вирішує —
+пароль перевіряє root, дозвіл записує root. Так увесь UAC (вигляд вікна, DPI,
+звук, «безпечний робочий стіл») — це код Windows у сеансі, а брокер підвищення
+прав — в одному місці, куди далі ляже `RAiLaunchAdminProcess` для `runas` і
+програм з `requireAdministrator`.
 
 - **Рішення приймає root.** `arctic-lxss` лежить у `host.sqfs` (тільки
   читання) і працює від root: процес Windows (усі вони — користувач `nt`)
@@ -130,20 +150,52 @@ C: змонтовано з `uid=nt` (`arctic-volume.c`): **будь-який п�
 - `peer_pid()`: локальний/віддалений порт з'єднання → inode у
   `/proc/net/tcp` → pid.
 - `authorized()`: обхід предків; `origin()`: вибір процесу-джерела.
-- `ask_consent()`: `fork`, `nt`, оточення сеансу (`WINEPREFIX=/run/nt`,
-  `WAYLAND_DISPLAY=arctic-0`, як у `docs/M2-display.md`), запуск
-  `consent.exe` **з образу хоста** (`/usr/lib/arctic/consent.exe`, тільки
-  читання — підмінити не можна), рядковий діалог через stdin/stdout:
-  `prompt <пароль 0|1> <ім'я програми> <шлях>` → `yes <пароль>` / `no` →
-  `ok` / `wrong` (вікно лишається, «Неправильний пароль»).
+- `ask_consent()`: з'єднання до служби Appinfo (порт і токен із
+  `C:\ProgramData\Arctic\Appinfo\session`) і рядковий діалог через нього:
+  `prompt <пароль 0|1> <ім'я програми> <шлях> <що просять>` → `yes <пароль>` /
+  `no` → `ok` / `wrong` (вікно лишається, «Неправильний пароль») /
+  `wait <секунди>`. Сам root вікон не запускає.
+- **Чи це справді служба.** Файл `session` лежить на C:, яку будь-який процес
+  Windows може переписати: тому процес на іншому кінці з'єднання має бути
+  `svchost.exe`, запущений `services.exe` (дерево процесів wineserver, патч
+  `0090`). Інакше — ні вікна, ні дозволу: запис у журнал і відмова. Без цього
+  програма підсунула б замість служби власне вікно, що просить пароль Linux.
+- Якщо служби ще немає (перші секунди завантаження) — чекає до 20 с, як будь-яка
+  програма чекає службу.
 - Новий запит `REQ_GATE` (для Панелі керування): стан; змінити пароль;
   увімкнути/вимкнути пароль. Завжди питає UAC з **поточним** паролем (якщо
   він увімкнений), незалежно від дозволів, — як зміна параметрів UAC у
   Windows.
 
-### 3. `runtime/wine/modules/programs/consent` → `consent.exe` (новий)
+### 3. `runtime/wine/modules/dlls/appinfo` → `appinfo.dll` (новий)
 
-Вікно контролю облікових записів Windows 7:
+Служба «Application Information» (Appinfo) — брокер UAC, як у Windows: DLL
+служби в `svchost.exe -k netsvcs` (`runtime/registry/uac.reg`: служба
+`Appinfo`, `ServiceDll`, група `netsvcs`, політики
+`HKLM\…\Policies\System` — `EnableLUA` та інші, які читають інсталятори).
+
+- Слухає 127.0.0.1 на випадковому порті, токен — 16 випадкових байтів;
+  порт і токен пише в `C:\ProgramData\Arctic\Appinfo\session`.
+- На запит: **одне вікно за раз** (`Global\ArcticAppinfoConsent`), запуск
+  `System32\consent.exe` з `WINEDLLOVERRIDES=consent.exe=b` — вікно завжди
+  вбудоване з образу хоста, навіть якщо файл на C: підмінили, — і передача
+  рядків між трубами вікна й з'єднанням хоста.
+- Служба не бачить ні `gate.conf`, ні пароля й нічого не вирішує: програма,
+  що з'єдналася сюди сама, може лише змусити з'явитися вікно — те саме, що
+  дає виклик власного API підвищення прав у Windows.
+- У Windows ця служба — `DEMAND_START` (її будить API підвищення прав). Тут
+  просить root, а root не може звернутися до диспетчера служб, тому служба
+  `AUTO_START` — єдине відхилення від Windows, решта (ім'я, група,
+  `ServiceDll`) як там.
+- Далі тут же: `RAiLaunchAdminProcess` для `runas` і манифестів
+  `requireAdministrator`, тобто повноцінний UAC для програм Windows.
+
+### 4. `runtime/wine/modules/programs/consent` → `consent.exe` (новий)
+
+Вікно контролю облікових записів Windows 7. Лише вікно: нічого в системі не
+просить і нічого не вирішує. Його запускає служба Appinfo зі своїми
+стандартними дескрипторами на трубах і говорить із ним тими самими рядками
+(`prompt` → `yes <пароль>` / `no` → `ok` / `wrong` / `wait <секунди>`).
 
 - затемнений знімок робочого столу на весь екран («безпечний робочий
   стіл»), поверх усього (своя z-смуга, `SetWindowBand`, Wine `0041`);
@@ -158,7 +210,7 @@ C: змонтовано з `uid=nt` (`arctic-volume.c`): **будь-який п�
   підсистеми Linux і натисніть «Так»»;
 - «Так» / «Ні», Enter, Esc, звук `Windows User Account Control`.
 
-### 4. `runtime/wine/modules/programs/wsl`
+### 5. `runtime/wine/modules/programs/wsl`
 
 - Лишаються `wsl.exe` і `System32\bash.exe` (у Windows обидва — запуск
   WSL). `git.exe` і `sh.exe` під цим іменем зникають: git — це Git for
@@ -166,7 +218,7 @@ C: змонтовано з `uid=nt` (`arctic-volume.c`): **будь-який п�
 - Відмова сервера → «Операцію скасовано користувачем.», код 1, як у
   Windows.
 
-### 5. Панель керування: «Облікові записи користувачів»
+### 6. Панель керування: «Облікові записи користувачів»
 
 - `dlls/usercpl` — пункт Панелі керування Windows 7 з посиланням «Змінити
   параметри контролю облікових записів користувачів».
@@ -178,13 +230,13 @@ C: змонтовано з `uid=nt` (`arctic-volume.c`): **будь-який п�
     дозвіл — раз на програму.
   Застосування — `REQ_GATE`, тобто через вікно UAC.
 
-### 6. `host/init/arctic-init.c`: dev-консоль
+### 7. `host/init/arctic-init.c`: dev-консоль
 
 `ttyS0` (лише `arctic.dev=1`): перед оболонкою «Пароль підсистеми
 Linux:» (`gate.c`); якщо пароль вимкнено — «Натисніть Enter, щоб
 підтвердити». Три помилки — 30 с паузи. У релізі консолі немає, як і досі.
 
-### 7. Windows-інструменти для всіх
+### 8. Windows-інструменти для всіх
 
 | Що | Куди | Примітка |
 |---|---|---|
@@ -193,7 +245,7 @@ Linux:» (`gate.c`); якщо пароль вимкнено — «Натисні
 | PowerShell 7 | в образ (зараз — `install-pwsh.sh`) | `powershell.exe` → pwsh 7 замість заглушки Wine (`docs/updates.md`, етап 4): агенти кличуть саме `powershell.exe` |
 | cmd.exe | без змін | перевірити ConPTY для терміналів IDE (Antigravity) |
 
-### 8. Інструмент Bash у Claude Code
+### 9. Інструмент Bash у Claude Code
 
 Мета — справжній Git Bash (`C:\Program Files\Git\bin\bash.exe`), як у
 Windows. **Зараз він під Arctic не працює:** сам bash іде, але будь-яка
@@ -217,7 +269,7 @@ Linux.
 `System32\git.exe` — міст у Linux, тож налаштування лягло в `.gitconfig`
 дистрибутиву. Ще одна причина прибрати міст (етап 4).
 
-### 9. Хост без Linux user mode (вимога 2026-10-11)
+### 10. Хост без Linux user mode (вимога 2026-10-11)
 
 Від Linux лишаються ядро, модулі, прошивки й **драйвери користувацького
 режиму** — те, що у Windows є UMD: Mesa, NVIDIA userspace, Vulkan-завантажувач,
@@ -234,7 +286,7 @@ alsa-lib з UCM, libinput/libevdev, бібліотеки unix-частини Win
 | `amixer`, `alsactl init` | alsa-lib mixer API в `arctic-init` | 13 |
 | `modprobe`, `modinfo` (kmod) | libkmod у `arctic-init`, `arctic-gpu`, `arctic-lxss`, `arctic-smb` | 13 |
 | `udevadm trigger` | запис `add`/`change` у `/sys/.../uevent` самим `arctic-init` | 13 |
-| `busybox sh` на `ttyS0` (dev) | dev-консоль лишається лише в dev-образі, за паролем (розділ 6); у звичайному образі busybox немає. Налагодження живої системи — через WSL (дистрибутив бачить хост через `/proc/1/root`), теж під гейтом | 14 |
+| `busybox sh` на `ttyS0` (dev) | dev-консоль лишається лише в dev-образі, за паролем (розділ 7); у звичайному образі busybox немає. Налагодження живої системи — через WSL (дистрибутив бачить хост через `/proc/1/root`), теж під гейтом | 14 |
 | `/bin/sh`, `/bin/bash` у `arctic-lxss` | беруться з дистрибутиву (chroot), хосту не потрібні | 14 |
 | `systemd-udevd` + hwdb | **лишається** невидимим бекендом (PnP); власний менеджер пристроїв — окремий етап після цього плану | — |
 | `iwd` + `dbus-daemon` | **лишаються** невидимими бекендами Wi-Fi; власний WPA у `Wlansvc` — окремий етап | — |
@@ -249,11 +301,11 @@ busybox, але busybox не потрапляє в `host.sqfs`. Перевірк
 
 | Частина | Образ | Оновлення встановленої системи |
 |---|---|---|
-| `arctic-lxss`, `arctic-init`, `gate.c`, `consent.exe` в `/usr/lib/arctic` | `ci/build-rootfs.sh` | `make-update.sh --host` (`host.sqfs`) |
-| `wsl.exe`, `bash.exe`, `usercpl.dll`, `UserAccountControlSettings.exe`, `powershell.exe` | `ci/build-wine.sh` → префікс | `--windows` |
+| `arctic-lxss`, `arctic-init`, `gate.c` | `ci/build-rootfs.sh` | `make-update.sh --host` (`host.sqfs`) |
+| `appinfo.dll`, `consent.exe`, `wsl.exe`, `bash.exe`, `usercpl.dll`, `UserAccountControlSettings.exe`, `powershell.exe` | `ci/build-wine.sh` → префікс | `--windows` |
 | видалити `System32\git.exe`, `System32\sh.exe` | не класти | **нове:** список `delete` у пакеті |
 | Git for Windows, gh, PowerShell 7 у `Program Files` | `ci/build-rootfs.sh` / `make-windows-img.sh` | **нове:** дерево `Root\` поверх `C:\` (не лише `Windows\`) |
-| реєстр: PATH, пункт Панелі керування, `wsl.reg` | `runtime/registry/*.reg` | **нове:** `Registry\*.reg`, імпортуються раз при першому вході після оновлення (userinit), потім видаляються |
+| реєстр: служба `Appinfo` і група `netsvcs` (`uac.reg`), PATH, пункт Панелі керування, `wsl.reg` | `runtime/registry/*.reg` | **нове:** `Registry\*.reg`, імпортуються раз при першому вході після оновлення (userinit), потім видаляються |
 
 Нове в пакеті оновлення: `Root\`, `delete`, `Registry\`. Усе, що замінено
 або видалено, іде в `Host\Previous` — «Arctic, undo the last update»
@@ -268,19 +320,25 @@ busybox, але busybox не потрапляє в `host.sqfs`. Перевірк
    користувачем.», код 1.
 4. Процес, що дістав токен і стукає в arctic-lxss сам, — вікно називає
    саме його.
-5. Пароль вимкнено в Панелі керування (через UAC з `0000`) → після
+5. Вікно належить службі: доки воно на екрані, `tasklist` показує
+   `svchost.exe` і `consent.exe`; `sc stop Appinfo` → `wsl -e id` відмовляє
+   («служба не відповіла») і не вішається.
+6. Підробка брокера: програма пише свій порт і токен у
+   `C:\ProgramData\Arctic\Appinfo\session` і слухає його → гейт відмовляє,
+   у журналі «is not the Application Information service», вікна немає.
+7. Пароль вимкнено в Панелі керування (через UAC з `0000`) → після
    перезавантаження лише «Так/Ні».
-6. Новий пароль → `0000` більше не підходить; перезавантаження —
+8. Новий пароль → `0000` більше не підходить; перезавантаження —
    питається раз.
-7. `dir C:\Windows\System32\config\Host\Gate` з Windows — порожньо;
+9. `dir C:\Windows\System32\config\Host\Gate` з Windows — порожньо;
    запис туди — відмова.
-8. Агент: інструменти Bash (Git Bash) і PowerShell без жодного вікна;
-   `wsl …` від агента → одне вікно на процес агента.
-9. `wsl.py` з дистрибутиву (збірка) — без вікон.
-10. dev-образ: `ttyS0` питає пароль; реліз: консолі немає.
-11. `git`, `gh`, `powershell.exe` з cmd — Windows-версії
+10. Агент: інструменти Bash (Git Bash) і PowerShell без жодного вікна;
+    `wsl …` від агента → одне вікно на процес агента.
+11. `wsl.py` з дистрибутиву (збірка) — без вікон.
+12. dev-образ: `ttyS0` питає пароль; реліз: консолі немає.
+13. `git`, `gh`, `powershell.exe` з cmd — Windows-версії
     (`where git` → `C:\Program Files\Git\cmd\git.exe`).
-12. Пакет оновлення на встановлений диск → усе вище; потім
+14. Пакет оновлення на встановлений диск → усе вище; потім
     `arctic.rollback=1` → попередній стан, `System32\git.exe` повернувся.
 
 ## Порядок
@@ -288,8 +346,8 @@ busybox, але busybox не потрапляє в `host.sqfs`. Перевірк
 | # | Етап | Стан |
 |---|---|---|
 | 1 | `gate.c` + захищена тека стану в `arctic-init` | 🔨 2026-10-12: `gate.c`/`gate.h` (читання/запис `gate.conf`, `crypt_rn`/`crypt_gensalt_rn` з libxcrypt); `gate_prepare_state_dir()` в `arctic-init` в'яже `Host\Gate` в `/run/arctic/gate` і накриває оригінал порожнім read-only tmpfs; `ci/build-rootfs.sh` (`-lcrypt`) і `packages.txt` (`libxcrypt`) |
-| 2 | Гейт в `arctic-lxss`: хто питає, дозволи, `REQ_GATE` | 🔨 2026-10-12: `peer_pid()` через `/proc/net/tcp`; предки через новий сокет wineserver (`runtime/wine/patches/0090…`, бо предки по `/proc` — завжди `arctic-init`), не через `/proc/<pid>/stat`; `origin()`/системні процеси/`wsl.exe` як запасний варіант; таблиця дозволів і прапорець пароля в спільній пам'яті, одне вікно consent за раз (`flock`); `REQ_GATE` (`status`/`password`/`require`); оболонки (cmd, pwsh, conhost) між програмою і `wsl.exe` пропускаються — агент питається раз; процеси дистрибутивів — без питань; UAC лише для гейт-дистрибутива (`distro=` у захищеному `gate.conf`, за іменем або тим самим VHDX), інші — вільно, як у Windows (до переходу на ВМ WSL вони теж root-chroot на хості: тимчасово, за рішенням 2026-10-12); захищена тека — `/run/arctic/gate` (tmpfs, root 0700) з `store` всередині, бо C: змонтовано для `nt`; не перевірено у VM — чекає `consent.exe` |
-| 3 | `consent.exe` (UAC Windows 7) | ⏳ |
+| 2 | Гейт в `arctic-lxss`: хто питає, дозволи, `REQ_GATE` | 🔨 2026-10-12: `peer_pid()` через `/proc/net/tcp`; предки через новий сокет wineserver (`runtime/wine/patches/0090…`, бо предки по `/proc` — завжди `arctic-init`), не через `/proc/<pid>/stat`; `origin()`/системні процеси/`wsl.exe` як запасний варіант; таблиця дозволів і прапорець пароля в спільній пам'яті, одне вікно consent за раз (`flock`); `REQ_GATE` (`status`/`password`/`require`); оболонки (cmd, pwsh, conhost) між програмою і `wsl.exe` пропускаються — агент питається раз; процеси дистрибутивів — без питань; UAC лише для гейт-дистрибутива (`distro=` у захищеному `gate.conf`, за іменем або тим самим VHDX), інші — вільно, як у Windows (до переходу на ВМ WSL вони теж root-chroot на хості: тимчасово, за рішенням 2026-10-12); захищена тека — `/run/arctic/gate` (tmpfs, root 0700) з `store` всередині, бо C: змонтовано для `nt`; 2026-10-12 вікно просить служба Appinfo (етап 3), а не fork+Wine від root; у VM не перевірено |
+| 3 | UAC як у Windows: служба `Appinfo` + `consent.exe` | 🔨 2026-10-12: `appinfo.dll` — DLL служби в `svchost -k netsvcs` (`runtime/registry/uac.reg`), слухає 127.0.0.1 з токеном у `C:\ProgramData\Arctic\Appinfo\session`, одне вікно за раз, запускає `System32\consent.exe` вбудованим (`WINEDLLOVERRIDES`); `consent.exe` — вікно Windows 7 (щит, затемнений стіл, `SetWindowBand`, поле пароля, `wait` після п'яти помилок, звук `WindowsUAC`); `arctic-lxss` більше не запускає Wine від root, а стукає до служби й перевіряє, що на іншому кінці `svchost.exe` від `services.exe`; зібрано (mingw + gcc), у VM не перевірено |
 | 4 | `wsl.exe`: без `git.exe`/`sh.exe`, повідомлення про відмову | 🔨 2026-10-11: `git.exe` прибрано; `wsl.exe` знає кадр відмови (`F_DENIED` → текст `ERROR_CANCELLED` системи, код 1) |
 | 5 | «Облікові записи користувачів» + `UserAccountControlSettings.exe` | ⏳ |
 | 6 | dev-консоль за паролем | 🔨 2026-10-12: `ttyS0` питає пароль гейту (`gate_check_password`) перед оболонкою, без пароля — Enter; три спроби, потім 30 с, далі знову; не перевірено у VM |

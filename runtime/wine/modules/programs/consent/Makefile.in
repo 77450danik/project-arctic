@@ -1,0 +1,9 @@
+MODULE    = consent.exe
+IMPORTS   = winmm comctl32 user32 gdi32 advapi32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Consent UI for administrative applications"
+
+SOURCES = \
+	consent.rc \
+	main.c

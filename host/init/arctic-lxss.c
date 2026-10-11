@@ -84,7 +84,8 @@ static void say(const char *fmt, ...);
 #define MAX_GRANTS 256
 #define GATE_LOCK GATE_RUN_DIR "/.lock"         /* the grants table and password_entered */
 #define CONSENT_LOCK GATE_RUN_DIR "/.consent"   /* one consent.exe window at a time, as in Windows */
-#define CONSENT_EXE "/usr/lib/arctic/consent.exe"
+#define APPINFO_SESSION C_DRIVE "/ProgramData/Arctic/Appinfo/session"
+#define APPINFO_WAIT_S 20                       /* the service comes up with the other services of Windows */
 #define CONSENT_TIMEOUT_S 120
 #define MAX_WRONG_ATTEMPTS 5
 #define WRONG_PAUSE_S 30
@@ -103,8 +104,6 @@ struct gate_shared {
 
 static struct gate_shared *gate_shm;
 static int gate_lock_fd = -1;
-static uid_t nt_uid;
-static gid_t nt_gid;
 
 static void gate_shared_init(void)
 {
@@ -1297,55 +1296,128 @@ static int read_line_timeout(int fd, char *buf, size_t size, int timeout_s)
 
 enum consent_result { CONSENT_DENIED, CONSENT_GRANTED };
 
-/* The UAC window: a Wine builtin run from the host image as user nt, never
- * from C: (docs/linux-gate.md, "Протокол arctic-lxss ↔ consent.exe"). One
- * socket serves as both its stdin and stdout, tab-separated UTF-8 lines. */
+/* ---- the consent window, asked for as Windows asks for it ----
+ *
+ * The window belongs to the Application Information service (appinfo.dll in
+ * svchost, runtime/wine/modules/dlls/appinfo), as in Windows: root starts no
+ * Windows program itself, it asks the service over 127.0.0.1 and the service
+ * puts consent.exe on the screen and carries the lines between the two. The
+ * service decides nothing: root checks the password and root records the
+ * answer.
+ *
+ *   C:\ProgramData\Arctic\Appinfo\session   "port token", written by the service
+ */
+static int appinfo_session(unsigned short *port, char *tok, size_t tok_len)
+{
+    FILE *f = fopen(APPINFO_SESSION, "re");
+    unsigned int read_port = 0;
+    char read_token[256];
+    int ok;
+
+    if (!f)
+        return -1;
+    ok = fscanf(f, "%u %255s", &read_port, read_token) == 2 && read_port && read_port < 65536 &&
+         strlen(read_token) < tok_len;
+    fclose(f);
+    if (!ok)
+        return -1;
+    *port = (unsigned short)read_port;
+    snprintf(tok, tok_len, "%s", read_token);
+    return 0;
+}
+
+/* Only the service may show that window. Any Windows program could write its
+ * own port and token into the session file (C: is mounted for nt) and put up
+ * a window of its own that asks for the Linux password; so the process behind
+ * the connection must be svchost.exe started by services.exe, which nothing
+ * of uid nt can be.
+ *
+ * A connection still waiting in the listener's queue belongs to no process
+ * yet (/proc/net/tcp gives it no inode), so this waits a moment for the
+ * service to accept it; the service is already listening, so it is about to. */
+static int is_appinfo_service(int sock)
+{
+    for (int attempt = 0; attempt < 30; attempt++) {
+        struct ntree_entry chain[NTREE_MAX];
+        pid_t peer = peer_pid(sock);
+        int n = peer > 0 ? query_ntree(peer, chain, NTREE_MAX) : 0;
+
+        if (!n) {
+            usleep(100000);
+            continue;
+        }
+        if (strcasecmp(image_basename(chain[0].image), "svchost.exe"))
+            return 0;
+        for (int i = 1; i < n; i++)
+            if (!strcasecmp(image_basename(chain[i].image), "services.exe"))
+                return 1;
+        return 0;
+    }
+    return 0; /* nobody owns it: not the service either */
+}
+
+/* A connection to the service with the token already sent, or -1. The first
+ * request of a start may come before the services are up, so it waits a
+ * while for it, as any program waiting for a service does. */
+static int appinfo_connect(void)
+{
+    struct timeval tv = {10, 0};
+
+    for (int attempt = 0; attempt < APPINFO_WAIT_S * 2; attempt++) {
+        struct sockaddr_in addr = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+        char tok[256], line[300];
+        unsigned short port;
+        int fd, n;
+
+        if (attempt)
+            usleep(500000);
+        if (appinfo_session(&port, tok, sizeof(tok)))
+            continue;
+        addr.sin_port = htons(port);
+        if ((fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
+            continue;
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr))) {
+            close(fd);
+            continue;
+        }
+        /* the token goes only to the service itself, and only once it is known
+         * to be the service: nothing else gets so much as a window */
+        if (!is_appinfo_service(fd)) {
+            say("gate: 127.0.0.1:%u is not the Application Information service", port);
+            close(fd);
+            return -1;
+        }
+        n = snprintf(line, sizeof(line), "%s\n", tok);
+        if (n < 0 || send_all(fd, line, (size_t)n)) {
+            close(fd);
+            return -1;
+        }
+        return fd;
+    }
+    return -1;
+}
+
 static enum consent_result ask_consent(struct gate_state *st, int need_password, const char *source_name,
                                        const char *source_path, const char *purpose)
 {
-    /* the session's own, as arctic-init gives every Windows program (nt_env) */
-    static char *const envp[] = {
-        "WINEPREFIX=/run/nt",       "HOME=/run/nt/home", "USER=User", "LOGNAME=User", "LANG=uk_UA.UTF-8",
-        "TZ=:/etc/localtime",       "PATH=/usr/bin",     "WINEDEBUG=fixme-all",
-        "WINE_IMAGE_CACHE=/run/nt/imagecache", "XDG_RUNTIME_DIR=/run/nt/xdg", "WAYLAND_DISPLAY=arctic-0",
-        "WINEDLLOVERRIDES=consent.exe=b", NULL,
-    };
-    int sv[2];
     char line[2048], prompt[2048];
-    pid_t pid;
-    int wrong = 0, n;
+    int wrong = 0, n, fd = appinfo_connect();
     enum consent_result result = CONSENT_DENIED;
 
-    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv))
-        return CONSENT_DENIED;
-    if ((pid = fork()) < 0) {
-        close(sv[0]);
-        close(sv[1]);
+    if (fd < 0) {
+        say("gate: no window to ask in: the Application Information service did not answer");
         return CONSENT_DENIED;
     }
-    if (!pid) {
-        int null = open("/dev/null", O_WRONLY);
-        char *argv[] = {"/usr/bin/wine", CONSENT_EXE, NULL};
-
-        close(sv[0]);
-        dup2(sv[1], 0);
-        dup2(sv[1], 1);
-        dup2(null >= 0 ? null : sv[1], 2);
-        setsid();
-        if (initgroups(NT_USER, nt_gid) || setgid(nt_gid) || setuid(nt_uid))
-            _exit(126);
-        execve(argv[0], argv, envp);
-        _exit(127);
-    }
-    close(sv[1]);
-
     n = snprintf(prompt, sizeof(prompt), "prompt\t%d\t%s\t%s\t%s\n", need_password, source_name, source_path,
                 purpose);
-    if (n < 0 || send_all(sv[0], prompt, (size_t)n))
-        goto done;
+    if (n < 0 || send_all(fd, prompt, (size_t)n)) {
+        close(fd);
+        return CONSENT_DENIED;
+    }
 
     for (;;) {
-        if (!read_line_timeout(sv[0], line, sizeof(line), CONSENT_TIMEOUT_S) || !strcmp(line, "no"))
+        if (!read_line_timeout(fd, line, sizeof(line), CONSENT_TIMEOUT_S) || !strcmp(line, "no"))
             break;
         if (!strncmp(line, "yes", 3) && (line[3] == 0 || line[3] == '\t')) {
             const char *pw = line[3] == '\t' ? line + 4 : "";
@@ -1353,7 +1425,7 @@ static enum consent_result ask_consent(struct gate_state *st, int need_password,
             if (!need_password || gate_check_password(st, pw)) {
                 if (need_password)
                     gate_shm->password_entered = 1;
-                if (!send_all(sv[0], "ok\n", 3))
+                if (!send_all(fd, "ok\n", 3))
                     result = CONSENT_GRANTED;
                 break;
             }
@@ -1361,26 +1433,20 @@ static enum consent_result ask_consent(struct gate_state *st, int need_password,
                 char wait_msg[32];
 
                 snprintf(wait_msg, sizeof(wait_msg), "wait\t%d\n", WRONG_PAUSE_S);
-                if (send_all(sv[0], wait_msg, strlen(wait_msg)))
+                if (send_all(fd, wait_msg, strlen(wait_msg)))
                     break;
                 sleep(WRONG_PAUSE_S);
                 wrong = 0;
                 continue;
             }
-            if (send_all(sv[0], "wrong\n", 6))
+            if (send_all(fd, "wrong\n", 6))
                 break;
             continue;
         }
         break; /* anything else: as good as "no" */
     }
 
-done:
-    close(sv[0]);
-    kill(pid, SIGTERM);
-    for (int i = 0; i < 20 && waitpid(pid, NULL, WNOHANG) == 0; i++)
-        usleep(100000);
-    kill(pid, SIGKILL);
-    waitpid(pid, NULL, 0);
+    close(fd); /* the window goes with it */
     return result;
 }
 
@@ -1866,12 +1932,6 @@ int main(void)
     prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
     signal(SIGPIPE, SIG_IGN);
     make_dirs(ROOTS);
-    struct passwd *nt_pw = getpwnam(NT_USER);
-    if (nt_pw) {
-        nt_uid = nt_pw->pw_uid;
-        nt_gid = nt_pw->pw_gid;
-    } else
-        say("no user %s: consent.exe could not run as it", NT_USER);
     gate_shared_init();
     if (getrandom(random_bytes, sizeof(random_bytes), 0) != (ssize_t)sizeof(random_bytes))
         return 1;

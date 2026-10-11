@@ -1,0 +1,7 @@
+MODULE    = appinfo.dll
+IMPORTS   = advapi32 ws2_32
+
+VER_FILEDESCRIPTION_STR = "Application Information Service"
+
+SOURCES = \
+	appinfo.c

@@ -26,6 +26,8 @@ parser.add_argument("--after", type=int, default=60, help="seconds to let it boo
 parser.add_argument("--keep", action="store_true")
 parser.add_argument("--memory", type=int, default=4096, help="MB of RAM")
 parser.add_argument("--put", action="append", default=[], help="LOCAL:REMOTE")
+parser.add_argument("--password", default="0000",
+                    help="the password of the Linux gate, which the development console asks for")
 parser.add_argument("--disk", action="append", default=[], help="a raw disk image attached as an internal disk")
 parser.add_argument("--stick", action="append", default=[], help="a raw disk image attached as a USB stick")
 parser.add_argument("--monitors", type=int, default=1, help="how many monitors the card has (virtio-gpu above one)")
@@ -89,7 +91,16 @@ def read_for(seconds):
     return data.decode("utf-8", "replace")
 
 
-read_for(args.after)
+boot = read_for(args.after)
+# The development console asks for the Linux gate's password before it gives
+# the shell (docs/linux-gate.md, section 7); with the password off it asks
+# for Enter, which the same line answers.
+if "підсистеми Linux" in boot and "arctic#" not in boot:
+    sock.sendall(args.password.encode() + b"\n")
+    answer = read_for(5)
+    print("### the development console: " +
+          ("the password was not taken" if "Неправильний пароль" in answer else "unlocked"))
+
 for spec in args.put:
     local, remote = spec.rsplit(":", 1)
     import base64
