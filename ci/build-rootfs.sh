@@ -53,11 +53,13 @@ fi
 cp -a "$OUT/wine/usr/." "$RFS/usr/"
 
 INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop,hiberfil}.c)
-gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}"
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}" \
+    "$ROOT/host/init/gate.c" -lcrypt
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"
-# WSL in Arctic: the distributions of D:\WSL, for wsl.exe and bash.exe (docs/updates.md)
-gcc -O2 -Wall -o "$RFS/usr/bin/arctic-lxss" "$ROOT/host/init/arctic-lxss.c"
+# WSL in Arctic: the distributions of D:\WSL, for wsl.exe and bash.exe (docs/updates.md).
+# gate.c: the Linux gate's password (docs/linux-gate.md), shared with arctic-init
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-lxss" "$ROOT/host/init/arctic-lxss.c" "$ROOT/host/init/gate.c" -lcrypt
 # Network folders: \\server\share mounted on demand (docs/M5-network.md)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-smb" "$ROOT/host/init/arctic-smb.c" -lpthread
 # Sharing out of Arctic: \\ARCTIC\share served to the network (docs/M5-network.md)

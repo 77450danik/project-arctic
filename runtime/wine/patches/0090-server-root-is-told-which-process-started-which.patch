@@ -1,0 +1,190 @@
+diff --git a/server/process.c b/server/process.c
+--- a/server/process.c	2026-10-11 23:22:32.086540160 +0200
++++ b/server/process.c	2026-10-11 23:22:32.183894281 +0200
+@@ -32,6 +32,8 @@
+ #include <sys/types.h>
+ #include <sys/time.h>
+ #include <sys/socket.h>
++#include <sys/un.h>
++#include <stddef.h>
+ #include <unistd.h>
+ #include <poll.h>
+ #ifdef HAVE_SYS_PARAM_H
+@@ -2048,3 +2050,154 @@
+         }
+     }
+ }
++
++
++/* Arctic: who started a process (docs/linux-gate.md). On Linux every Wine
++ * process is a child of init; only the server knows which process created
++ * which. arctic-lxss, root on the host, asks it for the process that
++ * connected to WSL and its parents: the gate of Linux allows a program, not
++ * a pid. The socket has an abstract name, bound before any program runs, and
++ * root alone is answered: no Windows program can ask or answer in its place.
++ *
++ * Request: the Unix pid (4 bytes). Reply: a line for the process and one for
++ * each parent up to the first that is gone, "<unix pid> <pid> <start time>
++ * <image>\n", the image as UTF-8. */
++struct ntree_socket
++{
++    struct object        obj;
++    struct fd           *fd;
++};
++
++static void ntree_socket_dump( struct object *obj, int verbose )
++{
++    fprintf( stderr, "Arctic process tree socket\n" );
++}
++
++static void ntree_socket_destroy( struct object *obj )
++{
++    struct ntree_socket *sock = (struct ntree_socket *)obj;
++    release_object( sock->fd );
++}
++
++static void ntree_socket_poll_event( struct fd *fd, int event );
++
++static const struct object_ops ntree_socket_ops =
++{
++    .size    = sizeof(struct ntree_socket),
++    .type    = &no_type,
++    .dump    = ntree_socket_dump,
++    .destroy = ntree_socket_destroy,
++};
++
++static const struct fd_ops ntree_socket_fd_ops =
++{
++    .poll_event = ntree_socket_poll_event,
++};
++
++static size_t ntree_put_utf8( char *out, size_t size, const WCHAR *str, data_size_t len )
++{
++    size_t pos = 0;
++
++    for (data_size_t i = 0; i < len / sizeof(WCHAR) && pos + 4 < size; i++)
++    {
++        unsigned int ch = str[i];
++
++        if (ch >= 0xd800 && ch < 0xdc00 && i + 1 < len / sizeof(WCHAR) && str[i + 1] >= 0xdc00 && str[i + 1] < 0xe000)
++            ch = 0x10000 + ((ch - 0xd800) << 10) + (str[++i] - 0xdc00);
++        if (ch == '\n' || ch == '\r') ch = ' ';
++        if (ch < 0x80) out[pos++] = ch;
++        else if (ch < 0x800)
++        {
++            out[pos++] = 0xc0 | (ch >> 6);
++            out[pos++] = 0x80 | (ch & 0x3f);
++        }
++        else if (ch < 0x10000)
++        {
++            out[pos++] = 0xe0 | (ch >> 12);
++            out[pos++] = 0x80 | ((ch >> 6) & 0x3f);
++            out[pos++] = 0x80 | (ch & 0x3f);
++        }
++        else
++        {
++            out[pos++] = 0xf0 | (ch >> 18);
++            out[pos++] = 0x80 | ((ch >> 12) & 0x3f);
++            out[pos++] = 0x80 | ((ch >> 6) & 0x3f);
++            out[pos++] = 0x80 | (ch & 0x3f);
++        }
++    }
++    return pos;
++}
++
++static void ntree_socket_poll_event( struct fd *fd, int event )
++{
++    struct timeval tv = { 1, 0 };
++    struct ucred cred;
++    socklen_t cred_len = sizeof(cred);
++    struct process *process = NULL, *p;
++    char reply[16384];
++    size_t pos = 0;
++    unsigned int want;
++    int client, depth;
++
++    if (!(event & POLLIN)) return;
++    if ((client = accept4( get_unix_fd( fd ), NULL, NULL, SOCK_CLOEXEC )) == -1) return;
++    if (getsockopt( client, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len ) || cred.uid != 0)
++    {
++        close( client );
++        return;
++    }
++    setsockopt( client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv) );
++    setsockopt( client, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv) );
++    if (read( client, &want, sizeof(want) ) == sizeof(want))
++    {
++        LIST_FOR_EACH_ENTRY( p, &process_list, struct process, entry )
++            if (p->unix_pid == (int)want)
++            {
++                process = (struct process *)grab_object( p );
++                break;
++            }
++        for (depth = 0; process && depth < 64 && pos + 1024 < sizeof(reply); depth++)
++        {
++            struct process *parent = NULL;
++
++            pos += snprintf( reply + pos, sizeof(reply) - pos, "%d %u %lld ", process->unix_pid, process->id,
++                              (long long)process->start_time );
++            if (process->image) pos += ntree_put_utf8( reply + pos, sizeof(reply) - pos - 2, process->image, process->imagelen );
++            reply[pos++] = '\n';
++            /* a parent id taken again by a newer process is not the parent */
++            if (process->parent_id && (parent = get_process_from_id( process->parent_id )) &&
++                parent->start_time > process->start_time)
++            {
++                release_object( parent );
++                parent = NULL;
++            }
++            release_object( process );
++            process = parent;
++        }
++        if (process) release_object( process );
++    }
++    if (pos) write( client, reply, pos );
++    close( client );
++}
++
++void open_arctic_ntree_socket(void)
++{
++    struct sockaddr_un addr = { .sun_family = AF_UNIX };
++    struct ntree_socket *sock;
++    static const char name[] = "arctic-wineserver-ntree";
++    int fd;
++
++    if ((fd = socket( AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0 )) == -1) return;
++    memcpy( addr.sun_path + 1, name, sizeof(name) - 1 );  /* abstract */
++    if (bind( fd, (struct sockaddr *)&addr, offsetof( struct sockaddr_un, sun_path ) + sizeof(name) ) == -1 ||
++        listen( fd, 8 ) == -1)
++    {
++        fprintf( stderr, "wineserver: Arctic process tree socket: %s\n", strerror( errno ));
++        close( fd );
++        return;
++    }
++    if (!(sock = alloc_object( &ntree_socket_ops )) ||
++        !(sock->fd = create_anonymous_fd( &ntree_socket_fd_ops, fd, &sock->obj, 0 )))
++        return;
++    set_fd_events( sock->fd, POLLIN );
++    make_object_permanent( &sock->obj );
++}
+diff --git a/server/process.h b/server/process.h
+--- a/server/process.h	2026-10-11 23:22:32.088419580 +0200
++++ b/server/process.h	2026-10-11 23:22:32.184119343 +0200
+@@ -104,6 +104,7 @@
+ extern data_size_t get_process_startup_info_size( struct process *process );
+ extern struct thread *get_process_first_thread( struct process *process );
+ extern struct process *get_process_from_id( process_id_t id );
++extern void open_arctic_ntree_socket(void);
+ extern struct process *get_process_from_handle( obj_handle_t handle, unsigned int access );
+ extern struct debug_obj *get_debug_obj( struct process *process, obj_handle_t handle, unsigned int access );
+ extern int process_set_debugger( struct process *process, struct thread *thread );
+diff --git a/server/request.c b/server/request.c
+--- a/server/request.c	2026-10-11 23:22:32.090262075 +0200
++++ b/server/request.c	2026-10-11 23:22:32.184338781 +0200
+@@ -816,6 +816,7 @@
+         fatal_error( "out of memory\n" );
+     set_fd_events( master_socket->fd, POLLIN );
+     make_object_permanent( &master_socket->obj );
++    open_arctic_ntree_socket();
+ }
+
+ /* open the master server socket and start waiting for new clients */

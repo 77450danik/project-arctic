@@ -55,6 +55,7 @@
 #include <unistd.h>
 
 #include "bootanim.h"
+#include "gate.h"
 #include "hiberfil.h"
 #include "stop.h"
 
@@ -2111,6 +2112,81 @@ static void mirror_ntlog(void)
     }
 }
 
+/* A line typed at the tty with echo off (a password, or a bare Enter):
+ * 0 only when the tty itself is gone (closed, unplugged) */
+static int read_hidden_line(int tty, char *buf, size_t size)
+{
+    struct termios old, new;
+    size_t len = 0;
+    int have_old = tcgetattr(tty, &old) == 0;
+
+    if (have_old) {
+        new = old;
+        new.c_lflag &= ~(tcflag_t)ECHO;
+        tcsetattr(tty, TCSANOW, &new);
+    }
+    for (;;) {
+        char c;
+        ssize_t n = read(tty, &c, 1);
+
+        if (n <= 0) {
+            if (have_old)
+                tcsetattr(tty, TCSANOW, &old);
+            return 0;
+        }
+        if (c == '\n' || c == '\r')
+            break;
+        if ((c == 8 || c == 127) && len) { /* backspace / delete */
+            len--;
+            continue;
+        }
+        if (c >= 32 && len + 1 < size)
+            buf[len++] = c;
+    }
+    buf[len] = 0;
+    if (have_old)
+        tcsetattr(tty, TCSANOW, &old);
+    write(tty, "\r\n", 2);
+    return 1;
+}
+
+/* The dev console's own gate (docs/linux-gate.md, section 6): the same
+ * password as wsl.exe's consent window, asked here directly since there is
+ * no desktop yet to show it on. Three tries, then 30 s, then three more. */
+static void gate_check_at_console(int tty)
+{
+    struct gate_state st;
+    static const char ask[] = "\r\nПароль підсистеми Linux: ";
+    static const char confirm[] = "\r\nНатисніть Enter, щоб підтвердити доступ до підсистеми Linux: ";
+    static const char wrong[] = "\r\nНеправильний пароль.\r\n";
+    char pw[256];
+
+    gate_load(&st);
+    if (!st.password_on) {
+        write(tty, confirm, strlen(confirm));
+        if (!read_hidden_line(tty, pw, sizeof(pw)))
+            _exit(1);
+        return;
+    }
+    for (;;) {
+        int tries, ok = 0;
+
+        for (tries = 0; tries < 3; tries++) {
+            write(tty, ask, strlen(ask));
+            if (!read_hidden_line(tty, pw, sizeof(pw)))
+                _exit(1);
+            if (gate_check_password(&st, pw)) {
+                ok = 1;
+                break;
+            }
+            write(tty, wrong, strlen(wrong));
+        }
+        if (ok)
+            return;
+        sleep(30);
+    }
+}
+
 static void start_shell(void)
 {
     pid_t pid;
@@ -2127,6 +2203,7 @@ static void start_shell(void)
         dup2(tty, 0);
         dup2(tty, 1);
         dup2(tty, 2);
+        gate_check_at_console(tty);
         char *argv[] = {"/usr/bin/busybox", "sh", NULL};
         char *envp[] = {"PATH=/usr/bin", "HOME=/root", "TERM=vt100", "PS1=arctic# ", NULL};
         execve(argv[0], argv, envp);
@@ -2888,6 +2965,10 @@ int main(void)
     struct rlimit files = {524288, 524288};
     if (setrlimit(RLIMIT_NOFILE, &files))
         say("open files limit: %s", strerror(errno));
+    /* right after C: is mounted (already true by here) and before
+     * wineserver starts: docs/linux-gate.md, "Де живе пароль" */
+    if (gate_prepare_state_dir())
+        say("gate: the Linux gate's state folder: %s", strerror(errno));
     start_shell();
 
     pw = getpwnam(NT_USER);

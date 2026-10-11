@@ -287,12 +287,12 @@ busybox, але busybox не потрапляє в `host.sqfs`. Перевірк
 
 | # | Етап | Стан |
 |---|---|---|
-| 1 | `gate.c` + захищена тека стану в `arctic-init` | ⏳ |
-| 2 | Гейт в `arctic-lxss`: хто питає, дозволи, `REQ_GATE` | ⏳ |
+| 1 | `gate.c` + захищена тека стану в `arctic-init` | 🔨 2026-10-12: `gate.c`/`gate.h` (читання/запис `gate.conf`, `crypt_rn`/`crypt_gensalt_rn` з libxcrypt); `gate_prepare_state_dir()` в `arctic-init` в'яже `Host\Gate` в `/run/arctic/gate` і накриває оригінал порожнім read-only tmpfs; `ci/build-rootfs.sh` (`-lcrypt`) і `packages.txt` (`libxcrypt`) |
+| 2 | Гейт в `arctic-lxss`: хто питає, дозволи, `REQ_GATE` | 🔨 2026-10-12: `peer_pid()` через `/proc/net/tcp`; предки через новий сокет wineserver (`runtime/wine/patches/0090…`, бо предки по `/proc` — завжди `arctic-init`), не через `/proc/<pid>/stat`; `origin()`/системні процеси/`wsl.exe` як запасний варіант; таблиця дозволів і прапорець пароля в спільній пам'яті, одне вікно consent за раз (`flock`); `REQ_GATE` (`status`/`password`/`require`); оболонки (cmd, pwsh, conhost) між програмою і `wsl.exe` пропускаються — агент питається раз; процеси дистрибутивів — без питань; UAC лише для гейт-дистрибутива (`distro=` у захищеному `gate.conf`, за іменем або тим самим VHDX), інші — вільно, як у Windows (до переходу на ВМ WSL вони теж root-chroot на хості: тимчасово, за рішенням 2026-10-12); захищена тека — `/run/arctic/gate` (tmpfs, root 0700) з `store` всередині, бо C: змонтовано для `nt`; не перевірено у VM — чекає `consent.exe` |
 | 3 | `consent.exe` (UAC Windows 7) | ⏳ |
 | 4 | `wsl.exe`: без `git.exe`/`sh.exe`, повідомлення про відмову | 🔨 2026-10-11: `git.exe` прибрано; `wsl.exe` знає кадр відмови (`F_DENIED` → текст `ERROR_CANCELLED` системи, код 1) |
 | 5 | «Облікові записи користувачів» + `UserAccountControlSettings.exe` | ⏳ |
-| 6 | dev-консоль за паролем | ⏳ |
+| 6 | dev-консоль за паролем | 🔨 2026-10-12: `ttyS0` питає пароль гейту (`gate_check_password`) перед оболонкою, без пароля — Enter; три спроби, потім 30 с, далі знову; не перевірено у VM |
 | 7 | Git for Windows, gh, PowerShell 7, `powershell.exe` → pwsh | 🔨 2026-10-11: `ci/install-windows-tools.sh` (перевірено окремо: 415 + 247 + 41 МБ, ярлики в «Пуску»), `powershell.exe` запускає pwsh (перевірено копією: команда без ключа, `-Command -`, код виходу), PATH дописує `userinit`; у VM ще не перевірено |
 | 8 | Пакет оновлення: `Root\`, `delete` (реєстр уже їде з `host.sqfs`: `reapply_registry`) | 🔨 2026-10-11: initrd (`install_tree`, `install_deletions`, `undo_tree`) і `make-update.sh --root`; у VM ще не перевірено |
 | 9 | Збірка, перевірка у VM, оновлення встановленої системи | ⏳ |

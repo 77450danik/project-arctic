@@ -29,19 +29,25 @@
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
+
+#include "gate.h"
 
 #define C_DRIVE "/mnt/c"
 #define DOSDEVICES "/run/nt/dosdevices"
@@ -57,13 +63,90 @@
 /* the protocol, shared with programs/wsl/main.c */
 #define MAGIC "ARCTLXS1"
 #define TOKEN_LEN 32
-enum { F_STDIN, F_STDIN_EOF, F_STDOUT, F_STDERR, F_EXIT, F_ERROR, F_SIGNAL };
+enum { F_STDIN, F_STDIN_EOF, F_STDOUT, F_STDERR, F_EXIT, F_ERROR, F_SIGNAL, F_DENIED };
 #define REQ_SHUTDOWN 1  /* wsl --shutdown */
 #define REQ_GITBASH 2   /* the working folder as Git Bash names it: /d/... */
 #define REQ_TERMINATE 4 /* wsl --terminate <name> */
+#define REQ_GATE 8      /* the Panel's "status" / "password" / "require" */
 
 static char token[TOKEN_LEN + 1];
 static volatile sig_atomic_t stopping;
+static void say(const char *fmt, ...);
+
+/* ---- the Linux gate (docs/linux-gate.md) ----
+ *
+ * Who may skip the consent window: a table of (pid, start time) of already
+ * agreed-to source processes, and whether the password has been typed once
+ * this boot, in memory shared across every connection's forked child
+ * (mapped before the accept loop's first fork). A pid is never enough by
+ * itself: a new, unrelated process reusing an old pid must not inherit its
+ * grant, hence the start time alongside it. */
+#define MAX_GRANTS 256
+#define GATE_LOCK GATE_RUN_DIR "/.lock"         /* the grants table and password_entered */
+#define CONSENT_LOCK GATE_RUN_DIR "/.consent"   /* one consent.exe window at a time, as in Windows */
+#define CONSENT_EXE "/usr/lib/arctic/consent.exe"
+#define CONSENT_TIMEOUT_S 120
+#define MAX_WRONG_ATTEMPTS 5
+#define WRONG_PAUSE_S 30
+
+struct grant {
+    pid_t pid;
+    long long start_time;
+};
+
+struct gate_shared {
+    int password_entered;
+    int ngrants;
+    int next;
+    struct grant grants[MAX_GRANTS];
+};
+
+static struct gate_shared *gate_shm;
+static int gate_lock_fd = -1;
+static uid_t nt_uid;
+static gid_t nt_gid;
+
+static void gate_shared_init(void)
+{
+    gate_shm = mmap(NULL, sizeof(*gate_shm), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (gate_shm == MAP_FAILED) {
+        say("gate: shared memory: %s", strerror(errno));
+        exit(1);
+    }
+    memset(gate_shm, 0, sizeof(*gate_shm));
+    mkdir(GATE_RUN_DIR, 0700); /* already there when arctic-init bound it; ours anyway if not */
+    gate_lock_fd = open(GATE_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+}
+
+static void gate_lock(void)
+{
+    if (gate_lock_fd >= 0)
+        flock(gate_lock_fd, LOCK_EX);
+}
+
+static void gate_unlock(void)
+{
+    if (gate_lock_fd >= 0)
+        flock(gate_lock_fd, LOCK_UN);
+}
+
+static int grant_lookup(pid_t pid, long long start_time)
+{
+    for (int i = 0; i < gate_shm->ngrants; i++)
+        if (gate_shm->grants[i].pid == pid && gate_shm->grants[i].start_time == start_time)
+            return 1;
+    return 0;
+}
+
+static void grant_add(pid_t pid, long long start_time)
+{
+    if (grant_lookup(pid, start_time))
+        return;
+    gate_shm->grants[gate_shm->next] = (struct grant){pid, start_time};
+    gate_shm->next = (gate_shm->next + 1) % MAX_GRANTS;
+    if (gate_shm->ngrants < MAX_GRANTS)
+        gate_shm->ngrants++;
+}
 
 static void say(const char *fmt, ...)
 {
@@ -938,6 +1021,487 @@ static char *read_string(int fd)
     return s;
 }
 
+/* ---- who is asking (docs/linux-gate.md, "Модель доступу") ---- */
+
+#define NTREE_MAX 32
+
+struct ntree_entry {
+    pid_t unix_pid;
+    unsigned int win32_id;
+    long long start_time;
+    char image[512];
+};
+
+/* The pid and its NT-level ancestors, from wineserver's own process tree
+ * (runtime/wine/patches/0090-...): on Linux every Wine process ends up a
+ * child of init, so /proc/<pid>/stat's ppid chain is never this. Closest
+ * first; stops at the first ancestor that is gone. 0 when wineserver has
+ * nothing for this pid (it always does for a real Wine process). */
+static int query_ntree(pid_t unix_pid, struct ntree_entry *entries, int max_entries)
+{
+    static const char name[] = "arctic-wineserver-ntree";
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    struct timeval tv = {2, 0};
+    char reply[16384];
+    unsigned int want = (unsigned int)unix_pid;
+    ssize_t total = 0, n;
+    int fd, count = 0;
+    char *line, *nl;
+
+    if ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
+        return 0;
+    memcpy(addr.sun_path + 1, name, sizeof(name) - 1);
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    if (connect(fd, (struct sockaddr *)&addr, (socklen_t)(offsetof(struct sockaddr_un, sun_path) + sizeof(name))) ||
+        send_all(fd, &want, sizeof(want))) {
+        close(fd);
+        return 0;
+    }
+    while (total < (ssize_t)sizeof(reply) - 1 &&
+           (n = recv(fd, reply + total, sizeof(reply) - 1 - (size_t)total, 0)) > 0)
+        total += n;
+    close(fd);
+    reply[total > 0 ? total : 0] = 0;
+
+    for (line = reply; count < max_entries && (nl = strchr(line, '\n')); line = nl + 1) {
+        int consumed = -1;
+
+        *nl = 0;
+        if (sscanf(line, "%d %u %lld %n", &entries[count].unix_pid, &entries[count].win32_id,
+                   &entries[count].start_time, &consumed) >= 3 && consumed >= 0)
+            snprintf(entries[count].image, sizeof(entries[count].image), "%s", line + consumed);
+        else
+            entries[count].image[0] = 0;
+        count++;
+    }
+    return count;
+}
+
+static const char *image_basename(const char *path)
+{
+    const char *base = path;
+
+    for (const char *p = path; *p; p++)
+        if (*p == '/' || *p == '\\')
+            base = p + 1;
+    return base;
+}
+
+/* never given a grant: what starts them (the shell, a service) must not
+ * hand every program it runs the grant it builds up for itself */
+static int is_system_image(const char *basename)
+{
+    static const char *const system[] = {
+        "explorer.exe", "svchost.exe", "services.exe", "winlogon.exe", "wininit.exe", "csrss.exe",
+        "rpcss.exe",    "winedevice.exe", "wineserver", "arctic-init", NULL,
+    };
+
+    for (int i = 0; system[i]; i++)
+        if (!strcasecmp(basename, system[i]))
+            return 1;
+    return 0;
+}
+
+/* the shells and consoles programs run commands through: each command of an
+ * agent is a new one of them */
+static int is_shell_image(const char *basename)
+{
+    static const char *const shells[] = {
+        "cmd.exe", "pwsh.exe", "powershell.exe", "conhost.exe", "openconsole.exe", "sh.exe", NULL,
+    };
+
+    for (int i = 0; shells[i]; i++)
+        if (!strcasecmp(basename, shells[i]))
+            return 1;
+    return 0;
+}
+
+/* The process-source: past wsl.exe/bash.exe themselves, and past the shells
+ * a program runs its commands in (claude.exe -> pwsh.exe -> wsl.exe is
+ * claude.exe: one question for the agent, not one for every command), the
+ * first program. A shell whose parent is a system process is the program
+ * (cmd.exe started from Explorer); a system process never is: then it is
+ * wsl.exe/bash.exe's own window, the one it opened, so that a shortcut in
+ * Start does not give Linux to everything Explorer starts. */
+static void find_origin(const struct ntree_entry *chain, int n, struct ntree_entry *origin)
+{
+    int i = 0;
+
+    while (i < n && (!strcasecmp(image_basename(chain[i].image), "wsl.exe") ||
+                      !strcasecmp(image_basename(chain[i].image), "bash.exe")))
+        i++;
+    while (i + 1 < n && is_shell_image(image_basename(chain[i].image)) &&
+           !is_system_image(image_basename(chain[i + 1].image)))
+        i++;
+    *origin = (i < n && !is_system_image(image_basename(chain[i].image))) ? chain[i] : chain[0];
+}
+
+/* a process of a distribution: Linux already, which asks for another one
+ * (tools/arctic/wsl.py in a build) */
+static int inside_distribution(pid_t pid)
+{
+    char link[64], where[PATH_MAX];
+    ssize_t n;
+
+    snprintf(link, sizeof(link), "/proc/%d/root", (int)pid);
+    if ((n = readlink(link, where, sizeof(where) - 1)) <= 0)
+        return 0;
+    where[n] = 0;
+    return !strncmp(where, ROOTS "/", strlen(ROOTS "/"));
+}
+
+/* The pid on the other end of this already-accepted TCP connection on
+ * 127.0.0.1: /proc/net/tcp names no owner, only the inode of the socket;
+ * /proc/<pid>/fd links one as "socket:[<inode>]" */
+static pid_t pid_by_socket_inode(unsigned long inode)
+{
+    char target[48], link[PATH_MAX], dest[PATH_MAX], fd_dir[64];
+    DIR *proc = opendir("/proc");
+    pid_t found = -1;
+
+    snprintf(target, sizeof(target), "socket:[%lu]", inode);
+    for (struct dirent *de; proc && found < 0 && (de = readdir(proc));) {
+        DIR *fds;
+
+        if (!isdigit((unsigned char)de->d_name[0]))
+            continue;
+        snprintf(fd_dir, sizeof(fd_dir), "/proc/%s/fd", de->d_name);
+        fds = opendir(fd_dir);
+        for (struct dirent *fe; fds && (fe = readdir(fds));) {
+            ssize_t n;
+
+            if (fe->d_name[0] == '.')
+                continue;
+            snprintf(link, sizeof(link), "%s/%s", fd_dir, fe->d_name);
+            if ((n = readlink(link, dest, sizeof(dest) - 1)) > 0) {
+                dest[n] = 0;
+                if (!strcmp(dest, target)) {
+                    found = (pid_t)atoi(de->d_name);
+                    break;
+                }
+            }
+        }
+        if (fds)
+            closedir(fds);
+    }
+    if (proc)
+        closedir(proc);
+    return found;
+}
+
+static pid_t peer_pid(int sock)
+{
+    struct sockaddr_in local = {0}, peer = {0};
+    socklen_t len = sizeof(local);
+    unsigned int local_port, peer_port;
+    char line[512];
+    FILE *f;
+    pid_t found = -1;
+
+    if (getsockname(sock, (struct sockaddr *)&local, &len) || getpeername(sock, (struct sockaddr *)&peer, &len))
+        return -1;
+    local_port = ntohs(local.sin_port);
+    peer_port = ntohs(peer.sin_port);
+    if (!(f = fopen("/proc/net/tcp", "re")))
+        return -1;
+    if (!fgets(line, sizeof(line), f)) { /* the header line */
+        fclose(f);
+        return -1;
+    }
+    while (fgets(line, sizeof(line), f)) {
+        unsigned int lport, rport, st;
+        unsigned long inode;
+
+        if (sscanf(line, " %*d: %*x:%x %*x:%x %x %*x:%*x %*x:%*x %*x %*d %*d %lu", &lport, &rport, &st, &inode) ==
+                4 &&
+            st == 1 /* TCP_ESTABLISHED */ && lport == peer_port && rport == local_port) {
+            found = pid_by_socket_inode(inode);
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+/* field 22 of /proc/<pid>/stat (starttime, clock ticks since boot): only a
+ * fallback for a peer wineserver's ntree socket had nothing for, since that
+ * never happens for a real Wine process */
+static long long process_start_time_fallback(pid_t pid)
+{
+    char path[64], buf[4096], *p;
+    int fd;
+    ssize_t n;
+
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0)
+        return -1;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return -1;
+    buf[n] = 0;
+    if (!(p = strrchr(buf, ')')))
+        return -1;
+    p += 2; /* ')', then the space before field 3 (state): now at field 3 */
+    for (int i = 0; i < 19; i++) { /* fields 3..21, 19 of them, before field 22 */
+        if (!(p = strchr(p, ' ')))
+            return -1;
+        p++;
+    }
+    return strtoll(p, NULL, 10);
+}
+
+static void join_argv(unsigned int argc, char *const argv[], char *out, size_t size)
+{
+    size_t len = 0;
+
+    out[0] = 0;
+    for (unsigned int i = 0; i < argc && len + 1 < size; i++) {
+        int n = snprintf(out + len, size - len, "%s%s", len ? " " : "", argv[i]);
+        if (n > 0)
+            len += (size_t)n;
+    }
+}
+
+/* A \n-terminated line from fd within timeout_s overall, or 0 on timeout,
+ * EOF, error or overflow (consent.exe's messages are short and few, so a
+ * byte-at-a-time read costs nothing here) */
+static int read_line_timeout(int fd, char *buf, size_t size, int timeout_s)
+{
+    struct timespec deadline, now;
+    size_t len = 0;
+
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += timeout_s;
+    while (len + 1 < size) {
+        struct pollfd pfd = {fd, POLLIN, 0};
+        ssize_t n;
+        int ms;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        ms = (int)((deadline.tv_sec - now.tv_sec) * 1000 + (deadline.tv_nsec - now.tv_nsec) / 1000000);
+        if (ms <= 0 || poll(&pfd, 1, ms) <= 0)
+            return 0;
+        n = read(fd, buf + len, 1);
+        if (n <= 0)
+            return 0;
+        if (buf[len] == '\n') {
+            buf[len] = 0;
+            return 1;
+        }
+        len++;
+    }
+    return 0;
+}
+
+enum consent_result { CONSENT_DENIED, CONSENT_GRANTED };
+
+/* The UAC window: a Wine builtin run from the host image as user nt, never
+ * from C: (docs/linux-gate.md, "Протокол arctic-lxss ↔ consent.exe"). One
+ * socket serves as both its stdin and stdout, tab-separated UTF-8 lines. */
+static enum consent_result ask_consent(struct gate_state *st, int need_password, const char *source_name,
+                                       const char *source_path, const char *purpose)
+{
+    /* the session's own, as arctic-init gives every Windows program (nt_env) */
+    static char *const envp[] = {
+        "WINEPREFIX=/run/nt",       "HOME=/run/nt/home", "USER=User", "LOGNAME=User", "LANG=uk_UA.UTF-8",
+        "TZ=:/etc/localtime",       "PATH=/usr/bin",     "WINEDEBUG=fixme-all",
+        "WINE_IMAGE_CACHE=/run/nt/imagecache", "XDG_RUNTIME_DIR=/run/nt/xdg", "WAYLAND_DISPLAY=arctic-0",
+        "WINEDLLOVERRIDES=consent.exe=b", NULL,
+    };
+    int sv[2];
+    char line[2048], prompt[2048];
+    pid_t pid;
+    int wrong = 0, n;
+    enum consent_result result = CONSENT_DENIED;
+
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv))
+        return CONSENT_DENIED;
+    if ((pid = fork()) < 0) {
+        close(sv[0]);
+        close(sv[1]);
+        return CONSENT_DENIED;
+    }
+    if (!pid) {
+        int null = open("/dev/null", O_WRONLY);
+        char *argv[] = {"/usr/bin/wine", CONSENT_EXE, NULL};
+
+        close(sv[0]);
+        dup2(sv[1], 0);
+        dup2(sv[1], 1);
+        dup2(null >= 0 ? null : sv[1], 2);
+        setsid();
+        if (initgroups(NT_USER, nt_gid) || setgid(nt_gid) || setuid(nt_uid))
+            _exit(126);
+        execve(argv[0], argv, envp);
+        _exit(127);
+    }
+    close(sv[1]);
+
+    n = snprintf(prompt, sizeof(prompt), "prompt\t%d\t%s\t%s\t%s\n", need_password, source_name, source_path,
+                purpose);
+    if (n < 0 || send_all(sv[0], prompt, (size_t)n))
+        goto done;
+
+    for (;;) {
+        if (!read_line_timeout(sv[0], line, sizeof(line), CONSENT_TIMEOUT_S) || !strcmp(line, "no"))
+            break;
+        if (!strncmp(line, "yes", 3) && (line[3] == 0 || line[3] == '\t')) {
+            const char *pw = line[3] == '\t' ? line + 4 : "";
+
+            if (!need_password || gate_check_password(st, pw)) {
+                if (need_password)
+                    gate_shm->password_entered = 1;
+                if (!send_all(sv[0], "ok\n", 3))
+                    result = CONSENT_GRANTED;
+                break;
+            }
+            if (++wrong >= MAX_WRONG_ATTEMPTS) {
+                char wait_msg[32];
+
+                snprintf(wait_msg, sizeof(wait_msg), "wait\t%d\n", WRONG_PAUSE_S);
+                if (send_all(sv[0], wait_msg, strlen(wait_msg)))
+                    break;
+                sleep(WRONG_PAUSE_S);
+                wrong = 0;
+                continue;
+            }
+            if (send_all(sv[0], "wrong\n", 6))
+                break;
+            continue;
+        }
+        break; /* anything else: as good as "no" */
+    }
+
+done:
+    close(sv[0]);
+    kill(pid, SIGTERM);
+    for (int i = 0; i < 20 && waitpid(pid, NULL, WNOHANG) == 0; i++)
+        usleep(100000);
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    return result;
+}
+
+/* True once origin has a grant; otherwise asks (one window at a time: a
+ * request that waited checks again first, in case the answer already
+ * covered it) and records a "yes" before returning */
+static int gate_authorize(struct gate_state *st, const struct ntree_entry *origin, const char *purpose)
+{
+    int lock_fd, ok;
+
+    gate_lock();
+    ok = grant_lookup(origin->unix_pid, origin->start_time);
+    gate_unlock();
+    if (ok)
+        return 1;
+
+    lock_fd = open(CONSENT_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lock_fd >= 0)
+        flock(lock_fd, LOCK_EX);
+
+    gate_lock();
+    ok = grant_lookup(origin->unix_pid, origin->start_time);
+    gate_unlock();
+    if (!ok) {
+        int need_password = st->password_on && !gate_shm->password_entered;
+
+        if (ask_consent(st, need_password, image_basename(origin->image), origin->image, purpose) ==
+            CONSENT_GRANTED) {
+            gate_lock();
+            grant_add(origin->unix_pid, origin->start_time);
+            gate_unlock();
+            ok = 1;
+        }
+    }
+    if (lock_fd >= 0) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+    }
+    return ok;
+}
+
+/* Who is asking: the program behind the connection (find_origin), or -1
+ * once the client was told it could not be known */
+static int identify(int sock, uint32_t flags, struct ntree_entry *origin)
+{
+    struct ntree_entry chain[NTREE_MAX];
+    pid_t peer = peer_pid(sock);
+    int chain_len = peer > 0 ? query_ntree(peer, chain, NTREE_MAX) : 0;
+
+    if (!chain_len && peer > 0) { /* wineserver had nothing for it: per-process, not per-origin */
+        long long start = process_start_time_fallback(peer);
+
+        if (start >= 0) {
+            chain[0].unix_pid = peer;
+            chain[0].win32_id = 0;
+            chain[0].start_time = start;
+            snprintf(chain[0].image, sizeof(chain[0].image), "%s", (flags & REQ_GITBASH) ? "bash.exe" : "wsl.exe");
+            chain_len = 1;
+        }
+    }
+    if (!chain_len) {
+        send_error(sock, "the Linux gate could not identify this request");
+        return -1;
+    }
+    find_origin(chain, chain_len, origin);
+    return 0;
+}
+
+/* The distribution that is the gate: by its name in the protected gate.conf
+ * or by its disk, as the list of distributions is a file any Windows
+ * program can write (another name for the same VHDX is the same gate) */
+static int is_gate_target(const struct gate_state *st, const char *name, const char *vhdx_win)
+{
+    char gate_name[256], gate_vhdx_win[PATH_MAX], a[PATH_MAX], b[PATH_MAX], ra[PATH_MAX], rb[PATH_MAX];
+
+    if (!strcasecmp(name, st->distro))
+        return 1;
+    if (find_distro(st->distro, gate_name, sizeof(gate_name), gate_vhdx_win, sizeof(gate_vhdx_win)))
+        return 0;
+    return !find_vhdx(vhdx_win, a, sizeof(a)) && !find_vhdx(gate_vhdx_win, b, sizeof(b)) && realpath(a, ra) &&
+           realpath(b, rb) && !strcmp(ra, rb);
+}
+
+/* REQ_GATE, for the Panel's "User Accounts": status needs no window;
+ * changing the password or requiring it always does, with the current
+ * password if one is set, independent of any standing grant */
+static void serve_gate(int sock, struct gate_state *st, const struct ntree_entry *origin, unsigned int argc,
+                       char **argv)
+{
+    char text[32];
+    int n;
+
+    if (argc >= 1 && !strcmp(argv[0], "status")) {
+        n = snprintf(text, sizeof(text), "password=%s\n", st->password_on ? "on" : "off");
+        send_frame(sock, F_STDOUT, text, (uint32_t)n);
+        send_frame(sock, F_EXIT, "\0\0\0\0", 4);
+        return;
+    }
+    if (!(argc >= 2 && (!strcmp(argv[0], "password") || !strcmp(argv[0], "require")))) {
+        send_error(sock, "gate: unknown request");
+        return;
+    }
+    if (ask_consent(st, st->password_on, image_basename(origin->image), origin->image, "settings") !=
+        CONSENT_GRANTED) {
+        send_frame(sock, F_DENIED, NULL, 0);
+        return;
+    }
+    if (!strcmp(argv[0], "password")) {
+        if (gate_set_password(st, argv[1])) {
+            send_error(sock, "gate: could not set the password");
+            return;
+        }
+    } else /* "require" */
+        st->password_on = !strcmp(argv[1], "on");
+    if (gate_save(st)) {
+        send_error(sock, "gate: could not save gate.conf");
+        return;
+    }
+    send_frame(sock, F_EXIT, "\0\0\0\0", 4);
+}
+
 /* the user's line in the distribution's /etc/passwd (read after chroot) */
 static int find_user(const char *want, uid_t *uid, gid_t *gid, char *home, size_t home_len, char *shell,
                      size_t shell_len)
@@ -1182,6 +1746,45 @@ static void serve(int sock)
     tv.tv_sec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
+    /* The gate (docs/linux-gate.md): the Panel's requests, and commands in
+     * the distribution that is the gate to the host, ask the user. The
+     * others do not, as WSL on Windows does not; until they run in WSL's
+     * own VM they are a root chroot on the host as well, which the user
+     * chose to leave free meanwhile. Stopping distributions asks nothing,
+     * as on Windows. */
+    struct gate_state gate_st;
+    struct ntree_entry origin;
+
+    gate_load(&gate_st);
+    if (flags & REQ_GATE) {
+        if (!identify(sock, flags, &origin))
+            serve_gate(sock, &gate_st, &origin, argc, argv);
+        _exit(0);
+    }
+    if (!(flags & (REQ_SHUTDOWN | REQ_TERMINATE))) {
+        pid_t peer;
+
+        if (find_distro(distro, name, sizeof(name), vhdx, sizeof(vhdx))) {
+            send_error(sock, *distro ? "There is no distribution with the supplied name: %s" : "No distribution in %s",
+                       *distro ? distro : "C:\\ProgramData\\Arctic\\Lxss\\distros");
+            _exit(0);
+        }
+        /* a process of a distribution is Linux already (wsl.py in a build) */
+        if (is_gate_target(&gate_st, name, vhdx) && !((peer = peer_pid(sock)) > 0 && inside_distribution(peer))) {
+            char purpose[2048];
+
+            if (identify(sock, flags, &origin))
+                _exit(0);
+            join_argv(argc, argv, purpose, sizeof(purpose));
+            if (!purpose[0])
+                snprintf(purpose, sizeof(purpose), "wsl -d %s", name);
+            if (!gate_authorize(&gate_st, &origin, purpose)) {
+                send_frame(sock, F_DENIED, NULL, 0);
+                _exit(0);
+            }
+        }
+    }
+
     int lock = lock_roots();
     if (flags & REQ_SHUTDOWN) {
         detach_all();
@@ -1263,6 +1866,13 @@ int main(void)
     prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
     signal(SIGPIPE, SIG_IGN);
     make_dirs(ROOTS);
+    struct passwd *nt_pw = getpwnam(NT_USER);
+    if (nt_pw) {
+        nt_uid = nt_pw->pw_uid;
+        nt_gid = nt_pw->pw_gid;
+    } else
+        say("no user %s: consent.exe could not run as it", NT_USER);
+    gate_shared_init();
     if (getrandom(random_bytes, sizeof(random_bytes), 0) != (ssize_t)sizeof(random_bytes))
         return 1;
     for (int i = 0; i < TOKEN_LEN / 2; i++)

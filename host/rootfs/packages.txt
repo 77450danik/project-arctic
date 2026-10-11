@@ -8,6 +8,10 @@ gcc-libs
 tzdata
 kmod
 
+# Password hashing for the Linux gate (docs/linux-gate.md): yescrypt via
+# crypt_rn/crypt_gensalt_rn, which glibc itself no longer carries
+libxcrypt
+
 # Hardware manager: only udevd, udevadm, sysusers and hwdb are used
 systemd
 
