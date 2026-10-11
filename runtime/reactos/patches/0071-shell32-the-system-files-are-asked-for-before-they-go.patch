@@ -1,0 +1,381 @@
+diff --git a/dll/win32/shell32/lang/en-US.rc b/dll/win32/shell32/lang/en-US.rc
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -1127,3 +1127,21 @@
+     IDS_USERFOLDER_VIDEOS "Videos"
+     IDS_USERFOLDER_DOWNLOADS "Downloads"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_SYSPROT_FOLDER_TITLE "Folder Access Denied"
++    IDS_SYSPROT_FILE_TITLE "File Access Denied"
++    IDS_SYSPROT_THISFOLDER "this folder"
++    IDS_SYSPROT_THISFILE "this file"
++    IDS_SYSPROT_ASK_MOVE "You'll need to provide administrator permission to move %s"
++    IDS_SYSPROT_ASK_DELETE "You'll need to provide administrator permission to delete %s"
++    IDS_SYSPROT_ASK_RENAME "You'll need to provide administrator permission to rename %s"
++    IDS_SYSPROT_ASK_TEXT "%s\n\nThese are system files. Without them Arctic may no longer start."
++    IDS_SYSPROT_DENY "You need permission to perform this action"
++    IDS_SYSPROT_DENY_TEXT "%s\n\nThis is part of Windows, and Arctic doesn't start without it. It can't be moved, deleted or renamed."
++    IDS_SYSPROT_CONTINUE "Continue"
++    IDS_SYSPROT_SKIP "Skip"
++    IDS_SYSPROT_CANCEL "Cancel"
++    IDS_SYSPROT_FORALL "Do this for all current items"
++END
+diff --git a/dll/win32/shell32/lang/ru-RU.rc b/dll/win32/shell32/lang/ru-RU.rc
+--- a/dll/win32/shell32/lang/ru-RU.rc
++++ b/dll/win32/shell32/lang/ru-RU.rc
+@@ -1098,3 +1098,21 @@
+     IDS_USERFOLDER_VIDEOS "Видео"
+     IDS_USERFOLDER_DOWNLOADS "Загрузки"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_SYSPROT_FOLDER_TITLE "Нет доступа к папке"
++    IDS_SYSPROT_FILE_TITLE "Нет доступа к файлу"
++    IDS_SYSPROT_THISFOLDER "эту папку"
++    IDS_SYSPROT_THISFILE "этот файл"
++    IDS_SYSPROT_ASK_MOVE "Чтобы переместить %s, нужно разрешение администратора"
++    IDS_SYSPROT_ASK_DELETE "Чтобы удалить %s, нужно разрешение администратора"
++    IDS_SYSPROT_ASK_RENAME "Чтобы переименовать %s, нужно разрешение администратора"
++    IDS_SYSPROT_ASK_TEXT "%s\n\nЭто системные файлы. Без них Arctic может перестать запускаться."
++    IDS_SYSPROT_DENY "Вам необходимо разрешение на выполнение этой операции"
++    IDS_SYSPROT_DENY_TEXT "%s\n\nЭто часть Windows, без которой Arctic не запустится. Её нельзя переместить, удалить или переименовать."
++    IDS_SYSPROT_CONTINUE "Продолжить"
++    IDS_SYSPROT_SKIP "Пропустить"
++    IDS_SYSPROT_CANCEL "Отмена"
++    IDS_SYSPROT_FORALL "Выполнить для всех текущих элементов"
++END
+diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -1127,3 +1127,21 @@
+     IDS_USERFOLDER_VIDEOS "Відео"
+     IDS_USERFOLDER_DOWNLOADS "Завантаження"
+ END
++
++STRINGTABLE
++BEGIN
++    IDS_SYSPROT_FOLDER_TITLE "Відмовлено в доступі до папки"
++    IDS_SYSPROT_FILE_TITLE "Відмовлено в доступі до файлу"
++    IDS_SYSPROT_THISFOLDER "цю папку"
++    IDS_SYSPROT_THISFILE "цей файл"
++    IDS_SYSPROT_ASK_MOVE "Щоб перемістити %s, потрібно надати дозвіл адміністратора"
++    IDS_SYSPROT_ASK_DELETE "Щоб видалити %s, потрібно надати дозвіл адміністратора"
++    IDS_SYSPROT_ASK_RENAME "Щоб перейменувати %s, потрібно надати дозвіл адміністратора"
++    IDS_SYSPROT_ASK_TEXT "%s\n\nЦе системні файли. Без них Arctic може перестати запускатися."
++    IDS_SYSPROT_DENY "Вам потрібен дозвіл на виконання цієї дії"
++    IDS_SYSPROT_DENY_TEXT "%s\n\nЦе частина Windows, без якої Arctic не запуститься. Її не можна перемістити, видалити чи перейменувати."
++    IDS_SYSPROT_CONTINUE "Продовжити"
++    IDS_SYSPROT_SKIP "Пропустити"
++    IDS_SYSPROT_CANCEL "Скасувати"
++    IDS_SYSPROT_FORALL "Виконати для всіх поточних елементів"
++END
+diff --git a/dll/win32/shell32/shlfileop.cpp b/dll/win32/shell32/shlfileop.cpp
+--- a/dll/win32/shell32/shlfileop.cpp
++++ b/dll/win32/shell32/shlfileop.cpp
+@@ -1394,6 +1394,243 @@
+     HeapFree(GetProcessHeap(), 0, flList->feFiles);
+ }
+ 
++/* Arctic: takes one entry out of a FILE_LIST */
++static void remove_file_from_list(FILE_LIST *flList, DWORD i)
++{
++    HeapFree(GetProcessHeap(), 0, flList->feFiles[i].szDirectory);
++    HeapFree(GetProcessHeap(), 0, flList->feFiles[i].szFilename);
++    HeapFree(GetProcessHeap(), 0, flList->feFiles[i].szFullPath);
++    MoveMemory(&flList->feFiles[i], &flList->feFiles[i + 1],
++               (flList->dwNumFiles - i - 1) * sizeof(FILE_ENTRY));
++    flList->dwNumFiles--;
++}
++
++/* Arctic: Windows keeps its own folders to itself. Moving, deleting or
++ * renaming what is in them asks for administrator permission, and the
++ * folders themselves need TrustedInstaller. Arctic has neither, so the shell
++ * asks instead (Continue, Skip, Cancel) and refuses the folders themselves.
++ * Without it a drag of System32 into SysWOW64 went without a word and left a
++ * system that started no program. */
++enum SYSPROT { SYSPROT_NONE, SYSPROT_ASK, SYSPROT_DENY };
++
++/* is Path Root itself (*pbSame) or in it? */
++static BOOL SHELL_PathInFolder(LPCWSTR Path, LPCWSTR Root, BOOL *pbSame)
++{
++    size_t cch = wcslen(Root);
++    while (cch && Root[cch - 1] == L'\\')
++        cch--;
++    if (!cch || _wcsnicmp(Path, Root, cch))
++        return FALSE;
++    if (!Path[cch] || (Path[cch] == L'\\' && !Path[cch + 1]))
++    {
++        *pbSame = TRUE;
++        return TRUE;
++    }
++    *pbSame = FALSE;
++    return Path[cch] == L'\\';
++}
++
++static SYSPROT SHELL_SystemProtection(LPCWSTR pszPath)
++{
++    WCHAR szFull[MAX_PATH], szPath[MAX_PATH], szWin[MAX_PATH], szDir[MAX_PATH];
++    BOOL bSame;
++
++    if (!GetFullPathNameW(pszPath, _countof(szFull), szFull, NULL) ||
++        !GetWindowsDirectoryW(szWin, _countof(szWin)))
++        return SYSPROT_NONE;
++    if (!GetLongPathNameW(szFull, szPath, _countof(szPath)))
++        StringCchCopyW(szPath, _countof(szPath), szFull);
++
++    /* the root of the system's drive and the folders at its top */
++    WCHAR szRoot[] = { szWin[0], L':', L'\\', 0 };
++    if (SHELL_PathInFolder(szPath, szRoot, &bSame) && bSame)
++        return SYSPROT_DENY;
++    static const int TopFolders[] = { CSIDL_PROGRAM_FILES, CSIDL_PROGRAM_FILESX86,
++                                      CSIDL_COMMON_APPDATA, CSIDL_PROFILES };
++    for (UINT i = 0; i < _countof(TopFolders); ++i)
++    {
++        if (SHGetFolderPathW(NULL, TopFolders[i], NULL, SHGFP_TYPE_CURRENT, szDir) == S_OK &&
++            SHELL_PathInFolder(szPath, szDir, &bSame) && bSame)
++            return SYSPROT_DENY;
++    }
++
++    /* the registry and the host system: nothing in them is the user's to move */
++    static const PCWSTR Locked[] = { L"System32\\config", L"System32\\Host" };
++    for (UINT i = 0; i < _countof(Locked); ++i)
++    {
++        PathCombineW(szDir, szWin, Locked[i]);
++        if (SHELL_PathInFolder(szPath, szDir, &bSame))
++            return SYSPROT_DENY;
++    }
++
++    static const PCWSTR Folders[] = { L"System32", L"SysWOW64" };
++    for (UINT i = 0; i < _countof(Folders); ++i)
++    {
++        PathCombineW(szDir, szWin, Folders[i]);
++        if (SHELL_PathInFolder(szPath, szDir, &bSame) && bSame)
++            return SYSPROT_DENY;
++    }
++
++    if (SHELL_PathInFolder(szPath, szWin, &bSame))
++    {
++        if (bSame)
++            return SYSPROT_DENY;
++        /* Temp is everybody's */
++        PathCombineW(szDir, szWin, L"Temp");
++        if (SHELL_PathInFolder(szPath, szDir, &bSame) && !bSame)
++            return SYSPROT_NONE;
++        return SYSPROT_ASK;
++    }
++
++    static const int AppFolders[] = { CSIDL_PROGRAM_FILES, CSIDL_PROGRAM_FILESX86 };
++    for (UINT i = 0; i < _countof(AppFolders); ++i)
++    {
++        if (SHGetFolderPathW(NULL, AppFolders[i], NULL, SHGFP_TYPE_CURRENT, szDir) == S_OK &&
++            SHELL_PathInFolder(szPath, szDir, &bSame))
++            return SYSPROT_ASK;
++    }
++    return SYSPROT_NONE;
++}
++
++/* the question for one item: IDOK goes on, IDIGNORE skips it, IDCANCEL stops */
++static int SHELL_ConfirmSystemItem(FILE_OPERATION *op, const FILE_ENTRY *fe, SYSPROT prot,
++                                   BOOL bMore, BOOL *pbForAll)
++{
++    const BOOL bDir = IsAttribDir(fe->attributes);
++    const UINT wFunc = op->req->wFunc;
++    CStringW strTitle(MAKEINTRESOURCEW(bDir ? IDS_SYSPROT_FOLDER_TITLE : IDS_SYSPROT_FILE_TITLE));
++    CStringW strThis(MAKEINTRESOURCEW(bDir ? IDS_SYSPROT_THISFOLDER : IDS_SYSPROT_THISFILE));
++    CStringW strContinue(MAKEINTRESOURCEW(IDS_SYSPROT_CONTINUE));
++    CStringW strSkip(MAKEINTRESOURCEW(IDS_SYSPROT_SKIP));
++    CStringW strCancel(MAKEINTRESOURCEW(IDS_SYSPROT_CANCEL));
++    CStringW strForAll(MAKEINTRESOURCEW(IDS_SYSPROT_FORALL));
++    CStringW strMain, strText;
++
++    if (prot == SYSPROT_DENY)
++    {
++        strMain.LoadStringW(IDS_SYSPROT_DENY);
++        strText.Format(IDS_SYSPROT_DENY_TEXT, fe->szFullPath);
++    }
++    else
++    {
++        strMain.Format(wFunc == FO_DELETE ? IDS_SYSPROT_ASK_DELETE :
++                       wFunc == FO_RENAME ? IDS_SYSPROT_ASK_RENAME : IDS_SYSPROT_ASK_MOVE,
++                       (PCWSTR)strThis);
++        strText.Format(IDS_SYSPROT_ASK_TEXT, fe->szFullPath);
++    }
++
++    TASKDIALOG_BUTTON Buttons[3];
++    UINT cButtons = 0;
++    if (prot == SYSPROT_ASK)
++        Buttons[cButtons++] = { IDOK, strContinue };
++    if (bMore)
++        Buttons[cButtons++] = { IDIGNORE, strSkip };
++    Buttons[cButtons++] = { IDCANCEL, strCancel };
++
++    TASKDIALOGCONFIG tdc = { sizeof(tdc) };
++    tdc.hwndParent = op->hWndOwner;
++    tdc.hInstance = shell32_hInstance;
++    tdc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
++    tdc.pszWindowTitle = strTitle;
++    tdc.pszMainIcon = prot == SYSPROT_ASK ? TD_WARNING_ICON : TD_ERROR_ICON;
++    tdc.pszMainInstruction = strMain;
++    tdc.pszContent = strText;
++    tdc.cButtons = cButtons;
++    tdc.pButtons = Buttons;
++    /* an Enter by habit must not move the system */
++    tdc.nDefaultButton = IDCANCEL;
++    if (bMore)
++        tdc.pszVerificationText = strForAll;
++
++    int Button = IDCANCEL;
++    BOOL bForAll = FALSE;
++    if (FAILED(TaskDialogIndirect(&tdc, &Button, NULL, &bForAll)))
++    {
++        CStringW strMsg = strMain + L"\n\n" + strText;
++        if (prot == SYSPROT_ASK)
++            Button = MessageBoxW(op->hWndOwner, strMsg, strTitle,
++                                 MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) == IDOK ? IDOK : IDCANCEL;
++        else
++            Button = (MessageBoxW(op->hWndOwner, strMsg, strTitle, MB_OK | MB_ICONERROR), IDCANCEL);
++    }
++    *pbForAll = bForAll;
++    return Button;
++}
++
++/* asks for the system's items before anything is done; what is skipped
++ * leaves the lists */
++static DWORD SHELL_CheckSystemItems(FILE_OPERATION *op, FILE_LIST *flFrom, FILE_LIST *flTo)
++{
++    const UINT wFunc = op->req->wFunc;
++    const FILEOP_FLAGS fFlags = op->req->fFlags;
++
++    if (wFunc != FO_MOVE && wFunc != FO_DELETE && wFunc != FO_RENAME)
++        return ERROR_SUCCESS;
++
++    /* a program that moves its own files without a word is not asked; the
++     * system's folders themselves it still may not move */
++    const BOOL bAsk = CanShowFileOpErrorUI(*op->req) &&
++                      !((fFlags & FOF_NOCONFIRMATION) && (fFlags & FOF_SILENT));
++    const BOOL bMultiDest = wFunc == FO_MOVE && (fFlags & FOF_MULTIDESTFILES);
++    const BOOL bMore = flFrom->dwNumFiles > 1;
++    int ForAll[SYSPROT_DENY + 1] = { 0 };
++    BOOL bAnySkipped = FALSE;
++
++    for (DWORD i = 0; i < flFrom->dwNumFiles;)
++    {
++        const FILE_ENTRY *fe = &flFrom->feFiles[i];
++        /* (an entry of a wildcard has its attributes, not bExists) */
++        SYSPROT prot = fe->attributes != INVALID_FILE_ATTRIBUTES ?
++                       SHELL_SystemProtection(fe->szFullPath) : SYSPROT_NONE;
++        int Answer = IDOK;
++
++        if (prot == SYSPROT_DENY && !bAsk)
++        {
++            Answer = IDIGNORE;
++        }
++        else if (prot != SYSPROT_NONE && bAsk)
++        {
++            Answer = ForAll[prot];
++            if (!Answer)
++            {
++                BOOL bForAll = FALSE;
++                Answer = SHELL_ConfirmSystemItem(op, fe, prot, bMore, &bForAll);
++                if (bForAll && Answer != IDCANCEL)
++                    ForAll[prot] = Answer;
++            }
++        }
++
++        if (Answer == IDCANCEL)
++        {
++            op->bCancelled = TRUE;
++            op->bHasDisplayedError = TRUE;
++            op->req->fAnyOperationsAborted = TRUE;
++            return ERROR_CANCELLED;
++        }
++        if (Answer == IDIGNORE)
++        {
++            TRACE("system item %s left out\n", debugstr_w(fe->szFullPath));
++            remove_file_from_list(flFrom, i);
++            if (bMultiDest && i < flTo->dwNumFiles)
++                remove_file_from_list(flTo, i);
++            bAnySkipped = TRUE;
++            continue;
++        }
++        ++i;
++    }
++
++    if (bAnySkipped)
++    {
++        op->req->fAnyOperationsAborted = TRUE;
++        if (!flFrom->dwNumFiles)
++        {
++            op->bHasDisplayedError = TRUE;
++            return bAsk ? ERROR_CANCELLED : ERROR_ACCESS_DENIED;
++        }
++    }
++    return ERROR_SUCCESS;
++}
++
+ static CStringW try_find_new_name(LPCWSTR szDestPath)
+ {
+     CStringW mask(szDestPath);
+@@ -1795,6 +2032,22 @@
+     if (FAILED(FileOpCallback(op, FOCE_PREMOVEITEM, feFrom->szFullPath, szDestPath, attrib)))
+         return;
+ 
++    /* Arctic: a folder moved within its volume is renamed at once, as Windows
++     * moves it; item by item only to merge into a folder that exists or to
++     * another volume. Item by item, a move of the folder the system runs from
++     * stopped half way, when what it had moved was what it needed. */
++    if (!PathFileExistsW(szDestPath))
++    {
++        _SetOperationTexts(op, feFrom->szFullPath, szDestPath);
++        if (MoveFileW(feFrom->szFullPath, szDestPath))
++        {
++            SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW, szDestPath, NULL);
++            SHChangeNotify(SHCNE_RMDIR, SHCNF_PATHW, feFrom->szFullPath, NULL);
++            FileOpCallback(op, FOCE_POSTMOVEITEM, feFrom->szFullPath, szDestPath, attrib, S_OK);
++            return;
++        }
++    }
++
+     SHNotifyCreateDirectoryW(szDestPath, NULL);
+ 
+     PathCombineW(szFrom, feFrom->szFullPath, L"*.*");
+@@ -2128,6 +2381,10 @@
+     if (ret)
+         goto cleanup;
+ 
++    ret = SHELL_CheckSystemItems(&op, &flFrom, &flTo);
++    if (ret)
++        goto cleanup;
++
+     if (lpFileOp->wFunc != FO_RENAME && !(lpFileOp->fFlags & FOF_SILENT)) {
+         ret = CoCreateInstance(CLSID_ProgressDialog,
+                                NULL,
+diff --git a/dll/win32/shell32/shresdef.h b/dll/win32/shell32/shresdef.h
+--- a/dll/win32/shell32/shresdef.h
++++ b/dll/win32/shell32/shresdef.h
+@@ -875,6 +875,21 @@
+ #define IDS_FRIENDLY_HOURS       21912
+ #define IDS_FRIENDLY_MINUTE      21913
+ #define IDS_FRIENDLY_HOUR        21914
++/* Arctic: moving, deleting or renaming the system's files asks first */
++#define IDS_SYSPROT_FOLDER_TITLE 21920
++#define IDS_SYSPROT_FILE_TITLE   21921
++#define IDS_SYSPROT_THISFOLDER   21922
++#define IDS_SYSPROT_THISFILE     21923
++#define IDS_SYSPROT_ASK_MOVE     21924
++#define IDS_SYSPROT_ASK_DELETE   21925
++#define IDS_SYSPROT_ASK_RENAME   21926
++#define IDS_SYSPROT_ASK_TEXT     21927
++#define IDS_SYSPROT_DENY         21928
++#define IDS_SYSPROT_DENY_TEXT    21929
++#define IDS_SYSPROT_CONTINUE     21930
++#define IDS_SYSPROT_SKIP         21931
++#define IDS_SYSPROT_CANCEL       21932
++#define IDS_SYSPROT_FORALL       21933
+ 
+ #define IDI_SHELL_DELETE5 16721
+ 

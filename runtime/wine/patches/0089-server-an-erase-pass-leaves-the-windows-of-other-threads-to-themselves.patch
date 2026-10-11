@@ -1,0 +1,34 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 11 Oct 2026 19:00:00 +0200
+Subject: [PATCH] server: An erase pass leaves the windows of other threads to themselves.
+
+RDW_ERASENOW over windows of another thread (InvalidateRect( NULL ) does
+it for every window of the system) sent each of them WM_NCPAINT and
+WM_ERASEBKGND from the calling thread. The other thread took them one at a
+time, with its own WM_PAINT in between: the background was erased after
+the window had painted, and stayed. Windows erases only the windows of the
+calling thread; the others erase when they paint.
+---
+diff --git a/server/window.c b/server/window.c
+index 73ccd66..bcf693d 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -1805,6 +1805,18 @@ static unsigned int get_update_flags( struct window *win, unsigned int flags )
+ {
+     unsigned int ret = 0;
+ 
++    /* Arctic: a pass that only erases (RDW_ERASENOW, InvalidateRect( NULL ),
++     * a window moved or hidden) is for the windows of the thread that makes
++     * it, as in Windows. The frame and the background of another thread's
++     * window were sent to it as two messages, each when it next took its
++     * messages, and it painted between them: the background came last, over
++     * what the window had just drawn, and nothing painted it again (the
++     * taskbar lost its icons that way). Such a window erases itself when it
++     * paints. */
++    if (!(flags & (UPDATE_PAINT | UPDATE_INTERNALPAINT)) && win->thread != current &&
++        !is_desktop_window( win ))  /* which never paints: whoever invalidates it erases it */
++        return 0;
++
+     if (flags & UPDATE_NONCLIENT)
+     {
+         if ((win->paint_flags & PAINT_NONCLIENT) && win->update_region) ret |= UPDATE_NONCLIENT;

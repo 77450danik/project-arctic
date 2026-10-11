@@ -1623,7 +1623,7 @@ index 0c93d854..a77d9a73 100644
  ImageFile = Normal\TaskBandButton.bmp
  ImageLayout = vertical
 -SizingMargins = 10, 7, 15, 8
-+SizingMargins = 1, 1, 1, 3
++SizingMargins = 4, 4, 1, 3
  SizingType = Stretch
  Transparent = True
 -TEXTSHADOWCOLOR = 0 0 0
@@ -1639,7 +1639,7 @@ index 0c93d854..a77d9a73 100644
  ImageFile = Normal\TaskBandButton.bmp
  ImageLayout = vertical
 -SizingMargins = 17, 5, 15, 8
-+SizingMargins = 1, 1, 1, 3
++SizingMargins = 4, 4, 1, 3
  SizingType = Stretch
  Transparent = True
  

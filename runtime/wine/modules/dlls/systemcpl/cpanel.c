@@ -450,11 +450,18 @@ void view_nav_home( struct view *view )
 
 void view_layout( struct view *view )
 {
-    HDC hdc = GetDC( view->content );
-    int width = view_content_width( view ), y = CONTENT_TOP, row_top = 0, row_height = 0, paint_top = 0;
+    HDC hdc;
+    int width, y = CONTENT_TOP, row_top = 0, row_height = 0, paint_top = 0;
     BOOL in_row = FALSE;
     RECT client;
     SCROLLINFO info = { sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS };
+
+    /* No window yet, or no more: nothing to lay out, and nothing may be
+     * asked of a window that is not there. InvalidateRect( NULL ) is every
+     * window of the system: Windows erases and draws them all again. */
+    if (!view->hwnd || !view->content) return;
+    hdc = GetDC( view->content );
+    width = view_content_width( view );
 
     for (UINT i = 0; i < view->count; i++)
     {
@@ -581,6 +588,8 @@ static void build( struct view *view )
 void view_rebuild( struct view *view )
 {
     int scroll = view->scroll;
+
+    if (!view->hwnd || !view->content) return;
 
     SendMessageW( view->content, WM_SETREDRAW, FALSE, 0 );
     build( view );
@@ -812,7 +821,9 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     switch (msg)
     {
     case WM_NCCREATE:
-        SetWindowLongPtrW( hwnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTW *)lp)->lpCreateParams );
+        view = ((CREATESTRUCTW *)lp)->lpCreateParams;
+        SetWindowLongPtrW( hwnd, GWLP_USERDATA, (LONG_PTR)view );
+        if (view) view->content = hwnd;  /* known before its first WM_SIZE */
         break;
     case WM_PAINT:
     {
@@ -945,7 +956,9 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     switch (msg)
     {
     case WM_NCCREATE:
-        SetWindowLongPtrW( hwnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTW *)lp)->lpCreateParams );
+        view = ((CREATESTRUCTW *)lp)->lpCreateParams;
+        SetWindowLongPtrW( hwnd, GWLP_USERDATA, (LONG_PTR)view );
+        if (view) view->hwnd = hwnd;
         break;
     case WM_APP_START_PAGE:
     {

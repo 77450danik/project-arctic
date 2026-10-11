@@ -1,0 +1,17 @@
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -2862,7 +2862,12 @@ HRESULT CSysPagerWnd::Initialize(IN HWND hWndParent)
+ {
+     /* Create the window. The tray window is going to move it to the correct
+         position and resize it as needed. */
+-    DWORD dwStyle = WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE;
++    /* Arctic: the pager clips its toolbar and never paints over it. Without
++     * that, the whole taskbar drawn again (its frame) painted the pager's
++     * background straight over the icons, and the toolbar, painted before
++     * it, did not paint them again: the icons of the notification area were
++     * gone until the pointer went over them. */
++    DWORD dwStyle = WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE;
+     Create(hWndParent, 0, NULL, dwStyle);
+     if (!m_hWnd)
+         return E_FAIL;

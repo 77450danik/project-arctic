@@ -1,0 +1,34 @@
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+index 83239bc..9dac6b0 100644
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -2706,11 +2706,28 @@ ChangePos:
+     }
+ 
+     // We have to draw non-client area because the 'Show Desktop' button is beyond client area.
++    // Arctic: only when it is, and only the button. The whole notification
++    // area was drawn again, at once, at every frame painting of the taskbar,
++    // which comes with every window that gets or loses the activation:
++    // switching between pages of the Control Panel or opening a window
++    // repainted the clock, the input indicator and the notification icons,
++    // and the icons, painted over by their pager, stayed blank until the
++    // pointer passed over them. Windows paints none of it then.
+     void DrawShowDesktopButton()
+     {
++        RECT rcButton, rcClient;
++
+         if (!m_pShowDesktopButton || !m_pShowDesktopButton->IsWindow())
+             return;
+-        ::RedrawWindow(m_TrayNotify, NULL, NULL, RDW_INVALIDATE | RDW_ERASENOW | RDW_UPDATENOW);
++        if (!::GetWindowRect(m_pShowDesktopButton->m_hWnd, &rcButton) || !GetClientRect(&rcClient))
++            return;
++        MapWindowPoints(NULL, (LPPOINT)&rcClient, 2);
++        if (rcButton.left >= rcClient.left && rcButton.top >= rcClient.top &&
++            rcButton.right <= rcClient.right && rcButton.bottom <= rcClient.bottom)
++        {
++            return; /* inside the client area: it paints itself */
++        }
++        ::RedrawWindow(m_pShowDesktopButton->m_hWnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE);
+     }
+ 
+     LRESULT OnNcPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)

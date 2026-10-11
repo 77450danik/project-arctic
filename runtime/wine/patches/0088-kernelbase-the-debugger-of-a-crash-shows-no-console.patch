@@ -1,0 +1,27 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 11 Oct 2026 18:00:00 +0200
+Subject: [PATCH] kernelbase: The debugger of a crash shows no console.
+
+A program that crashed opened a console window full of addresses
+(winedbg --auto writing its backtrace), which Windows never shows: the
+helpers of Discord's game capture did so at every screen share. The crash
+is in the log already; the debugger gets a console nobody sees.
+---
+diff --git a/dlls/kernelbase/debug.c b/dlls/kernelbase/debug.c
+index c50ce42..e2f51ab 100644
+--- a/dlls/kernelbase/debug.c
++++ b/dlls/kernelbase/debug.c
+@@ -665,7 +665,12 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
+     startup.cb = sizeof(startup);
+     startup.dwFlags = STARTF_USESHOWWINDOW;
+     startup.wShowWindow = SW_SHOWNORMAL;
+-    ret = CreateProcessW( NULL, cmdline, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, env, NULL, &startup, &info );
++    /* Arctic: no console window full of addresses over the desktop, which
++     * Windows never shows: the crash is in the log already (report_crash),
++     * and the debugger, a console program, writes its own report to a
++     * console nobody sees */
++    ret = CreateProcessW( NULL, cmdline, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, env, NULL,
++                          &startup, &info );
+     FreeEnvironmentStringsW( env );
+ 
+     if (ret)

@@ -12,7 +12,7 @@ dwm на GPU, заокруглені кути, значки й відступи 
 - Перемикач «Меню "Пуск"» є (`base/shell/explorer/trayprop.cpp`), вибір пишеться
   в `SHELLSTATE.fStartPanelOn`, але explorer його не читає: меню завжди класичне.
   Кнопка «Налаштувати…» для нього нікуди не веде.
-- Акрил, заокруглення, анімації появи вже вміє dwm (`dwmcore/gl.c`): акрил —
+- Акрил, заокруглення, анімації появи вже вміє dwm (`dwmcore/vk.c`): акрил —
   розмиття того, що під вікном, на GPU (на залізі — Mesa/NVIDIA, у QEMU —
   llvmpipe). Вікно отримує його через `SetWindowCompositionAttribute`
   (`WCA_ACCENT_POLICY`), кути — `DWMWA_WINDOW_CORNER_PREFERENCE`, появу —

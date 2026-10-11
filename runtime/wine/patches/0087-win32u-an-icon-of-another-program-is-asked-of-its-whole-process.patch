@@ -1,0 +1,209 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 11 Oct 2026 18:00:00 +0200
+Subject: [PATCH] win32u: An icon of another program is asked of its whole process, and asked again.
+
+A foreign icon whose owner thread had ended (Chromium makes its cursors
+in threads that end) or was busy (Explorer opening a page) never came: the
+failure was kept for good, and every GetIconInfo/CopyIcon/DrawIconEx of
+that cursor failed with ERROR_INVALID_CURSOR_HANDLE. Discord's screen
+sharing draws the pointer it gets from GetCursorInfo and dropped every such
+frame. Another thread of the owner with windows is asked now, a failure is
+asked again after two seconds, and the pointer of a program that gives
+nothing is drawn as the standard arrow. A monochrome cursor (AND and XOR
+masks, no colour: the I-beam, CreateCursor) gave no pixels at all; it does.
+---
+diff --git a/dlls/win32u/cursoricon.c b/dlls/win32u/cursoricon.c
+index b1d4960..d9a8fad 100644
+--- a/dlls/win32u/cursoricon.c
++++ b/dlls/win32u/cursoricon.c
+@@ -81,9 +81,11 @@ struct icon_bits
+ C_ASSERT( sizeof(struct icon_bits) == 6 * sizeof(UINT) );
+ 
+ #define FOREIGN_ICON_CACHE 128
++/* an owner that did not answer is asked again after this long */
++#define FOREIGN_ICON_RETRY_MS 2000
+ 
+ static pthread_mutex_t foreign_icon_lock = PTHREAD_MUTEX_INITIALIZER;
+-static struct { HICON foreign, local; } foreign_icons[FOREIGN_ICON_CACHE];
++static struct { HICON foreign, local; DWORD failed_at; } foreign_icons[FOREIGN_ICON_CACHE];
+ static unsigned int foreign_icon_next;
+ 
+ static HBITMAP bitmap_from_rows( UINT width, UINT height, UINT bpp, const void *rows )
+@@ -133,12 +135,47 @@ static HICON icon_from_bits( const struct icon_bits *bits )
+     return icon;
+ }
+ 
++static BOOL ask_icon_bits( HICON handle, DWORD pid, DWORD tid, UINT timeout, struct icon_bits *bits )
++{
++    DWORD_PTR size = 0;
++
++    return send_internal_message_timeout( pid, tid, WM_WINE_GETICONBITS, (WPARAM)handle, (LPARAM)bits,
++                                          SMTO_ABORTIFHUNG, timeout, &size ) &&
++           size >= sizeof(*bits) && bits->width && bits->height && bits->width <= WINE_ICON_BITS_MAX &&
++           bits->height <= WINE_ICON_BITS_MAX && size >= sizeof(*bits) + bits->width * bits->height * 4;
++}
++
++/* An icon belongs to its whole process, as in Windows: when the thread that
++ * made it has ended, or is busy, another thread of the process with windows
++ * gives its pixels. Chromium makes its cursors in threads that end, and a
++ * busy Explorer kept every program from seeing its pointer (Discord's
++ * screen sharing dropped those frames). */
++static BOOL ask_other_threads( HICON handle, DWORD pid, DWORD tid, struct icon_bits *bits )
++{
++    HWND *list = list_window_children( get_desktop_window() );
++    DWORD asked[4], count = 0, owner, thread;
++    BOOL ret = FALSE;
++
++    if (!list) return FALSE;
++    for (int i = 0; list[i] && !ret && count < ARRAY_SIZE(asked); i++)
++    {
++        DWORD j;
++
++        if (!(thread = get_window_thread( list[i], &owner )) || owner != pid || thread == tid) continue;
++        for (j = 0; j < count; j++) if (asked[j] == thread) break;
++        if (j < count) continue;
++        asked[count++] = thread;
++        ret = ask_icon_bits( handle, pid, thread, 250, bits );
++    }
++    free( list );
++    return ret;
++}
++
+ /* a copy of an icon of another process, 0 if its owner does not give it */
+ static HICON copy_foreign_icon( HICON handle )
+ {
+     struct icon_bits *bits;
+-    DWORD pid, tid;
+-    DWORD_PTR size = 0;
++    DWORD pid, tid, now = NtGetTickCount();
+     HICON local = 0;
+     unsigned int i;
+ 
+@@ -146,6 +183,13 @@ static HICON copy_foreign_icon( HICON handle )
+     for (i = 0; i < FOREIGN_ICON_CACHE; i++)
+     {
+         if (foreign_icons[i].foreign != handle) continue;
++        /* a failure is kept a little: the owner is not asked again and again,
++         * but it is asked again once it may answer */
++        if (!foreign_icons[i].local && now - foreign_icons[i].failed_at >= FOREIGN_ICON_RETRY_MS)
++        {
++            foreign_icons[i].foreign = 0;
++            break;
++        }
+         local = foreign_icons[i].local;
+         pthread_mutex_unlock( &foreign_icon_lock );
+         return local;
+@@ -154,31 +198,65 @@ static HICON copy_foreign_icon( HICON handle )
+ 
+     if (!get_user_handle_owner( handle, NTUSER_OBJ_ICON, &pid, &tid )) return 0;
+     if (!(bits = malloc( WINE_ICON_BITS_SIZE ))) return 0;
+-    if (send_internal_message_timeout( pid, tid, WM_WINE_GETICONBITS, (WPARAM)handle, (LPARAM)bits,
+-                                       SMTO_ABORTIFHUNG, 500, &size ) &&
+-        size >= sizeof(*bits) && bits->width && bits->height && bits->width <= WINE_ICON_BITS_MAX &&
+-        bits->height <= WINE_ICON_BITS_MAX && size >= sizeof(*bits) + bits->width * bits->height * 4)
++    if (ask_icon_bits( handle, pid, tid, 500, bits ) || ask_other_threads( handle, pid, tid, bits ))
+         local = icon_from_bits( bits );
+     else WARN( "icon %p of process %04x: its pixels did not come\n", handle, pid );
+     free( bits );
+ 
+-    /* a failure is kept too: the owner is not asked again and again */
+     pthread_mutex_lock( &foreign_icon_lock );
+     i = foreign_icon_next++ % FOREIGN_ICON_CACHE;
+     if (foreign_icons[i].local) NtUserDestroyCursor( foreign_icons[i].local, 0 );
+     foreign_icons[i].foreign = handle;
+     foreign_icons[i].local = local;
++    foreign_icons[i].failed_at = now;
+     pthread_mutex_unlock( &foreign_icon_lock );
+     return local;
+ }
+ 
++/* The standard arrow, for the pointer of a program that does not answer: a
++ * program that draws the pointer it is shown (screen sharing, recording)
++ * gets an arrow where it would have got an error, and dropped the frame. */
++static const char standard_arrow[20][13] =
++{
++    "B           ", "BB          ", "BWB         ", "BWWB        ", "BWWWB       ", "BWWWWB      ",
++    "BWWWWWB     ", "BWWWWWWB    ", "BWWWWWWWB   ", "BWWWWWWWWB  ", "BWWWWWWWWWB ", "BWWWWWWBBBBB",
++    "BWWWBWWB    ", "BWWB BWWB   ", "BWB  BWWB   ", "BB    BWWB  ", "B     BWWB  ", "       BWWB ",
++    "       BWWB ", "        BB  ",
++};
++
++static HICON stand_in_arrow(void)
++{
++    static HICON arrow;
++    struct icon_bits *bits;
++
++    if (arrow) return arrow;
++    if (!(bits = calloc( 1, sizeof(*bits) + 12 * 20 * sizeof(UINT32) ))) return 0;
++    bits->width = 12;
++    bits->height = 20;
++    for (int y = 0; y < 20; y++)
++        for (int x = 0; x < 12; x++)
++            bits->pixels[y * 12 + x] = standard_arrow[y][x] == 'B' ? 0xff000000 :
++                                       standard_arrow[y][x] == 'W' ? 0xffffffff : 0;
++    arrow = icon_from_bits( bits );
++    free( bits );
++    return arrow;
++}
++
++static BOOL is_current_cursor( HICON handle )
++{
++    CURSORINFO info = { sizeof(info) };
++
++    return NtUserGetCursorInfo( &info ) && info.hCursor == handle;
++}
++
+ static struct cursoricon_object *get_icon_ptr( HICON handle )
+ {
+     struct cursoricon_object *obj = get_user_handle_ptr( handle, NTUSER_OBJ_ICON );
+     HICON local;
+ 
+     if (obj != OBJ_OTHER_PROCESS) return obj;
+-    if (!(local = copy_foreign_icon( handle ))) return NULL;
++    if (!(local = copy_foreign_icon( handle )) && (!is_current_cursor( handle ) || !(local = stand_in_arrow())))
++        return NULL;
+     obj = get_user_handle_ptr( local, NTUSER_OBJ_ICON );
+     return obj == OBJ_OTHER_PROCESS ? NULL : obj;
+ }
+@@ -211,7 +289,7 @@ LRESULT get_icon_bits( HICON handle, void *buffer, size_t size )
+     width = frame.width;
+     height = frame.height;
+     if (!width || !height || width > WINE_ICON_BITS_MAX || height > WINE_ICON_BITS_MAX) return 0;
+-    if (size < sizeof(*bits) + width * height * 4 || (!frame.alpha && !frame.color)) return 0;
++    if (size < sizeof(*bits) + width * height * 4 || (!frame.alpha && !frame.color && !frame.mask)) return 0;
+ 
+     info.bmiHeader.biWidth = width;
+     info.bmiHeader.biHeight = -(int)height;
+@@ -232,6 +310,32 @@ LRESULT get_icon_bits( HICON handle, void *buffer, size_t size )
+                               (min( 255, ((p >> 8) & 0xff) * 255 / a ) << 8) | min( 255, (p & 0xff) * 255 / a );
+         }
+     }
++    else if (!frame.color)
++    {
++        /* Arctic: a monochrome cursor (the classic I-beam, a program's own
++         * from CreateCursor): the AND mask over the XOR mask, twice as tall.
++         * What only the AND mask keeps is transparent, the rest black or
++         * white; the inverted pixels are drawn black, as on a light screen. */
++        mask_stride = (width + 31) / 32 * 4;
++        memset( mask_buffer, 0, sizeof(mask_buffer) );
++        mask_info->bmiHeader = info.bmiHeader;
++        mask_info->bmiHeader.biHeight = -(int)height * 2;
++        mask_info->bmiHeader.biBitCount = 1;
++        mask_info->bmiHeader.biClrUsed = 2;
++        ok = FALSE;
++        if ((mask = calloc( height * 2, mask_stride )))
++        {
++            ok = NtGdiGetDIBitsInternal( hdc, frame.mask, 0, height * 2, mask, mask_info, DIB_RGB_COLORS, 0, 0 );
++            for (UINT y = 0; ok && y < height; y++)
++                for (UINT x = 0; x < width; x++)
++                {
++                    BOOL and = mask[y * mask_stride + x / 8] & (0x80 >> (x % 8));
++                    BOOL xor = mask[(y + height) * mask_stride + x / 8] & (0x80 >> (x % 8));
++                    bits->pixels[y * width + x] = and ? (xor ? 0xff000000 : 0) : (xor ? 0xffffffff : 0xff000000);
++                }
++            free( mask );
++        }
++    }
+     else
+     {
+         /* colour and mask: what the mask leaves is opaque */

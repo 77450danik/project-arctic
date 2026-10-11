@@ -6,7 +6,10 @@ dwm.exe puts acrylic behind the taskbar, so its pictures carry alpha:
     them on a dark taskbar: white at 0, 10, 6, 0, 15 and 22% (normal, hot,
     pressed, disabled, checked = the active window, hot checked), each with
     the 2 px line of a running program at the bottom in the accent's light
-    shade;
+    shade: across the whole button when it is active, hot or pressed, and
+    INSET px short of each edge for a window in the background, so that
+    the buttons of running programs side by side keep a gap between their
+    lines (the theme's SizingMargins keep those edges unstretched);
   - STARTBUTTON: the Start button's three states: the Arctic snowflake over
     nothing, white at 10% and at 6%.
 
@@ -18,6 +21,7 @@ import sys
 from PIL import Image
 
 LINE = (0x76, 0xB9, 0xED)  # the light shade of the accent (#0078D7)
+INSET = 4  # the normal state's line stops short of each edge (SizingMargins 4, 4, 1, 3)
 
 
 def save_bmp(path, img):
@@ -44,7 +48,8 @@ def task_buttons():
     for state, white in enumerate((0, 0.10, 0.06, 0, 0.15, 0.22)):
         for y in range(h):
             for x in range(w):
-                if y >= h - 2 and state != 3:
+                inset = state == 0 and (x < INSET or x >= w - INSET)
+                if y >= h - 2 and state != 3 and not inset:
                     px[x, state * h + y] = LINE + (255,)
                 elif white:
                     px[x, state * h + y] = (255, 255, 255, round(255 * white))
