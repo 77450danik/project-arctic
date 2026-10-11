@@ -10,8 +10,9 @@
  * what:    the component that failed, or NULL
  * drm_fd:  a card fd that may already hold DRM master, or -1
  *
- * Development builds stay on the screen and return; release builds restart
- * the machine once the progress reaches 100%, as Windows does. */
+ * Development builds on a machine with a serial port (the shell is there)
+ * stay on the screen and return; everything else restarts the machine once
+ * the progress reaches 100%, as Windows does. */
 void stop_screen(int drm_fd, const char *font_path, const char *code, const char *what, int dev_mode);
 
 /* White text centred across the screen, for the boot screen (bootanim.c):

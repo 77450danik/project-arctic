@@ -336,6 +336,22 @@ void boot_text_at(struct screen *s, int big, const char *text, double x, double 
     text_bg = BLUE;
 }
 
+/* Whether somebody can be on the development shell: a serial port that is
+ * really there (a VM, a board with a UART). The kernel names ttyS0 on every
+ * PC; one with no UART behind it has the type 0 (unknown). */
+static int serial_port_present(void)
+{
+    char type[16] = "";
+    FILE *f = fopen("/sys/class/tty/ttyS0/type", "r");
+
+    if (!f)
+        return 0;
+    if (!fgets(type, sizeof(type), f))
+        type[0] = 0;
+    fclose(f);
+    return atoi(type) != 0;
+}
+
 void stop_screen(int drm_fd, const char *font_path, const char *code, const char *what, int dev_mode)
 {
     static const int steps[] = {0, 10, 25, 40, 55, 70, 85, 100};
@@ -359,7 +375,10 @@ void stop_screen(int drm_fd, const char *font_path, const char *code, const char
         sleep(5);
     }
 
-    if (dev_mode)
+    /* A development build stays on the screen only where its serial shell
+     * can be reached. A PC with no serial port restarts as Windows does: a
+     * laptop installed from a development build sat on "100%" for good. */
+    if (dev_mode && serial_port_present())
         return;
     sleep(3);
     sync();

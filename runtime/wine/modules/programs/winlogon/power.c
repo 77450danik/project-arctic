@@ -440,6 +440,11 @@ static DWORD idle_ms(void)
             if (execution->slots[i].pid && (int)(execution->slots[i].ping - since) > 0 &&
                 (int)(now - execution->slots[i].ping) >= 0)
                 since = execution->slots[i].ping;
+    /* the last input is stamped by wineserver's clock, which runs a few
+     * milliseconds ahead of this process's tick count: input that came just
+     * now is not 49 days ago (that put the screen off and the PC to sleep
+     * at once) */
+    if ((int)(now - since) < 0) return 0;
     return now - since;
 }
 
