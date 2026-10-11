@@ -105,10 +105,12 @@ struct arctic_dwm_shared
 };
 
 /* Screenshots: the desktop as dwm.exe composes it (PrintScreen, BitBlt from
- * the screen). A client takes the lock, creates the section with the
- * request and room for the pixels, sets the request event and waits for the
- * done event; dwm.exe fills the pixels and closes its view before it says
- * so. dwm.exe owns the events. */
+ * the screen), or one window alone, as it would be with nothing over it
+ * (BitBlt from the DC of another program's window, PrintWindow). A client
+ * takes the lock, creates the section with the request and room for the
+ * pixels, sets the request event and waits for the done event; dwm.exe
+ * fills the pixels and closes its view before it says so. dwm.exe owns the
+ * events. */
 #define ARCTIC_CAPTURE_LOCK    L"Global\\__arctic_dwm_capture_lock"
 #define ARCTIC_CAPTURE_SECTION L"Global\\__arctic_dwm_capture"
 #define ARCTIC_CAPTURE_REQUEST L"Global\\__arctic_dwm_capture_request"
@@ -118,6 +120,7 @@ struct arctic_capture
 {
     LONG   x, y, width, height;  /* in the virtual screen, in its pixels */
     LONG   status;               /* 0 once the pixels are there */
+    UINT32 hwnd;                 /* 0: the screen; else only this window, where it stands */
     UINT32 pixels[1];            /* width * height, BGRA, top row first, opaque */
 };
 

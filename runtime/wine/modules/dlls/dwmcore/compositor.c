@@ -34,14 +34,24 @@
 
 #include "config.h"
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#include <dlfcn.h>
 #include <errno.h>
+#include <execinfo.h>
+#include <signal.h>
+#include <unistd.h>
 #include <limits.h>
+#include <pthread.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <ucontext.h>
 #include <wayland-server.h>
 
 #include "xdg-shell-server-protocol.h"
@@ -198,17 +208,25 @@ static void read_dmabuf( struct surface *s )
     if (!dmabuf_read( s->dmabuf, s->pixels )) memset( s->pixels, 0, (size_t)s->width * s->height * 4 );
 }
 
+/* how deep surfaces go under one another: a window and its pieces are a few
+ * levels; more is a client gone wrong, which must not take dwm.exe down */
+#define MAX_TREE_DEPTH 16
+static int depth;  /* of the tree being walked; a walk cut short by a fault leaves it for guarded() to clear */
+
 static void draw_tree( struct surface *s, int x, int y, bool backdrop )
 {
     struct surface *child;
 
     if (s->dmabuf && s->stale) read_dmabuf( s );
     if (s->pixels) blit( s, x, y, backdrop ? LAYER_KEYED : s->alpha ? LAYER_PREMULTIPLIED : LAYER_OPAQUE );
+    if (depth >= MAX_TREE_DEPTH) return;
+    depth++;
     wl_list_for_each( child, &s->children, child_link )
     {
         if (child->hwnd) continue; /* a window of its own: placed by wineserver, not by its parent */
         draw_tree( child, x + child->sub_x, y + child->sub_y, backdrop );
     }
+    depth--;
 }
 
 /* the standard arrow, until cursor shapes come from win32u */
@@ -361,7 +379,7 @@ static void make_cursor_image( float scale )
             }
     }
     img->serial++;
-    hw_cursor = kms_set_cursor_image( img->pixels, img->width, img->height );
+    hw_cursor = kms_set_cursor_image( img->pixels, img->width, img->height, img->hot_x, img->hot_y );
 }
 
 /* the scale of the monitor the pointer is on: the topmost window there knows it */
@@ -450,8 +468,8 @@ static bool update_screen(void)
         if (!o->connector_id || !o->enabled) continue;
         rect.left = min( rect.left, o->x );
         rect.top = min( rect.top, o->y );
-        rect.right = max( rect.right, o->x + (int32_t)o->fbs[0].width );
-        rect.bottom = max( rect.bottom, o->y + (int32_t)o->fbs[0].height );
+        rect.right = max( rect.right, o->x + (int32_t)o->modes[o->mode].width );
+        rect.bottom = max( rect.bottom, o->y + (int32_t)o->modes[o->mode].height );
     }
     if (rect.left > rect.right) return false;
     if (!memcmp( &rect, &screen, sizeof(rect) )) return true;
@@ -617,8 +635,8 @@ static struct window_state *get_window_state( uint32_t hwnd )
 
 static void free_window_state( struct window_state *ws )
 {
-    gl_image_free( &ws->snapshot );
-    gl_image_free( &ws->scratch );
+    gpu_image_free( &ws->snapshot );
+    gpu_image_free( &ws->scratch );
     wl_list_remove( &ws->link );
     free( ws );
 }
@@ -637,8 +655,8 @@ static bool monitor_rect( int x, int y, RECT *rect )
 
         if (!o->connector_id || !o->enabled) continue;
         mode = &o->modes[o->mode];
-        if (x < o->x || y < o->y || x >= o->x + mode->info.hdisplay || y >= o->y + mode->info.vdisplay) continue;
-        set_rect(rect, o->x, o->y, o->x + mode->info.hdisplay, o->y + mode->info.vdisplay );
+        if (x < o->x || y < o->y || x >= o->x + mode->width || y >= o->y + mode->height) continue;
+        set_rect(rect, o->x, o->y, o->x + mode->width, o->y + mode->height );
         return true;
     }
     return false;
@@ -832,7 +850,7 @@ static struct frect minimize_target( const struct window_state *ws, const struct
 static void animate( struct window_state *ws, enum animation anim, struct frect from, struct frect to,
                      float alpha_from, float alpha_to, uint32_t ms, bool ghost )
 {
-    if (!gl_active()) return;  /* the CPU would not keep up */
+    if (!gpu_active()) return;  /* the CPU would not keep up */
     TRACE( "%08x: animation %d for %u ms%s\n", ws->hwnd, anim, ms, ghost ? ", from its last frame" : "" );
     ws->anim = anim;
     ws->anim_from = from;
@@ -869,7 +887,7 @@ static void animate_out( struct window_state *ws, const struct dwm_window *w )
 
     if (transition == TRANSITION_NONE) return;
     if (!ws->snapshot_valid || !rect_equal(&ws->snapshot_rect, &(RECT){ w->left, w->top, w->right, w->bottom } ))
-        gl_snapshot( ws, w );
+        gpu_snapshot( ws, w );
     if (!ws->snapshot_valid)
     {
         TRACE( "%08x went without a last frame\n", ws->hwnd );
@@ -925,7 +943,7 @@ static void update_window_states(void)
             {
                 if (!ws->snapshot_valid || !rect_equal(&ws->snapshot_rect, &(RECT){ ws->last.left, ws->last.top,
                                                                                   ws->last.right, ws->last.bottom } ))
-                    gl_snapshot( ws, &ws->last );
+                    gpu_snapshot( ws, &ws->last );
                 if (ws->snapshot_valid)
                 {
                     struct frect r = frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top,
@@ -950,7 +968,7 @@ static void update_window_states(void)
                 /* what it shows before it redraws at the new size is stretched meanwhile */
                 if (!ws->snapshot_valid || !rect_equal( &ws->snapshot_rect, &(RECT){ ws->last.left, ws->last.top,
                                                                                    ws->last.right, ws->last.bottom } ))
-                    gl_snapshot( ws, &ws->last );
+                    gpu_snapshot( ws, &ws->last );
             }
             if (moved && ws->maximize_time && now - ws->maximize_time < 300000)
             {
@@ -1090,7 +1108,7 @@ static void update_snap( const struct dwm_set_windows_params *params )
     struct frect current;
     float alpha;
 
-    if (!gl_active()) return;
+    if (!gpu_active()) return;
     if (params->snap_window)
     {
         struct frect to = frect_from( params->snap_left, params->snap_top, params->snap_right, params->snap_bottom );
@@ -1448,14 +1466,28 @@ static void compose(void)
 /* the part of the virtual screen the monitor stands on */
 static void copy_shadow( const struct kms_output *o, struct kms_fb *fb )
 {
+    const struct kms_mode *mode = &o->modes[o->mode];
     uint32_t width = screen.right - screen.left, height = screen.bottom - screen.top;
     uint32_t rows = min( fb->height, height - (o->y - screen.top) );
+    const uint32_t *src = shadow ? shadow + (size_t)(o->y - screen.top) * width + (o->x - screen.left) : NULL;
 
     if (!shadow) return;
-    for (uint32_t y = 0; y < rows; y++)
-        memcpy( (uint8_t *)fb->pixels + (size_t)y * fb->pitch,
-                shadow + (size_t)(o->y - screen.top + y) * width + (o->x - screen.left),
-                min( fb->width, width ) * 4 );
+    if (mode->width == fb->width && mode->height == fb->height)
+    {
+        for (uint32_t y = 0; y < rows; y++)
+            memcpy( (uint8_t *)fb->pixels + (size_t)y * fb->pitch, src + (size_t)y * width,
+                    min( fb->width, width ) * 4 );
+        return;
+    }
+    /* a mode the card scales: the frame buffer has the monitor's own size,
+     * and the plane shows it where the smaller screen goes */
+    for (uint32_t y = 0; y < fb->height; y++)
+    {
+        const uint32_t *row = src + (size_t)(y * mode->height / fb->height) * width;
+        uint32_t *dst = (uint32_t *)((uint8_t *)fb->pixels + (size_t)y * fb->pitch);
+
+        for (uint32_t x = 0; x < fb->width; x++) dst[x] = row[x * mode->width / fb->width];
+    }
 }
 
 static void send_frame_callbacks(void)
@@ -1479,8 +1511,8 @@ static bool cursor_on( const struct kms_output *o )
 {
     const struct kms_mode *mode = &o->modes[o->mode];
 
-    return !cursor_hidden && cursor_x >= o->x && cursor_y >= o->y && cursor_x < o->x + (int)mode->info.hdisplay &&
-           cursor_y < o->y + (int)mode->info.vdisplay;
+    return !cursor_hidden && cursor_x >= o->x && cursor_y >= o->y && cursor_x < o->x + (int)mode->width &&
+           cursor_y < o->y + (int)mode->height;
 }
 
 /* The buffer of a window that fills the monitor, with nothing over it: a game
@@ -1489,7 +1521,7 @@ static bool cursor_on( const struct kms_output *o )
 static struct surface *fullscreen_content( const struct kms_output *o, uint32_t *hwnd )
 {
     const struct kms_mode *mode = &o->modes[o->mode];
-    RECT rect = { o->x, o->y, o->x + mode->info.hdisplay, o->y + mode->info.vdisplay };
+    RECT rect = { o->x, o->y, o->x + mode->width, o->y + mode->height };
     struct surface *s, *top, *child;
 
     wl_list_for_each( s, &toplevels, stack_link )
@@ -1632,13 +1664,15 @@ static void count_frame( struct output *output, bool direct, bool vrr, uint64_t 
 /* A frame for every monitor that needs one and has shown its last one. A
  * window that fills a monitor with a GPU buffer turns variable refresh on
  * there: the monitor then waits for the game's frames. */
+static uint64_t no_direct_until;  /* after a fault: composed frames only, for a while */
+
 static void repaint(void)
 {
     struct { struct output *output; struct surface *content; bool vrr; } ready[KMS_MAX_OUTPUTS];
     uint64_t now = kms_now();
     struct output *output;
     int count = 0;
-    bool composed = false, gpu = gl_active();
+    bool composed = false, gpu = gpu_active();
 
     animating = update_animations( now );
     /* a dark display shows nothing: the frames wait for it to light again */
@@ -1654,7 +1688,7 @@ static void repaint(void)
         content = fullscreen_content( o, &hwnd );
         ready[count].output = output;
         ready[count].vrr = content && vrr_allowed && !vrr_turned_off( o );
-        ready[count].content = content && can_show_directly( o, content ) ? content : NULL;
+        ready[count].content = content && now >= no_direct_until && can_show_directly( o, content ) ? content : NULL;
         if (ready[count].content) output->direct_hwnd = hwnd;
         else
         {
@@ -1672,10 +1706,10 @@ static void repaint(void)
     {
         if (ready[i].content) present_directly( ready[i].output, ready[i].content, ready[i].vrr );
         else if (!gpu) present_composed( ready[i].output, ready[i].vrr );
-        else if (!gl_render( ready[i].output, ready[i].vrr ))
+        else if (!gpu_render( ready[i].output, ready[i].vrr ))
         {
             /* busy, or the GPU gave up: then the CPU composes from now on */
-            if (!gl_active()) dirty = true;
+            if (!gpu_active()) dirty = true;
             ready[i].output->needs_frame = true;
         }
         count_frame( ready[i].output, !!ready[i].content, ready[i].vrr, now );
@@ -1686,14 +1720,20 @@ void compositor_flip_done( struct kms_output *o, void *buffer )
 {
     struct output *output = o->user;
 
-    if (buffer && !gl_frame_released( buffer )) dmabuf_unref( buffer );
+    if (buffer && !gpu_frame_released( buffer )) dmabuf_unref( buffer );
     if (output && o->fake_vblank) output->not_before = o->done_time + kms_frame_time( o );
+    send_frame_callbacks();
+}
+
+void compositor_frame_in_place( struct output *output )
+{
+    output->not_before = kms_now() + kms_frame_time( output->kms );
     send_frame_callbacks();
 }
 
 void compositor_buffer_unused( void *buffer )
 {
-    if (!gl_frame_released( buffer )) dmabuf_unref( buffer );
+    if (!gpu_frame_released( buffer )) dmabuf_unref( buffer );
 }
 
 static bool flips_pending(void)
@@ -1880,7 +1920,7 @@ static void keep_last_frame( struct surface *s, struct dmabuf *buffer )
         height = wl_shm_buffer_get_height( shm );
     }
     if (width == s->width && height == s->height) return;
-    gl_snapshot( ws, &ws->last );
+    gpu_snapshot( ws, &ws->last );
 }
 
 static void surface_commit( struct wl_client *client, struct wl_resource *resource )
@@ -1977,8 +2017,8 @@ static void surface_destroyed( struct wl_resource *resource )
 
     /* a window closing: what it showed stays for its animation */
     if (s->hwnd && s->xdg_toplevel && has_content( s ) && (ws = window_state( s->hwnd )) && ws->shown)
-        gl_snapshot( ws, &ws->last );
-    gl_surface_gone( s );
+        gpu_snapshot( ws, &ws->last );
+    gpu_surface_gone( s );
     unmap_toplevel( s );
     wl_list_remove( &s->all_link );
     wl_list_remove( &s->pending_buffer_destroy.link );
@@ -2101,7 +2141,7 @@ static void subsurface_destroyed( struct wl_resource *resource )
 {
     struct surface *s = get_surface( resource );
 
-    if (!s) return;
+    if (!s || s->subsurface != resource) return;
     if (s->parent)
     {
         wl_list_remove( &s->child_link );
@@ -2115,13 +2155,43 @@ static void subsurface_destroyed( struct wl_resource *resource )
 static void subcompositor_get_subsurface( struct wl_client *client, struct wl_resource *resource, uint32_t id,
                                           struct wl_resource *surface, struct wl_resource *parent )
 {
-    struct surface *s = get_surface( surface ), *p = get_surface( parent );
+    struct surface *s = get_surface( surface ), *p = get_surface( parent ), *ancestor;
     struct wl_resource *sub = wl_resource_create( client, &wl_subsurface_interface, 1, id );
 
     if (!sub)
     {
         wl_client_post_no_memory( client );
         return;
+    }
+    /* A surface put under one of its own children (two windows of a program
+     * that each become the other's: a browser leaving full screen) would be
+     * drawn without end, down the whole stack: dwm.exe died of it, and the
+     * desktop with it. The child that leads back to the surface leaves it
+     * first; the program is not punished with a protocol error, which would
+     * end it. */
+    if (p == s)
+    {
+        wl_resource_set_implementation( sub, &subsurface_impl, NULL, subsurface_destroyed );
+        return;
+    }
+    for (ancestor = p; ancestor && ancestor->parent; ancestor = ancestor->parent)
+    {
+        if (ancestor->parent != s) continue;
+        MESSAGE( "dwm: a surface is placed under its own child: the child leaves it first\n" );
+        wl_list_remove( &ancestor->child_link );
+        wl_list_init( &ancestor->child_link );
+        ancestor->parent = NULL;
+        break;
+    }
+    /* A surface that still has a subsurface object leaves its old place and
+     * that object first: linked twice, the lists of children went round in
+     * a circle, and the old object, destroyed later, took the surface out of
+     * its new place or wrote into it once it was freed. */
+    if (s->subsurface) wl_resource_set_user_data( s->subsurface, NULL );
+    if (s->parent)
+    {
+        wl_list_remove( &s->child_link );
+        wl_list_init( &s->child_link );
     }
     wl_resource_set_implementation( sub, &subsurface_impl, s, subsurface_destroyed );
     s->subsurface = sub;
@@ -2588,13 +2658,13 @@ static void output_send_state( struct output *output, struct wl_resource *only )
         if (only && resource != only) continue;
         /* a monitor that does not say its size is taken for 96 dpi */
         wl_output_send_geometry( resource, o->x, o->y,
-                                 o->mm_width ? o->mm_width : mode->info.hdisplay * 254 / 960,
-                                 o->mm_height ? o->mm_height : mode->info.vdisplay * 254 / 960,
+                                 o->mm_width ? o->mm_width : mode->width * 254 / 960,
+                                 o->mm_height ? o->mm_height : mode->height * 254 / 960,
                                  WL_OUTPUT_SUBPIXEL_UNKNOWN, "Arctic", o->name, WL_OUTPUT_TRANSFORM_NORMAL );
         for (uint32_t i = 0; i < o->mode_count; i++)
             wl_output_send_mode( resource, (i == o->mode ? WL_OUTPUT_MODE_CURRENT : 0) |
                                  (i == o->preferred ? WL_OUTPUT_MODE_PREFERRED : 0),
-                                 o->modes[i].info.hdisplay, o->modes[i].info.vdisplay, o->modes[i].refresh );
+                                 o->modes[i].width, o->modes[i].height, o->modes[i].refresh );
         if (wl_resource_get_version( resource ) >= WL_OUTPUT_SCALE_SINCE_VERSION)
             wl_output_send_scale( resource, 1 );
     }
@@ -2602,7 +2672,7 @@ static void output_send_state( struct output *output, struct wl_resource *only )
     wl_resource_for_each( resource, &output->xdg_resources )
     {
         zxdg_output_v1_send_logical_position( resource, o->x, o->y );
-        zxdg_output_v1_send_logical_size( resource, mode->info.hdisplay, mode->info.vdisplay );
+        zxdg_output_v1_send_logical_size( resource, mode->width, mode->height );
         if (wl_resource_get_version( resource ) < ZXDG_OUTPUT_V1_DONE_SINCE_VERSION)
             zxdg_output_v1_send_done( resource );
     }
@@ -2669,7 +2739,7 @@ void compositor_output_removed( struct kms_output *o )
     struct output *output = o->user;
 
     if (!output) return;
-    gl_output_gone( output );
+    gpu_output_gone( output );
     o->user = NULL;
     output->kms = NULL;
     /* while the card is replaced the clients keep seeing the monitors they
@@ -2947,7 +3017,7 @@ static int switch_card( void *data )
     kms_source = wl_event_loop_add_fd( wl_display_get_event_loop( display ), kms.fd, WL_EVENT_READABLE,
                                        kms_event, NULL );
     set_cursor_image();
-    gl_start();
+    gpu_start();
     /* the Windows side gives the monitors of the new card their modes */
     update_globals();
     update_screen();
@@ -2991,6 +3061,97 @@ static int hotplug_event( int fd, uint32_t mask, void *data )
     return 0;
 }
 
+/* A fault in dwm.exe's own code ends the whole desktop (every program loses
+ * its compositor, winlogon with them), and Wine cannot even say where when
+ * it happens on the unix side ("Exception frame is not in stack limits").
+ * Where it was goes to the log first; then Wine's handler goes on as before. */
+static struct sigaction previous_segv, previous_bus, previous_ill, previous_fpe, previous_abrt;
+
+/* where a call from dwm.exe goes back to when it faults (guarded) */
+static sigjmp_buf fault_jmp;
+static volatile sig_atomic_t fault_armed;
+static pthread_t fault_thread;
+
+static void write_text( const char *text )
+{
+    ssize_t ret = write( 2, text, strlen( text ) );
+    (void)ret;
+}
+
+static void fault_report( int sig, siginfo_t *info, void *context )
+{
+    static volatile int reported;
+    struct sigaction *previous = sig == SIGSEGV ? &previous_segv : sig == SIGBUS ? &previous_bus :
+                                 sig == SIGFPE ? &previous_fpe : sig == SIGABRT ? &previous_abrt : &previous_ill;
+    void *frames[48];
+    char line[160];
+    Dl_info where;
+    int count;
+
+    /* a fault in the code of Windows programs, or one Wine's own unix code
+     * expects (a buffer probed), is Wine's business: only the rest is told */
+#ifdef __x86_64__
+    void *ip = context ? (void *)((ucontext_t *)context)->uc_mcontext.gregs[REG_RIP] : NULL;
+#else
+    void *ip = NULL;
+#endif
+    BOOL ours = ip && dladdr( ip, &where ) && where.dli_fname && !strstr( where.dli_fname, "ntdll.so" ) &&
+                !strstr( where.dli_fname, "win32u.so" );
+
+    if (ours && reported++ < 20)
+    {
+        snprintf( line, sizeof(line), "dwm: signal %d at address %p, code at %s+%#lx\n", sig,
+                  info ? info->si_addr : NULL, strrchr( where.dli_fname, '/' ) ? strrchr( where.dli_fname, '/' ) + 1 :
+                  where.dli_fname, (unsigned long)((char *)ip - (char *)where.dli_fbase) );
+        write_text( line );
+        count = backtrace( frames, ARRAY_SIZE(frames) );
+        for (int i = 0; i < count; i++)
+        {
+            if (dladdr( frames[i], &where ) && where.dli_fname)
+                snprintf( line, sizeof(line), "dwm:   %s+%#lx %s\n", strrchr( where.dli_fname, '/' ) ?
+                          strrchr( where.dli_fname, '/' ) + 1 : where.dli_fname,
+                          (unsigned long)((char *)frames[i] - (char *)where.dli_fbase),
+                          where.dli_sname ? where.dli_sname : "" );
+            else snprintf( line, sizeof(line), "dwm:   %p\n", frames[i] );
+            write_text( line );
+        }
+    }
+    /* Out of the call that faulted, back to dwm.exe's loop, without Wine:
+     * its own way back from a fault inside a unix call did not survive
+     * (both times the desktop died it was on that way, at the same place). */
+    if (ours && fault_armed && pthread_equal( pthread_self(), fault_thread ))
+    {
+        fault_armed = 0;
+        siglongjmp( fault_jmp, sig );
+    }
+    if (previous->sa_flags & SA_SIGINFO) previous->sa_sigaction( sig, info, context );
+    else if (previous->sa_handler != SIG_DFL && previous->sa_handler != SIG_IGN) previous->sa_handler( sig );
+    else
+    {
+        signal( sig, SIG_DFL );
+        raise( sig );
+    }
+}
+
+static void report_faults(void)
+{
+    struct sigaction action = { 0 };
+
+    /* backtrace() is not called here to have its library loaded early: the
+     * C library then loads libgcc_s its own way, and the loader faulted
+     * when Mesa, which needs it too, was opened after that */
+    action.sa_sigaction = fault_report;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+    sigemptyset( &action.sa_mask );
+    sigaction( SIGSEGV, &action, &previous_segv );
+    sigaction( SIGBUS, &action, &previous_bus );
+    sigaction( SIGILL, &action, &previous_ill );
+    /* a division by zero and abort() end dwm.exe at once: Wine cannot hand
+     * them to Windows code from the unix side */
+    sigaction( SIGFPE, &action, &previous_fpe );
+    sigaction( SIGABRT, &action, &previous_abrt );
+}
+
 static NTSTATUS dwm_start( void *args )
 {
     const struct dwm_start_params *params = args;
@@ -3031,10 +3192,12 @@ static NTSTATUS dwm_start( void *args )
     kms_source = wl_event_loop_add_fd( loop, kms.fd, WL_EVENT_READABLE, kms_event, NULL );
     switch_timer = wl_event_loop_add_timer( loop, switch_card, NULL );
     set_cursor_image();
-    gl_start();
+    gpu_start();
     if ((hotplug = kms_hotplug_socket()) >= 0)
         wl_event_loop_add_fd( loop, hotplug, WL_EVENT_READABLE, hotplug_event, NULL );
     MESSAGE( "dwm: serving %s/%s\n", getenv( "XDG_RUNTIME_DIR" ), SOCKET_NAME );
+    /* once the display and the GPU are set up: their libraries are loaded */
+    report_faults();
     return STATUS_SUCCESS;
 }
 
@@ -3042,8 +3205,16 @@ static NTSTATUS dwm_start( void *args )
  * between calls the PE side asks wineserver about the windows */
 static NTSTATUS dwm_dispatch( void *args )
 {
+    static unsigned int calls;
     struct dwm_dispatch_params *params = args;
 
+    /* for the tests of what a fault does (tests/vm): the development shell
+     * makes this file, and the frame after that faults */
+    if (!(++calls % 64) && !access( "/run/arctic/dwm-fault", F_OK ))
+    {
+        unlink( "/run/arctic/dwm-fault" );
+        *(volatile int *)8 = 0;
+    }
     wl_event_loop_dispatch( wl_display_get_event_loop( display ), (int)params->timeout_ms );
     repaint();
     wl_display_flush_clients( display );
@@ -3087,6 +3258,51 @@ static NTSTATUS dwm_set_attributes( void *args )
     return STATUS_SUCCESS;
 }
 
+/* a surface and the surfaces placed in it, read from the GPU if need be */
+static void capture_tree( struct surface *s, int x, int y )
+{
+    struct surface *child;
+
+    if (s->dmabuf && (s->stale || !s->pixels)) read_dmabuf( s );
+    if (s->pixels) blit( s, x, y, s->alpha ? LAYER_PREMULTIPLIED : LAYER_OPAQUE );
+    if (depth >= MAX_TREE_DEPTH) return;
+    depth++;
+    wl_list_for_each( child, &s->children, child_link )
+    {
+        if (child->hwnd) continue;
+        capture_tree( child, x + child->sub_x, y + child->sub_y );
+    }
+    depth--;
+}
+
+static void capture_window_surface( struct surface *s, int x, int y, void *ctx )
+{
+    capture_tree( s, x, y );
+}
+
+/* One window alone, as it would be with nothing over it and nothing under
+ * it (black where it is transparent): what BitBlt from the DC of another
+ * program's window and PrintWindow give. A program that draws with the GPU
+ * is there too, as DWM gives it on Windows. The window is drawn into the
+ * caller's pixels as if they were the part of the screen asked for. */
+static NTSTATUS capture_window( const struct dwm_capture_params *params )
+{
+    const struct dwm_window *w = listed_window( params->hwnd );
+    uint32_t *saved_shadow = shadow;
+    RECT saved_screen = screen;
+    size_t count = (size_t)params->width * params->height;
+
+    if (!w) return STATUS_NOT_FOUND;
+    for (size_t i = 0; i < count; i++) params->pixels[i] = 0;
+    shadow = params->pixels;
+    set_rect( &screen, params->x, params->y, params->x + params->width, params->y + params->height );
+    for_each_window_surface( w, capture_window_surface, NULL );
+    shadow = saved_shadow;
+    screen = saved_screen;
+    for (size_t i = 0; i < count; i++) params->pixels[i] |= 0xff000000;
+    return STATUS_SUCCESS;
+}
+
 /* A screenshot, without the pointer: drawn again on the GPU, or composed
  * in RAM. Outside the monitors it is black, as BitBlt from the screen has it. */
 static NTSTATUS dwm_capture( void *args )
@@ -3097,7 +3313,8 @@ static NTSTATUS dwm_capture( void *args )
     bool hidden = cursor_hidden;
 
     if (width <= 0 || height <= 0 || width > 32768 || height > 32768) return STATUS_INVALID_PARAMETER;
-    if (gl_active() && gl_capture( params->x, params->y, width, height, params->pixels )) return STATUS_SUCCESS;
+    if (params->hwnd) return capture_window( params );
+    if (gpu_active() && gpu_capture( params->x, params->y, width, height, params->pixels )) return STATUS_SUCCESS;
     if (!shadow) return STATUS_NOT_SUPPORTED;
 
     cursor_hidden = true;
@@ -3171,8 +3388,8 @@ static NTSTATUS dwm_get_outputs( void *args )
         info->mode_count = min( o->mode_count, DWM_MAX_MODES );
         for (uint32_t k = 0; k < info->mode_count; k++)
         {
-            info->modes[k].width = o->modes[k].info.hdisplay;
-            info->modes[k].height = o->modes[k].info.vdisplay;
+            info->modes[k].width = o->modes[k].width;
+            info->modes[k].height = o->modes[k].height;
             info->modes[k].refresh = o->modes[k].refresh;
             info->modes[k].flags = k == o->preferred ? DWM_MODE_PREFERRED : 0;
         }
@@ -3238,17 +3455,72 @@ static NTSTATUS dwm_set_options( void *args )
     return STATUS_SUCCESS;
 }
 
+/* A fault in one call must not end dwm.exe, and every program with it: the
+ * call is given up, where it faulted is in the log (fault_report), monitors
+ * are composed the plain way for a while, and the next call goes on. Only
+ * faults that come without end are let through. */
+static NTSTATUS guarded( NTSTATUS (*func)( void * ), void *args, const char *name )
+{
+    static uint64_t first_fault;
+    static unsigned int faults;
+    NTSTATUS ret;
+    int sig;
+
+    if (fault_armed) return func( args );
+    fault_thread = pthread_self();
+    if ((sig = sigsetjmp( fault_jmp, 1 )))
+    {
+        uint64_t now = kms_now();
+
+        if (now - first_fault > 10000000)
+        {
+            first_fault = now;
+            faults = 0;
+        }
+        MESSAGE( "dwm: %s was given up (signal %d), %u in the last seconds\n", name, sig, ++faults );
+        if (faults >= 50) return STATUS_UNSUCCESSFUL;
+        no_direct_until = now + 5000000;
+        dirty = true;
+        depth = 0;
+        return STATUS_SUCCESS;
+    }
+    fault_armed = 1;
+    ret = func( args );
+    fault_armed = 0;
+    return ret;
+}
+
+static NTSTATUS guarded_dispatch( void *args )
+{
+    struct dwm_dispatch_params *params = args;
+    NTSTATUS ret;
+
+    params->events = 0;
+    ret = guarded( dwm_dispatch, args, "a frame" );
+    return ret;
+}
+
+#define GUARDED(func, what) static NTSTATUS guarded_##func( void *args ) { return guarded( dwm_##func, args, what ); }
+GUARDED(set_windows, "the list of windows")
+GUARDED(set_cursor, "the pointer")
+GUARDED(get_outputs, "the list of monitors")
+GUARDED(set_config, "a display mode")
+GUARDED(set_options, "the options")
+GUARDED(set_attributes, "the window attributes")
+GUARDED(capture, "a screenshot")
+#undef GUARDED
+
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     dwm_start,
-    dwm_dispatch,
-    dwm_set_windows,
-    dwm_set_cursor,
-    dwm_get_outputs,
-    dwm_set_config,
-    dwm_set_options,
-    dwm_set_attributes,
-    dwm_capture,
+    guarded_dispatch,
+    guarded_set_windows,
+    guarded_set_cursor,
+    guarded_get_outputs,
+    guarded_set_config,
+    guarded_set_options,
+    guarded_set_attributes,
+    guarded_capture,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );

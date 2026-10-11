@@ -1,0 +1,78 @@
+From 2e1468a4cb465a0a13a3951181b7123df2ee9c35 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 11 Oct 2026 03:33:47 +0200
+Subject: [PATCH] win32u: A swap chain is sized in the DPI terms of the thread
+ that asks.
+
+Windows gives a window's size to a thread in its own DPI awareness. A
+game whose window was made before DXVK made the process DPI aware (NFS
+Hot Pursuit at 125 %) got a 1536x864 swap chain, the window's 96 DPI
+size, while GetClientRect in its threads said 1920x1080: DXVK drew the
+1920x1080 frame into it, and only its top left was shown, stretched
+over the screen. Surface capabilities, acquire and present now measure
+the client area with the calling thread's DPI.
+---
+ dlls/win32u/vulkan.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 261c10c..2949471 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -1579,6 +1579,17 @@ static void win32u_vkDestroySurfaceKHR( VkInstance client_instance, VkSurfaceKHR
+     free( surface );
+ }
+ 
++/* Arctic: the size of a window's swap chain, as Windows gives it, is its
++ * client area in the terms of the thread that asks: its DPI awareness, not
++ * the window's. A game whose window was made before DXVK made the process
++ * DPI aware (NFS Hot Pursuit) got a 1536x864 swap chain at 125 %, while its
++ * GetClientRect said 1920x1080: the frame was drawn 1920x1080 into it and
++ * only its top left showed, stretched over the screen. */
++static struct ratio swapchain_dpi( HWND hwnd )
++{
++    return get_thread_dpi();
++}
++
+ static BOOL get_surface_rect( HWND hwnd, RECT *rect, struct ratio dpi )
+ {
+     if (!get_present_rect( hwnd, rect, dpi ) && !get_client_rect( hwnd, rect, dpi )) return FALSE;
+@@ -1602,7 +1613,7 @@ static void adjust_surface_capabilities( struct vulkan_instance *instance, struc
+ 
+     /* Update the image extents to match what the Win32 WSI would provide. */
+     /* FIXME: handle DPI scaling, somehow */
+-    get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) );
++    get_surface_rect( surface->hwnd, &client_rect, swapchain_dpi( surface->hwnd ) );
+     capabilities->minImageExtent.width = client_rect.right - client_rect.left;
+     capabilities->minImageExtent.height = client_rect.bottom - client_rect.top;
+     capabilities->maxImageExtent.width = client_rect.right - client_rect.left;
+@@ -1914,7 +1925,7 @@ static VkResult win32u_vkAcquireNextImage2KHR( VkDevice client_device, const VkA
+     acquire_info_host.fence = fence ? fence->host.fence : 0;
+     res = device->p_vkAcquireNextImage2KHR( device->host.device, &acquire_info_host, image_index );
+ 
+-    if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
++    if (!res && get_surface_rect( surface->hwnd, &client_rect, swapchain_dpi( surface->hwnd ) ) &&
+         !extents_equals( &swapchain->extents, &client_rect ))
+     {
+         WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
+@@ -1940,7 +1951,7 @@ static VkResult win32u_vkAcquireNextImageKHR( VkDevice client_device, VkSwapchai
+                                               semaphore ? semaphore->host.semaphore : 0, fence ? fence->host.fence : 0,
+                                               image_index );
+ 
+-    if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
++    if (!res && get_surface_rect( surface->hwnd, &client_rect, swapchain_dpi( surface->hwnd ) ) &&
+         !extents_equals( &swapchain->extents, &client_rect ))
+     {
+         WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
+@@ -2001,7 +2012,7 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
+         client_surface_present( surface->client );
+ 
+         if (swapchain_res < VK_SUCCESS) continue;
+-        if (!get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ))
++        if (!get_surface_rect( surface->hwnd, &client_rect, swapchain_dpi( surface->hwnd ) ))
+         {
+             WARN( "Swapchain window %p is invalid, returning VK_ERROR_OUT_OF_DATE_KHR\n", surface->hwnd );
+             if (present_info->pResults) present_info->pResults[i] = VK_ERROR_OUT_OF_DATE_KHR;
+-- 
+2.56.0
+

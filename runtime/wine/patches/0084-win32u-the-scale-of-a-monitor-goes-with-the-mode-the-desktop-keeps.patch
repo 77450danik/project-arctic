@@ -1,0 +1,49 @@
+From 9ab0d04eb494e0ec3d1236bd50fad2f58e84fc97 Mon Sep 17 00:00:00 2001
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 11 Oct 2026 02:31:37 +0200
+Subject: [PATCH] win32u: The scale of a monitor goes with the mode the desktop
+ keeps.
+
+A full screen game's temporary mode (no CDS_UPDATEREGISTRY) changed the
+monitor's scale: NFS Hot Pursuit in 1280x768 on a 1080p laptop at 125 %
+turned it to 100 % under itself, and back to 125 % when it went to
+1920x1080, its window, sized meanwhile at 100 %, then larger than the
+screen. The recommended scale is now worked out from the registry's
+mode, the one the Control Panel sets.
+---
+ dlls/win32u/sysparams.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index bcd54c8..9ae5220 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -2168,10 +2168,25 @@ static void arctic_choose_source_dpi( struct source *source, const struct gdi_mo
+     UINT width = gdi_monitor->rc_monitor.right - gdi_monitor->rc_monitor.left;
+     UINT height = gdi_monitor->rc_monitor.bottom - gdi_monitor->rc_monitor.top;
+     UINT recommended, max_index, index;
++    DEVMODEW saved = {.dmSize = sizeof(saved)};
+     DWORD value;
+     char key[64];
+     INT steps;
+ 
++    /* The scale goes with the mode the desktop keeps (the registry's, which
++     * the Control Panel sets), not with a full screen game's mode of the
++     * moment: a game in 1280x768 on a 1080p panel at 125 % turned the scale
++     * to 100 % under itself, and back to 125 % at its return to 1920x1080,
++     * when its window, sized meanwhile at 100 %, grew past the screen. */
++    if (read_source_mode( source->key, ENUM_REGISTRY_SETTINGS, &saved ) &&
++        saved.dmPelsWidth && saved.dmPelsHeight)
++    {
++        BOOL turned = (saved.dmFields & DM_DISPLAYORIENTATION) &&
++                      (saved.dmDisplayOrientation == DMDO_90 || saved.dmDisplayOrientation == DMDO_270);
++        width = turned ? saved.dmPelsHeight : saved.dmPelsWidth;
++        height = turned ? saved.dmPelsWidth : saved.dmPelsHeight;
++    }
++
+     arctic_monitor_scale_key( gdi_monitor, id, key, sizeof(key) );
+     recommended = arctic_recommended_scale_index( gdi_monitor->edid, gdi_monitor->edid_len, width, height );
+     max_index = arctic_max_scale_index( width, height );
+-- 
+2.56.0
+

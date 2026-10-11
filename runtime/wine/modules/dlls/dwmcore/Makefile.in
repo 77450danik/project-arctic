@@ -2,7 +2,7 @@ MODULE    = dwmcore.dll
 UNIXLIB   = dwmcore.so
 IMPORTS   = advapi32 ntdll
 UNIX_CFLAGS = $(WAYLAND_SERVER_CFLAGS)
-UNIX_LIBS   = $(WAYLAND_SERVER_LIBS) -lEGL -lGLESv2 -lgbm -lm
+UNIX_LIBS   = $(WAYLAND_SERVER_LIBS) -lvulkan -lm
 
 VER_FILEDESCRIPTION_STR = "Arctic desktop composition engine"
 
@@ -15,5 +15,6 @@ SOURCES = \
 	kms.c \
 	linux-dmabuf-v1-protocol.c \
 	viewporter-protocol.c \
+	vk.c \
 	xdg-output-unstable-v1-protocol.c \
 	xdg-shell-protocol.c

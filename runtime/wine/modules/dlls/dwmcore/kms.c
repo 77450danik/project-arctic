@@ -207,6 +207,8 @@ static void read_modes( struct kms_output *out, const struct drm_mode_modeinfo *
         if (k < out->mode_count && !preferred) continue;
         out->modes[k].info = *m;
         out->modes[k].refresh = refresh;
+        out->modes[k].width = m->hdisplay;
+        out->modes[k].height = m->vdisplay;
         if (k == out->mode_count) out->mode_count++;
         if (preferred)
         {
@@ -269,6 +271,69 @@ static void keep_lit_mode( struct kms_output *out )
         m->refresh = refresh;
         return;
     }
+}
+
+/* Windows drivers offer every common size up to the monitor's own, the card
+ * scaling the picture up to the monitor's timings (GPU scaling): a laptop
+ * panel takes only its native mode, and games ask for 800x600 or 1280x768.
+ * Such a mode keeps the native timings, so switching to it and back needs no
+ * modeset: the panel does not even blink. */
+static void add_scaled_modes( struct kms_output *out )
+{
+    static const struct { uint16_t width, height; } sizes[] =
+    {
+        {640, 480}, {720, 480}, {720, 576}, {800, 600}, {1024, 768}, {1152, 864}, {1176, 664},
+        {1280, 600}, {1280, 720}, {1280, 768}, {1280, 800}, {1280, 960}, {1280, 1024}, {1360, 768},
+        {1366, 768}, {1400, 1050}, {1440, 900}, {1600, 900}, {1600, 1024}, {1600, 1200}, {1680, 1050},
+        {1920, 1080}, {1920, 1200}, {1920, 1440}, {2048, 1152}, {2560, 1080}, {2560, 1440},
+        {2560, 1600}, {2880, 1800}, {3200, 1800}, {3440, 1440}, {3840, 2160},
+    };
+    struct kms_mode native = out->modes[out->preferred], *modes;
+    uint32_t count = out->mode_count;
+
+    if (!(modes = realloc( out->modes, (count + ARRAY_SIZE(sizes)) * sizeof(*modes) ))) return;
+    out->modes = modes;
+    for (uint32_t i = 0; i < ARRAY_SIZE(sizes) && count < DWM_MAX_MODES; i++)
+    {
+        uint32_t k;
+
+        if (sizes[i].width > native.width || sizes[i].height > native.height) continue;
+        for (k = 0; k < count; k++)
+            if (modes[k].width == sizes[i].width && modes[k].height == sizes[i].height &&
+                whole_hz( modes[k].refresh ) == whole_hz( native.refresh )) break;
+        if (k < count) continue;
+        modes[count] = native;
+        modes[count].info.type &= ~DRM_MODE_TYPE_PREFERRED;
+        modes[count].width = sizes[i].width;
+        modes[count].height = sizes[i].height;
+        count++;
+    }
+    out->mode_count = count;
+}
+
+static bool is_scaled( const struct kms_mode *mode )
+{
+    return mode->width != mode->info.hdisplay || mode->height != mode->info.vdisplay;
+}
+
+/* Where a scaled mode shows on the timings: as large as it fits, its shape
+ * kept, centred (Windows' "maintain aspect ratio"); the whole of them for a
+ * mode of their own size, or if the shape cannot be kept. */
+static void mode_view( const struct kms_mode *mode, bool keep_shape, struct kms_output *out )
+{
+    uint32_t w = mode->info.hdisplay, h = mode->info.vdisplay;
+
+    if (keep_shape && is_scaled( mode ))
+    {
+        if ((uint64_t)mode->width * h > (uint64_t)mode->height * w)
+            h = (uint32_t)((uint64_t)w * mode->height / mode->width) & ~1u;
+        else
+            w = (uint32_t)((uint64_t)h * mode->width / mode->height) & ~1u;
+    }
+    out->view.x = (mode->info.hdisplay - w) / 2;
+    out->view.y = (mode->info.vdisplay - h) / 2;
+    out->view.width = w;
+    out->view.height = h;
 }
 
 /* A connected monitor as a new slot, not yet in kms.outputs. count_modes 0 on
@@ -334,6 +399,7 @@ static bool read_connector( uint32_t id, struct kms_output *out )
             if (enc.encoder_id == conn.encoder_id && enc.crtc_id) out->crtc_id = enc.crtc_id;
         }
         keep_lit_mode( out );
+        if (out->mode_count) add_scaled_modes( out );
         ok = out->mode_count && out->possible_crtcs;
         if (!ok)
         {
@@ -526,7 +592,7 @@ struct kms_mode *kms_find_mode( struct kms_output *out, uint32_t width, uint32_t
     {
         struct kms_mode *m = &out->modes[i];
 
-        if (m->info.hdisplay != width || m->info.vdisplay != height) continue;
+        if (m->width != width || m->height != height) continue;
         if (m->refresh == refresh) return m;
         /* a whole Hz is all a DEVMODE carries */
         if (whole_hz( m->refresh ) == whole_hz( refresh )) best = m;
@@ -639,15 +705,16 @@ static void read_crtc_state( struct kms_output *out )
     out->vrr_refused = false;
 }
 
-/* the whole of src_width x src_height of fb over the whole mode */
+/* the whole of src_width x src_height of fb over the view: the whole mode,
+ * or where a scaled one shows on it */
 static bool flip_atomic( struct kms_output *out, uint32_t fb, uint32_t src_width, uint32_t src_height, bool vrr,
                          uint32_t flags )
 {
-    const struct drm_mode_modeinfo *mode = &out->modes[out->mode].info;
     const uint32_t *prop = plane_properties( out->plane );
     const uint64_t plane_values[PLANE_TYPE] =
     {
-        fb, out->crtc_id, 0, 0, (uint64_t)src_width << 16, (uint64_t)src_height << 16, 0, 0, mode->hdisplay, mode->vdisplay
+        fb, out->crtc_id, 0, 0, (uint64_t)src_width << 16, (uint64_t)src_height << 16,
+        (uint64_t)(int64_t)out->view.x, (uint64_t)(int64_t)out->view.y, out->view.width, out->view.height
     };
     uint32_t objs[2] = { out->plane, out->crtc_id }, counts[2] = { PLANE_TYPE, 1 }, props[PLANE_TYPE + 1];
     uint64_t values[PLANE_TYPE + 1];
@@ -803,36 +870,6 @@ uint32_t kms_add_dmabuf( int fd, uint32_t width, uint32_t height, uint32_t forma
     return cmd.fb_id;
 }
 
-/* the handles belong to GBM, which closes them */
-uint32_t kms_add_fb( uint32_t width, uint32_t height, uint32_t format, uint32_t planes, const uint32_t *handles,
-                     const uint32_t *pitches, const uint32_t *offsets, uint64_t modifier )
-{
-    struct drm_mode_fb_cmd2 cmd = { .width = width, .height = height, .pixel_format = format };
-
-    for (uint32_t i = 0; i < planes && i < 4; i++)
-    {
-        cmd.handles[i] = handles[i];
-        cmd.pitches[i] = pitches[i];
-        cmd.offsets[i] = offsets[i];
-        if (modifier != DRM_FORMAT_MOD_INVALID) cmd.modifier[i] = modifier;
-    }
-    if (modifier != DRM_FORMAT_MOD_INVALID) cmd.flags = DRM_MODE_FB_MODIFIERS;
-    if (!ioctl( kms.fd, DRM_IOCTL_MODE_ADDFB2, &cmd )) return cmd.fb_id;
-    if (modifier == DRM_FORMAT_MOD_LINEAR)
-    {
-        cmd.flags = 0;
-        memset( cmd.modifier, 0, sizeof(cmd.modifier) );
-        if (!ioctl( kms.fd, DRM_IOCTL_MODE_ADDFB2, &cmd )) return cmd.fb_id;
-    }
-    WARN( "cannot make a framebuffer of a %ux%u buffer: %s\n", width, height, strerror( errno ) );
-    return 0;
-}
-
-void kms_remove_fb( uint32_t fb )
-{
-    if (fb && kms.fd >= 0) ioctl( kms.fd, DRM_IOCTL_MODE_RMFB, &fb );
-}
-
 void kms_remove_dmabuf( uint32_t fb )
 {
     for (int i = 0; i < ARRAY_SIZE(imported); i++)
@@ -849,9 +886,9 @@ void kms_remove_dmabuf( uint32_t fb )
 
 /* the hardware cursor: one image for every CRTC, its buffer made once for
  * the card and drawn into again when the image changes (another scale) */
-static struct { uint32_t handle, width, height, pitch; uint64_t size; } cursor;
+static struct { uint32_t handle, width, height, pitch; uint64_t size; int32_t hot_x, hot_y; } cursor;
 
-bool kms_set_cursor_image( const uint32_t *argb, uint32_t width, uint32_t height )
+bool kms_set_cursor_image( const uint32_t *argb, uint32_t width, uint32_t height, int32_t hot_x, int32_t hot_y )
 {
     struct drm_mode_map_dumb map = {0};
     uint8_t *pixels;
@@ -872,6 +909,8 @@ bool kms_set_cursor_image( const uint32_t *argb, uint32_t width, uint32_t height
         cursor.size = create.size;
     }
     if (width > cursor.width || height > cursor.height) return false;
+    cursor.hot_x = hot_x;
+    cursor.hot_y = hot_y;
     map.handle = cursor.handle;
     if (ioctl( kms.fd, DRM_IOCTL_MODE_MAP_DUMB, &map ) ||
         (pixels = mmap( NULL, cursor.size, PROT_READ | PROT_WRITE, MAP_SHARED, kms.fd, (off_t)map.offset )) == MAP_FAILED)
@@ -899,6 +938,15 @@ bool kms_show_cursor( struct kms_output *out, bool show, int32_t x, int32_t y )
     set.flags = DRM_MODE_CURSOR_MOVE;
     set.x = x;
     set.y = y;
+    if (out->mode_count && is_scaled( &out->modes[out->mode] ))
+    {
+        /* the point under the pointer moves with the picture; the image keeps its size */
+        const struct kms_mode *mode = &out->modes[out->mode];
+        int32_t hot_x = cursor.hot_x, hot_y = cursor.hot_y;
+
+        set.x = out->view.x + (int64_t)(x + hot_x) * out->view.width / mode->width - hot_x;
+        set.y = out->view.y + (int64_t)(y + hot_y) * out->view.height / mode->height - hot_y;
+    }
     if (!out->cursor_on)
     {
         set.flags |= DRM_MODE_CURSOR_BO;
@@ -915,6 +963,42 @@ bool kms_show_cursor( struct kms_output *out, bool show, int32_t x, int32_t y )
  *          Modes
  */
 
+/* the monitor gets the same signal: a scaled mode and the native one */
+static bool same_timings( const struct drm_mode_modeinfo *a, const struct drm_mode_modeinfo *b )
+{
+    return a->clock == b->clock && a->hdisplay == b->hdisplay && a->hsync_start == b->hsync_start &&
+           a->hsync_end == b->hsync_end && a->htotal == b->htotal && a->hskew == b->hskew &&
+           a->vdisplay == b->vdisplay && a->vsync_start == b->vsync_start && a->vsync_end == b->vsync_end &&
+           a->vtotal == b->vtotal && a->vscan == b->vscan && a->flags == b->flags;
+}
+
+/* Whether the card scales a frame of the mode's size up to the timings the
+ * monitor shows now, its shape kept or else stretched. A card that cannot
+ * (no atomic modesetting, a plane without a scaler) does not get the mode,
+ * as a Windows driver without GPU scaling does not list it. */
+static bool test_scaling( struct kms_output *out, const struct kms_mode *mode, bool *keep_shape )
+{
+    struct kms_fb fb;
+    typeof(out->view) saved = out->view;
+    bool ok = false;
+
+    *keep_shape = true;
+    if (!kms.atomic) return false;
+    /* lit with other timings, or another CRTC: it is found out on the first frame */
+    if (!out->enabled || !out->plane || !same_timings( &out->modes[out->mode].info, &mode->info )) return true;
+    if (!create_fb( mode->width, mode->height, &fb )) return false;
+    for (int shape = 1; shape >= 0 && !ok; shape--)
+    {
+        mode_view( mode, shape, out );
+        ok = flip_atomic( out, fb.fb_id, mode->width, mode->height, out->vrr_on, DRM_MODE_ATOMIC_TEST_ONLY );
+        *keep_shape = shape;
+    }
+    if (!ok) WARN( "%s cannot scale %ux%u up: %s\n", out->name, mode->width, mode->height, strerror( errno ) );
+    out->view = saved;
+    destroy_fb( &fb );
+    return ok;
+}
+
 /* Modes, positions and CRTCs for every monitor at once. If one modeset fails,
  * the ones already made are undone: the screen stays as it was. */
 bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool test )
@@ -926,6 +1010,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         int32_t       x, y;
         struct kms_fb fb;
         bool          new_fb;
+        bool          keep_shape;
     } next[KMS_MAX_OUTPUTS];
     uint32_t used = 0;
     bool any = false;
@@ -941,6 +1026,8 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         next[i].crtc = out->crtc_id;
         next[i].x = out->x;
         next[i].y = out->y;
+        next[i].keep_shape = out->view.width != (out->mode_count ? out->modes[out->mode].info.hdisplay : 0) ||
+                             out->view.height != (out->mode_count ? out->modes[out->mode].info.vdisplay : 0);
     }
 
     for (uint32_t c = 0; c < count; c++)
@@ -963,6 +1050,9 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         next[i].mode = mode - kms.outputs[i].modes;
         next[i].x = configs[c].x;
         next[i].y = configs[c].y;
+        if (is_scaled( mode ) && (!kms.outputs[i].enabled || next[i].mode != kms.outputs[i].mode) &&
+            !test_scaling( &kms.outputs[i], mode, &next[i].keep_shape ))
+            return false;
     }
 
     /* CRTCs: each monitor keeps its own if it can, then the rest get free ones */
@@ -1013,7 +1103,8 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         const struct drm_mode_modeinfo *m;
 
         if (!out->connector_id || !next[i].enabled) continue;
-        next[i].modeset = !out->enabled || next[i].mode != out->mode || next[i].crtc != out->crtc_id;
+        next[i].modeset = !out->enabled || next[i].crtc != out->crtc_id ||
+                          !same_timings( &out->modes[next[i].mode].info, &out->modes[out->mode].info );
         if (!next[i].modeset) continue;
         m = &out->modes[next[i].mode].info;
         if (out->enabled && out->fbs[0].width == m->hdisplay && out->fbs[0].height == m->vdisplay)
@@ -1064,10 +1155,12 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
             out->fbs[0] = next[i].fb;
             out->front_fb = next[i].fb.fb_id;
         }
-        if (next[i].enabled && (next[i].modeset || !out->enabled || next[i].x != out->x || next[i].y != out->y))
-            MESSAGE( "dwm: %s %ux%u@%u at %d,%d\n", out->name, out->modes[next[i].mode].info.hdisplay,
-                     out->modes[next[i].mode].info.vdisplay, whole_hz( out->modes[next[i].mode].refresh ),
-                     next[i].x, next[i].y );
+        if (next[i].enabled && (next[i].modeset || !out->enabled || next[i].mode != out->mode ||
+                                next[i].x != out->x || next[i].y != out->y))
+            MESSAGE( "dwm: %s %ux%u@%u at %d,%d%s\n", out->name, out->modes[next[i].mode].width,
+                     out->modes[next[i].mode].height, whole_hz( out->modes[next[i].mode].refresh ),
+                     next[i].x, next[i].y, is_scaled( &out->modes[next[i].mode] ) ?
+                     (next[i].keep_shape ? ", scaled by the card" : ", stretched by the card") : "" );
         else if (out->enabled && !next[i].enabled)
             MESSAGE( "dwm: %s off\n", out->name );
         out->enabled = next[i].enabled;
@@ -1075,6 +1168,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         out->crtc_id = next[i].crtc;
         out->x = next[i].x;
         out->y = next[i].y;
+        mode_view( &out->modes[out->mode], next[i].keep_shape, out );
         if (next[i].modeset) read_crtc_state( out );
     }
     return true;

@@ -711,6 +711,7 @@ static void serve_capture(void)
             params.y = capture->y;
             params.width = capture->width;
             params.height = capture->height;
+            params.hwnd = capture->hwnd;
             params.pixels = capture->pixels;
             capture->status = WINE_UNIX_CALL( unix_dwm_capture, &params );
         }
@@ -758,7 +759,29 @@ DWORD WINAPI DwmCoreRun(void)
     grow( 256 );
     for (;;)
     {
-        if ((status = WINE_UNIX_CALL( unix_dwm_dispatch, &dispatch ))) return status;
+        if ((status = WINE_UNIX_CALL( unix_dwm_dispatch, &dispatch )))
+        {
+            /* The dispatch itself never fails: this is a fault inside it,
+             * which Wine turns into the status the call returns (where it
+             * was is in the log, "dwm: signal ..."). Leaving here ended the
+             * whole desktop: every program lost its compositor at once,
+             * winlogon with them, and the screen went black in the middle of
+             * a film. One frame or one client's request is lost instead, and
+             * the next ones go on; only faults that come without end give
+             * up, as Windows starts its DWM again and again only so often. */
+            static DWORD first_fault, faults;
+            DWORD now = GetTickCount();
+
+            if (now - first_fault > 10000)
+            {
+                first_fault = now;
+                faults = 0;
+            }
+            ERR( "a fault while composing (%#lx), %lu in the last seconds: going on\n", status, faults + 1 );
+            if (++faults >= 50) return status;
+            dispatch.events = 0;
+            continue;
+        }
         if (dispatch.events & DWM_EVENT_HOTPLUG)
         {
             configure_monitors();

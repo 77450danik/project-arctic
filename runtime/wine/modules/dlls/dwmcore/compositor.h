@@ -40,10 +40,9 @@ struct surface
     int                 dst_width, dst_height; /* wp_viewport destination, 0 if unset */
     struct wl_resource *viewport;
 
-    /* on the GPU: the pixels as a texture */
-    uint32_t            texture;             /* 0 if none */
-    uint32_t            texture_generation;  /* of the GL context it was made in */
-    int                 texture_width, texture_height;
+    /* on the GPU: the pixels as an image */
+    void               *texture;             /* NULL if none */
+    uint32_t            texture_generation;  /* of the device it was made on */
     bool                texture_stale;       /* the pixels changed since the upload */
 
     /* subsurface role */
@@ -65,7 +64,7 @@ struct surface
     struct wl_list      stack_link;          /* toplevels, bottom to top */
 };
 
-struct gl_output;
+struct gpu_output;
 
 /* one monitor, as the clients see it */
 struct output
@@ -83,7 +82,7 @@ struct output
     uint32_t           stat_direct, stat_composed;
     bool               stat_vrr;
     uint64_t           stat_since;           /* µs */
-    struct gl_output  *gl;                   /* its frames on the GPU */
+    struct gpu_output *gpu;                  /* its frames on the GPU */
 };
 
 /* a rectangle in screen coordinates, fractional while it moves */
@@ -116,8 +115,8 @@ enum layer_mode
  * now, drawn once to be faded or zoomed as a whole */
 struct window_image
 {
-    uint32_t texture, framebuffer;
-    uint32_t generation;
+    void    *texture;                        /* on the GPU */
+    uint32_t generation;                     /* of the device it was made on */
     int      width, height;
     uint32_t *pixels;                        /* on the CPU: width x height */
 };
@@ -186,19 +185,22 @@ struct cursor_image
 extern struct cursor_image  cursor_image;
 extern void update_cursor_image(void);
 
-/* gl.c */
-bool gl_start(void);                         /* a GL context on the card: composition on the GPU */
-bool gl_active(void);
-bool gl_render( struct output *output, bool vrr );  /* composes and queues a flip; false if it could not */
-void gl_output_gone( struct output *output );
-bool gl_frame_released( void *buffer );      /* true if the buffer was one of our frames */
-void gl_surface_gone( struct surface *s );
-void gl_dmabuf_gone( struct dmabuf *buffer );
-void gl_image_free( struct window_image *image );
-bool gl_snapshot( struct window_state *ws, const struct dwm_window *w );
-bool gl_capture( int x, int y, int width, int height, uint32_t *pixels );  /* a screenshot, without the pointer */
+/* vk.c */
+bool gpu_start(void);                        /* a Vulkan device for the card: composition on the GPU */
+bool gpu_active(void);
+bool gpu_render( struct output *output, bool vrr );  /* composes and queues a flip; false if it could not */
+void gpu_output_gone( struct output *output );
+bool gpu_frame_released( void *buffer );     /* true if the buffer was one of our frames */
+void gpu_surface_gone( struct surface *s );
+void gpu_dmabuf_gone( struct dmabuf *buffer );
+void gpu_image_free( struct window_image *image );
+bool gpu_snapshot( struct window_state *ws, const struct dwm_window *w );
+bool gpu_capture( int x, int y, int width, int height, uint32_t *pixels );  /* a screenshot, without the pointer */
 
-/* compositor.c, for gl.c: how each window is drawn this frame */
+/* compositor.c, for vk.c: a frame was drawn where it shows, on a card that cannot flip */
+void compositor_frame_in_place( struct output *output );
+
+/* compositor.c, for vk.c: how each window is drawn this frame */
 struct window_draw
 {
     const struct dwm_window *w;

@@ -24,6 +24,9 @@ struct kms_mode
 {
     struct drm_mode_modeinfo info;
     uint32_t                 refresh;      /* mHz, from the timings */
+    /* the size of the screen: the timings' own, or smaller for a mode the
+     * card scales up to them, as Windows drivers offer every common size */
+    uint32_t                 width, height;
 };
 
 /* a dumb buffer the CRTC scans out */
@@ -56,6 +59,8 @@ struct kms_output
     uint32_t         crtc_id;              /* when off: the one firmware used, 0 if none */
     uint32_t         mode;                 /* index into modes */
     int32_t          x, y;                 /* in the virtual screen */
+    struct { int32_t x, y; uint32_t width, height; } view;  /* where the frames show on the
+                                                          * timings: all of them unless scaled */
     struct kms_fb    fbs[2];               /* composed frames: one on screen while the other is drawn */
 
     /* scanout, when the monitor is on */
@@ -131,13 +136,13 @@ void kms_dispatch(void);              /* reads the card's events: finished flips
 uint64_t kms_now(void);               /* µs */
 uint32_t kms_frame_time( const struct kms_output *output );  /* µs one refresh takes */
 
-/* a client's buffer as a framebuffer, 0 if the card cannot take it */
+/* a buffer of a client, or an image of ours, as a framebuffer; 0 if the card cannot take it */
 uint32_t kms_add_dmabuf( int fd, uint32_t width, uint32_t height, uint32_t format, uint32_t offset,
                          uint32_t stride, uint64_t modifier );
 void kms_remove_dmabuf( uint32_t fb );
 
 /* the hardware cursor, for monitors that show a client buffer directly */
-bool kms_set_cursor_image( const uint32_t *argb, uint32_t width, uint32_t height );
+bool kms_set_cursor_image( const uint32_t *argb, uint32_t width, uint32_t height, int32_t hot_x, int32_t hot_y );
 bool kms_show_cursor( struct kms_output *output, bool show, int32_t x, int32_t y );  /* false if it cannot */
 
 /* called by kms_probe for a monitor that was unplugged, before its slot is freed */
@@ -166,11 +171,9 @@ struct dmabuf
     size_t              map_size;
     bool                map_failed;
     bool                gpu_failed;        /* the GPU could not read it back */
-    /* composed on the GPU: the buffer as a texture, without a copy */
-    void               *image;             /* EGLImage */
-    uint32_t            texture;
-    uint32_t            texture_generation;  /* of the GL context */
-    bool                texture_external;  /* GL_TEXTURE_EXTERNAL_OES */
+    /* composed on the GPU: the buffer as an image, without a copy */
+    void               *texture;
+    uint32_t            texture_generation;  /* of the device it was made on */
     bool                texture_failed;
 };
 
@@ -181,13 +184,8 @@ void dmabuf_unref( struct dmabuf *buffer );  /* the client gets its buffer back 
 bool dmabuf_read( struct dmabuf *buffer, uint32_t *pixels );  /* width x height, packed */
 uint32_t dmabuf_fb( struct dmabuf *buffer );  /* 0 if the card cannot scan it out */
 
-/* gl.c */
+/* vk.c */
 bool gpu_read_dmabuf( struct dmabuf *buffer, uint32_t *pixels );
-void gl_dmabuf_gone( struct dmabuf *buffer );
-
-/* a framebuffer of a buffer object of ours (GBM), 0 if the card cannot take it */
-uint32_t kms_add_fb( uint32_t width, uint32_t height, uint32_t format, uint32_t planes, const uint32_t *handles,
-                     const uint32_t *pitches, const uint32_t *offsets, uint64_t modifier );
-void kms_remove_fb( uint32_t fb );
+void gpu_dmabuf_gone( struct dmabuf *buffer );
 
 #endif

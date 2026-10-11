@@ -1,0 +1,258 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 11 Oct 2026 18:00:00 +0200
+Subject: [PATCH] win32u: The window of another program is taken from dwm.exe, as DWM gives it.
+
+BitBlt from the DC of another program's window drew nothing: its pixels
+are not in this process. They come now from dwm.exe, the window alone as
+it composes it, with what the GPU draws in it, as Windows gives it with
+DWM. PrintWindow of another program's window (WM_PRINT could not draw into
+a DC of ours) and PrintWindow with PW_RENDERFULLCONTENT take it the same
+way. Screen sharing of one program (Discord's Go Live, OBS) and window
+previews see the program.
+---
+diff --git a/dlls/win32u/bitblt.c b/dlls/win32u/bitblt.c
+index 852f1c8..9a1be81 100644
+--- a/dlls/win32u/bitblt.c
++++ b/dlls/win32u/bitblt.c
+@@ -618,8 +618,9 @@ static HANDLE open_named( const char *name, int kind, SIZE_T size )
+     return handle;
+ }
+ 
+-/* what the monitors show of rect, BGRA, top row first; free() it */
+-static UINT32 *capture_screen( const RECT *rect )
++/* what the monitors show of rect, or what the window hwnd (a toplevel) shows
++ * there with nothing over it, BGRA, top row first; free() it */
++static UINT32 *capture_from_dwm( const RECT *rect, HWND hwnd )
+ {
+     int width = rect->right - rect->left, height = rect->bottom - rect->top;
+     SIZE_T size = offsetof( struct arctic_capture, pixels[0] ) + (SIZE_T)width * height * sizeof(UINT32);
+@@ -649,13 +650,15 @@ static UINT32 *capture_screen( const RECT *rect )
+     capture->y = rect->top;
+     capture->width = width;
+     capture->height = height;
++    capture->hwnd = HandleToUlong( hwnd );
+     capture->status = -1;
+     NtResetEvent( done, NULL );
+     NtSetEvent( request, NULL );
+     if (!NtWaitForSingleObject( done, FALSE, &timeout ) && !capture->status &&
+         (pixels = malloc( (SIZE_T)width * height * sizeof(UINT32) )))
+         memcpy( pixels, capture->pixels, (SIZE_T)width * height * sizeof(UINT32) );
+-    else WARN( "no screenshot of %s from dwm.exe (%#x)\n", wine_dbgstr_rect( rect ), (int)capture->status );
++    else WARN( "no screenshot of %s (window %p) from dwm.exe (%#x)\n", wine_dbgstr_rect( rect ), hwnd,
++               (int)capture->status );
+ 
+ done:
+     if (capture) NtUnmapViewOfSection( NtCurrentProcess(), capture );
+@@ -683,42 +686,20 @@ static BOOL is_screen_dc( HDC hdc )
+     return ret;
+ }
+ 
+-/* TRUE when the blit was done from what dwm.exe drew; *ret has its result */
+-static BOOL stretch_blt_from_screen( HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, INT height_dst,
+-                                     HDC hdc_src, INT x_src, INT y_src, INT width_src, INT height_src,
+-                                     DWORD rop, COLORREF bk_color, BOOL *ret )
++/* rect of the screen (or of the window hwnd alone), in the pixels of the
++ * monitors, stretched onto hdc_dst; FALSE when dwm.exe did not give it */
++static BOOL blt_from_dwm( HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, INT height_dst, const RECT *rect,
++                          HWND hwnd, BOOL mirror_x, BOOL mirror_y, DWORD rop, COLORREF bk_color, BOOL *ret )
+ {
+-    struct ratio raw_dpi = { 0 };
+-    POINT pts[2] = { { x_src, y_src }, { x_src + width_src, y_src + height_src } };
+     BITMAPINFO info = { .bmiHeader = { sizeof(BITMAPINFOHEADER), 0, 0, 1, 32, BI_RGB } };
+-    RECT desktop, raw, rect;
++    int width = rect->right - rect->left, height = rect->bottom - rect->top;
+     HBITMAP bitmap;
+     HGDIOBJ old;
+     UINT32 *pixels;
+     void *bits;
+     HDC hdc_mem;
+-    int width, height;
+-    DC *dc;
+-
+-    if (!is_screen_dc( hdc_src ) || !(dc = get_dc_ptr( hdc_src ))) return FALSE;
+-    update_dc( dc );
+-    lp_to_dp( dc, pts, 2 );
+-    /* the whole desktop, in the coordinates of the DC (its DPI) */
+-    desktop = dc->attr->vis_rect;
+-    if (IsRectEmpty( &desktop )) desktop = dc->device_rect;
+-    release_dc_ptr( dc );
+-    raw = get_virtual_screen_rect( raw_dpi, MDT_RAW_DPI );
+-    if (IsRectEmpty( &desktop ) || IsRectEmpty( &raw )) return FALSE;
+ 
+-    /* in the pixels of the monitors (fewer for a program that sees 96 DPI):
+-     * device 0,0 of the screen is the corner of the desktop */
+-    rect.left   = raw.left + muldiv( min( pts[0].x, pts[1].x ), raw.right - raw.left, desktop.right - desktop.left );
+-    rect.right  = raw.left + muldiv( max( pts[0].x, pts[1].x ), raw.right - raw.left, desktop.right - desktop.left );
+-    rect.top    = raw.top + muldiv( min( pts[0].y, pts[1].y ), raw.bottom - raw.top, desktop.bottom - desktop.top );
+-    rect.bottom = raw.top + muldiv( max( pts[0].y, pts[1].y ), raw.bottom - raw.top, desktop.bottom - desktop.top );
+-    width = rect.right - rect.left;
+-    height = rect.bottom - rect.top;
+-    if (!(pixels = capture_screen( &rect ))) return FALSE;
++    if (!(pixels = capture_from_dwm( rect, hwnd ))) return FALSE;
+ 
+     info.bmiHeader.biWidth = width;
+     info.bmiHeader.biHeight = -height;
+@@ -731,9 +712,8 @@ static BOOL stretch_blt_from_screen( HDC hdc_dst, INT x_dst, INT y_dst, INT widt
+             old = NtGdiSelectBitmap( hdc_mem, bitmap );
+             /* a source that runs backwards mirrors, as it would have from the screen */
+             *ret = NtGdiStretchBlt( hdc_dst, x_dst, y_dst, width_dst, height_dst, hdc_mem,
+-                                    pts[1].x < pts[0].x ? width : 0, pts[1].y < pts[0].y ? height : 0,
+-                                    pts[1].x < pts[0].x ? -width : width, pts[1].y < pts[0].y ? -height : height,
+-                                    rop, bk_color );
++                                    mirror_x ? width : 0, mirror_y ? height : 0,
++                                    mirror_x ? -width : width, mirror_y ? -height : height, rop, bk_color );
+             NtGdiSelectBitmap( hdc_mem, old );
+             NtGdiDeleteObjectApp( bitmap );
+         }
+@@ -743,6 +723,104 @@ static BOOL stretch_blt_from_screen( HDC hdc_dst, INT x_dst, INT y_dst, INT widt
+     return TRUE;
+ }
+ 
++/* the same for rect in screen coordinates in the terms of the calling thread
++ * (fewer pixels than the monitors' for a program that sees 96 DPI) */
++static BOOL blt_screen_rect_from_dwm( HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, INT height_dst,
++                                      const RECT *rect, HWND hwnd, BOOL mirror_x, BOOL mirror_y, DWORD rop,
++                                      COLORREF bk_color, BOOL *ret )
++{
++    struct ratio raw_dpi = { 0 };
++    RECT virt = get_virtual_screen_rect( get_thread_dpi(), MDT_DEFAULT );
++    RECT raw = get_virtual_screen_rect( raw_dpi, MDT_RAW_DPI ), monitors;
++
++    if (IsRectEmpty( &virt ) || IsRectEmpty( &raw ) || IsRectEmpty( rect )) return FALSE;
++    monitors.left   = raw.left + muldiv( rect->left - virt.left, raw.right - raw.left, virt.right - virt.left );
++    monitors.right  = raw.left + muldiv( rect->right - virt.left, raw.right - raw.left, virt.right - virt.left );
++    monitors.top    = raw.top + muldiv( rect->top - virt.top, raw.bottom - raw.top, virt.bottom - virt.top );
++    monitors.bottom = raw.top + muldiv( rect->bottom - virt.top, raw.bottom - raw.top, virt.bottom - virt.top );
++    if (IsRectEmpty( &monitors )) return FALSE;
++    return blt_from_dwm( hdc_dst, x_dst, y_dst, width_dst, height_dst, &monitors, hwnd, mirror_x, mirror_y,
++                         rop, bk_color, ret );
++}
++
++/* TRUE when the blit was done from what dwm.exe drew; *ret has its result */
++static BOOL stretch_blt_from_screen( HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, INT height_dst,
++                                     HDC hdc_src, INT x_src, INT y_src, INT width_src, INT height_src,
++                                     DWORD rop, COLORREF bk_color, BOOL *ret )
++{
++    struct ratio raw_dpi = { 0 };
++    POINT pts[2] = { { x_src, y_src }, { x_src + width_src, y_src + height_src } };
++    RECT desktop, raw, rect;
++    DC *dc;
++
++    if (!is_screen_dc( hdc_src ) || !(dc = get_dc_ptr( hdc_src ))) return FALSE;
++    update_dc( dc );
++    lp_to_dp( dc, pts, 2 );
++    /* the whole desktop, in the coordinates of the DC (its DPI) */
++    desktop = dc->attr->vis_rect;
++    if (IsRectEmpty( &desktop )) desktop = dc->device_rect;
++    release_dc_ptr( dc );
++    raw = get_virtual_screen_rect( raw_dpi, MDT_RAW_DPI );
++    if (IsRectEmpty( &desktop ) || IsRectEmpty( &raw )) return FALSE;
++
++    /* in the pixels of the monitors (fewer for a program that sees 96 DPI):
++     * device 0,0 of the screen is the corner of the desktop */
++    rect.left   = raw.left + muldiv( min( pts[0].x, pts[1].x ), raw.right - raw.left, desktop.right - desktop.left );
++    rect.right  = raw.left + muldiv( max( pts[0].x, pts[1].x ), raw.right - raw.left, desktop.right - desktop.left );
++    rect.top    = raw.top + muldiv( min( pts[0].y, pts[1].y ), raw.bottom - raw.top, desktop.bottom - desktop.top );
++    rect.bottom = raw.top + muldiv( max( pts[0].y, pts[1].y ), raw.bottom - raw.top, desktop.bottom - desktop.top );
++    return blt_from_dwm( hdc_dst, x_dst, y_dst, width_dst, height_dst, &rect, NULL,
++                         pts[1].x < pts[0].x, pts[1].y < pts[0].y, rop, bk_color, ret );
++}
++
++/* Arctic: the window of another program. Its pixels are not in this
++ * process (its DC draws nowhere here) but in dwm.exe, which composes it: a
++ * blit from that DC takes the window from there, alone, as BitBlt from the
++ * DC of another program's window gives it on Windows with DWM. Screen
++ * sharing (Discord, OBS's window capture) and the programs that preview a
++ * window see it, those drawn with the GPU (a browser, a game) too. */
++static BOOL stretch_blt_from_window( HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, INT height_dst,
++                                     HDC hdc_src, INT x_src, INT y_src, INT width_src, INT height_src,
++                                     DWORD rop, COLORREF bk_color, BOOL *ret )
++{
++    HWND hwnd = NtUserWindowFromDC( hdc_src ), root;
++    POINT pts[2] = { { x_src, y_src }, { x_src + width_src, y_src + height_src } };
++    RECT origin, rect;
++    DC *dc;
++
++    if (!hwnd || hwnd == get_desktop_window() || is_current_process_window( hwnd )) return FALSE;
++    if (!(root = NtUserGetAncestor( hwnd, GA_ROOT ))) return FALSE;
++    if (!(dc = get_dc_ptr( hdc_src ))) return FALSE;
++    update_dc( dc );
++    lp_to_dp( dc, pts, 2 );
++    /* device 0,0 of a window's DC is the corner of its client area (of the
++     * window, for GetWindowDC), on the screen in the program's terms */
++    origin = dc->attr->vis_rect;
++    release_dc_ptr( dc );
++
++    rect.left   = origin.left + min( pts[0].x, pts[1].x );
++    rect.right  = origin.left + max( pts[0].x, pts[1].x );
++    rect.top    = origin.top + min( pts[0].y, pts[1].y );
++    rect.bottom = origin.top + max( pts[0].y, pts[1].y );
++    return blt_screen_rect_from_dwm( hdc_dst, x_dst, y_dst, width_dst, height_dst, &rect, root,
++                                     pts[1].x < pts[0].x, pts[1].y < pts[0].y, rop, bk_color, ret );
++}
++
++/* Arctic: the window alone as dwm.exe has it, at 0,0 of hdc: PrintWindow of
++ * another program's window, or with PW_RENDERFULLCONTENT. rect is where it
++ * is on the screen, in the terms of the calling thread. */
++BOOL print_window_from_dwm( HWND hwnd, HDC hdc, const RECT *rect )
++{
++    BOOL ret = FALSE;
++    HWND root = NtUserGetAncestor( hwnd, GA_ROOT );
++
++    if (!root || IsRectEmpty( rect )) return FALSE;
++    if (!blt_screen_rect_from_dwm( hdc, 0, 0, rect->right - rect->left, rect->bottom - rect->top, rect, root,
++                                   FALSE, FALSE, SRCCOPY, 0, &ret ))
++        return FALSE;
++    return ret;
++}
++
+ /***********************************************************************
+  *           NtGdiStretchBlt    (win32u.@)
+  */
+@@ -756,6 +834,8 @@ BOOL WINAPI NtGdiStretchBlt( HDC hdcDst, INT xDst, INT yDst, INT widthDst, INT h
+     if (!rop_uses_src( rop )) return NtGdiPatBlt( hdcDst, xDst, yDst, widthDst, heightDst, rop );
+ 
+     if (stretch_blt_from_screen( hdcDst, xDst, yDst, widthDst, heightDst, hdcSrc, xSrc, ySrc, widthSrc,
++                                 heightSrc, rop, bk_color, &ret ) ||
++        stretch_blt_from_window( hdcDst, xDst, yDst, widthDst, heightDst, hdcSrc, xSrc, ySrc, widthSrc,
+                                  heightSrc, rop, bk_color, &ret ))
+         return ret;
+ 
+diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+index 0ea79d7..84a7865 100644
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -2238,6 +2238,21 @@ INT WINAPI NtUserScrollWindowEx( HWND hwnd, INT dx, INT dy, const RECT *rect,
+ BOOL WINAPI NtUserPrintWindow( HWND hwnd, HDC hdc, UINT flags )
+ {
+     UINT prf_flags = PRF_CHILDREN | PRF_ERASEBKGND | PRF_OWNED | PRF_CLIENT;
++
++    /* Arctic: another program cannot draw into a DC of ours (WM_PRINT got
++     * nothing from it), and what the GPU draws is not in WM_PRINT at all:
++     * the window as dwm.exe composes it, as Windows gives it with DWM and
++     * with PW_RENDERFULLCONTENT. */
++    if (!is_current_process_window( hwnd ) || (flags & 2 /* PW_RENDERFULLCONTENT */))
++    {
++        RECT rect;
++        BOOL ok;
++
++        if (flags & PW_CLIENTONLY) ok = get_client_rect_rel( hwnd, COORDS_SCREEN, &rect, get_thread_dpi() );
++        else ok = get_window_rect_rel( hwnd, COORDS_SCREEN, &rect, get_thread_dpi() );
++        if (ok && print_window_from_dwm( hwnd, hdc, &rect )) return TRUE;
++    }
++
+     if (!(flags & PW_CLIENTONLY)) prf_flags |= PRF_NONCLIENT;
+     send_message( hwnd, WM_PRINT, (WPARAM)hdc, prf_flags );
+     return TRUE;
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 08dfcf4..970a981 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -190,6 +190,7 @@ extern struct ratio get_thread_dpi(void);
+ extern UINT set_thread_dpi_awareness_context( UINT context );
+ extern UINT get_thread_dpi_awareness_context(void);
+ extern RECT get_virtual_screen_rect( struct ratio dpi, MONITOR_DPI_TYPE type );
++extern BOOL print_window_from_dwm( HWND hwnd, HDC hdc, const RECT *rect );
+ extern const char *gpu_device_name( UINT16 vendor, UINT16 device, const char *name );
+ extern BOOL is_exiting_thread( DWORD tid );
+ extern UINT map_user_dpi( UINT value, struct ratio dpi_from );

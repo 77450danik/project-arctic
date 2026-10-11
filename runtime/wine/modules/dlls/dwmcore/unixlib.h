@@ -129,6 +129,7 @@ struct dwm_set_attributes_params
 struct dwm_capture_params
 {
     INT32   x, y, width, height;
+    UINT32  hwnd;    /* 0: the screen; else that window alone */
     UINT32 *pixels;  /* width * height, BGRA, top row first */
 };
 
