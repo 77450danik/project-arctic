@@ -472,6 +472,29 @@ static int replay_entry(int fd, const unsigned char *e, uint32_t len, int apply)
     return 0;
 }
 
+/* Both slots get the next headers, naming no log: the other slot first, then
+ * the current one. One is not enough. qemu-nbd writes both headers again at
+ * its first write, each with the log it named when read, so a slot left with
+ * the old log's name comes back as the current header. And with a log named
+ * qemu refuses every block it has to add (-ENOTSUP, "the log be flushed after
+ * every write") after the block is in its table in memory: the write fails,
+ * later writes to that block go through, and none of them is on the disk
+ * once it is detached. */
+static int write_empty_log_headers(int fd, unsigned char *header, int cur)
+{
+    for (int i = 0; i < 2; i++) {
+        put64le(header + 8, get64le(header + 8) + 1);
+        memset(header + 48, 0, 16);
+        memset(header + 4, 0, 4);
+        uint32_t crc = crc32c(header, VHDX_SECTOR, 4);
+        for (int k = 0; k < 4; k++)
+            header[4 + k] = (unsigned char)(crc >> 8 * k);
+        if (pwrite_all(fd, header, VHDX_SECTOR, 0x10000 * (i ? cur + 1 : 2 - cur)) || fsync(fd))
+            return -1;
+    }
+    return 0;
+}
+
 /* 0 when the log is empty or has been replayed (or is qemu's to judge),
  * -1 when the disk is better left alone */
 static int replay_vhdx_log(const char *path, const char *name, char *err, size_t err_len)
@@ -511,7 +534,15 @@ static int replay_vhdx_log(const char *path, const char *name, char *err, size_t
         } else
             free(e);
     }
-    if (!head) { /* nothing to replay: qemu's search ends on a log like that */
+    if (!head) {
+        /* a log named and nothing in it: the power went between the header
+         * and the entry. qemu finds nothing to replay either, and keeps the
+         * name, which is what must not stay */
+        if (write_empty_log_headers(fd, header[cur], cur)) {
+            snprintf(err, err_len, "%s: a header for its disk: %s", name, strerror(errno));
+            goto done;
+        }
+        say("%s: the log of %s was named but empty", name, path);
         ret = 0;
         goto done;
     }
@@ -549,14 +580,7 @@ replay:
         snprintf(err, err_len, "%s: replaying the log of its disk: %s", name, strerror(errno));
         goto done;
     }
-    /* the other slot gets the next header, with an empty log */
-    put64le(header[cur] + 8, get64le(header[cur] + 8) + 1);
-    memset(header[cur] + 48, 0, 16);
-    memset(header[cur] + 4, 0, 4);
-    uint32_t crc = crc32c(header[cur], VHDX_SECTOR, 4);
-    for (int i = 0; i < 4; i++)
-        header[cur][4 + i] = (unsigned char)(crc >> 8 * i);
-    if (pwrite_all(fd, header[cur], VHDX_SECTOR, 0x10000 * (2 - cur)) || fsync(fd)) {
+    if (write_empty_log_headers(fd, header[cur], cur)) {
         snprintf(err, err_len, "%s: a header for its disk: %s", name, strerror(errno));
         goto done;
     }
