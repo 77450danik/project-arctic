@@ -290,11 +290,11 @@ busybox, але busybox не потрапляє в `host.sqfs`. Перевірк
 | 1 | `gate.c` + захищена тека стану в `arctic-init` | ⏳ |
 | 2 | Гейт в `arctic-lxss`: хто питає, дозволи, `REQ_GATE` | ⏳ |
 | 3 | `consent.exe` (UAC Windows 7) | ⏳ |
-| 4 | `wsl.exe`: без `git.exe`/`sh.exe`, повідомлення про відмову | ⏳ |
+| 4 | `wsl.exe`: без `git.exe`/`sh.exe`, повідомлення про відмову | 🔨 2026-10-11: `git.exe` прибрано; `wsl.exe` знає кадр відмови (`F_DENIED` → текст `ERROR_CANCELLED` системи, код 1) |
 | 5 | «Облікові записи користувачів» + `UserAccountControlSettings.exe` | ⏳ |
 | 6 | dev-консоль за паролем | ⏳ |
-| 7 | Git for Windows, gh, PowerShell 7, `powershell.exe` → pwsh | ⏳ |
-| 8 | Пакет оновлення: `Root\`, `delete`, `Registry\` | ⏳ |
+| 7 | Git for Windows, gh, PowerShell 7, `powershell.exe` → pwsh | 🔨 2026-10-11: `ci/install-windows-tools.sh` (перевірено окремо: 415 + 247 + 41 МБ, ярлики в «Пуску»), `powershell.exe` запускає pwsh (перевірено копією: команда без ключа, `-Command -`, код виходу), PATH дописує `userinit`; у VM ще не перевірено |
+| 8 | Пакет оновлення: `Root\`, `delete` (реєстр уже їде з `host.sqfs`: `reapply_registry`) | 🔨 2026-10-11: initrd (`install_tree`, `install_deletions`, `undo_tree`) і `make-update.sh --root`; у VM ще не перевірено |
 | 9 | Збірка, перевірка у VM, оновлення встановленої системи | ⏳ |
 | 10 | Патч Wine для MSYS2/Cygwin (запуск дочірніх процесів, FAST_CWD) — вимога 11; Git Bash для агентів, як у Windows | ⏳ |
 | 11 | `host.sqfs` — лише замикання залежностей + allowlist | ⏳ |

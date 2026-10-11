@@ -669,8 +669,10 @@ static int grow_c(const char *dev)
  * (the files of the EFI system partition: shim, Limine, its config, the
  * kernel and the initrd, signed together) and Windows (files that go over
  * C:\Windows, as Windows' pending file renames do: ReactOS' shell32,
- * explorer.exe...). "ready", written last, names what is there, a line each:
- * "host.sqfs <size>", "Boot", "Windows"; a lone number is the older form,
+ * explorer.exe...), Root (files that go over C:\ itself: Program Files) and
+ * delete (files of C: to take away, a path from C:\ a line). "ready",
+ * written last, names what is there, a line each: "host.sqfs <size>",
+ * "Boot", "Windows", "Root", "delete"; a lone number is the older form,
  * host.sqfs of that size and Boot. The initrd installs it before anything
  * runs from C:: what it replaces goes to Host\Previous, the new parts take
  * its place. With Boot, the EFI system partition is written from
@@ -1040,32 +1042,47 @@ static void read_list(const char *file, struct file_list *list)
         fclose(f);
 }
 
-/* The files of C:\Windows an update brings: each one there goes to
- * Previous\Windows, the new one takes its place. A file C:\Windows did not
- * have is named in Windows.absent instead. */
-static void install_windows(void)
+/* The trees an update can lay over C:: Windows over C:\Windows (ReactOS'
+ * shell32, explorer.exe...), Root over C:\ itself (Program Files: PowerShell,
+ * Git for Windows...). Each has its own folder in Previous and its own list
+ * of the files the update added, <part>.absent. */
+struct tree {
+    const char *part;  /* its folder in Update and Previous */
+    const char *base;  /* where it lies on C: */
+    const char *shown; /* C:\Windows\ or C:\, for the log */
+};
+
+static const struct tree windows_tree = {"Windows", WINDOWS_DIR, "C:\\Windows\\"};
+static const struct tree root_tree = {"Root", CDRIVE, "C:\\"};
+
+/* The files of a tree an update brings: each one there goes to Previous, the
+ * new one takes its place. A file C: did not have is named in the absent
+ * list instead. */
+static void install_tree(const struct tree *t)
 {
-    char c[PATH_MAX], u[PATH_MAX], p[PATH_MAX];
+    char c[PATH_MAX], u[PATH_MAX], p[PATH_MAX], from[PATH_MAX], absent_list[PATH_MAX];
     struct file_list list = {0};
     size_t done = 0;
     FILE *absent;
 
-    list_files(UPDATE_DIR "/Windows", "", &list);
-    absent = fopen(ABSENT_LIST, "we");
+    snprintf(from, sizeof(from), UPDATE_DIR "/%s", t->part);
+    snprintf(absent_list, sizeof(absent_list), PREVIOUS_DIR "/%s.absent", t->part);
+    list_files(from, "", &list);
+    absent = fopen(absent_list, "ae");
     for (size_t i = 0; i < list.count; i++) {
         const char *rel = list.names[i];
-        snprintf(c, sizeof(c), WINDOWS_DIR "/%s", rel);
-        snprintf(u, sizeof(u), UPDATE_DIR "/Windows/%s", rel);
-        snprintf(p, sizeof(p), PREVIOUS_DIR "/Windows/%s", rel);
+        snprintf(c, sizeof(c), "%s/%s", t->base, rel);
+        snprintf(u, sizeof(u), "%s/%s", from, rel);
+        snprintf(p, sizeof(p), PREVIOUS_DIR "/%s/%s", t->part, rel);
         make_parents(c);
         make_parents(p);
         int had = !access(c, F_OK);
         if (had && rename(c, p)) {
-            say("update: C:\\Windows\\%s stays as it is: %s", rel, strerror(errno));
+            say("update: %s%s stays as it is: %s", t->shown, rel, strerror(errno));
             continue;
         }
         if (rename(u, c)) {
-            say("update: C:\\Windows\\%s: %s", rel, strerror(errno));
+            say("update: %s%s: %s", t->shown, rel, strerror(errno));
             if (had)
                 rename(p, c);
             continue;
@@ -1079,49 +1096,88 @@ static void install_windows(void)
         fsync(fileno(absent));
         fclose(absent);
     }
-    say("update: %zu of %zu files of C:\\Windows replaced", done, list.count);
+    say("update: %zu of %zu files of %s replaced", done, list.count, t->shown);
     list_free(&list);
 }
 
-/* Undo for the files of C:\Windows: the ones in Previous\Windows and C:\Windows
- * change places, the ones the update added go to Previous. Done again, it
- * brings the update back. */
-static int undo_windows(void)
+/* The files of C: an update takes away ("delete", a path from C:\ a line,
+ * as Windows' pending deletions): they go to Previous\Root, from where undo
+ * brings them back. A bridge into Linux that was a Windows program's name
+ * (System32\git.exe) went this way. */
+static void install_deletions(void)
 {
-    char c[PATH_MAX], p[PATH_MAX], via[PATH_MAX + 8];
+    struct file_list list = {0};
+    char c[PATH_MAX], p[PATH_MAX];
+    size_t done = 0;
+
+    read_list(UPDATE_DIR "/delete", &list);
+    for (size_t i = 0; i < list.count; i++) {
+        char *rel = list.names[i];
+        for (char *s = rel; *s; s++)
+            if (*s == '\\')
+                *s = '/';
+        while (*rel == '/')
+            rel++;
+        if (!*rel || strstr(rel, "..") || strchr(rel, ':')) {
+            say("update: not deleted, not a path on C:: %s", list.names[i]);
+            continue;
+        }
+        snprintf(c, sizeof(c), CDRIVE "/%s", rel);
+        snprintf(p, sizeof(p), PREVIOUS_DIR "/Root/%s", rel);
+        if (access(c, F_OK))
+            continue; /* not there: nothing to do */
+        if (make_parents(p) || rename(c, p)) {
+            say("update: C:\\%s stays: %s", rel, strerror(errno));
+            continue;
+        }
+        done++;
+    }
+    say("update: %zu of %zu files of C: taken away", done, list.count);
+    list_free(&list);
+}
+
+/* Undo for a tree: the files in Previous and on C: change places, the ones
+ * the update added go to Previous, the ones it took away come back. Done
+ * again, it brings the update back. */
+static int undo_tree(const struct tree *t)
+{
+    char c[PATH_MAX], p[PATH_MAX], via[PATH_MAX + 8], prev[PATH_MAX], absent_list[PATH_MAX], absent_new[PATH_MAX + 4];
     struct file_list list = {0}, added = {0};
     FILE *absent;
 
-    list_files(PREVIOUS_DIR "/Windows", "", &list);
-    read_list(ABSENT_LIST, &added);
+    snprintf(prev, sizeof(prev), PREVIOUS_DIR "/%s", t->part);
+    snprintf(absent_list, sizeof(absent_list), PREVIOUS_DIR "/%s.absent", t->part);
+    snprintf(absent_new, sizeof(absent_new), "%s.new", absent_list);
+    list_files(prev, "", &list);
+    read_list(absent_list, &added);
     if (!list.count && !added.count)
         return 0;
-    absent = fopen(ABSENT_LIST ".new", "we");
+    absent = fopen(absent_new, "we");
     for (size_t i = 0; i < list.count; i++) {
-        snprintf(c, sizeof(c), WINDOWS_DIR "/%s", list.names[i]);
-        snprintf(p, sizeof(p), PREVIOUS_DIR "/Windows/%s", list.names[i]);
+        snprintf(c, sizeof(c), "%s/%s", t->base, list.names[i]);
+        snprintf(p, sizeof(p), "%s/%s", prev, list.names[i]);
         snprintf(via, sizeof(via), "%s.swap", c);
         if (!access(c, F_OK)) {
             if (swap_paths(c, p, via))
-                say("rollback: C:\\Windows\\%s: %s", list.names[i], strerror(errno));
+                say("rollback: %s%s: %s", t->shown, list.names[i], strerror(errno));
         } else if (make_parents(c) || rename(p, c))
-            say("rollback: C:\\Windows\\%s: %s", list.names[i], strerror(errno));
+            say("rollback: %s%s: %s", t->shown, list.names[i], strerror(errno));
         else if (absent)
             fprintf(absent, "%s\n", list.names[i]);
     }
     for (size_t i = 0; i < added.count; i++) {
-        snprintf(c, sizeof(c), WINDOWS_DIR "/%s", added.names[i]);
-        snprintf(p, sizeof(p), PREVIOUS_DIR "/Windows/%s", added.names[i]);
+        snprintf(c, sizeof(c), "%s/%s", t->base, added.names[i]);
+        snprintf(p, sizeof(p), "%s/%s", prev, added.names[i]);
         if (make_parents(p) || rename(c, p))
-            say("rollback: C:\\Windows\\%s: %s", added.names[i], strerror(errno));
+            say("rollback: %s%s: %s", t->shown, added.names[i], strerror(errno));
     }
     if (absent) {
         fflush(absent);
         fsync(fileno(absent));
         fclose(absent);
     }
-    rename(ABSENT_LIST ".new", ABSENT_LIST);
-    say("rollback: %zu files of C:\\Windows back, %zu taken away", list.count, added.count);
+    rename(absent_new, absent_list);
+    say("rollback: %zu files of %s back, %zu taken away", list.count, t->shown, added.count);
     list_free(&list);
     list_free(&added);
     return 1;
@@ -1130,7 +1186,7 @@ static int undo_windows(void)
 /* What Host\Update holds, from "ready" */
 struct update {
     unsigned long long host_size;
-    int host, boot, windows;
+    int host, boot, windows, root, del;
 };
 
 static int read_ready(struct update *up)
@@ -1157,8 +1213,12 @@ static int read_ready(struct update *up)
             up->boot = 1;
         else if (!strcmp(line, "Windows"))
             up->windows = 1;
+        else if (!strcmp(line, "Root"))
+            up->root = 1;
+        else if (!strcmp(line, "delete"))
+            up->del = 1;
     }
-    return up->host || up->boot || up->windows ? 0 : -1;
+    return up->host || up->boot || up->windows || up->root || up->del ? 0 : -1;
 }
 
 static int update_complete(const struct update *up)
@@ -1173,6 +1233,10 @@ static int update_complete(const struct update *up)
         return 0;
     if (up->windows && access(UPDATE_DIR "/Windows", F_OK))
         return 0;
+    if (up->root && access(UPDATE_DIR "/Root", F_OK))
+        return 0;
+    if (up->del && access(UPDATE_DIR "/delete", R_OK))
+        return 0;
     return 1;
 }
 
@@ -1186,8 +1250,8 @@ static void install_update(const char *dev)
         say("update: incomplete, left as it is");
         return;
     }
-    say("update: installing%s%s%s", up.host ? " host.sqfs" : "", up.boot ? " Boot" : "",
-        up.windows ? " Windows" : "");
+    say("update: installing%s%s%s%s%s", up.host ? " host.sqfs" : "", up.boot ? " Boot" : "",
+        up.windows ? " Windows" : "", up.root ? " Root" : "", up.del ? " delete" : "");
     /* a new host brings a new Wine, whose registry arctic-init brings up
      * next, under the same screen from 50% (one update, as in Windows) */
     int top = up.host ? 50 : 100;
@@ -1212,7 +1276,11 @@ static void install_update(const char *dev)
     }
     update_screen(INSTALLING, top * 30 / 100);
     if (up.windows)
-        install_windows();
+        install_tree(&windows_tree);
+    if (up.del)
+        install_deletions();
+    if (up.root)
+        install_tree(&root_tree);
     remove_tree(UPDATE_DIR);
     sync();
     update_screen(INSTALLING, top * 60 / 100);
@@ -1236,8 +1304,9 @@ static void undo_update(const char *dev)
 {
     int host = !access(PREVIOUS_DIR "/host.sqfs", R_OK), boot = !access(PREVIOUS_DIR "/Boot/EFI/Arctic/vmlinuz", R_OK);
     int windows = !access(PREVIOUS_DIR "/Windows", F_OK) || !access(ABSENT_LIST, F_OK);
+    int root = !access(PREVIOUS_DIR "/Root", F_OK) || !access(PREVIOUS_DIR "/Root.absent", F_OK);
 
-    if (!host && !boot && !windows) {
+    if (!host && !boot && !windows && !root) {
         say("rollback: there is no version before this one");
         return;
     }
@@ -1257,7 +1326,9 @@ static void undo_update(const char *dev)
     }
     update_screen(UNDOING, 30);
     if (windows)
-        undo_windows();
+        undo_tree(&windows_tree);
+    if (root)
+        undo_tree(&root_tree);
     sync();
     update_screen(UNDOING, 60);
     if (!boot) {

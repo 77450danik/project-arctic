@@ -1,17 +1,17 @@
 /*
- * wsl.exe, bash.exe and git.exe: Linux in Arctic, as WSL gives it on Windows
+ * wsl.exe and bash.exe: Linux in Arctic, as WSL gives it on Windows
  *
- * One program under three names. It asks the host's arctic-lxss
- * (host/init/arctic-lxss.c) to run a command in a WSL distribution and
- * passes stdin, stdout, stderr and the exit code through, the way WSL's
- * wsl.exe does over its own socket:
+ * One program under two names, as in Windows 10. It asks the host's
+ * arctic-lxss (host/init/arctic-lxss.c) to run a command in a WSL
+ * distribution and passes stdin, stdout, stderr and the exit code through,
+ * the way WSL's wsl.exe does over its own socket. Linux is reached only with
+ * the user's consent (docs/linux-gate.md): when it is refused, the program
+ * says what Windows says for a cancelled elevation.
  *
  *   wsl.exe   wsl [-d name] [-u user] [--cd dir] [-e cmd args | -- cmd | cmd],
  *             wsl -l, wsl --shutdown, wsl -t name
  *   bash.exe  bash with these arguments in the default distribution, the
- *             drives as Git Bash names them (/c, /d): Claude Code's
- *             CLAUDE_CODE_GIT_BASH_PATH
- *   git.exe   git there, with C:\x arguments as /c/x
+ *             drives under /c, /d as well as /mnt/c, /mnt/d
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -26,7 +26,7 @@
 /* the protocol, shared with host/init/arctic-lxss.c */
 #define MAGIC "ARCTLXS1"
 #define TOKEN_LEN 32
-enum { F_STDIN, F_STDIN_EOF, F_STDOUT, F_STDERR, F_EXIT, F_ERROR, F_SIGNAL };
+enum { F_STDIN, F_STDIN_EOF, F_STDOUT, F_STDERR, F_EXIT, F_ERROR, F_SIGNAL, F_DENIED };
 #define REQ_SHUTDOWN 1
 #define REQ_GITBASH 2
 #define REQ_TERMINATE 4
@@ -248,22 +248,26 @@ static int pass_variable(const WCHAR *entry)
     return 1;
 }
 
-/* C:\x or C:/x as Git Bash writes it: /c/x */
-static char *git_bash_path(const WCHAR *arg)
+/* "The operation was canceled by the user.", in the language of the system */
+static void cancelled(void)
 {
-    char *s = utf8(arg);
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    WCHAR text[512];
+    char bytes[1024];
+    DWORD len = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, ERROR_CANCELLED, 0,
+                               text, ARRAY_SIZE(text), NULL), mode, written;
+    int n;
 
-    if (((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) && s[1] == ':' &&
-        (s[2] == '\\' || s[2] == '/' || !s[2])) {
-        char *out = malloc(strlen(s) + 2);
-        sprintf(out, "/%c%s", s[0] | 0x20, s + 2);
-        for (char *p = out; *p; p++)
-            if (*p == '\\')
-                *p = '/';
-        free(s);
-        return out;
+    if (!len)
+        len = swprintf(text, ARRAY_SIZE(text), L"The operation was canceled by the user.\r\n");
+    if (GetConsoleMode(err, &mode)) {
+        WriteConsoleW(err, text, len, &written, NULL);
+        return;
     }
-    return s;
+    /* redirected: in the console's code page, as cmd's own messages */
+    n = WideCharToMultiByte(GetConsoleOutputCP(), 0, text, (int)len, bytes, sizeof(bytes), NULL, NULL);
+    if (n > 0)
+        WriteFile(err, bytes, (DWORD)n, &written, NULL);
 }
 
 static void usage(void)
@@ -316,16 +320,11 @@ int __cdecl wmain(int argc, WCHAR *argv[])
     GetCurrentDirectoryW(ARRAY_SIZE(cwd_w), cwd_w);
     cwd = utf8(cwd_w);
 
-    if (!_wcsicmp(base, L"bash.exe") || !_wcsicmp(base, L"sh.exe")) {
+    if (!_wcsicmp(base, L"bash.exe")) {
         flags |= REQ_GITBASH;
         args[nargs++] = "bash";
         for (; i < argc; i++)
             args[nargs++] = utf8(argv[i]);
-    } else if (!_wcsicmp(base, L"git.exe")) {
-        flags |= REQ_GITBASH;
-        args[nargs++] = "git";
-        for (; i < argc; i++)
-            args[nargs++] = git_bash_path(argv[i]);
     } else {
         int exec = 0;
         for (; i < argc; i++) {
@@ -435,6 +434,9 @@ int __cdecl wmain(int argc, WCHAR *argv[])
         case F_ERROR:
             data[len] = 0;
             message("%s\n", data);
+            finish(1);
+        case F_DENIED: /* the user said no in the consent window */
+            cancelled();
             finish(1);
         case F_EXIT:
             finish(len >= 4 ? (data[0] & 0xff) | (data[1] & 0xff) << 8 : 1);

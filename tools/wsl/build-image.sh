@@ -10,6 +10,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=/root/arctic/out
 export ARCTIC_OUT=$OUT SKIP_DEPS=1
+# downloads of fixed versions (ci/install-windows-tools.sh) are kept between builds
+export ARCTIC_DOWNLOADS=${ARCTIC_DOWNLOADS:-/root/arctic/downloads}
 
 if [ ! -f "$OUT/kernel/vmlinuz" ]; then
     echo "taking the kernel from $ROOT/out/arctic.iso"

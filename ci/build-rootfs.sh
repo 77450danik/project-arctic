@@ -198,6 +198,9 @@ cp "$RFS"/usr/lib/nvidia/wine/*.dll "$PFX/drive_c/windows/system32/" 2>/dev/null
 
 # Google Chrome, the browser of the system (ci/install-chrome.sh)
 bash "$ROOT/ci/install-chrome.sh" "$PFX"
+# PowerShell 7, Git for Windows and GitHub CLI: the shells and tools are
+# Windows programs, Linux is only behind wsl.exe (docs/linux-gate.md)
+bash "$ROOT/ci/install-windows-tools.sh" "$PFX"
 
 # the Snipping Tool in Start, as in Windows 11 (Win+Shift+S starts it too)
 python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Ножиці.lnk" \

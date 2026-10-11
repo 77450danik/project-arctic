@@ -7,6 +7,10 @@
 #              the files of C:\Windows that differ from the ones on that C:
 #   --host     host.sqfs of the last image build (tools/wsl/build-image.sh):
 #              Wine, the host's programs, drivers' user space
+#              and the files of C: it has no program for any more (delete)
+#   --root     the Windows tools of that build in C:\Program Files: PowerShell 7,
+#              Git for Windows, GitHub CLI (ci/install-windows-tools.sh), the
+#              files that differ from the ones on that C:
 #   --boot     the kernel and the initrd of that build, Limine and shim,
 #              signed for that C: (installed next to Windows: for its GPT GUID)
 #   --live     the C:\Windows files go in at once and explorer.exe restarts;
@@ -17,18 +21,19 @@
 # The package goes to <C:>\Windows\System32\Host\Update, added to one already
 # waiting there; "ready" is written last. The next start installs it with
 # Windows' "Робота з оновленнями" screen.
-# usage: make-update.sh [--to DIR] [--windows] [--host] [--boot] [--live]
+# usage: make-update.sh [--to DIR] [--windows] [--host] [--root] [--boot] [--live]
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 BUILD=/root/arctic/out
 C=
-WINDOWS=0 HOST=0 BOOT=0 LIVE=0
+WINDOWS=0 HOST=0 PROGRAMS=0 BOOT=0 LIVE=0
 while [ $# -gt 0 ]; do
     case $1 in
     --to) C=$2; shift ;;
     --windows) WINDOWS=1 ;;
     --host) HOST=1 ;;
+    --root) PROGRAMS=1 ;;
     --boot) BOOT=1 ;;
     --live) LIVE=1 ;;
     *) sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2 ;;
@@ -41,7 +46,7 @@ if [ -z "$C" ]; then
         { echo "not in Arctic: name its C: with --to (the installed one is /mnt/f from Windows 10)"; exit 2; }
 fi
 [ -f "$C/Windows/System32/Host/host.sqfs" ] || { echo "$C is not an Arctic C:"; exit 2; }
-[ $((WINDOWS + HOST + BOOT)) -gt 0 ] || { echo "nothing to put in: --windows, --host or --boot"; exit 2; }
+[ $((WINDOWS + HOST + PROGRAMS + BOOT)) -gt 0 ] || { echo "nothing to put in: --windows, --host, --root or --boot"; exit 2; }
 
 U="$C/Windows/System32/Host/Update"
 mkdir -p "$U"
@@ -130,6 +135,50 @@ if [ "$HOST" = 1 ]; then
         add_part "host.sqfs $(stat -c %s "$U/host.sqfs")"
         echo "host.sqfs: $(du -h "$U/host.sqfs" | cut -f1)"
     fi
+    # Files of C: the new host has no program for: Linux's git and sh under
+    # Windows names (docs/linux-gate.md). Wine would find no builtin behind
+    # them; Git for Windows is the git now.
+    gone=()
+    for rel in Windows/System32/git.exe Windows/System32/sh.exe Windows/SysWOW64/git.exe Windows/SysWOW64/sh.exe; do
+        [ -e "$C/$rel" ] && grep -qa "Wine builtin DLL" "$C/$rel" && gone+=("$rel")
+    done
+    if [ ${#gone[@]} -gt 0 ]; then
+        touch "$U/delete"
+        for rel in "${gone[@]}"; do
+            grep -qxF "$rel" "$U/delete" || echo "$rel" >> "$U/delete"
+        done
+        add_part delete
+        echo "taken away: ${gone[*]}"
+    fi
+fi
+
+# --- C:\Program Files: the Windows tools of the image ---
+if [ "$PROGRAMS" = 1 ]; then
+    PF="$BUILD/prefix/drive_c/Program Files"
+    [ -f "$PF/Git/cmd/git.exe" ] || { echo "no $PF/Git: run tools/wsl/build-image.sh"; exit 1; }
+    count=0
+    for tool in "PowerShell/7" "Git" "GitHub CLI"; do
+        n=0
+        while IFS= read -r -d '' f; do
+            rel="Program Files/${f#"$PF"/}"
+            cmp -s "$f" "$C/$rel" 2>/dev/null && continue
+            mkdir -p "$(dirname "$U/Root/$rel")"
+            cp -p "$f" "$U/Root/$rel"
+            n=$((n + 1))
+        done < <(find "$PF/$tool" -type f -print0)
+        echo "C:\\Program Files\\${tool//\//\\}: $n files differ"
+        count=$((count + n))
+    done
+    # their shortcuts in Start
+    SM="ProgramData/Microsoft/Windows/Start Menu/Programs"
+    for lnk in "PowerShell/PowerShell 7 (x64).lnk" "Git/Git Bash.lnk" "Git/Git CMD.lnk"; do
+        f="$BUILD/prefix/drive_c/$SM/$lnk"
+        [ -f "$f" ] && ! cmp -s "$f" "$C/$SM/$lnk" 2>/dev/null || continue
+        mkdir -p "$(dirname "$U/Root/$SM/$lnk")"
+        cp -p "$f" "$U/Root/$SM/$lnk"
+        count=$((count + 1))
+    done
+    [ "$count" -gt 0 ] && add_part Root
 fi
 
 # --- the boot files, signed for that C: ---

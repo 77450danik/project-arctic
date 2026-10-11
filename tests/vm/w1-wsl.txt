@@ -1,8 +1,9 @@
 # WSL in Arctic (docs/updates.md): a copy of arctic-ros' ext4.vhdx on its own
 # NTFS disk, named in C:\ProgramData\Arctic\Lxss\distros.
 #   vm-test.py --boot-disk <install test disk> --uefi --disk <wsl disk> --script tests/vm/w1-wsl.txt
-# wsl.exe lists it and runs a command there, bash.exe works as Git Bash
-# (C:\Users is /c/Users, the exit code comes back), git.exe answers.
+# wsl.exe lists it and runs a command there, bash.exe names the drives as
+# Git Bash does (C:\Users is /c/Users, the exit code comes back); git is not
+# Linux's any more: "where git" finds Git for Windows or nothing.
 sleep 6
 move 27 789
 click
@@ -28,7 +29,7 @@ sleep 5
 type echo exit=%errorlevel%
 key ret
 sleep 1
-type git --version
+type where git
 key ret
 sleep 5
 type wsl -u nobody -e id
