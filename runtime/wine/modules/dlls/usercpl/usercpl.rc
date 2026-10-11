@@ -1,0 +1,65 @@
+/*
+ * User Accounts of the Control Panel: resources
+ *
+ * The Ukrainian words are Windows' own (usercpl.dll.mui, uk-UA) where it has
+ * them, in the wording of Windows 7 for User Account Control ("контроль
+ * облікових записів"); the icon is Windows' own too
+ * (SystemResources\usercpl.dll.mun, the icon DefaultIcon points at). What is
+ * about the Linux subsystem is Arctic's own (docs/linux-gate.md).
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "usercpl.h"
+
+/* @makedep: users.ico */
+IDI_USERS ICON users.ico
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                     "Control Panel Home"
+    0xf001                     "See also"
+    IDS_USER_ACCOUNTS          "User Accounts"
+    IDS_USER_ACCOUNTS_TIP      "Change user account settings and passwords for people who share this computer."
+    IDS_PASSWORD_PROTECTED     "Password protected"
+    IDS_LOCAL_ACCOUNT          "Local Account"
+    IDS_ADMINISTRATOR          "Administrator"
+    IDS_TITLE                  "Make changes to your user account"
+    IDS_MANAGE_ACCOUNTS        "Manage User Accounts"
+    IDS_UAC_SETTINGS           "Change User Account Control settings"
+    IDS_LINUX_GROUP            "Windows Subsystem for Linux"
+    IDS_LINUX_ABOUT            "A program that is given the Linux subsystem has the rights of an administrator on this computer, so Arctic asks for your consent, and for a password once after every restart."
+    IDS_LINUX_PASSWORD         "Change the password of the Linux subsystem"
+    IDS_ONE_ACCOUNT            "This computer has one account, and everything runs as it."
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                     "Домашня сторінка панелі керування"
+    0xf001                     "Див. також"
+    IDS_USER_ACCOUNTS          "Облікові записи користувачів"
+    IDS_USER_ACCOUNTS_TIP      "Змінення параметрів і паролів облікових записів користувачів на комп’ютері."
+    IDS_PASSWORD_PROTECTED     "Захищено паролем"
+    IDS_LOCAL_ACCOUNT          "Локальний обліковий запис"
+    IDS_ADMINISTRATOR          "Адміністратор"
+    IDS_TITLE                  "Внесення змін до облікового запису користувача"
+    IDS_MANAGE_ACCOUNTS        "Керування обліковими записами користувачів"
+    IDS_UAC_SETTINGS           "Змінити параметри контролю облікових записів користувачів"
+    IDS_LINUX_GROUP            "Підсистема Windows для Linux"
+    IDS_LINUX_ABOUT            "Програма, якій дозволено підсистему Linux, отримує права адміністратора на цьому комп’ютері, тому Arctic питає дозволу, а пароль — раз після кожного перезавантаження."
+    IDS_LINUX_PASSWORD         "Змінити пароль підсистеми Linux"
+    IDS_ONE_ACCOUNT            "На цьому комп’ютері один обліковий запис, і все працює від нього."
+}

@@ -543,7 +543,9 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
     ShowWindow( consent.hwnd, SW_SHOW );
     SetForegroundWindow( consent.hwnd );
     SetActiveWindow( consent.hwnd );
-    SetFocus( consent.password ? consent.password : consent.no );
+    /* the password field, or "Так", which is the default button as in Windows:
+     * Enter means it, Esc means "Ні" */
+    SetFocus( consent.password ? consent.password : consent.yes );
     play_sound();
     CreateThread( NULL, 0, reader_thread, NULL, 0, NULL );
 

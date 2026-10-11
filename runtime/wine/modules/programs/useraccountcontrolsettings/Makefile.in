@@ -1,0 +1,10 @@
+MODULE    = useraccountcontrolsettings.exe
+IMPORTS   = comctl32 user32 gdi32 advapi32 ws2_32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "User Account Control Settings"
+
+SOURCES = \
+	gate.c \
+	main.c \
+	uac.rc

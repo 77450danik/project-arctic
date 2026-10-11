@@ -54,3 +54,4 @@ pe programs/wsl main.c
 pe dlls/ntshrui main.c page.c perms.c shares.c wizard.c
 pe dlls/appinfo appinfo.c
 pe programs/consent main.c
+pe programs/useraccountcontrolsettings gate.c main.c

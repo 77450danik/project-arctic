@@ -220,15 +220,29 @@ C: змонтовано з `uid=nt` (`arctic-volume.c`): **будь-який п�
 
 ### 6. Панель керування: «Облікові записи користувачів»
 
-- `dlls/usercpl` — пункт Панелі керування Windows 7 з посиланням «Змінити
-  параметри контролю облікових записів користувачів».
+- `dlls/usercpl` — пункт Панелі керування Windows 7
+  ({60632754-C523-4B62-B45C-4172DA012619}, `uac.reg`), сторінка «Внесення
+  змін до облікового запису користувача» на спільному вигляді Панелі
+  (`PARENTSRC = ../systemcpl`, `cpanel.c`/`cpfolder.c`, як у `netcenter`):
+  обліковий запис із плиткою (значок — Windows'ів, із
+  `SystemResources\usercpl.dll.mun`), далі розділ «Підсистема Windows для
+  Linux» і посилання зі щитом «Змінити пароль підсистеми Linux» і «Змінити
+  параметри контролю облікових записів користувачів» — обидва відкривають
+  `UserAccountControlSettings.exe`. Усе, що Windows має для інших облікових
+  записів, тут не потрібне: обліковий запис один.
 - `programs/useraccountcontrolsettings` → `UserAccountControlSettings.exe`:
-  вікно Windows 7, розділ «Підсистема Windows для Linux»:
+  вікно Windows 7 (біле тіло з синьою інструкцією, сірий низ із «OK» і
+  «Скасувати»), розділ «Підсистема Windows для Linux»:
   - ☑ «Вимагати пароль для доступу до Linux»;
-  - «Змінити пароль…» — поточний / новий / підтвердження;
+  - «Змінити пароль…» — новий і підтвердження; **поточний** питає вікно UAC,
+    бо перевіряє його тільки root;
   - пояснення: пароль питається раз після кожного перезавантаження,
-    дозвіл — раз на програму.
-  Застосування — `REQ_GATE`, тобто через вікно UAC.
+    дозвіл — раз на програму;
+  - щит на «OK» і «Змінити пароль…» (`BCM_SETSHIELD`), як у Windows на всьому,
+    що веде до підвищення прав.
+  Застосування — `REQ_GATE` (`gate.c`/`gate.h` програми: ті самі кадри, що в
+  `wsl.exe`), тобто через вікно UAC; відмова — «Операцію скасовано
+  користувачем.» і параметри лишаються як були.
 
 ### 7. `host/init/arctic-init.c`: dev-консоль
 
@@ -302,10 +316,10 @@ busybox, але busybox не потрапляє в `host.sqfs`. Перевірк
 | Частина | Образ | Оновлення встановленої системи |
 |---|---|---|
 | `arctic-lxss`, `arctic-init`, `gate.c` | `ci/build-rootfs.sh` | `make-update.sh --host` (`host.sqfs`) |
-| `appinfo.dll`, `consent.exe`, `wsl.exe`, `bash.exe`, `usercpl.dll`, `UserAccountControlSettings.exe`, `powershell.exe` | `ci/build-wine.sh` → префікс | `--windows` |
+| `appinfo.dll`, `consent.exe`, `wsl.exe`, `bash.exe`, `usercpl.dll`, `useraccountcontrolsettings.exe`, `powershell.exe` | `ci/build-wine.sh` → префікс | `--windows` |
 | видалити `System32\git.exe`, `System32\sh.exe` | не класти | **нове:** список `delete` у пакеті |
 | Git for Windows, gh, PowerShell 7 у `Program Files` | `ci/build-rootfs.sh` / `make-windows-img.sh` | **нове:** дерево `Root\` поверх `C:\` (не лише `Windows\`) |
-| реєстр: служба `Appinfo` і група `netsvcs` (`uac.reg`), PATH, пункт Панелі керування, `wsl.reg` | `runtime/registry/*.reg` | **нове:** `Registry\*.reg`, імпортуються раз при першому вході після оновлення (userinit), потім видаляються |
+| реєстр: служба `Appinfo`, група `netsvcs` і пункт «Облікові записи користувачів» (`uac.reg`), PATH, пункт Панелі керування, `wsl.reg` | `runtime/registry/*.reg` | **нове:** `Registry\*.reg`, імпортуються раз при першому вході після оновлення (userinit), потім видаляються |
 
 Нове в пакеті оновлення: `Root\`, `delete`, `Registry\`. Усе, що замінено
 або видалено, іде в `Host\Previous` — «Arctic, undo the last update»
@@ -349,7 +363,7 @@ busybox, але busybox не потрапляє в `host.sqfs`. Перевірк
 | 2 | Гейт в `arctic-lxss`: хто питає, дозволи, `REQ_GATE` | 🔨 2026-10-12: `peer_pid()` через `/proc/net/tcp`; предки через новий сокет wineserver (`runtime/wine/patches/0090…`, бо предки по `/proc` — завжди `arctic-init`), не через `/proc/<pid>/stat`; `origin()`/системні процеси/`wsl.exe` як запасний варіант; таблиця дозволів і прапорець пароля в спільній пам'яті, одне вікно consent за раз (`flock`); `REQ_GATE` (`status`/`password`/`require`); оболонки (cmd, pwsh, conhost) між програмою і `wsl.exe` пропускаються — агент питається раз; процеси дистрибутивів — без питань; UAC лише для гейт-дистрибутива (`distro=` у захищеному `gate.conf`, за іменем або тим самим VHDX), інші — вільно, як у Windows (до переходу на ВМ WSL вони теж root-chroot на хості: тимчасово, за рішенням 2026-10-12); захищена тека — `/run/arctic/gate` (tmpfs, root 0700) з `store` всередині, бо C: змонтовано для `nt`; 2026-10-12 вікно просить служба Appinfo (етап 3), а не fork+Wine від root; у VM не перевірено |
 | 3 | UAC як у Windows: служба `Appinfo` + `consent.exe` | 🔨 2026-10-12: `appinfo.dll` — DLL служби в `svchost -k netsvcs` (`runtime/registry/uac.reg`), слухає 127.0.0.1 з токеном у `C:\ProgramData\Arctic\Appinfo\session`, одне вікно за раз, запускає `System32\consent.exe` вбудованим (`WINEDLLOVERRIDES`); `consent.exe` — вікно Windows 7 (щит, затемнений стіл, `SetWindowBand`, поле пароля, `wait` після п'яти помилок, звук `WindowsUAC`); `arctic-lxss` більше не запускає Wine від root, а стукає до служби й перевіряє, що на іншому кінці `svchost.exe` від `services.exe`; зібрано (mingw + gcc), у VM не перевірено |
 | 4 | `wsl.exe`: без `git.exe`/`sh.exe`, повідомлення про відмову | 🔨 2026-10-11: `git.exe` прибрано; `wsl.exe` знає кадр відмови (`F_DENIED` → текст `ERROR_CANCELLED` системи, код 1) |
-| 5 | «Облікові записи користувачів» + `UserAccountControlSettings.exe` | ⏳ |
+| 5 | «Облікові записи користувачів» + `UserAccountControlSettings.exe` | 🔨 2026-10-12: `dlls/usercpl` (сторінка Панелі на спільному вигляді `systemcpl`, значок і тексти Windows' uk-UA з `usercpl.dll.mun`/`.mui`) і `programs/useraccountcontrolsettings` (вікно Windows 7, прапорець пароля, зміна пароля, щити, клієнт `REQ_GATE`); реєстрація в `uac.reg`; зібрано, у VM не перевірено |
 | 6 | dev-консоль за паролем | 🔨 2026-10-12: `ttyS0` питає пароль гейту (`gate_check_password`) перед оболонкою, без пароля — Enter; три спроби, потім 30 с, далі знову; не перевірено у VM |
 | 7 | Git for Windows, gh, PowerShell 7, `powershell.exe` → pwsh | 🔨 2026-10-11: `ci/install-windows-tools.sh` (перевірено окремо: 415 + 247 + 41 МБ, ярлики в «Пуску»), `powershell.exe` запускає pwsh (перевірено копією: команда без ключа, `-Command -`, код виходу), PATH дописує `userinit`; у VM ще не перевірено |
 | 8 | Пакет оновлення: `Root\`, `delete` (реєстр уже їде з `host.sqfs`: `reapply_registry`) | 🔨 2026-10-11: initrd (`install_tree`, `install_deletions`, `undo_tree`) і `make-update.sh --root`; у VM ще не перевірено |

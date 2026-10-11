@@ -1,0 +1,92 @@
+/*
+ * UserAccountControlSettings.exe: resources
+ *
+ * The Ukrainian words are Windows' own where it has them (usercpl.dll.mui and
+ * UserAccountControlSettings.dll.mui, uk-UA), in the wording of Windows 7,
+ * which the rest of Arctic's User Account Control uses ("контроль облікових
+ * записів", not Windows 10's "служба захисту користувачів"). What is about
+ * the Linux subsystem is Arctic's own (docs/linux-gate.md).
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "resource.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TITLE             "User Account Control Settings"
+    IDS_HEADING           "Choose how Arctic asks for the Linux subsystem"
+    IDS_ABOUT_UAC         "User Account Control helps prevent potentially harmful programs from making changes to your computer."
+    IDS_ABOUT_LINUX       "The Linux subsystem gives a program the rights of an administrator on this computer, so Arctic asks for your consent every time a program wants it."
+    IDS_GROUP             "Windows Subsystem for Linux"
+    IDS_REQUIRE_PASSWORD  "&Require a password for access to Linux"
+    IDS_WHEN_ASKED        "The password is asked once after every restart; consent is asked once for every program that wants Linux."
+    IDS_CHANGE_PASSWORD   "Change &password..."
+    IDS_OK                "OK"
+    IDS_CANCEL            "Cancel"
+    IDS_NO_SUBSYSTEM      "The Windows Subsystem for Linux is not running, so its settings cannot be changed."
+    IDS_NOT_CHANGED       "The settings were not changed."
+    IDS_PASSWORDS_DIFFER  "The passwords you typed do not match. Retype the new password in both text boxes."
+    IDS_PASSWORD_EMPTY    "Type the new password."
+    IDS_PASSWORD_NOTE     "The password set now is asked for in the User Account Control window when you click OK."
+}
+
+IDD_PASSWORD DIALOGEX 0, 0, 260, 118
+STYLE DS_SHELLFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Change Password"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "&New password:", -1, 10, 12, 100, 8
+    EDITTEXT IDC_NEW_PASSWORD, 110, 10, 140, 13, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "&Confirm new password:", -1, 10, 32, 100, 8
+    EDITTEXT IDC_CONFIRM_PASSWORD, 110, 30, 140, 13, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "", IDC_PASSWORD_NOTE, 10, 54, 240, 28
+    DEFPUSHBUTTON "OK", IDOK, 142, 94, 52, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 198, 94, 52, 14
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TITLE             "Параметри контролю облікових записів користувачів"
+    IDS_HEADING           "Виберіть, як Arctic питатиме дозволу на доступ до Linux"
+    IDS_ABOUT_UAC         "Контроль облікових записів допомагає перешкоджати потенційно шкідливим програмам вносити зміни на комп'ютері."
+    IDS_ABOUT_LINUX       "Підсистема Linux дає програмі права адміністратора на цьому комп'ютері, тому Arctic питає дозволу щоразу, коли програма її просить."
+    IDS_GROUP             "Підсистема Windows для Linux"
+    IDS_REQUIRE_PASSWORD  "&Вимагати пароль для доступу до Linux"
+    IDS_WHEN_ASKED        "Пароль питають раз після кожного перезавантаження, а дозвіл — раз для кожної програми, що просить Linux."
+    IDS_CHANGE_PASSWORD   "Змінити &пароль…"
+    IDS_OK                "OK"
+    IDS_CANCEL            "Скасувати"
+    IDS_NO_SUBSYSTEM      "Підсистема Windows для Linux не запущена, тому її параметри змінити не вдалося."
+    IDS_NOT_CHANGED       "Параметри не змінено."
+    IDS_PASSWORDS_DIFFER  "Введені паролі не збігаються. Введіть новий пароль в обох текстових полях ще раз."
+    IDS_PASSWORD_EMPTY    "Введіть новий пароль."
+    IDS_PASSWORD_NOTE     "Поточний пароль запитає вікно контролю облікових записів, коли ви натиснете OK."
+}
+
+IDD_PASSWORD DIALOGEX 0, 0, 290, 122
+STYLE DS_SHELLFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Змінити пароль"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "&Новий пароль:", -1, 10, 12, 130, 8
+    EDITTEXT IDC_NEW_PASSWORD, 142, 10, 138, 13, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "&Підтвердження пароля:", -1, 10, 32, 130, 8
+    EDITTEXT IDC_CONFIRM_PASSWORD, 142, 30, 138, 13, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "", IDC_PASSWORD_NOTE, 10, 54, 270, 30
+    DEFPUSHBUTTON "OK", IDOK, 166, 98, 56, 14
+    PUSHBUTTON "Скасувати", IDCANCEL, 226, 98, 56, 14
+}

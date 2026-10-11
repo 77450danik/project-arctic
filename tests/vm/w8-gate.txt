@@ -1,0 +1,60 @@
+# The Linux gate (docs/linux-gate.md): the consent window of the Application
+# Information service, the password once a boot, consent once a program.
+#   vm-test.py --boot-disk <install test disk> --uefi --disk <wsl disk> --script tests/vm/w8-gate.txt
+# What to see on the shots: w8-gate-consent — the window of User Account
+# Control with the password field, named after cmd.exe; w8-gate-wrong — "Неправильний
+# пароль" with the window still up; w8-gate-id — uid=0 in the console and the
+# second "wsl -e id" of the same console with no window at all; w8-gate-second —
+# a new console asks again, without the password field; w8-gate-cancelled —
+# "Операцію скасовано користувачем." and the exit code 1.
+sleep 6
+move 27 789
+click
+sleep 2
+move 90 711
+click                         # Виконати...
+sleep 3
+type cmd
+key ret
+sleep 4
+type wsl -d arctic-build -e id
+key ret
+sleep 8
+shot w8-gate-consent          # the consent window, with the password field
+type 1111
+key ret
+sleep 4
+shot w8-gate-wrong            # "Неправильний пароль", the window stays
+type 0000
+key ret
+sleep 10
+type wsl -d arctic-build -e id
+key ret
+sleep 8
+shot w8-gate-id               # uid=0 twice, the second time without a window
+# a program that has no grant of its own asks again, and the password of this
+# boot is not asked for a second time
+move 27 789
+click
+sleep 2
+move 90 711
+click
+sleep 3
+type cmd
+key ret
+sleep 4
+type wsl -d arctic-build -e id
+key ret
+sleep 8
+shot w8-gate-second           # the window again, no password field
+key esc                       # "Ні"
+sleep 4
+type echo exit=%errorlevel%
+key ret
+sleep 2
+shot w8-gate-cancelled        # "Операцію скасовано користувачем.", exit=1
+# the distributions that are not the gate ask nothing, as WSL on Windows does
+type wsl -d arctic-ros -e uname -sr
+key ret
+sleep 25
+shot w8-gate-free

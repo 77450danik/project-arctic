@@ -35,3 +35,27 @@ REGEDIT4
 "ConsentPromptBehaviorAdmin"=dword:00000002
 "ConsentPromptBehaviorUser"=dword:00000003
 "PromptOnSecureDesktop"=dword:00000001
+
+; "Облікові записи користувачів" of the Control Panel (usercpl.dll): a shell
+; folder Explorer browses into, as {60632754-...} is in Windows, with the
+; link to the settings of User Account Control. Category 9 is Windows' own
+; for User Accounts, and the icon is the one DefaultIcon points at there.
+[HKEY_CLASSES_ROOT\CLSID\{60632754-C523-4B62-B45C-4172DA012619}]
+@="User Accounts"
+"LocalizedString"="@C:\\Windows\\System32\\usercpl.dll,-1"
+"InfoTip"="@C:\\Windows\\System32\\usercpl.dll,-2"
+"System.ApplicationName"="Microsoft.UserAccounts"
+"System.ControlPanel.Category"="9"
+
+[HKEY_CLASSES_ROOT\CLSID\{60632754-C523-4B62-B45C-4172DA012619}\DefaultIcon]
+@="C:\\Windows\\System32\\usercpl.dll,-1"
+
+[HKEY_CLASSES_ROOT\CLSID\{60632754-C523-4B62-B45C-4172DA012619}\InProcServer32]
+@="C:\\Windows\\System32\\usercpl.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\CLSID\{60632754-C523-4B62-B45C-4172DA012619}\ShellFolder]
+"Attributes"=dword:28000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{60632754-C523-4B62-B45C-4172DA012619}]
+@="User Accounts"
