@@ -204,11 +204,46 @@ Wine (`runtime/wine/patches`) — окремий етап із тестом
 `tests/vm/w8-git-bash.txt` (fork, конвеєри, `mktemp`, `git` з bash, коди
 виходу).
 
-До того `CLAUDE_CODE_GIT_BASH_PATH` лишається на `System32\bash.exe`, але
-вже **під гейтом**: перший виклик Bash процесом агента — вікно UAC,
-людина дозволяє, далі цей процес працює без питань (вимога 7). Коли Git
-Bash запрацює — змінна переходить на нього, і агенти в Linux не ходять
-зовсім.
+**Рішення 2026-10-11: агенти — як у Windows одразу, без перехідного
+періоду.** `CLAUDE_CODE_GIT_BASH_PATH` із системного оточення зникає
+(`runtime/registry/wsl.reg`): Claude Code, як у Windows, сам знаходить Git
+Bash за встановленим Git for Windows, а поки той не працює — працює через
+PowerShell. Linux для агента — лише явний `wsl …` під гейтом, як у
+Windows 10. Перевірено 2026-10-11 у живій системі: PowerShell 7,
+`git.exe` і `gh.exe` для Windows (status, log, commit, fetch, push) — без
+Linux.
+
+Пастка, знайдена тоді ж: `gh auth setup-git` кличе `git` з PATH, а там
+`System32\git.exe` — міст у Linux, тож налаштування лягло в `.gitconfig`
+дистрибутиву. Ще одна причина прибрати міст (етап 4).
+
+### 9. Хост без Linux user mode (вимога 2026-10-11)
+
+Від Linux лишаються ядро, модулі, прошивки й **драйвери користувацького
+режиму** — те, що у Windows є UMD: Mesa, NVIDIA userspace, Vulkan-завантажувач,
+alsa-lib з UCM, libinput/libevdev, бібліотеки unix-частини Wine. Плюс наші
+власні програми хоста (`arctic-*`) і сам Wine (`wineserver`, завантажувач).
+Утиліт, оболонок і «системи» Linux на хості немає. Рішення 2026-10-11 —
+**етапно**:
+
+| Що зараз викликає хост | Чим замінюється | Етап |
+|---|---|---|
+| `pacstrap` усього списку пакетів | замикання ELF-залежностей наших програм + allowlist даних (як і задумано в `PLAN.md`, розділ 5) | 11 |
+| `busybox ip` (адреси, маршрути) | netlink у `arctic-init` | 12 |
+| `busybox udhcpc` + `udhcpc.script` | власний DHCP-клієнт (`host/init/dhcp.c`); пізніше — служба `Dhcp` у Windows-світі через hostd | 12 |
+| `amixer`, `alsactl init` | alsa-lib mixer API в `arctic-init` | 13 |
+| `modprobe`, `modinfo` (kmod) | libkmod у `arctic-init`, `arctic-gpu`, `arctic-lxss`, `arctic-smb` | 13 |
+| `udevadm trigger` | запис `add`/`change` у `/sys/.../uevent` самим `arctic-init` | 13 |
+| `busybox sh` на `ttyS0` (dev) | dev-консоль лишається лише в dev-образі, за паролем (розділ 6); у звичайному образі busybox немає. Налагодження живої системи — через WSL (дистрибутив бачить хост через `/proc/1/root`), теж під гейтом | 14 |
+| `/bin/sh`, `/bin/bash` у `arctic-lxss` | беруться з дистрибутиву (chroot), хосту не потрібні | 14 |
+| `systemd-udevd` + hwdb | **лишається** невидимим бекендом (PnP); власний менеджер пристроїв — окремий етап після цього плану | — |
+| `iwd` + `dbus-daemon` | **лишаються** невидимими бекендами Wi-Fi; власний WPA у `Wlansvc` — окремий етап | — |
+| `qemu-nbd` | частина WSL: стартує лише `arctic-lxss` для дистрибутиву | — |
+
+Збірка образу (`mkprefix.sh`, `register.sh`) і далі йде в контейнері з
+busybox, але busybox не потрапляє в `host.sqfs`. Перевірка етапу 11:
+`unsquashfs -l host.sqfs` без `bin/sh`, `busybox`, `coreutils`, `pacman`,
+`python`; усе з таблиці `PLAN.md` 4 працює у VM.
 
 ## Доставка: образ і запущена система
 
@@ -239,7 +274,8 @@ Bash запрацює — змінна переходить на нього, і 
    питається раз.
 7. `dir C:\Windows\System32\config\Host\Gate` з Windows — порожньо;
    запис туди — відмова.
-8. Агент: `claude.exe` → `bash.exe` → одне вікно на процес агента.
+8. Агент: інструменти Bash (Git Bash) і PowerShell без жодного вікна;
+   `wsl …` від агента → одне вікно на процес агента.
 9. `wsl.py` з дистрибутиву (збірка) — без вікон.
 10. dev-образ: `ttyS0` питає пароль; реліз: консолі немає.
 11. `git`, `gh`, `powershell.exe` з cmd — Windows-версії
@@ -260,8 +296,13 @@ Bash запрацює — змінна переходить на нього, і 
 | 7 | Git for Windows, gh, PowerShell 7, `powershell.exe` → pwsh | ⏳ |
 | 8 | Пакет оновлення: `Root\`, `delete`, `Registry\` | ⏳ |
 | 9 | Збірка, перевірка у VM, оновлення встановленої системи | ⏳ |
-| 10 | Патч Wine для MSYS2/Cygwin (запуск дочірніх процесів, FAST_CWD) — вимога 11; `CLAUDE_CODE_GIT_BASH_PATH` → Git Bash | ⏳ |
+| 10 | Патч Wine для MSYS2/Cygwin (запуск дочірніх процесів, FAST_CWD) — вимога 11; Git Bash для агентів, як у Windows | ⏳ |
+| 11 | `host.sqfs` — лише замикання залежностей + allowlist | ⏳ |
+| 12 | netlink і власний DHCP-клієнт замість busybox | ⏳ |
+| 13 | alsa-lib, libkmod, uevent замість amixer/alsactl/modprobe/udevadm | ⏳ |
+| 14 | busybox лише в dev-образі; shell хосту не потрібен | ⏳ |
 
-Етап 10 іде паралельно з 1–6: від нього залежить, чи агентам взагалі
-знадобиться Linux, і він виправляє сумісність для всіх програм на
-MSYS2/Cygwin, а не лише для Git Bash.
+Порядок роботи: спершу етап 10 і 7 (агенти й люди одразу отримують
+Windows-інструменти), далі гейт (1–6), потім пакет оновлення (8) і хост
+(11–14), і все разом — збірка та перевірка (9). Етап 10 виправляє
+сумісність для всіх програм на MSYS2/Cygwin, а не лише для Git Bash.
