@@ -228,7 +228,10 @@ static void relayout( HWND dialog )
     GetDlgItemTextW( dialog, IDC_MESSAGE, message, ARRAY_SIZE(message) );
     no_details = consent.details ? 0 : DETAILS_DU * du / 8;
     no_password = consent.password_needed ? 0 : PASSWORD_DU * du / 8;
-    no_message = message[0] ? 0 : MESSAGE_DU * du / 8;
+    /* while a password is asked for, the line for "Неправильний пароль." is
+     * kept even when it is empty: the window then does not jump about between
+     * attempts, and the box under the hands of the person stays where it was */
+    no_message = (message[0] || consent.password_needed) ? 0 : MESSAGE_DU * du / 8;
 
     for (unsigned int i = 0; i < ARRAY_SIZE(details_rows); i++) show( dialog, details_rows[i], consent.details );
     show( dialog, IDC_PASSWORD_PROMPT, consent.password_needed );
