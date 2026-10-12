@@ -5,6 +5,9 @@
 #   PowerShell 7            C:\Program Files\PowerShell\7   (powershell.exe runs it)
 #   Git for Windows         C:\Program Files\Git            (PortableGit: git, Git Bash)
 #   GitHub CLI              C:\Program Files\GitHub CLI
+#   Python                  C:\Program Files\Python314      (python.org's NuGet build:
+#                                                            the full CPython with pip,
+#                                                            no bootstrapper to run)
 # userinit puts their folders on the system PATH (programs/userinit), as their
 # installers would. Each download is checked against its SHA-256.
 #
@@ -26,6 +29,12 @@ GIT_SHA256=eceb5e061aa90df2f69ddd3e90f0030e1b8037a7829934bc40e4be1caa1accc1
 GH_VERSION=2.102.0
 GH_URL=https://github.com/cli/cli/releases/download/v$GH_VERSION/gh_${GH_VERSION}_windows_amd64.zip
 GH_SHA256=ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4
+# 3.14 rather than the newest 3.15.0: binary wheels catch up with a new
+# minor version months after it comes out
+PYTHON_VERSION=3.14.8
+PYTHON_URL=https://api.nuget.org/v3-flatcontainer/python/$PYTHON_VERSION/python.$PYTHON_VERSION.nupkg
+PYTHON_SHA256=ce85f674d9a63029f709cbff7a3da1c6bc5bfcfaefdd9999f98fa0290470c454
+PYTHON_DIR=Python$(echo "$PYTHON_VERSION" | cut -d. -f1,2 | tr -d .)
 
 fetch() { # url sha256 -> path of the checked file
     local file="$DL/$(basename "$1")"
@@ -36,8 +45,8 @@ fetch() { # url sha256 -> path of the checked file
     echo "$file"
 }
 
-rm -rf "$PF/PowerShell/7" "$PF/Git" "$PF/GitHub CLI"
-mkdir -p "$PF/PowerShell/7" "$PF/Git" "$PF/GitHub CLI"
+rm -rf "$PF/PowerShell/7" "$PF/Git" "$PF/GitHub CLI" "$PF/$PYTHON_DIR"
+mkdir -p "$PF/PowerShell/7" "$PF/Git" "$PF/GitHub CLI" "$PF/$PYTHON_DIR"
 
 7z x -y -o"$PF/PowerShell/7" "$(fetch "$PWSH_URL" "$PWSH_SHA256")" >/dev/null
 7z x -y -o"$PF/Git" "$(fetch "$GIT_URL" "$GIT_SHA256")" >/dev/null
@@ -46,12 +55,20 @@ GH_TMP=$(mktemp -d)
 cp -a "$GH_TMP/bin/gh.exe" "$PF/GitHub CLI/"
 cp -a "$GH_TMP/LICENSE" "$PF/GitHub CLI/LICENSE.txt" 2>/dev/null || true
 rm -rf "$GH_TMP"
-ls -l "$PF/PowerShell/7/pwsh.exe" "$PF/Git/cmd/git.exe" "$PF/Git/bin/bash.exe" "$PF/GitHub CLI/gh.exe"
+# the package is a zip whose tools/ is the installed Python
+PY_TMP=$(mktemp -d)
+7z x -y -o"$PY_TMP" "$(fetch "$PYTHON_URL" "$PYTHON_SHA256")" 'tools/*' >/dev/null
+cp -a "$PY_TMP/tools/." "$PF/$PYTHON_DIR/"
+rm -rf "$PY_TMP"
+ls -l "$PF/PowerShell/7/pwsh.exe" "$PF/Git/cmd/git.exe" "$PF/Git/bin/bash.exe" "$PF/GitHub CLI/gh.exe" \
+    "$PF/$PYTHON_DIR/python.exe"
 
 # Start, as their installers leave it
 programs="$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs"
-mkdir -p "$programs/PowerShell" "$programs/Git"
+python_menu="Python $(echo "$PYTHON_VERSION" | cut -d. -f1,2)"
+mkdir -p "$programs/PowerShell" "$programs/Git" "$programs/$python_menu"
 python3 "$ROOT/ci/mklnk.py" "$programs/PowerShell/PowerShell 7 (x64).lnk" 'C:\Program Files\PowerShell\7\pwsh.exe'
 python3 "$ROOT/ci/mklnk.py" "$programs/Git/Git Bash.lnk" 'C:\Program Files\Git\git-bash.exe' --cd-to-home
 python3 "$ROOT/ci/mklnk.py" "$programs/Git/Git CMD.lnk" 'C:\Program Files\Git\git-cmd.exe' --cd-to-home
-echo "PowerShell $PWSH_VERSION, Git for Windows $GIT_VERSION, GitHub CLI $GH_VERSION"
+python3 "$ROOT/ci/mklnk.py" "$programs/$python_menu/$python_menu (64-bit).lnk" "C:\\Program Files\\$PYTHON_DIR\\python.exe"
+echo "PowerShell $PWSH_VERSION, Git for Windows $GIT_VERSION, GitHub CLI $GH_VERSION, Python $PYTHON_VERSION"

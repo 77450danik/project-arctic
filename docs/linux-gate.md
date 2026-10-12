@@ -277,6 +277,7 @@ Linux:» (`gate.c`); якщо пароль вимкнено — «Натисні
 | Git for Windows (PortableGit 2.56) | `C:\Program Files\Git`, `cmd\` на PATH | перевірено під Arctic: `git log/status`, https-remote, `!sh`-аліаси |
 | GitHub CLI для Windows | `C:\Program Files\GitHub CLI` на PATH | вхід — той самий обліковий запис, що й у дистрибутиві |
 | PowerShell 7 | в образ (зараз — `install-pwsh.sh`) | `powershell.exe` → pwsh 7 замість заглушки Wine (`docs/updates.md`, етап 4): агенти кличуть саме `powershell.exe` |
+| Python 3.14 для Windows | `C:\Program Files\Python314` і `Scripts\` на PATH | збірка python.org у пакеті NuGet: повний CPython з pip і venv, без інсталятора; `tools/vm-test.py` і скрипти `tools/` ідуть на ньому. 3.14, а не щойно випущена 3.15: колеса бінарних пакетів наздоганяють нову версію місяцями |
 | cmd.exe | без змін | перевірити ConPTY для терміналів IDE (Antigravity) |
 
 ### 9. Інструмент Bash у Claude Code

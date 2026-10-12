@@ -28,7 +28,8 @@ static const WCHAR winlogon_key[] = L"Software\\Microsoft\\Windows NT\\CurrentVe
 static const WCHAR environment_key[] = L"System\\CurrentControlSet\\Control\\Session Manager\\Environment";
 
 /* under Program Files */
-static const WCHAR *const tool_dirs[] = { L"PowerShell\\7", L"Git\\cmd", L"GitHub CLI" };
+static const WCHAR *const tool_dirs[] = { L"PowerShell\\7", L"Git\\cmd", L"GitHub CLI",
+                                          L"Python314", L"Python314\\Scripts" };
 
 /* whether the list holds the folder, its variables expanded, with or
  * without a closing backslash */
