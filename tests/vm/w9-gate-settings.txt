@@ -2,12 +2,12 @@
 # User Account Control (docs/linux-gate.md, component 6):
 #   vm-test.py --usb --uefi --disk out/test-local/wsl-disk.img --script tests/vm/w9-gate-settings.txt
 # What to see on the shots: w9-users-page — the page "Внесення змін до
-# облікового запису користувача" with the account's tile, the section
-# "Підсистема Windows для Linux" and the two shield links; w9-uac-settings —
-# the window of the settings with the checkbox and the shield on OK;
-# w9-uac-consent — the consent window asking for the password of the gate,
-# which changing these settings always asks for; w9-no-password — a console
-# gets consent without a password field once the password is off.
+# облікового запису користувача" with the account, its tile and the section
+# "Підсистема Windows для Linux" with the two shield links; w9-uac-settings —
+# the settings, an ordinary dialog, with the password box ticked; w9-uac-consent
+# — the consent window asking for the password of the gate, which changing
+# these settings always asks for; w9-no-password — a console then gets consent
+# with no password field, because the password is no longer required.
 # (A comment after "type" would be typed in: they go on their own line.)
 sleep 5
 move 27 789
@@ -17,23 +17,22 @@ sleep 3
 move 330 679
 click
 sleep 3
-type control /name Microsoft.UserAccounts
+type explorer shell:::{60632754-C523-4B62-B45C-4172DA012619}
 key ret
-sleep 12
+sleep 20
 shot w9-users-page
-# "Змінити параметри контролю облікових записів користувачів", the lower of
-# the two shield links of the page
-move 300 430
+# "Змінити параметри контролю облікових записів користувачів" of the page
+move 630 351
 click
-sleep 10
+sleep 12
 shot w9-uac-settings
-# the checkbox of the password, then OK: the gate asks for the password set now
-move 90 300
+# the box of the password, then OK: the gate asks for the password set now
+move 437 408
 click
 sleep 2
-move 420 390
+move 740 530
 click
-sleep 10
+sleep 12
 shot w9-uac-consent
 type 0000
 key ret
