@@ -1,0 +1,39 @@
+# Stage 0 of docs/browser.md: Internet Explorer on our own engine.
+#
+# python tools/vm-test.py --script tests/vm/b0-ie-window.txt --wait 5
+#
+# (no --gpu yet: vm-test.py's virgl path does not work, so in the VM the page
+# goes through lavapipe or GDI, and the status bar tells which.)
+#
+# What the shots must show:
+#   b0-ie-start   - the frame (IEFrame): back and forward, the address bar
+#                   with about:arctic, the Go button, the status bar; and
+#                   inside it the engine's window, which drew the heading in
+#                   Arial and the paragraphs in Times New Roman. The right
+#                   part of the status bar says "Рушій: Vulkan" on the GPU
+#                   path and "Рушій: GDI" on the software one - both are a
+#                   pass, and which one it says is the point of the shot.
+#   b0-ie-address - the address the frame handed the engine, shown on the
+#                   page in Courier New: the way from the frame through the
+#                   engine to the screen works.
+#   b0-ie-resized - the window maximized by a double click on its caption:
+#                   the page laid out again for the whole screen, the
+#                   swapchain remade, nothing left of the old size.
+sleep 25
+shot b0-desktop
+key win-r
+sleep 2
+type iexplore
+key ret
+sleep 10
+shot b0-ie-start
+# the address bar has the focus and its text is selected, so this replaces it
+type example.com
+key ret
+sleep 4
+shot b0-ie-address
+# a bigger window: the layout and the swapchain follow the size
+move 400 14
+dblclick
+sleep 3
+shot b0-ie-resized

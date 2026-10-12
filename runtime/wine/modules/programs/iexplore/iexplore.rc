@@ -1,0 +1,55 @@
+/*
+ * iexplore.exe: resources
+ *
+ * The frame of the browser: the window class is IEFrame and the window of
+ * the page is "Internet Explorer_Server", as in Windows, so what looks for
+ * the browser finds it where it is used to.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "resource.h"
+
+/* the visual style of the system, and the scale of the monitor under the
+ * window: the shell is per-monitor v2 too (docs/dpi.md) */
+/* @makedep: iexplore.manifest */
+1 24 iexplore.manifest
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TITLE        "Internet Explorer"
+    IDS_READY        "Done"
+    IDS_GO           "Go"
+    IDS_BACK         "Back"
+    IDS_FORWARD      "Forward"
+    IDS_ADDRESS      "Address"
+    IDS_ON_VULKAN    "Engine: Vulkan"
+    IDS_ON_GDI       "Engine: GDI"
+    IDS_TITLE_FORMAT "%s - Internet Explorer"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_TITLE        "Internet Explorer"
+    IDS_READY        "Готово"
+    IDS_GO           "Перейти"
+    IDS_BACK         "Назад"
+    IDS_FORWARD      "Вперед"
+    IDS_ADDRESS      "Адреса"
+    IDS_ON_VULKAN    "Рушій: Vulkan"
+    IDS_ON_GDI       "Рушій: GDI"
+    IDS_TITLE_FORMAT "%s - Internet Explorer"
+}

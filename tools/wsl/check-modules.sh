@@ -18,7 +18,7 @@ unix() {
     for f in "$@"; do
         gcc -c -o "$OUT/$(basename "$dir")-${f%.c}.o" -fPIC -O2 -Wall -Wextra -Wno-unused-parameter \
             -Wno-sign-compare -Wno-missing-field-initializers \
-            -I"$MODULES/$dir" -I"$CONFIG" -I"$WINE_INC" -D__WINESRC__ -DWINE_UNIX_LIB -D_GNU_SOURCE \
+            -I"$MODULES/$dir" -I"$MODULES/include" -I"$CONFIG" -I"$WINE_INC" -D__WINESRC__ -DWINE_UNIX_LIB -D_GNU_SOURCE \
             $(pkg-config --cflags $pkgs) "$MODULES/$dir/$f"
         echo "ok: $dir/$f"
     done
@@ -29,14 +29,14 @@ pe() {
     local dir=$1; shift
     for f in "$@"; do
         x86_64-w64-mingw32-gcc -c -o "$OUT/$(basename "$dir")-${f%.c}-pe.o" -O2 -Wall -Wno-unused-parameter \
-            -fno-builtin -I"$MODULES/$dir" -I"$CONFIG" -I"$WINE_INC" -I"$WINE_INC/msvcrt" -D__WINESRC__ \
+            -fno-builtin -I"$MODULES/$dir" -I"$MODULES/include" -I"$CONFIG" -I"$WINE_INC" -I"$WINE_INC/msvcrt" -D__WINESRC__ \
             -D_WIN32_WINNT=0x0a00 -D_UCRT -nostdinc -isystem "$(x86_64-w64-mingw32-gcc -print-file-name=include)" \
             "$MODULES/$dir/$f"
         echo "ok: $dir/$f (PE)"
     done
 }
 
-unix dlls/dwmcore "wayland-server egl glesv2 gbm" kms.c compositor.c dmabuf.c gpuread.c linux-dmabuf-v1-protocol.c xdg-shell-protocol.c viewporter-protocol.c \
+unix dlls/dwmcore "wayland-server vulkan gbm" kms.c compositor.c dmabuf.c vk.c linux-dmabuf-v1-protocol.c xdg-shell-protocol.c viewporter-protocol.c \
     xdg-output-unstable-v1-protocol.c arctic-shell-v1-protocol.c arctic-display-v1-protocol.c
 pe dlls/dwmcore dwmcore.c
 unix dlls/winsrv "libinput libudev" libinput.c
@@ -55,3 +55,5 @@ pe dlls/ntshrui main.c page.c perms.c shares.c wizard.c
 pe dlls/appinfo appinfo.c
 pe programs/consent main.c
 pe programs/useraccountcontrolsettings gate.c main.c
+pe dlls/arctichtml main.c view.c display.c raster.c present.c
+pe programs/iexplore main.c

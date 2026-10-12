@@ -48,6 +48,11 @@ REGEDIT4
 "shlwapi"="native,builtin"
 "comctl32"="native,builtin"
 "winemenubuilder.exe"=""
+; Wine's mshtml is a shell over wine-gecko, which this image does not carry:
+; a program that asked for it got the "download Gecko" box, which has hung
+; the start before (host/init/arctic-init.c). Off until our own mshtml
+; stands on our engine (docs/browser.md, stage 10).
+"mshtml"=""
 
 [HKEY_CURRENT_USER\Software\Wine\WineDbg]
 "ShowCrashDialog"=dword:00000000

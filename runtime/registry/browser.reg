@@ -1,0 +1,17 @@
+REGEDIT4
+
+; Internet Explorer: the system's own browser on the system's own engine
+; (docs/browser.md). Nothing here claims http, https or a file type: Chrome
+; keeps them until the engine is hardened (docs/browser.md, stage 11), and
+; this only makes the program findable the way Windows makes it findable.
+;
+; There is no "Version" value on purpose: the engine is ours and not
+; Trident, and a program that asks which Internet Explorer this is should
+; not be told a number that is not true.
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\iexplore.exe]
+@="C:\\Windows\\System32\\iexplore.exe"
+"Path"="C:\\Windows\\System32"
+
+[HKEY_CURRENT_USER\Software\Microsoft\Internet Explorer\Main]
+"Start Page"="about:arctic"

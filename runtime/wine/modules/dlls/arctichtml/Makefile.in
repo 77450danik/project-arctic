@@ -1,0 +1,12 @@
+MODULE    = arctichtml.dll
+IMPORTLIB = arctichtml
+IMPORTS   = user32 gdi32
+
+VER_FILEDESCRIPTION_STR = "Arctic web engine"
+
+SOURCES = \
+	display.c \
+	main.c \
+	present.c \
+	raster.c \
+	view.c

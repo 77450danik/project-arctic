@@ -1,0 +1,7 @@
+@ stdcall ArcticHtmlCreateView(long ptr ptr)
+@ stdcall ArcticHtmlDestroyView(ptr)
+@ stdcall ArcticHtmlSetRect(ptr ptr)
+@ stdcall ArcticHtmlGetWindow(ptr)
+@ stdcall ArcticHtmlNavigate(ptr wstr)
+@ stdcall ArcticHtmlGetTitle(ptr ptr long)
+@ stdcall ArcticHtmlOnGpu(ptr)
