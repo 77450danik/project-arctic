@@ -30,8 +30,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument("iso", nargs="?", default=os.path.join(ROOT, "out", "arctic-local.iso"))
 parser.add_argument("--wait", type=int, default=20, help="seconds after NT is up, before the screenshot")
 parser.add_argument("--append", default="")
-parser.add_argument("--timeout", type=int, default=240)
+parser.add_argument("--timeout", type=int, default=60,
+                    help="seconds to wait for the desktop: a normal start takes 15 to 20")
 parser.add_argument("--headless", action="store_true", help="no window (the screenshot is still taken)")
+parser.add_argument("--tcg", action="store_true",
+                    help="emulate the processor instead of using the hypervisor: slow, but the only way from "
+                         "inside Arctic until WinHvPlatform serves the MMIO of devices above 4 GB (the guest's "
+                         "xHCI reads 0xffffffff and the USB keyboard and mouse of the test never appear)")
 parser.add_argument("--keep", action="store_true", help="leave the VM running after the test")
 parser.add_argument("--script", help="input steps to run once the desktop is up (tools/vmscript.py)")
 parser.add_argument("--usb", action="store_true",
@@ -68,7 +73,7 @@ for path in (serial, shot):
     if os.path.exists(path):
         os.remove(path)
 
-cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", "4096", "-smp", "4",
+cmd = [QEMU] + ([] if args.tcg else ["-accel", "whpx,kernel-irqchip=off"]) + ["-accel", "tcg", "-m", "4096", "-smp", "4",
        "-display", "egl-headless" if args.headless and args.gpu else "none" if args.headless
        else "sdl,gl=on" if args.gpu else "gtk",
        "-rtc", "base=localtime",  # as a PC that Windows runs on keeps its clock

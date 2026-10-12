@@ -1589,21 +1589,27 @@ static BOOL write_state( struct partition *partition, struct vp *vp, struct stat
 /* what the program sees of the processor while it does an MMIO access */
 static void fake_mmio_register( struct vp *vp, WHV_REGISTER_NAME name, WHV_REGISTER_VALUE *value )
 {
+    /* An address above 4 GB does not fit a 32-bit context, so the program is
+     * shown long mode for it, where the address is RDI. Paging stays off:
+     * the address it decodes is the guest physical one, and nothing of the
+     * guest's own page tables (CR3) takes part in the access. */
+    BOOL high = vp->mmio_gpa + vp->mmio_offset > 0xffffffffull;
     struct kvm_segment flat = { .limit = 0xffffffff, .type = 3, .present = 1, .db = 1, .s = 1, .g = 1 };
+    struct kvm_segment code = { .limit = 0xffffffff, .type = 0xb, .present = 1, .db = !high, .l = high, .s = 1,
+                                .g = 1 };
 
     switch (name)
     {
     case WHvX64RegisterRax:    value->Reg64 = vp->mmio_value; break;
-    case WHvX64RegisterRdi:    value->Reg64 = (UINT32)(vp->mmio_gpa + vp->mmio_offset); break;
+    case WHvX64RegisterRdi:    value->Reg64 = vp->mmio_gpa + vp->mmio_offset; break;
     case WHvX64RegisterRip:    value->Reg64 = 0; break;
     case WHvX64RegisterRflags: value->Reg64 = 2; break;
-    case WHvX64RegisterCr0:    value->Reg64 = 0x11; break;
+    case WHvX64RegisterCr0:    value->Reg64 = 0x11; break;   /* ET, PE: no paging */
     case WHvX64RegisterCr3:
-    case WHvX64RegisterCr4:
-    case WHvX64RegisterEfer:   value->Reg64 = 0; break;
+    case WHvX64RegisterCr4:    value->Reg64 = 0; break;
+    case WHvX64RegisterEfer:   value->Reg64 = high ? 0x500 : 0; break;   /* LMA, LME */
     case WHvX64RegisterCs:
-        flat.type = 0xb;
-        segment_to_whv( &flat, &value->Segment );
+        segment_to_whv( &code, &value->Segment );
         break;
     case WHvX64RegisterDs:
     case WHvX64RegisterEs:
@@ -1944,14 +1950,19 @@ static HRESULT exit_with_state( struct partition *partition, struct vp *vp, WHV_
     ctx->VpContext.InstructionLength = length;
     if (reason == WHvRunVpExitReasonMemoryAccess)
     {
-        /* the program decodes the MOV in protected mode, flat, no paging */
-        struct kvm_segment flat = { .limit = 0xffffffff, .type = 0xb, .present = 1, .dpl = 0, .db = 1, .s = 1, .g = 1 };
+        /* The program decodes the MOV in a flat context with no paging:
+         * protected mode below 4 GB, where the address is EDI, and long mode
+         * above it, where it is RDI (the xHCI of a machine with 4 GB of RAM
+         * has its registers up there) */
+        BOOL high = vp->mmio_gpa + vp->mmio_offset > 0xffffffffull;
+        struct kvm_segment flat = { .limit = 0xffffffff, .type = 0xb, .present = 1, .dpl = 0, .db = !high,
+                                    .l = high, .s = 1, .g = 1 };
 
         segment_to_whv( &flat, &ctx->VpContext.Cs );
         ctx->VpContext.ExecutionState.Cpl = 0;
         ctx->VpContext.ExecutionState.Cr0Pe = 1;
         ctx->VpContext.ExecutionState.Cr0Am = 0;
-        ctx->VpContext.ExecutionState.EferLma = 0;
+        ctx->VpContext.ExecutionState.EferLma = high;
         ctx->VpContext.Rip = 0;
         ctx->VpContext.Rflags &= ~(1ull << 17);   /* not virtual 8086 */
         ctx->VpContext.InstructionLength = ctx->MemoryAccess.InstructionByteCount;
@@ -2110,13 +2121,6 @@ static NTSTATUS run_vp( void *args )
             if (vp->mmio_write) memcpy( vp->mmio_data, run->mmio.data, vp->mmio_len );
             vp->mmio_offset = 0;
             vp->mmio_piece = mmio_piece_size( vp );
-            if (vp->mmio_gpa + vp->mmio_len > 0x100000000ull)
-            {
-                /* not addressable in the flat 32-bit context */
-                FIXME( "MMIO above 4 GB at %#llx: not done\n", (long long)vp->mmio_gpa );
-                if (!vp->mmio_write) memcpy( run->mmio.data, vp->mmio_data, vp->mmio_len );
-                continue;
-            }
             vp->mmio = TRUE;
             reason = WHvRunVpExitReasonMemoryAccess;
             break;
