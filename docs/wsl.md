@@ -55,11 +55,11 @@ Linux від цього на хості не з'являється: ядро В�
 | `WinHvPlatform.dll` (гіпервізор) | є: KVM під усім API (`docs/hypervisor.md`) | ✅ |
 | HCS: `computecore.dll`, `vmcompute.exe` — створення й керування утилітарною ВМ за JSON-документом (`LinuxKernelDirect`: ядро + initrd, virtio-пристрої, пам'ять, vCPU) | наш `computecore` над WinHvPlatform і служба `vmcompute`; документ HCS → машина KVM | ⏳ |
 | `hvsocket` (`AF_HYPERV`), яким `wslservice` говорить з гостем | своє сімейство сокетів у `afd`/`ws2_32` над `AF_VSOCK` KVM (ідентифікатори служб HCS → порти vsock) | ⏳ |
-| Ядро гостя й initrd (у MSI — `C:\Program Files\WSL\tools`) | стокові, з MSI; наше ядро — тільки для хоста | ⏳ |
+| Ядро гостя, initrd і диски ВМ: у MSI це `C:\Program Files\WSL\tools\{kernel,initrd.img,init,artifacts.vhd}` і `system.vhd` (перевірено на Windows поряд: `kernel` 15 МБ, `system.vhd` 758 МБ) | стокові, з MSI; наше ядро — лише для хоста | ⏳ |
 | Диски Windows у гості (`/mnt/c`): WSL віддає їх по 9P/virtio-fs | сервер на хості, під'єднаний до ВМ як virtio-пристрій, що описує документ HCS | ⏳ |
 | Мережа: NAT за замовчуванням | `tap` + NAT у `arctic-init`, як адаптер ВМ у документі HCS; DNS — наш `resolvconf` | ⏳ |
 | Реєстр `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss`, служби `WslService`/`vmcompute` | ключі заводить сама WSL; від нас — щоб `services.exe` підняв її службу, як у Windows | ⏳ |
-| `wsl.exe`, `wslservice.exe`, `wslg` | стокові, без змін | ⏳ |
+| `wsl.exe`, `wslservice.exe`, `libwsl.dll`, `wslg` у `C:\Program Files\WSL`; `System32\wsl.exe` — тонкий переадресник (171 КБ), `System32\lxss\` — залишки WSL1 | стокові, без змін; від нас — переадресник у `System32` (нижче) | ⏳ |
 
 Поки цього немає, усі дистрибутиви веде `arctic-lxss` (root-chroot на хості).
 Це тимчасово й це обхід гейта для звичайних дистрибутивів — користувач на це

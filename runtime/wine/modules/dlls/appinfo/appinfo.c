@@ -260,20 +260,37 @@ static DWORD WINAPI client_thread( void *arg )
 
 /* ---- the service ---- */
 
+static void session_file_path( WCHAR *path, size_t count, BOOL make_directories )
+{
+    WCHAR dir[MAX_PATH];
+
+    if (!GetEnvironmentVariableW( L"ProgramData", dir, ARRAY_SIZE(dir) )) wcscpy( dir, L"C:\\ProgramData" );
+    wcscat( dir, L"\\Arctic" );
+    if (make_directories) CreateDirectoryW( dir, NULL );
+    wcscat( dir, L"\\Appinfo" );
+    if (make_directories) CreateDirectoryW( dir, NULL );
+    swprintf( path, count, L"%s\\session", dir );
+}
+
+/* the file names a port that nothing listens on once the service is gone:
+ * the host would rather find nothing than something stale */
+static void remove_session_file( void )
+{
+    WCHAR path[MAX_PATH];
+
+    session_file_path( path, ARRAY_SIZE(path), FALSE );
+    DeleteFileW( path );
+}
+
 /* where the host looks for this service */
 static void write_session_file( unsigned short port )
 {
-    WCHAR dir[MAX_PATH], path[MAX_PATH];
+    WCHAR path[MAX_PATH];
     char text[64];
     DWORD written;
     HANDLE file;
 
-    if (!GetEnvironmentVariableW( L"ProgramData", dir, ARRAY_SIZE(dir) )) wcscpy( dir, L"C:\\ProgramData" );
-    wcscat( dir, L"\\Arctic" );
-    CreateDirectoryW( dir, NULL );
-    wcscat( dir, L"\\Appinfo" );
-    CreateDirectoryW( dir, NULL );
-    swprintf( path, ARRAY_SIZE(path), L"%s\\session", dir );
+    session_file_path( path, ARRAY_SIZE(path), TRUE );
     file = CreateFileW( path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, 0, NULL );
     if (file == INVALID_HANDLE_VALUE)
     {
@@ -323,6 +340,7 @@ static DWORD WINAPI control_handler( DWORD control, DWORD type, void *data, void
 
         set_state( SERVICE_STOP_PENDING );
         listener = INVALID_SOCKET;
+        remove_session_file();
         if (sock != INVALID_SOCKET) closesocket( sock ); /* the accept loop ends with it */
         return NO_ERROR;
     }
@@ -355,6 +373,7 @@ void WINAPI ServiceMain( DWORD argc, WCHAR *argv[] )
         else closesocket( sock );
     }
     if (one_window) CloseHandle( one_window );
+    remove_session_file();
     set_state( SERVICE_STOPPED );
 }
 
