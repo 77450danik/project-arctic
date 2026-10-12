@@ -93,6 +93,29 @@ if [ "$WINDOWS" = 1 ]; then
             cp "$wine_file" "$U/Windows/System32/$name"
         fi
     done
+    # The builtins of Wine as this build has them. wineboot brings the prefix
+    # on C: up to a new Wine, but a module that is new to it (appinfo.dll,
+    # usercpl.dll of the gate) is in no wine.inf, so the update carries what
+    # differs - which after one build is a handful of files.
+    PFX="$BUILD/prefix/drive_c/windows"
+    if [ -d "$PFX/system32" ]; then
+        wine_files=0
+        for dir in system32 syswow64; do
+            [ -d "$PFX/$dir" ] || continue
+            for f in "$PFX/$dir"/*; do
+                [ -f "$f" ] || continue
+                name=${f##*/}
+                # what ReactOS builds is taken above, from out/reactos
+                [ -e "$SRC/System32/$name" ] && continue
+                cmp -s "$f" "$C/Windows/$dir/$name" 2>/dev/null && continue
+                changed+=("$dir/$name")
+                mkdir -p "$U/Windows/$dir"
+                cp "$f" "$U/Windows/$dir/$name"
+                wine_files=$((wine_files + 1))
+            done
+        done
+        echo "the builtins of Wine: $wine_files files differ"
+    fi
     echo "C:\\Windows: ${#changed[@]} files differ"
     printf '  %s\n' "${changed[@]}"
     if [ ${#changed[@]} -gt 0 ] && [ "$LIVE" = 1 ]; then
