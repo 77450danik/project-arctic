@@ -44,7 +44,10 @@ int gate_prepare_state_dir(void)
 
 int gate_set_password(struct gate_state *st, const char *new_password)
 {
-    char setting[64];
+    /* libxcrypt wants the whole of its output size here, not as much as a
+     * setting takes: with less it returns ERANGE and no hash is made at all,
+     * and then every password is wrong (found in a VM 2026-10-12) */
+    char setting[CRYPT_GENSALT_OUTPUT_SIZE];
     unsigned char rbytes[16];
     struct crypt_data data;
     char *result;
