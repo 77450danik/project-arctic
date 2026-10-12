@@ -17,6 +17,11 @@
 #include "winnls.h"
 #include "resource.h"
 
+/* the visual style of the system, as every window of Windows has it: without
+ * the manifest the buttons and the box are the classic grey ones */
+/* @makedep: consent.manifest */
+1 24 consent.manifest
+
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
 
 STRINGTABLE

@@ -1150,17 +1150,21 @@ static int inside_distribution(pid_t pid)
     return !strncmp(where, ROOTS "/", strlen(ROOTS "/"));
 }
 
-/* The pid on the other end of this already-accepted TCP connection on
- * 127.0.0.1: /proc/net/tcp names no owner, only the inode of the socket;
- * /proc/<pid>/fd links one as "socket:[<inode>]" */
-static pid_t pid_by_socket_inode(unsigned long inode)
+/* Every process that holds this socket: /proc/net/tcp names no owner, only
+ * the inode, and /proc/<pid>/fd links one as "socket:[<inode>]". There is
+ * more than one holder: a socket of a Wine program is made by wineserver and
+ * passed on, and both of them have it open, so the program itself is not
+ * always the first one found. */
+#define MAX_HOLDERS 8
+
+static int pids_by_socket_inode(unsigned long inode, pid_t *pids, int max_pids)
 {
     char target[48], link[PATH_MAX], dest[PATH_MAX], fd_dir[64];
     DIR *proc = opendir("/proc");
-    pid_t found = -1;
+    int count = 0;
 
     snprintf(target, sizeof(target), "socket:[%lu]", inode);
-    for (struct dirent *de; proc && found < 0 && (de = readdir(proc));) {
+    for (struct dirent *de; proc && count < max_pids && (de = readdir(proc));) {
         DIR *fds;
 
         if (!isdigit((unsigned char)de->d_name[0]))
@@ -1176,7 +1180,7 @@ static pid_t pid_by_socket_inode(unsigned long inode)
             if ((n = readlink(link, dest, sizeof(dest) - 1)) > 0) {
                 dest[n] = 0;
                 if (!strcmp(dest, target)) {
-                    found = (pid_t)atoi(de->d_name);
+                    pids[count++] = (pid_t)atoi(de->d_name);
                     break;
                 }
             }
@@ -1186,27 +1190,27 @@ static pid_t pid_by_socket_inode(unsigned long inode)
     }
     if (proc)
         closedir(proc);
-    return found;
+    return count;
 }
 
-static pid_t peer_pid(int sock)
+static int peer_pids(int sock, pid_t *pids, int max_pids)
 {
     struct sockaddr_in local = {0}, peer = {0};
     socklen_t len = sizeof(local);
     unsigned int local_port, peer_port;
     char line[512];
     FILE *f;
-    pid_t found = -1;
+    int count = 0;
 
     if (getsockname(sock, (struct sockaddr *)&local, &len) || getpeername(sock, (struct sockaddr *)&peer, &len))
-        return -1;
+        return 0;
     local_port = ntohs(local.sin_port);
     peer_port = ntohs(peer.sin_port);
     if (!(f = fopen("/proc/net/tcp", "re")))
-        return -1;
+        return 0;
     if (!fgets(line, sizeof(line), f)) { /* the header line */
         fclose(f);
-        return -1;
+        return 0;
     }
     while (fgets(line, sizeof(line), f)) {
         unsigned int lport, rport, st;
@@ -1215,12 +1219,28 @@ static pid_t peer_pid(int sock)
         if (sscanf(line, " %*d: %*x:%x %*x:%x %x %*x:%*x %*x:%*x %*x %*d %*d %lu", &lport, &rport, &st, &inode) ==
                 4 &&
             st == 1 /* TCP_ESTABLISHED */ && lport == peer_port && rport == local_port) {
-            found = pid_by_socket_inode(inode);
+            count = pids_by_socket_inode(inode, pids, max_pids);
             break;
         }
     }
     fclose(f);
-    return found;
+    return count;
+}
+
+/* the one of them that is a program (not wineserver, which holds the sockets
+ * it made for everybody), or the first that is anything at all */
+static pid_t peer_pid(int sock)
+{
+    pid_t pids[MAX_HOLDERS];
+    int count = peer_pids(sock, pids, MAX_HOLDERS);
+
+    for (int i = 0; i < count; i++) {
+        struct ntree_entry chain[NTREE_MAX];
+
+        if (query_ntree(pids[i], chain, 1) && strcasecmp(image_basename(chain[0].image), "wineserver"))
+            return pids[i];
+    }
+    return count ? pids[0] : -1;
 }
 
 /* field 22 of /proc/<pid>/stat (starttime, clock ticks since boot): only a
@@ -1338,22 +1358,28 @@ static int appinfo_session(unsigned short *port, char *tok, size_t tok_len)
 static int is_appinfo_service(int sock)
 {
     for (int attempt = 0; attempt < 30; attempt++) {
-        struct ntree_entry chain[NTREE_MAX];
-        pid_t peer = peer_pid(sock);
-        int n = peer > 0 ? query_ntree(peer, chain, NTREE_MAX) : 0;
+        pid_t pids[MAX_HOLDERS];
+        int count = peer_pids(sock, pids, MAX_HOLDERS), known = 0;
 
-        if (!n) {
-            usleep(100000);
-            continue;
+        for (int p = 0; p < count; p++) {
+            struct ntree_entry chain[NTREE_MAX];
+            int n = query_ntree(pids[p], chain, NTREE_MAX);
+
+            /* wineserver holds the sockets it makes for everybody: it says
+             * nothing about whose connection this is */
+            if (!n || !strcasecmp(image_basename(chain[0].image), "wineserver")) continue;
+            known = 1;
+            if (strcasecmp(image_basename(chain[0].image), "svchost.exe"))
+                continue;
+            for (int i = 1; i < n; i++)
+                if (!strcasecmp(image_basename(chain[i].image), "services.exe"))
+                    return 1;
         }
-        if (strcasecmp(image_basename(chain[0].image), "svchost.exe"))
-            return 0;
-        for (int i = 1; i < n; i++)
-            if (!strcasecmp(image_basename(chain[i].image), "services.exe"))
-                return 1;
-        return 0;
+        if (known)
+            return 0; /* somebody else is listening there */
+        usleep(100000); /* not accepted yet: the socket has no owner */
     }
-    return 0; /* nobody owns it: not the service either */
+    return 0;
 }
 
 /* A connection to the service with the token already sent, or -1. The first

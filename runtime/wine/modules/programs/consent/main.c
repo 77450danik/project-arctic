@@ -12,9 +12,11 @@
  *   out  yes <password>   |   no
  *   in   ok   |   wrong   |   wait <seconds>
  *
- * The desktop behind is dimmed and the window sits in the band above every
- * program window (SetWindowBand, Wine 0041), which is as close to Windows'
- * secure desktop as Arctic gets until CreateDesktop/SwitchDesktop work.
+ * The window sits in the band above every program window (SetWindowBand,
+ * Wine 0041), which is as close to Windows' secure desktop as Arctic gets
+ * until CreateDesktop/SwitchDesktop work. Windows dims the desktop behind
+ * it; here a layered window over the desktop comes out black instead of
+ * dimmed, so there is none until that blends properly.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -59,7 +61,7 @@ struct consent
     BOOL   waiting;        /* an answer is with the service */
     WCHAR  message[256];   /* "The password is incorrect." and such */
     int    pause_left;     /* seconds the Yes button stays disabled */
-    HWND   hwnd, backdrop, yes, no, password;
+    HWND   hwnd, yes, no, password;
     HFONT  font, heading_font;
     HICON  shield;
     int    dpi;
@@ -152,18 +154,57 @@ static void play_sound( void )
     }
 }
 
+/* Where everything goes, in the logical pixels of the drawing below. The
+ * caption is the first 30, the footer the last 56; between them the shield
+ * with the instruction, the rows of the request, "Показати подробиці", and
+ * the password when it is asked for. The Ukrainian labels are long, so the
+ * value column starts at 220, not where Windows' English one does. */
+struct layout
+{
+    int link_y, prompt_y, field_y, message_y, height;
+};
+
+#define CAPTION_H  30
+#define FOOTER_H   56
+#define LABEL_X    64
+#define VALUE_X    220
+#define ROW_Y      96
+#define ROW_H      20
+
+static struct layout layout_of( void )
+{
+    struct layout l = { 0 };
+    int y = ROW_Y + 3 * ROW_H;   /* program, publisher, requester */
+
+    if (consent.details) y += 2 * ROW_H + 6;
+    y += 10;
+    l.link_y = y;
+    y += 26;
+    if (consent.password_needed)
+    {
+        l.prompt_y = y;
+        y += 20;
+        l.field_y = y;
+        y += 30;
+    }
+    if (consent.message[0])
+    {
+        l.message_y = y;
+        y += 20;
+    }
+    l.height = y + 6 + FOOTER_H;
+    return l;
+}
+
 static int window_height( void )
 {
-    int height = scale( consent.password_needed ? 252 : 206 );
-
-    if (consent.details) height += scale( 58 );
-    if (consent.message[0]) height += scale( 20 );
-    return height;
+    return scale( layout_of().height );
 }
 
 static void place_controls( void )
 {
-    int width = scale( 510 ), height = window_height(), button_y = height - scale( 44 );
+    struct layout l = layout_of();
+    int width = scale( 510 ), height = scale( l.height ), button_y = height - scale( 42 );
     RECT work;
 
     SystemParametersInfoW( SPI_GETWORKAREA, 0, &work, 0 );
@@ -172,7 +213,7 @@ static void place_controls( void )
     SetWindowPos( consent.no, NULL, width - scale( 108 ), button_y, scale( 92 ), scale( 26 ), SWP_NOZORDER );
     SetWindowPos( consent.yes, NULL, width - scale( 208 ), button_y, scale( 92 ), scale( 26 ), SWP_NOZORDER );
     if (consent.password)
-        SetWindowPos( consent.password, NULL, scale( 74 ), button_y - scale( 36 ), scale( 200 ), scale( 23 ),
+        SetWindowPos( consent.password, NULL, scale( LABEL_X ), scale( l.field_y ), scale( 240 ), scale( 23 ),
                       SWP_NOZORDER );
     InvalidateRect( consent.hwnd, NULL, TRUE );
 }
@@ -187,17 +228,35 @@ static void draw_text( HDC hdc, const WCHAR *text, int x, int y, int width, COLO
     SelectObject( hdc, old );
 }
 
-/* where "Show details" is, so a click on it can be seen */
+/* where "Показати подробиці" is, so a click on it can be seen */
 static RECT link_rect( void )
 {
-    RECT rect = { scale( 20 ), window_height() - scale( 76 ), scale( 200 ), window_height() - scale( 58 ) };
+    struct layout l = layout_of();
+    RECT rect = { scale( LABEL_X ), scale( l.link_y ), scale( LABEL_X + 200 ), scale( l.link_y + 18 ) };
 
     return rect;
 }
 
+/* a label and its value side by side, each on one line */
+static void draw_row( HDC hdc, UINT label_id, const WCHAR *value, int y, COLORREF colour )
+{
+    WCHAR label[128];
+    RECT rect = { scale( LABEL_X ), scale( y ), scale( VALUE_X - 8 ), scale( y + ROW_H ) };
+    HFONT old = SelectObject( hdc, consent.font );
+
+    load_string( label_id, label, ARRAY_SIZE(label) );
+    SetTextColor( hdc, colour );
+    DrawTextW( hdc, label, -1, &rect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX );
+    rect.left = scale( VALUE_X );
+    rect.right = scale( 490 );
+    DrawTextW( hdc, value, -1, &rect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX );
+    SelectObject( hdc, old );
+}
+
 static void paint( HWND hwnd )
 {
-    WCHAR text[512], label[128];
+    WCHAR text[512];
+    struct layout l = layout_of();
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint( hwnd, &ps );
     RECT client, rect;
@@ -205,11 +264,11 @@ static void paint( HWND hwnd )
 
     GetClientRect( hwnd, &client );
     rect = client;
-    rect.bottom = scale( 30 );
+    rect.bottom = scale( CAPTION_H );
     SetBkMode( hdc, TRANSPARENT );
     FillRect( hdc, &rect, CreateSolidBrush( CAPTION_COLOR ) );
     rect.top = rect.bottom;
-    rect.bottom = client.bottom - scale( 56 );
+    rect.bottom = client.bottom - scale( FOOTER_H );
     FillRect( hdc, &rect, CreateSolidBrush( BODY_COLOR ) );
     rect.top = rect.bottom;
     rect.bottom = client.bottom;
@@ -223,43 +282,31 @@ static void paint( HWND hwnd )
     if (consent.shield) DrawIconEx( hdc, scale( 20 ), scale( 44 ), consent.shield, scale( 32 ), scale( 32 ), 0,
                                     NULL, DI_NORMAL );
     load_string( IDS_HEADING, text, ARRAY_SIZE(text) );
-    draw_text( hdc, text, 64, 44, 420, HEADING_COLOR, consent.heading_font );
+    draw_text( hdc, text, LABEL_X, 44, 420, HEADING_COLOR, consent.heading_font );
 
-    y = 84;
-    load_string( IDS_PROGRAM, label, ARRAY_SIZE(label) );
-    draw_text( hdc, label, 64, y, 120, GetSysColor( COLOR_WINDOWTEXT ), NULL );
-    draw_text( hdc, consent.program, 150, y, 330, GetSysColor( COLOR_WINDOWTEXT ), NULL );
-    y += 18;
-    load_string( IDS_PUBLISHER, label, ARRAY_SIZE(label) );
-    draw_text( hdc, label, 64, y, 120, GetSysColor( COLOR_WINDOWTEXT ), NULL );
+    y = ROW_Y;
+    draw_row( hdc, IDS_PROGRAM, consent.program, y, GetSysColor( COLOR_WINDOWTEXT ) );
+    y += ROW_H;
     load_string( IDS_PUBLISHER_NAME, text, ARRAY_SIZE(text) );
-    draw_text( hdc, text, 150, y, 330, GetSysColor( COLOR_WINDOWTEXT ), NULL );
-    y += 18;
-    load_string( IDS_REQUESTER, label, ARRAY_SIZE(label) );
-    draw_text( hdc, label, 64, y, 120, GetSysColor( COLOR_WINDOWTEXT ), NULL );
-    draw_text( hdc, consent.source, 150, y, 330, GetSysColor( COLOR_WINDOWTEXT ), NULL );
+    draw_row( hdc, IDS_PUBLISHER, text, y, GetSysColor( COLOR_WINDOWTEXT ) );
+    y += ROW_H;
+    draw_row( hdc, IDS_REQUESTER, consent.source, y, GetSysColor( COLOR_WINDOWTEXT ) );
 
     if (consent.details)
     {
-        y += 22;
-        load_string( IDS_LOCATION, label, ARRAY_SIZE(label) );
-        draw_text( hdc, label, 64, y, 120, GetSysColor( COLOR_GRAYTEXT ), NULL );
-        draw_text( hdc, consent.path, 150, y, 330, GetSysColor( COLOR_GRAYTEXT ), NULL );
-        y += 18;
-        load_string( IDS_COMMAND, label, ARRAY_SIZE(label) );
-        draw_text( hdc, label, 64, y, 120, GetSysColor( COLOR_GRAYTEXT ), NULL );
-        draw_text( hdc, consent.command, 150, y, 330, GetSysColor( COLOR_GRAYTEXT ), NULL );
+        y += ROW_H + 6;
+        draw_row( hdc, IDS_LOCATION, consent.path, y, GetSysColor( COLOR_GRAYTEXT ) );
+        y += ROW_H;
+        draw_row( hdc, IDS_COMMAND, consent.command, y, GetSysColor( COLOR_GRAYTEXT ) );
     }
 
     if (consent.password_needed)
     {
         load_string( IDS_PASSWORD_PROMPT, text, ARRAY_SIZE(text) );
-        draw_text( hdc, text, 20, (window_height() - scale( 56 )) * 96 / consent.dpi - 58, 460,
-                   GetSysColor( COLOR_WINDOWTEXT ), NULL );
+        draw_text( hdc, text, LABEL_X, l.prompt_y, 420, GetSysColor( COLOR_WINDOWTEXT ), NULL );
     }
     if (consent.message[0])
-        draw_text( hdc, consent.message, 20, (window_height() - scale( 56 )) * 96 / consent.dpi - 20, 460,
-                   ERROR_COLOR, NULL );
+        draw_text( hdc, consent.message, LABEL_X, l.message_y, 420, ERROR_COLOR, NULL );
 
     /* "Show details" / "Hide details", as a link */
     {
@@ -412,19 +459,6 @@ static LRESULT CALLBACK consent_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp 
     return DefWindowProcW( hwnd, msg, wp, lp );
 }
 
-static void create_backdrop( void )
-{
-    int x = GetSystemMetrics( SM_XVIRTUALSCREEN ), y = GetSystemMetrics( SM_YVIRTUALSCREEN );
-    int width = GetSystemMetrics( SM_CXVIRTUALSCREEN ), height = GetSystemMetrics( SM_CYVIRTUALSCREEN );
-
-    consent.backdrop = CreateWindowExW( WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                                        L"ArcticConsentBackdrop", NULL, WS_POPUP, x, y, width, height, NULL, NULL,
-                                        GetModuleHandleW( NULL ), NULL );
-    if (!consent.backdrop) return;
-    SetLayeredWindowAttributes( consent.backdrop, 0, 120, LWA_ALPHA );
-    ShowWindow( consent.backdrop, SW_SHOWNOACTIVATE );
-}
-
 /* above every program window, as Windows puts the secure desktop */
 static void raise_band( HWND hwnd )
 {
@@ -485,11 +519,12 @@ static BOOL take_prompt( void )
 
 int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int show )
 {
-    WNDCLASSEXW backdrop_class = { sizeof(backdrop_class) }, window_class = { sizeof(window_class) };
+    WNDCLASSEXW window_class = { sizeof(window_class) };
     WCHAR title[256], text[256];
     HDC screen;
     MSG msg;
 
+    InitCommonControls();   /* the visual style of the system, as the manifest asks */
     server_in = GetStdHandle( STD_INPUT_HANDLE );
     server_out = GetStdHandle( STD_OUTPUT_HANDLE );
     if (!take_prompt()) return 1;
@@ -502,21 +537,15 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
     if (!(consent.shield = LoadIconW( NULL, (const WCHAR *)IDI_SHIELD )))
         consent.shield = LoadIconW( NULL, (const WCHAR *)IDI_WARNING );
 
-    backdrop_class.lpfnWndProc = DefWindowProcW;
-    backdrop_class.hInstance = instance;
-    backdrop_class.hbrBackground = CreateSolidBrush( RGB(0, 0, 0) );
-    backdrop_class.lpszClassName = L"ArcticConsentBackdrop";
-    RegisterClassExW( &backdrop_class );
     window_class.lpfnWndProc = consent_proc;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursorW( NULL, (const WCHAR *)IDC_ARROW );
     window_class.lpszClassName = L"ArcticConsent";
     RegisterClassExW( &window_class );
 
-    create_backdrop();
     load_string( IDS_TITLE, title, ARRAY_SIZE(title) );
     consent.hwnd = CreateWindowExW( WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, L"ArcticConsent", title, WS_POPUP | WS_BORDER,
-                                    0, 0, scale( 510 ), scale( 206 ), NULL, NULL, instance, NULL );
+                                    0, 0, scale( 510 ), window_height(), NULL, NULL, instance, NULL );
     if (!consent.hwnd) return 1;
 
     load_string( IDS_YES, text, ARRAY_SIZE(text) );
@@ -538,7 +567,6 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
     if (consent.password) SendMessageW( consent.password, WM_SETFONT, (WPARAM)consent.font, TRUE );
 
     place_controls();
-    raise_band( consent.backdrop );
     raise_band( consent.hwnd );
     ShowWindow( consent.hwnd, SW_SHOW );
     SetForegroundWindow( consent.hwnd );

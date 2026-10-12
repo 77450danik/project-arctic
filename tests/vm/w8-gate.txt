@@ -1,60 +1,80 @@
 # The Linux gate (docs/linux-gate.md): the consent window of the Application
 # Information service, the password once a boot, consent once a program.
-#   vm-test.py --boot-disk <install test disk> --uefi --disk <wsl disk> --script tests/vm/w8-gate.txt
+#   tools/wsl/make-wsl-test-disk.sh                        (two tiny distributions)
+#   vm-test.py --usb --uefi --disk out/test-local/wsl-disk.img --script tests/vm/w8-gate.txt
+# D:\gate.vhdx goes in as arctic-build, which gate.conf names as the gate, and
+# D:\free.vhdx as arctic-ros, which is free as WSL is on Windows.
 # What to see on the shots: w8-gate-consent — the window of User Account
-# Control with the password field, named after cmd.exe; w8-gate-wrong — "Неправильний
-# пароль" with the window still up; w8-gate-id — uid=0 in the console and the
+# Control with the password field, named after cmd.exe; w8-gate-wrong —
+# "Неправильний пароль" with the window still up; w8-gate-id — uid=0 and the
 # second "wsl -e id" of the same console with no window at all; w8-gate-second —
 # a new console asks again, without the password field; w8-gate-cancelled —
-# "Операцію скасовано користувачем." and the exit code 1.
-sleep 6
+# "Операцію скасовано користувачем." and the exit code 1; w8-gate-free — the
+# other distribution answers with no window at all.
+# (A comment after "type" would be typed in: they go on their own line.)
+sleep 5
 move 27 789
 click
-sleep 2
-move 90 711
-click                         # Виконати...
+sleep 3
+# "Виконати..." of the Start menu
+move 330 679
+click
 sleep 3
 type cmd
 key ret
+sleep 6
+type md C:\ProgramData\Arctic\Lxss
+key ret
+sleep 2
+type echo arctic-build D:\gate.vhdx> C:\ProgramData\Arctic\Lxss\distros
+key ret
+sleep 2
+type echo arctic-ros D:\free.vhdx>> C:\ProgramData\Arctic\Lxss\distros
+key ret
+sleep 2
+type vol D: & wsl -l
+key ret
 sleep 4
+shot w8-gate-distros
 type wsl -d arctic-build -e id
 key ret
-sleep 8
-shot w8-gate-consent          # the consent window, with the password field
+sleep 12
+shot w8-gate-consent
 type 1111
 key ret
-sleep 4
-shot w8-gate-wrong            # "Неправильний пароль", the window stays
+sleep 5
+shot w8-gate-wrong
 type 0000
 key ret
-sleep 10
+sleep 20
+shot w8-gate-id
 type wsl -d arctic-build -e id
 key ret
-sleep 8
-shot w8-gate-id               # uid=0 twice, the second time without a window
-# a program that has no grant of its own asks again, and the password of this
+sleep 10
+shot w8-gate-again
+# a program with no grant of its own is asked again, and the password of this
 # boot is not asked for a second time
 move 27 789
 click
-sleep 2
-move 90 711
+sleep 3
+move 330 679
 click
 sleep 3
 type cmd
 key ret
-sleep 4
+sleep 6
 type wsl -d arctic-build -e id
 key ret
-sleep 8
-shot w8-gate-second           # the window again, no password field
-key esc                       # "Ні"
+sleep 10
+shot w8-gate-second
+key esc
 sleep 4
 type echo exit=%errorlevel%
 key ret
-sleep 2
-shot w8-gate-cancelled        # "Операцію скасовано користувачем.", exit=1
-# the distributions that are not the gate ask nothing, as WSL on Windows does
+sleep 3
+shot w8-gate-cancelled
+# a distribution that is not the gate asks nothing, as WSL on Windows does
 type wsl -d arctic-ros -e uname -sr
 key ret
-sleep 25
+sleep 20
 shot w8-gate-free

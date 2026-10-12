@@ -50,7 +50,6 @@ static struct
     HWND hwnd, require, change, ok, cancel;
     HFONT font, heading_font, group_font;
     BOOL required;      /* what the gate says now */
-    BOOL asked;         /* the checkbox as the user left it */
     int dpi;
 } settings;
 
@@ -142,10 +141,9 @@ static INT_PTR CALLBACK password_proc( HWND dialog, UINT msg, WPARAM wp, LPARAM 
                     return TRUE;
                 }
             }
-            /* a password that is set is a password that is required */
-            settings.required = TRUE;
+            /* a password that is set is a password that is meant to be asked
+             * for: the box is ticked, and OK applies it like any other change */
             SendMessageW( settings.require, BM_SETCHECK, BST_CHECKED, 0 );
-            settings.asked = TRUE;
             EndDialog( dialog, 1 );
             return TRUE;
         }
@@ -348,7 +346,6 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
         report( state );
         return 1;
     }
-    settings.asked = settings.required;
     SendMessageW( settings.require, BM_SETCHECK, settings.required ? BST_CHECKED : BST_UNCHECKED, 0 );
 
     ShowWindow( settings.hwnd, SW_SHOW );
