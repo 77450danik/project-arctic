@@ -1,8 +1,10 @@
 /*
  * consent.exe: resources
  *
- * The window of User Account Control as Windows 7 shows it, asking for the
- * Linux subsystem (docs/linux-gate.md).
+ * The window of User Account Control, asking for the Linux subsystem
+ * (docs/linux-gate.md). It is an ordinary dialog: the frame, the caption and
+ * the controls are the system's own, in the visual style of the system - as
+ * the window of Windows 7 is. The texts are Windows' where it has them.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -14,6 +16,7 @@
 
 #include "windef.h"
 #include "winbase.h"
+#include "winuser.h"
 #include "winnls.h"
 #include "resource.h"
 
@@ -36,14 +39,39 @@ STRINGTABLE
     IDS_REQUESTER        "Requested by:"
     IDS_LOCATION         "Program location:"
     IDS_COMMAND          "Command:"
-    IDS_SHOW_DETAILS     "Show details"
-    IDS_HIDE_DETAILS     "Hide details"
+    IDS_SHOW_DETAILS     "Show &details"
+    IDS_HIDE_DETAILS     "Hide &details"
     IDS_PASSWORD_PROMPT  "Type the password of the Linux subsystem, and then click Yes."
     IDS_PASSWORD_CUE     "Password"
     IDS_WRONG            "The password is incorrect."
     IDS_WAIT             "Too many incorrect passwords. Try again in %d s."
     IDS_YES              "&Yes"
     IDS_NO               "&No"
+}
+
+IDD_CONSENT DIALOGEX 0, 0, 290, 190
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "User Account Control"
+FONT 8, "MS Shell Dlg"
+{
+    ICON "", IDC_SHIELD, 10, 12, 21, 20, SS_ICON | SS_REALSIZEIMAGE
+    LTEXT "", IDC_HEADING, 40, 10, 242, 20
+    LTEXT "", IDC_PROGRAM_LABEL, 40, 38, 88, 9
+    LTEXT "", IDC_PROGRAM, 132, 38, 150, 9
+    LTEXT "", IDC_PUBLISHER_LABEL, 40, 50, 88, 9
+    LTEXT "", IDC_PUBLISHER, 132, 50, 150, 9
+    LTEXT "", IDC_REQUESTER_LABEL, 40, 62, 88, 9
+    LTEXT "", IDC_REQUESTER, 132, 62, 150, 9
+    LTEXT "", IDC_LOCATION_LABEL, 40, 74, 88, 9
+    LTEXT "", IDC_LOCATION, 132, 74, 150, 9
+    LTEXT "", IDC_COMMAND_LABEL, 40, 86, 88, 9
+    LTEXT "", IDC_COMMAND, 132, 86, 150, 9
+    PUSHBUTTON "", IDC_DETAILS, 40, 100, 90, 14
+    LTEXT "", IDC_PASSWORD_PROMPT, 40, 120, 242, 9
+    EDITTEXT IDC_PASSWORD, 40, 132, 130, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "", IDC_MESSAGE, 40, 150, 242, 9
+    DEFPUSHBUTTON "", IDC_ANSWER_YES, 174, 166, 52, 14
+    PUSHBUTTON "", IDC_ANSWER_NO, 230, 166, 52, 14
 }
 
 LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
@@ -60,12 +88,37 @@ STRINGTABLE
     IDS_REQUESTER        "Запит від:"
     IDS_LOCATION         "Розташування програми:"
     IDS_COMMAND          "Команда:"
-    IDS_SHOW_DETAILS     "Показати подробиці"
-    IDS_HIDE_DETAILS     "Приховати подробиці"
+    IDS_SHOW_DETAILS     "Показати &подробиці"
+    IDS_HIDE_DETAILS     "Приховати &подробиці"
     IDS_PASSWORD_PROMPT  "Введіть пароль підсистеми Linux і натисніть «Так»."
     IDS_PASSWORD_CUE     "Пароль"
     IDS_WRONG            "Неправильний пароль."
-    IDS_WAIT             "Забагато неправильних паролів. Спробуйте ще раз через %d с."
+    IDS_WAIT             "Забагато неправильних паролів. Спробуйте за %d с."
     IDS_YES              "&Так"
     IDS_NO               "&Ні"
+}
+
+IDD_CONSENT DIALOGEX 0, 0, 310, 190
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Контроль облікових записів користувачів"
+FONT 8, "MS Shell Dlg"
+{
+    ICON "", IDC_SHIELD, 10, 12, 21, 20, SS_ICON | SS_REALSIZEIMAGE
+    LTEXT "", IDC_HEADING, 40, 10, 262, 20
+    LTEXT "", IDC_PROGRAM_LABEL, 40, 38, 96, 9
+    LTEXT "", IDC_PROGRAM, 140, 38, 162, 9
+    LTEXT "", IDC_PUBLISHER_LABEL, 40, 50, 96, 9
+    LTEXT "", IDC_PUBLISHER, 140, 50, 162, 9
+    LTEXT "", IDC_REQUESTER_LABEL, 40, 62, 96, 9
+    LTEXT "", IDC_REQUESTER, 140, 62, 162, 9
+    LTEXT "", IDC_LOCATION_LABEL, 40, 74, 96, 9
+    LTEXT "", IDC_LOCATION, 140, 74, 162, 9
+    LTEXT "", IDC_COMMAND_LABEL, 40, 86, 96, 9
+    LTEXT "", IDC_COMMAND, 140, 86, 162, 9
+    PUSHBUTTON "", IDC_DETAILS, 40, 100, 100, 14
+    LTEXT "", IDC_PASSWORD_PROMPT, 40, 120, 262, 9
+    EDITTEXT IDC_PASSWORD, 40, 132, 140, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "", IDC_MESSAGE, 40, 150, 262, 9
+    DEFPUSHBUTTON "", IDC_ANSWER_YES, 190, 166, 54, 14
+    PUSHBUTTON "", IDC_ANSWER_NO, 248, 166, 54, 14
 }

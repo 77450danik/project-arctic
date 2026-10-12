@@ -25,3 +25,23 @@
 #define IDS_WAIT              16
 #define IDS_YES               17
 #define IDS_NO                18
+
+#define IDD_CONSENT           100
+#define IDC_SHIELD            101
+#define IDC_HEADING           102
+#define IDC_PROGRAM_LABEL     103
+#define IDC_PROGRAM           104
+#define IDC_PUBLISHER_LABEL   105
+#define IDC_PUBLISHER         106
+#define IDC_REQUESTER_LABEL   107
+#define IDC_REQUESTER         108
+#define IDC_LOCATION_LABEL    109
+#define IDC_LOCATION          110
+#define IDC_COMMAND_LABEL     111
+#define IDC_COMMAND           112
+#define IDC_DETAILS           113
+#define IDC_PASSWORD_PROMPT   114
+#define IDC_PASSWORD          115
+#define IDC_MESSAGE           116
+#define IDC_ANSWER_YES        117
+#define IDC_ANSWER_NO         118
