@@ -1,55 +1,58 @@
 # "Облікові записи користувачів" of the Control Panel and the settings of
-# User Account Control (docs/linux-gate.md, components 6):
-#   vm-test.py --boot-disk <install test disk> --uefi --disk <wsl disk> --script tests/vm/w9-gate-settings.txt
+# User Account Control (docs/linux-gate.md, component 6):
+#   vm-test.py --usb --uefi --disk out/test-local/wsl-disk.img --script tests/vm/w9-gate-settings.txt
 # What to see on the shots: w9-users-page — the page "Внесення змін до
 # облікового запису користувача" with the account's tile, the section
 # "Підсистема Windows для Linux" and the two shield links; w9-uac-settings —
 # the window of the settings with the checkbox and the shield on OK;
 # w9-uac-consent — the consent window asking for the password of the gate,
-# which changing these settings always asks for; w9-no-password — a new
-# console gets consent without a password field once the password is off.
-sleep 6
+# which changing these settings always asks for; w9-no-password — a console
+# gets consent without a password field once the password is off.
+# (A comment after "type" would be typed in: they go on their own line.)
+sleep 5
 move 27 789
 click
-sleep 2
-move 90 711
-click                         # Виконати...
+sleep 3
+# "Виконати..." of the Start menu
+move 330 679
+click
 sleep 3
 type control /name Microsoft.UserAccounts
 key ret
-sleep 10
+sleep 12
 shot w9-users-page
-# "Змінити параметри контролю облікових записів користувачів" on the page
-move 300 420
+# "Змінити параметри контролю облікових записів користувачів", the lower of
+# the two shield links of the page
+move 300 430
 click
-sleep 8
+sleep 10
 shot w9-uac-settings
 # the checkbox of the password, then OK: the gate asks for the password set now
-move 60 300
+move 90 300
 click
-sleep 1
+sleep 2
 move 420 390
 click
-sleep 8
+sleep 10
 shot w9-uac-consent
 type 0000
 key ret
-sleep 8
+sleep 10
 shot w9-uac-applied
 # with the password off, a program is only asked "Так/Ні"
 move 27 789
 click
-sleep 2
-move 90 711
+sleep 3
+move 330 679
 click
 sleep 3
 type cmd
 key ret
-sleep 4
+sleep 8
 type wsl -d arctic-build -e id
 key ret
-sleep 8
-shot w9-no-password
-key ret                       # "Так" is the default button
 sleep 10
+shot w9-no-password
+key ret
+sleep 15
 shot w9-after-yes
