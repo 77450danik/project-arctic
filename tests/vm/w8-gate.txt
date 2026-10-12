@@ -52,6 +52,7 @@ type wsl -d arctic-build -e id
 key ret
 sleep 10
 shot w8-gate-again
+# the same console again: no window, the grant is its own
 # a program with no grant of its own is asked again, and the password of this
 # boot is not asked for a second time
 move 27 789
@@ -69,6 +70,10 @@ sleep 10
 shot w8-gate-second
 key esc
 sleep 4
+# back in the console, whatever took the focus when the window closed
+move 300 200
+click
+sleep 2
 type echo exit=%errorlevel%
 key ret
 sleep 3

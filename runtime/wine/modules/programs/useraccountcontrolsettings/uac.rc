@@ -42,6 +42,22 @@ STRINGTABLE
     IDS_PASSWORD_NOTE     "The password set now is asked for in the User Account Control window when you click OK."
 }
 
+IDD_SETTINGS DIALOGEX 0, 0, 300, 190
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "User Account Control Settings"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "", IDC_HEADING, 10, 10, 280, 18
+    LTEXT "", IDC_ABOUT_UAC, 10, 32, 280, 18
+    LTEXT "", IDC_ABOUT_LINUX, 10, 54, 280, 26
+    GROUPBOX "", IDC_GROUP, 10, 86, 280, 74
+    AUTOCHECKBOX "", IDC_REQUIRE, 20, 102, 260, 10
+    LTEXT "", IDC_WHEN_ASKED, 32, 116, 250, 18
+    PUSHBUTTON "", IDC_CHANGE, 20, 138, 110, 14
+    DEFPUSHBUTTON "", IDOK, 184, 168, 52, 14
+    PUSHBUTTON "", IDCANCEL, 240, 168, 52, 14
+}
+
 IDD_PASSWORD DIALOGEX 0, 0, 260, 118
 STYLE DS_SHELLFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Change Password"
@@ -75,6 +91,22 @@ STRINGTABLE
     IDS_PASSWORDS_DIFFER  "Введені паролі не збігаються. Введіть новий пароль в обох текстових полях ще раз."
     IDS_PASSWORD_EMPTY    "Введіть новий пароль."
     IDS_PASSWORD_NOTE     "Поточний пароль запитає вікно контролю облікових записів, коли ви натиснете OK."
+}
+
+IDD_SETTINGS DIALOGEX 0, 0, 320, 200
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Параметри контролю облікових записів користувачів"
+FONT 8, "MS Shell Dlg"
+{
+    LTEXT "", IDC_HEADING, 10, 10, 300, 18
+    LTEXT "", IDC_ABOUT_UAC, 10, 32, 300, 20
+    LTEXT "", IDC_ABOUT_LINUX, 10, 56, 300, 28
+    GROUPBOX "", IDC_GROUP, 10, 90, 300, 80
+    AUTOCHECKBOX "", IDC_REQUIRE, 20, 106, 280, 10
+    LTEXT "", IDC_WHEN_ASKED, 32, 120, 270, 20
+    PUSHBUTTON "", IDC_CHANGE, 20, 146, 120, 14
+    DEFPUSHBUTTON "", IDOK, 200, 178, 54, 14
+    PUSHBUTTON "", IDCANCEL, 258, 178, 54, 14
 }
 
 IDD_PASSWORD DIALOGEX 0, 0, 290, 122

@@ -23,7 +23,15 @@
 #define IDS_PASSWORD_EMPTY     14
 #define IDS_PASSWORD_NOTE      15
 
+#define IDD_SETTINGS           99
 #define IDD_PASSWORD           100
 #define IDC_NEW_PASSWORD       101
 #define IDC_CONFIRM_PASSWORD   102
 #define IDC_PASSWORD_NOTE      103
+#define IDC_HEADING            104
+#define IDC_ABOUT_UAC          105
+#define IDC_ABOUT_LINUX        106
+#define IDC_GROUP              107
+#define IDC_REQUIRE            108
+#define IDC_WHEN_ASKED         109
+#define IDC_CHANGE             110

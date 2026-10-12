@@ -53,6 +53,7 @@ static struct
 } consent;
 
 static HANDLE server_in, server_out;
+static HWND asked_from;   /* the window that was in front when we came up */
 
 static const WCHAR *load( UINT id )
 {
@@ -269,6 +270,13 @@ static void set_message( HWND dialog, UINT id, int seconds )
     relayout( dialog );
 }
 
+/* back to the console (or whatever else) that asked, as closing any window of
+ * the system gives the focus back to the one under it */
+static void give_focus_back( void )
+{
+    if (asked_from && IsWindow( asked_from ) && IsWindowVisible( asked_from )) SetForegroundWindow( asked_from );
+}
+
 static void send_answer( HWND dialog, BOOL yes )
 {
     WCHAR typed[256] = L"";
@@ -278,6 +286,7 @@ static void send_answer( HWND dialog, BOOL yes )
     if (!yes)
     {
         answer( "no" );
+        give_focus_back();
         ExitProcess( 1 );
     }
     GetDlgItemTextW( dialog, IDC_PASSWORD, typed, ARRAY_SIZE(typed) );
@@ -297,7 +306,11 @@ static void send_answer( HWND dialog, BOOL yes )
 
 static void server_line( HWND dialog, char *line )
 {
-    if (!strcmp( line, "ok" )) ExitProcess( 0 );
+    if (!strcmp( line, "ok" ))
+    {
+        give_focus_back();
+        ExitProcess( 0 );
+    }
     consent.waiting = FALSE;
     if (!strncmp( line, "wait", 4 ))
     {
@@ -349,6 +362,7 @@ static INT_PTR CALLBACK consent_proc( HWND dialog, UINT msg, WPARAM wp, LPARAM l
     {
     case WM_INITDIALOG:
         consent.hwnd = dialog;
+        asked_from = GetForegroundWindow();
         fill( dialog );
         relayout( dialog );
         raise_band( dialog );
