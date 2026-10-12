@@ -1,0 +1,38 @@
+# Git Bash runs commands (docs/linux-gate.md, component 9; Wine 0091).
+#
+# python tools/vm-test.py --script tests/vm/w8-git-bash.txt --wait 5
+#
+# A forked MSYS2 child used to die in its stack probe before it could run
+# anything, so every external command of Git Bash failed and --login itself
+# stopped at etc/post-install/06-windows-files.post ("Directory \drivers\etc
+# does not exist"). The "Couldn't compute FAST_CWD pointer" warning still
+# shows: it is only a warning.
+#
+# The command runs inside cmd, so what it printed stays on the screen even
+# when bash itself dies.
+#
+# What w8-bash must show, line by line:
+#   MSYS_NT-10.0-22000 ...      an external command
+#   pipe                        a pipe: two children and their fds
+#   sys=C:\windows\system32     command substitution: what post-install needs
+#   /tmp/tmp.XXXXXXXXXX         mktemp
+#   git version 2.56.0.windows.1
+#   rc=3                        a subshell's exit code
+#   bash=0                      cmd's view of how bash ended
+sleep 25
+key win-r
+sleep 2
+type cmd
+key ret
+sleep 4
+type "C:\Program Files\Git\bin\bash.exe" --login -c "uname -sr; echo pipe | cat; x=$(cygpath -S -w); echo sys=$x; mktemp -u; git --version; (exit 3); echo rc=$?"
+key ret
+sleep 15
+shot w8-bash-15
+# a hang and a slow start look alike at first: the second shot tells them apart
+sleep 45
+shot w8-bash-60
+type echo bash=%errorlevel%
+key ret
+sleep 2
+shot w8-bash

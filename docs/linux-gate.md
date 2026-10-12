@@ -290,6 +290,26 @@ Wine (`runtime/wine/patches`) — окремий етап із тестом
 `tests/vm/w8-git-bash.txt` (fork, конвеєри, `mktemp`, `git` з bash, коди
 виходу).
 
+**Причина знайдена 2026-10-13.** FAST_CWD — лише попередження в stderr, не
+причина. `strace.exe` з Git і `WINEDEBUG=+seh` (у `nt.log`) показали:
+fork проходить, а дочірній процес падає в `___chkstk_ms` (проба стеку)
+під час побудови оточення для `spawnve` — `c0000005` на `0x7FFFF8FE8`,
+рівно на сторінку нижче сторожової зони стеку. Дочірній процес MSYS2
+резервує свій стек із `PAGE_NOACCESS` і сам ставить сторожові сторінки
+`PAGE_READWRITE | PAGE_GUARD`. Коли стек доростає до сторожі,
+`grow_thread_stack` у Wine (`dlls/ntdll/unix/virtual.c`) робить
+сторожею наступну сторінку, **але лишає їй права резервації — тобто
+жодних**; Windows у цьому місці комітить нову сторожу як
+`PAGE_READWRITE | PAGE_GUARD` (ReactOS: `MiCheckForUserStackOverflow`).
+Наступний дотик знімає сторожу зі сторінки без прав — і доступ
+порушено. Власні стеки Wine резервує з RW, тому їх це не зачіпало.
+Виправлення — Wine `0091`: нова сторожа і гарантована зона
+переповнення — read-write, як у Windows. Через цю ж ваду Claude Code
+падав одразу на старті bash: `etc/post-install/06-windows-files.post`
+бере системний каталог через `$(cygpath -S -w)`, дочірній процес
+гинув, рядок виходив порожнім — «Directory \drivers\etc does not
+exist».
+
 **Рішення 2026-10-11: агенти — як у Windows одразу, без перехідного
 періоду.** `CLAUDE_CODE_GIT_BASH_PATH` із системного оточення зникає
 (`runtime/registry/wsl.reg`): Claude Code, як у Windows, сам знаходить Git
