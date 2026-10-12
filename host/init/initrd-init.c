@@ -1252,6 +1252,26 @@ static void install_update(const char *dev)
     }
     say("update: installing%s%s%s%s%s", up.host ? " host.sqfs" : "", up.boot ? " Boot" : "",
         up.windows ? " Windows" : "", up.root ? " Root" : "", up.del ? " delete" : "");
+    /* and what "ready" said, word for word: a part that was written and is
+     * not installed (the deletions of one update were not) is told apart
+     * from one that was never written only by this */
+    {
+        char text[256] = "";
+        int fd = open(UPDATE_DIR "/ready", O_RDONLY | O_CLOEXEC);
+
+        if (fd >= 0) {
+            ssize_t n = read(fd, text, sizeof(text) - 1);
+
+            close(fd);
+            if (n > 0) {
+                text[n] = 0;
+                for (char *p = text; *p; p++)
+                    if (*p == '\n' || *p == '\r')
+                        *p = ' ';
+                say("update: ready said: %s", text);
+            }
+        }
+    }
     /* a new host brings a new Wine, whose registry arctic-init brings up
      * next, under the same screen from 50% (one update, as in Windows) */
     int top = up.host ? 50 : 100;

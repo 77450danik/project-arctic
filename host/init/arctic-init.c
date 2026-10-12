@@ -3084,6 +3084,14 @@ int main(void)
      * keep the variable, and a .NET program without mscoree loads no assembly */
     if (updating)
         snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=mscoree,mshtml=");
+    /* Arctic's own settings go in before wineboot as well as after it: a
+     * service the update brings (Appinfo, the broker of User Account Control)
+     * is in these .reg files, and services.exe - which wineboot starts - reads
+     * the list of services once. Applied only afterwards, a new service would
+     * start a whole boot later. What wine.inf then writes over is put back by
+     * the second reapply_registry below. */
+    if (updating)
+        reapply_registry();
     int rc = run(wineboot, 1, ntlog, 300);
     if (updating && rc == 137) {
         /* wineboot hung: every Wine program started after it waits for its
