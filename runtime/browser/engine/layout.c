@@ -76,6 +76,7 @@ struct layout
     struct deferred     *deferred;      /* positioned boxes waiting for their containing block */
     unsigned int         deferred_count, deferred_capacity;
     float                viewport_w, viewport_h;
+    float                fixed_right;   /* the right edge of the blocks of a set width laid out since it was 0 */
     float                last_width;    /* the border box of the last block laid out, */
     float                last_margin[2];    /* and its left and right margins as they came out */
 };
@@ -225,7 +226,9 @@ static BOOL is_field( lxb_dom_element_t *element )
 
 static BOOL is_block( const struct style *style )
 {
-    return style->display == DISPLAY_BLOCK || style->display == DISPLAY_LIST_ITEM;
+    return style->display == DISPLAY_BLOCK || style->display == DISPLAY_LIST_ITEM ||
+           style->display == DISPLAY_TABLE_ROW_GROUP || style->display == DISPLAY_TABLE_ROW ||
+           style->display == DISPLAY_TABLE_CELL;
 }
 
 /* visibility: hidden and opacity: 0 keep their place and draw nothing */
@@ -376,8 +379,16 @@ static void add_image( struct layout *ctx, lxb_dom_element_t *element, const str
 
     if ((src = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"src", 3, &len )))
         image = document_image( ctx->doc, src, len );
-    w = style->width.unit == LEN_PX ? style->width.value : (float)attribute_number( element, "width" );
+    w = style->width.unit == LEN_PX ? style->width.value :
+        style->width.unit == LEN_PERCENT ? style->width.value * ctx->line_width / 100.0f : (float)attribute_number( element, "width" );
     h = style->height.unit == LEN_PX ? style->height.value : (float)attribute_number( element, "height" );
+    if (style->max_width.unit != LEN_AUTO && w > length_px( &style->max_width, ctx->line_width ))
+    {
+        float max_w = length_px( &style->max_width, ctx->line_width );
+
+        if (h > 0 && w > 0) h = h * max_w / w;
+        w = max_w;
+    }
     if (!image)
     {
         /* an image of a size the page gave keeps its place, as in browsers;
@@ -1376,14 +1387,21 @@ static float lay_item( struct layout *ctx, struct flex_item *item, float main, f
         }
         else
         {
+            float outer_fixed = ctx->fixed_right;
+
+            ctx->fixed_right = 0;
             height = layout_block( ctx, item->element, style, 0, item->margin[0],
                                    main >= 0 ? main + item->margin[1] + item->margin[3] : containing, 0 );
             width = ctx->last_width;
             if (measuring && style->width.unit == LEN_AUTO)
             {
-                /* as wide as what it holds: the right edge of its text, its images, its fields */
+                /* as wide as what it holds: the right edge of its text, its images, its fields,
+                 * its blocks of a set width */
                 struct list_mark now;
                 float inner = item->margin[3] + style->border[3] + style->padding[3], right = inner;
+
+                /* the item itself is no block of a set width here: only what is inside it */
+                right = max( right, ctx->fixed_right < width + item->margin[3] - 0.5f ? ctx->fixed_right : inner );
 
                 mark_at( ctx, &now );
                 for (unsigned int i = item->from.items; i < now.items; i++)
@@ -1393,6 +1411,7 @@ static float lay_item( struct layout *ctx, struct flex_item *item, float main, f
                     right = max( right, (float)ctx->list->controls[i].rect.right );
                 width = min( width, right - item->margin[3] + style->padding[1] + style->border[1] );
             }
+            ctx->fixed_right = max( outer_fixed, ctx->fixed_right );
         }
     }
     mark_at( ctx, &item->to );
@@ -1729,6 +1748,220 @@ static float layout_flex( struct layout *ctx, lxb_dom_element_t *element, const 
     return fixed_height >= 0 ? max( fixed_height, total ) : total;
 }
 
+/* --- tables --- */
+
+#define MAX_COLUMNS 64
+
+struct table_cell
+{
+    struct flex_item item;
+    int              column, span;
+};
+
+static int attribute_int( lxb_dom_element_t *element, const char *name, int fallback )
+{
+    size_t len;
+    const char *value = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)name, strlen( name ), &len );
+
+    return value && atoi( value ) > 0 ? atoi( value ) : fallback;
+}
+
+/* the rows of a table, through its row groups, in order */
+static unsigned int table_rows( struct layout *ctx, lxb_dom_element_t *table, const struct style *style,
+                                lxb_dom_element_t **rows, const struct style **row_styles, unsigned int max_rows )
+{
+    unsigned int count = 0;
+
+    for (lxb_dom_node_t *node = lxb_dom_node_first_child( lxb_dom_interface_node( table ) ); node && count < max_rows;
+         node = lxb_dom_node_next( node ))
+    {
+        const struct style *child;
+        lxb_dom_element_t *element;
+
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+        element = lxb_dom_interface_element( node );
+        if (!(child = compute( ctx, style, element )) || child->display == DISPLAY_NONE) continue;
+        if (child->display == DISPLAY_TABLE_ROW_GROUP)
+            count += table_rows( ctx, element, child, rows + count, row_styles + count, max_rows - count );
+        else if (child->display == DISPLAY_TABLE_ROW)
+        {
+            rows[count] = element;
+            row_styles[count++] = child;
+        }
+    }
+    return count;
+}
+
+/* The rows and cells of a table at x, y in a content box width wide; returns their height.
+ * Columns are as wide as the widest cell asks or says, shrunk together when they do not fit;
+ * a row is as tall as its tallest cell, the others stretched to it or in its middle. */
+static float layout_table( struct layout *ctx, lxb_dom_element_t *table, const struct style *style, float x,
+                           float y, float width )
+{
+    lxb_dom_element_t *rows[512];
+    const struct style *row_styles[512];
+    unsigned int row_count = table_rows( ctx, table, style, rows, row_styles, ARRAY_SIZE(rows) ), columns = 0;
+    float natural[MAX_COLUMNS] = { 0 }, fixed[MAX_COLUMNS] = { 0 }, used[MAX_COLUMNS], total = 0, cursor;
+    float spacing = (float)attribute_int( table, "cellspacing", 2 );
+    struct table_cell *cells = NULL;
+    unsigned int *row_first = calloc( row_count + 1, sizeof(unsigned int) ), cell_count = 0, cell_capacity = 0;
+    const char *collapse;
+    size_t len;
+
+    if (!row_first) return 0;
+    if ((collapse = (const char *)lxb_dom_element_get_attribute( table, (const lxb_char_t *)"cellspacing", 11, &len )) &&
+        !atoi( collapse ))
+        spacing = 0;
+
+    /* the cells, each in its columns */
+    for (unsigned int r = 0; r < row_count; r++)
+    {
+        int column = 0;
+
+        row_first[r] = cell_count;
+        for (lxb_dom_node_t *node = lxb_dom_node_first_child( lxb_dom_interface_node( rows[r] ) ); node;
+             node = lxb_dom_node_next( node ))
+        {
+            const struct style *child;
+            lxb_dom_element_t *element;
+            struct table_cell *cell;
+
+            if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+            element = lxb_dom_interface_element( node );
+            if (!(child = compute( ctx, row_styles[r], element )) || child->display == DISPLAY_NONE) continue;
+            if (cell_count == cell_capacity)
+            {
+                unsigned int capacity = cell_capacity ? cell_capacity * 2 : 32;
+                struct table_cell *grown = realloc( cells, capacity * sizeof(*grown) );
+
+                if (!grown) break;
+                cells = grown;
+                cell_capacity = capacity;
+            }
+            cell = &cells[cell_count++];
+            memset( cell, 0, sizeof(*cell) );
+            cell->item.element = element;
+            cell->item.style = child;
+            cell->item.frame_h = child->border[3] + child->padding[3] + child->padding[1] + child->border[1];
+            cell->item.frame_v = child->border[0] + child->padding[0] + child->padding[2] + child->border[2];
+            cell->column = column;
+            cell->span = min( attribute_int( element, "colspan", 1 ), MAX_COLUMNS - column );
+            if (cell->span < 1) cell->span = 1;
+            column += cell->span;
+            if (column >= MAX_COLUMNS) break;
+        }
+        columns = max( columns, (unsigned int)column );
+    }
+    row_first[row_count] = cell_count;
+
+    /* what each column asks: its widest cell, or what a cell says */
+    for (unsigned int i = 0; i < cell_count; i++)
+    {
+        struct table_cell *cell = &cells[i];
+        const struct style *s = cell->item.style;
+        float w;
+
+        if (s->width.unit == LEN_PX) w = s->width.value + (s->border_box ? 0 : cell->item.frame_h);
+        else if (s->width.unit == LEN_PERCENT) w = s->width.value * width / 100.0f;
+        else if (attribute_int( cell->item.element, "width", 0 ))
+            w = (float)attribute_int( cell->item.element, "width", 0 );
+        else
+        {
+            lay_item( ctx, &cell->item, -1, -1, width, TRUE, &w );
+            truncate_list( ctx, &cell->item.from );
+            if (cell->span == 1) natural[cell->column] = max( natural[cell->column], w );
+            continue;
+        }
+        if (cell->span == 1) fixed[cell->column] = max( fixed[cell->column], w );
+    }
+    for (unsigned int c = 0; c < columns; c++)
+    {
+        used[c] = max( fixed[c], natural[c] );
+        total += used[c];
+    }
+    {
+        float room = width - spacing * (columns + 1);
+
+        if (total > room && total > 0)
+        {
+            /* too wide: the columns of no set width give up what is missing */
+            float flexible = 0, over = total - room;
+
+            for (unsigned int c = 0; c < columns; c++) if (!fixed[c]) flexible += used[c];
+            for (unsigned int c = 0; c < columns; c++)
+                if (!fixed[c] && flexible > 0) used[c] = max( 0, used[c] - over * used[c] / flexible );
+        }
+        else if (total < room && style->width.unit != LEN_AUTO && columns)
+        {
+            /* a table of a set width: what is left goes to its columns */
+            float extra = (room - total) / columns;
+
+            for (unsigned int c = 0; c < columns; c++) used[c] += extra;
+        }
+    }
+
+    /* the rows, top down */
+    cursor = spacing;
+    for (unsigned int r = 0; r < row_count; r++)
+    {
+        float row_h = row_styles[r]->height.unit == LEN_PX ? row_styles[r]->height.value : 0, offset_x = spacing;
+        BOOL again = FALSE;
+
+        for (unsigned int i = row_first[r]; i < row_first[r + 1]; i++)
+        {
+            struct table_cell *cell = &cells[i];
+            float w = spacing * (cell->span - 1);
+
+            for (int c = cell->column; c < cell->column + cell->span && c < MAX_COLUMNS; c++) w += used[c];
+            cell->item.main = max( w, cell->item.frame_h );
+            {
+                lxb_dom_element_t *outer = enter_link( ctx, cell->item.element );
+
+                cell->item.cross = lay_item( ctx, &cell->item, cell->item.main, -1, cell->item.main, FALSE, NULL );
+                ctx->link = outer;
+            }
+            row_h = max( row_h, cell->item.cross );
+        }
+        /* cells with a background or a frame reach down to the row's bottom */
+        for (unsigned int i = row_first[r]; i < row_first[r + 1]; i++)
+            if (cells[i].item.cross + 0.5f < row_h &&
+                ((cells[i].item.style->background >> 24) || cells[i].item.frame_v > 0))
+                again = TRUE;
+        if (again && row_first[r] < row_first[r + 1])
+        {
+            truncate_list( ctx, &cells[row_first[r]].item.from );
+            for (unsigned int i = row_first[r]; i < row_first[r + 1]; i++)
+            {
+                struct table_cell *cell = &cells[i];
+                BOOL stretch = (cell->item.style->background >> 24) || cell->item.frame_v > 0;
+                lxb_dom_element_t *outer = enter_link( ctx, cell->item.element );
+
+                cell->item.cross = lay_item( ctx, &cell->item, cell->item.main, stretch ? row_h : -1, cell->item.main,
+                                             FALSE, NULL );
+                ctx->link = outer;
+            }
+        }
+        for (unsigned int i = row_first[r]; i < row_first[r + 1]; i++)
+        {
+            struct table_cell *cell = &cells[i];
+            float top = 0;
+
+            offset_x = spacing;
+            for (int c = 0; c < cell->column; c++) offset_x += used[c] + spacing;
+            if (cell->item.cross + 0.5f < row_h)
+            {
+                if (cell->item.style->valign == VALIGN_MIDDLE) top = (row_h - cell->item.cross) / 2;
+                else if (cell->item.style->valign == VALIGN_BOTTOM) top = row_h - cell->item.cross;
+            }
+            shift_box( ctx, &cell->item.from, &cell->item.to, (int)(x + offset_x + 0.5f), (int)(y + cursor + top + 0.5f) );
+        }
+        cursor += row_h + spacing;
+    }
+    free( cells );
+    free( row_first );
+    return row_count ? cursor : 0;
+}
+
 static void emit_marker( struct layout *ctx, const struct style *style, float content_x, float content_y,
                          int index )
 {
@@ -1813,6 +2046,12 @@ static void place_absolute( struct layout *ctx, const struct deferred *entry, fl
             }
         }
     }
+    /* a height in percent is of the containing block's, known here */
+    if (copy->height.unit == LEN_PERCENT)
+    {
+        copy->height.unit = LEN_PX;
+        copy->height.value = copy->height.value * cb_h / 100.0f - (copy->border_box ? 0 : 0);
+    }
     if (copy->height.unit == LEN_AUTO && has[0] && has[2])
     {
         copy->height.unit = LEN_PX;
@@ -1860,6 +2099,41 @@ static void place_deferred( struct layout *ctx, unsigned int first, float cb_x, 
     }
     /* what the placed ones deferred themselves they have placed: only the fixed stay */
     ctx->deferred_count = min( kept, ctx->deferred_count );
+}
+
+/* an <img> that is a block of its own - display: block, absolute -: its picture fills its
+ * content box, as wide as it is unless the page says, as tall as its proportions make it */
+static float layout_image_block( struct layout *ctx, lxb_dom_element_t *element, const struct style *style,
+                                 float x, float y, float *content_w, BOOL width_auto, float containing )
+{
+    const struct image *image = NULL;
+    const char *src;
+    size_t len;
+    float w = *content_w, h, iw = 0, ih = 0;
+    struct item *item;
+
+    if ((src = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"src", 3, &len )))
+        image = document_image( ctx->doc, src, len );
+    if (image) { iw = (float)image->width; ih = (float)image->height; }
+    if (!iw) iw = (float)attribute_number( element, "width" );
+    if (!ih) ih = (float)attribute_number( element, "height" );
+    if (width_auto)
+    {
+        if (style->height.unit == LEN_PX && ih > 0) w = style->height.value * iw / ih;
+        else w = iw;
+        if (style->max_width.unit != LEN_AUTO) w = min( w, length_px( &style->max_width, containing ) );
+        *content_w = w;
+    }
+    if (style->height.unit == LEN_PX) h = style->height.value;
+    else if (style->height.unit == LEN_PERCENT) h = style->height.value * style_viewport_height / 100.0f;
+    else h = iw > 0 ? w * ih / iw : ih;
+    if (image && paints( style ) && w > 0 && h > 0 && (item = display_list_add( ctx->list, ITEM_IMAGE )))
+    {
+        SetRect( &item->rect, (int)x, (int)y, (int)ceilf( x + w ), (int)ceilf( y + h ) );
+        item->image = image;
+        if (ctx->link) display_list_link( ctx->list, &item->rect, ctx->link );
+    }
+    return h;
 }
 
 static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const struct style *style,
@@ -1918,7 +2192,17 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
     if (style->display == DISPLAY_LIST_ITEM && paints( style ))
         emit_marker( ctx, style, box_x + style->border[3] + style->padding[3], y + frame_v_top, list_index );
 
-    if (style->flex)
+    if (lxb_dom_element_tag_id( element ) == LXB_TAG_IMG)
+    {
+        BOOL width_auto = style->width.unit == LEN_AUTO;
+
+        content_h = layout_image_block( ctx, element, style, box_x + style->border[3] + style->padding[3],
+                                        y + frame_v_top, &content_w, width_auto, containing );
+    }
+    else if (style->table)
+        content_h = layout_table( ctx, element, style, box_x + style->border[3] + style->padding[3], y + frame_v_top,
+                                  content_w );
+    else if (style->flex)
         content_h = layout_flex( ctx, element, style, box_x + style->border[3] + style->padding[3], y + frame_v_top,
                                  content_w );
     else content_h = flow_children( ctx, lxb_dom_interface_node( element ), style, box_x + style->border[3] + style->padding[3],
@@ -1950,6 +2234,27 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
         }
     }
 
+    if (style->position != POSITION_STATIC)
+    {
+        struct list_mark now;
+
+        /* its absolute descendants go against its padding box */
+        place_deferred( ctx, waiting, box_x + style->border[3], y + style->border[0],
+                        content_w + style->padding[3] + style->padding[1],
+                        content_h + style->padding[0] + style->padding[2], FALSE );
+        if (style->position == POSITION_RELATIVE)
+        {
+            /* moved from where it stands, the flow keeping its place */
+            float dx = style->inset[3].unit != LEN_AUTO ? length_px( &style->inset[3], containing ) :
+                       style->inset[1].unit != LEN_AUTO ? -length_px( &style->inset[1], containing ) : 0;
+            float dy = style->inset[0].unit != LEN_AUTO ? length_px( &style->inset[0], containing ) :
+                       style->inset[2].unit != LEN_AUTO ? -length_px( &style->inset[2], containing ) : 0;
+
+            mark_at( ctx, &now );
+            if (dx || dy) shift_box( ctx, &start, &now, (int)dx, (int)dy );
+        }
+        ctx->list->layer = outer_layer;
+    }
     if (style->clips && lxb_dom_element_tag_id( element ) != LXB_TAG_HTML &&
         lxb_dom_element_tag_id( element ) != LXB_TAG_BODY)
     {
@@ -1974,28 +2279,8 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
         for (unsigned int i = start.links; i < now.links; i++)
             IntersectRect( &ctx->list->links[i].rect, &ctx->list->links[i].rect, &box );
     }
-    if (style->position != POSITION_STATIC)
-    {
-        struct list_mark now;
-
-        /* its absolute descendants go against its padding box */
-        place_deferred( ctx, waiting, box_x + style->border[3], y + style->border[0],
-                        content_w + style->padding[3] + style->padding[1],
-                        content_h + style->padding[0] + style->padding[2], FALSE );
-        if (style->position == POSITION_RELATIVE)
-        {
-            /* moved from where it stands, the flow keeping its place */
-            float dx = style->inset[3].unit != LEN_AUTO ? length_px( &style->inset[3], containing ) :
-                       style->inset[1].unit != LEN_AUTO ? -length_px( &style->inset[1], containing ) : 0;
-            float dy = style->inset[0].unit != LEN_AUTO ? length_px( &style->inset[0], containing ) :
-                       style->inset[2].unit != LEN_AUTO ? -length_px( &style->inset[2], containing ) : 0;
-
-            mark_at( ctx, &now );
-            if (dx || dy) shift_box( ctx, &start, &now, (int)dx, (int)dy );
-        }
-        ctx->list->layer = outer_layer;
-    }
     ctx->list->owner = outer_owner;
+    if (fixed && !ctx->list->absolute) ctx->fixed_right = max( ctx->fixed_right, box_x + content_w + frame_h );
     ctx->last_width = content_w + frame_h;  /* as the box itself came out, not its last descendant */
     ctx->last_margin[0] = ml;
     ctx->last_margin[1] = mr;

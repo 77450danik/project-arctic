@@ -844,8 +844,16 @@ static void apply_display( lxb_dom_element_t *element, struct style *style )
 
     if (!decl) return;
     style->flex = decl->u.display->a == LXB_CSS_VALUE_FLEX || decl->u.display->a == LXB_CSS_VALUE_INLINE_FLEX;
+    style->table = decl->u.display->a == LXB_CSS_VALUE_TABLE || decl->u.display->a == LXB_CSS_VALUE_INLINE_TABLE;
     switch (decl->u.display->a)
     {
+    case LXB_CSS_VALUE_TABLE_ROW_GROUP:
+    case LXB_CSS_VALUE_TABLE_HEADER_GROUP:
+    case LXB_CSS_VALUE_TABLE_FOOTER_GROUP: style->display = DISPLAY_TABLE_ROW_GROUP; return;
+    case LXB_CSS_VALUE_TABLE_ROW:          style->display = DISPLAY_TABLE_ROW; return;
+    case LXB_CSS_VALUE_TABLE_CELL:         style->display = DISPLAY_TABLE_CELL; return;
+    case LXB_CSS_VALUE_TABLE_COLUMN:
+    case LXB_CSS_VALUE_TABLE_COLUMN_GROUP: style->display = DISPLAY_NONE; return;
     case LXB_CSS_VALUE_NONE:         style->display = DISPLAY_NONE; break;
     case LXB_CSS_VALUE_INLINE:
     case LXB_CSS_VALUE_CONTENTS:     style->display = DISPLAY_INLINE; break;
@@ -953,6 +961,7 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     style->clips = FALSE;
     for (int i = 0; i < 4; i++) style->inset[i].unit = LEN_AUTO;
     style->flex = FALSE;
+    style->table = FALSE;
     style->flex_direction = FLEX_ROW;
     style->flex_wrap = FALSE;
     style->justify = JUSTIFY_START;
@@ -1012,6 +1021,34 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
         break;
     case LXB_TAG_INPUT: case LXB_TAG_SELECT: case LXB_TAG_TEXTAREA: case LXB_TAG_BUTTON:
         ua_control( element, style );
+        break;
+    case LXB_TAG_TABLE:
+        style->table = TRUE;
+        break;
+    case LXB_TAG_THEAD: case LXB_TAG_TBODY: case LXB_TAG_TFOOT:
+        style->display = DISPLAY_TABLE_ROW_GROUP;
+        break;
+    case LXB_TAG_TR:
+        style->display = DISPLAY_TABLE_ROW;
+        break;
+    case LXB_TAG_TD: case LXB_TAG_TH:
+    {
+        /* a cell: in the middle of its row, cellpadding="" of its table around it */
+        lxb_dom_node_t *up = lxb_dom_interface_node( element )->parent;
+        size_t len;
+        const char *pad = NULL;
+
+        style->display = DISPLAY_TABLE_CELL;
+        style->valign = VALIGN_MIDDLE;
+        while (up && !(up->type == LXB_DOM_NODE_TYPE_ELEMENT &&
+                       lxb_dom_element_tag_id( lxb_dom_interface_element( up ) ) == LXB_TAG_TABLE))
+            up = up->parent;
+        if (up) pad = (const char *)lxb_dom_element_get_attribute( lxb_dom_interface_element( up ), (const lxb_char_t *)"cellpadding", 11, &len );
+        for (int i = 0; i < 4; i++) style->padding[i] = pad ? (float)atoi( pad ) : 1;
+        break;
+    }
+    case LXB_TAG_COL: case LXB_TAG_COLGROUP:
+        style->display = DISPLAY_NONE;
         break;
     case LXB_TAG_IFRAME:
     {

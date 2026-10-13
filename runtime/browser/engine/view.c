@@ -32,6 +32,7 @@ static const WCHAR view_class[] = L"Internet Explorer_Server";
 #define WHEEL_STEP  100     /* a notch of the wheel, as browsers on Windows scroll */
 #define WM_LOADED   (WM_APP + 1)
 #define WM_FRAME_LOADED (WM_APP + 2)
+#define WM_IMAGE_LOADED (WM_APP + 3)
 
 struct arctic_html_view
 {
@@ -254,6 +255,79 @@ static void load_frame( struct arctic_html_view *view, struct document *parent, 
         free( job->name );
         free( job );
     }
+}
+
+/* images a script added: each fetched on a thread, each placed as it comes */
+struct image_job
+{
+    HWND             window;
+    LONG             navigation;
+    struct document *doc;
+    char            *page;
+    char           **urls;
+    unsigned int     count;
+};
+
+struct image_result
+{
+    struct document *doc;
+    char            *url;
+    struct image     image;
+};
+
+static DWORD WINAPI image_loader( void *arg )
+{
+    struct image_job *job = arg;
+
+    for (unsigned int i = 0; i < job->count; i++)
+    {
+        struct image_result *result = calloc( 1, sizeof(*result) );
+
+        if (result)
+        {
+            result->doc = job->doc;
+            result->url = job->urls[i];
+            job->urls[i] = NULL;
+            document_fetch_image( result->url, job->page, &result->image );
+            if (!PostMessageW( job->window, WM_IMAGE_LOADED, job->navigation, (LPARAM)result ))
+            {
+                if (result->image.bitmap) DeleteObject( result->image.bitmap );
+                free( result->url );
+                free( result );
+            }
+        }
+        free( job->urls[i] );
+    }
+    free( job->urls );
+    free( job->page );
+    free( job );
+    return 0;
+}
+
+static void load_new_images( struct arctic_html_view *view, struct document *doc )
+{
+    struct image_job *job;
+    char **urls;
+    unsigned int count;
+    HANDLE thread;
+
+    if (!doc) return;
+    for (unsigned int i = 0; i < doc->frame_count; i++) load_new_images( view, doc->frames[i]->doc );
+    if (!(count = document_new_images( doc, &urls ))) return;
+    if (!(job = calloc( 1, sizeof(*job) )))
+    {
+        for (unsigned int i = 0; i < count; i++) free( urls[i] );
+        free( urls );
+        return;
+    }
+    job->window = view->window;
+    job->navigation = view->navigation;
+    job->doc = doc;
+    job->page = _strdup( doc->address ? doc->address : "" );
+    job->urls = urls;
+    job->count = count;
+    if ((thread = CreateThread( NULL, 0, image_loader, job, 0, NULL ))) CloseHandle( thread );
+    else image_loader( job );
 }
 
 /* the <iframe>s of a document that have no document yet, or another src now */
@@ -846,6 +920,7 @@ static void after_script( struct arctic_html_view *view )
     if (tree_mutations( doc ) != view->mutations)
     {
         if (doc->html) check_frames( view, doc, lxb_dom_interface_node( doc->html ) );
+        load_new_images( view, doc );
         view->mutations = tree_mutations( doc );
         view->relayout = TRUE;
         InvalidateRect( view->window, NULL, FALSE );
@@ -1049,6 +1124,21 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
             return 0;
         }
         break;
+    }
+    case WM_IMAGE_LOADED:
+    {
+        struct image_result *result = (struct image_result *)lp;
+
+        if ((LONG)wp == view->navigation && in_tree( view->doc, result->doc ) &&
+            document_set_image( result->doc, result->url, &result->image ))
+        {
+            view->relayout = TRUE;
+            InvalidateRect( hwnd, NULL, FALSE );
+        }
+        if (result->image.bitmap) DeleteObject( result->image.bitmap );
+        free( result->url );
+        free( result );
+        return 0;
     }
     case WM_FRAME_LOADED:
     {

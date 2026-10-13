@@ -471,6 +471,52 @@ static void collect_images( struct document *doc, lxb_dom_node_t *node )
     }
 }
 
+/* the <img>s a page's scripts added since it loaded: each gets its place, failed until it
+ * comes; their addresses come back for the view to fetch on a thread of its own */
+unsigned int document_new_images( struct document *doc, char ***urls )
+{
+    unsigned int before = doc->image_count, count;
+
+    *urls = NULL;
+    if (!doc->html) return 0;
+    collect_images( doc, lxb_dom_interface_node( doc->html ) );
+    if (!(count = doc->image_count - before) || !(*urls = calloc( count, sizeof(char *) ))) return 0;
+    for (unsigned int i = 0; i < count; i++) (*urls)[i] = _strdup( doc->images[before + i]->url );
+    return count;
+}
+
+/* an image fetched and decoded on another thread: its picture goes to its place */
+BOOL document_set_image( struct document *doc, const char *url, struct image *decoded )
+{
+    struct image *image = find_image( doc, url );
+
+    if (!image || !image->failed) return FALSE;
+    image->bitmap = decoded->bitmap;
+    image->width = decoded->width;
+    image->height = decoded->height;
+    image->failed = decoded->failed;
+    decoded->bitmap = NULL;
+    return TRUE;
+}
+
+/* fetched and decoded, for a page that shows: the view does it on a thread of its own */
+BOOL document_fetch_image( const char *url, const char *page, struct image *image )
+{
+    struct response response;
+    BOOL ok = FALSE;
+
+    memset( image, 0, sizeof(*image) );
+    image->failed = TRUE;
+    if (net_fetch( url, page, REQUEST_IMAGE, &response ) && response.status < 400 && response.body &&
+        image_decode( image, response.body, response.length ))
+    {
+        image->failed = FALSE;
+        ok = TRUE;
+    }
+    response_free( &response );
+    return ok;
+}
+
 static DWORD WINAPI image_thread( void *arg )
 {
     struct image_jobs *jobs = arg;

@@ -279,6 +279,10 @@ struct frame *document_frame( struct document *doc, lxb_dom_element_t *element, 
 char *frame_url( struct document *doc, lxb_dom_element_t *element );
 /* which document of a page and its frames an element is in */
 struct document *document_owning( struct document *root, lxb_dom_element_t *element );
+/* images scripts add after the page loaded (document.c): new ones to fetch, fetched ones placed */
+unsigned int document_new_images( struct document *doc, char ***urls );
+BOOL document_fetch_image( const char *url, const char *page, struct image *image );
+BOOL document_set_image( struct document *doc, const char *url, struct image *decoded );
 /* the decoded image of an <img src>, if it came */
 const struct image *document_image( struct document *doc, const char *src, size_t len );
 /* an address the page writes, made absolute against its base; the caller frees */
@@ -312,7 +316,8 @@ char *css_expand_inline( const struct css_context *ctx, const char *style, size_
 
 /* --- styles --- */
 
-enum display_kind { DISPLAY_NONE, DISPLAY_INLINE, DISPLAY_BLOCK, DISPLAY_LIST_ITEM, DISPLAY_INLINE_BLOCK };
+enum display_kind { DISPLAY_NONE, DISPLAY_INLINE, DISPLAY_BLOCK, DISPLAY_LIST_ITEM, DISPLAY_INLINE_BLOCK,
+                    DISPLAY_TABLE_ROW_GROUP, DISPLAY_TABLE_ROW, DISPLAY_TABLE_CELL };
 enum white_space_kind { WS_NORMAL, WS_NOWRAP, WS_PRE, WS_PRE_WRAP, WS_PRE_LINE };
 enum text_align_kind { ALIGN_LEFT, ALIGN_RIGHT, ALIGN_CENTER, ALIGN_JUSTIFY };
 enum length_unit { LEN_AUTO, LEN_PX, LEN_PERCENT };
@@ -357,6 +362,7 @@ struct style
     enum valign_kind      valign;       /* of an inline-block or an image on its line */
     /* flexbox: the container's */
     BOOL                  flex;         /* display: flex or inline-flex */
+    BOOL                  table;        /* display: table or inline-table */
     enum flex_direction   flex_direction;
     BOOL                  flex_wrap;
     enum justify_kind     justify;

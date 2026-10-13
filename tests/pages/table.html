@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Таблиці</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px }
+table.data { border: 1px solid #888 } .data td, .data th { border: 1px solid #bbb; padding: 4px 8px } .data th { background: #e8eef6 }
+.grid td { padding: 0 }
+.wrap { position: relative; width: 100px; height: 100px; overflow: hidden }
+.wrap img { position: absolute; width: 300%; height: 300% }
+.block { display: block; width: 240px; margin: 10px 0; border: 1px solid #ccc }
+</style></head>
+<body>
+<table class="data"><tr><th>Місто</th><th>Температура</th><th>Опис</th></tr>
+<tr><td>Київ</td><td>11°</td><td>Хмарно, вітер північний</td></tr>
+<tr><td>Львів</td><td>9°</td><td>Дощ</td></tr>
+<tr><td colspan="2">Разом два міста</td><td>colspan=2</td></tr></table>
+<p>Сітка 3×3, кожна клітинка — шматок однієї картинки:</p>
+<table class="grid" cellspacing="4"><tbody>
+<tr><td><div class="wrap"><img src="picture.png" style="top:0;left:0"></div></td><td><div class="wrap"><img src="picture.png" style="top:0;left:-100%"></div></td><td><div class="wrap"><img src="picture.png" style="top:0;left:-200%"></div></td></tr>
+<tr><td><div class="wrap"><img src="picture.png" style="top:-100%;left:0"></div></td><td><div class="wrap"><img src="picture.png" style="top:-100%;left:-100%"></div></td><td><div class="wrap"><img src="picture.png" style="top:-100%;left:-200%"></div></td></tr>
+<tr><td><div class="wrap"><img src="picture.png" style="top:-200%;left:0"></div></td><td><div class="wrap"><img src="picture.png" style="top:-200%;left:-100%"></div></td><td><div class="wrap"><img src="picture.png" style="top:-200%;left:-200%"></div></td></tr>
+</tbody></table>
+<img class="block" src="picture.png">
+</body></html>
