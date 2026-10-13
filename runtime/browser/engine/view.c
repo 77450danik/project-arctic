@@ -258,6 +258,7 @@ static void check_frames( struct arctic_html_view *view, struct document *doc, l
 
         if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
         element = lxb_dom_interface_element( node );
+        if (lxb_dom_element_tag_id( element ) == LXB_TAG_NOSCRIPT) continue;    /* for browsers without scripts */
         if (lxb_dom_element_tag_id( element ) != LXB_TAG_IFRAME)
         {
             check_frames( view, doc, node );
@@ -381,7 +382,7 @@ static lxb_dom_element_t *link_at( struct arctic_html_view *view, int x, int y )
 {
     POINT point = { x, y + view->scroll_y };
 
-    if (view->relayout) return NULL;
+    if (view->relayout) layout( view );
     for (unsigned int i = view->list.link_count; i--; )
         if (PtInRect( &view->list.links[i].rect, point )) return view->list.links[i].element;
     return NULL;
@@ -441,7 +442,7 @@ static const struct control_area *control_at( struct arctic_html_view *view, int
 {
     POINT point = { x, y + view->scroll_y };
 
-    if (view->relayout) return NULL;
+    if (view->relayout) layout( view );
     for (unsigned int i = view->list.control_count; i--; )
         if (PtInRect( &view->list.controls[i].rect, point )) return &view->list.controls[i];
     return NULL;
@@ -853,7 +854,8 @@ static lxb_dom_element_t *target_at( struct arctic_html_view *view, int x, int y
 {
     lxb_dom_element_t *target;
 
-    if (!view->doc || view->relayout) return NULL;
+    if (!view->doc) return NULL;
+    if (view->relayout) layout( view );     /* a script changed the page: where things are now */
     if ((target = display_list_hit( &view->list, x, y + view->scroll_y ))) return target;
     return view->doc->html && view->doc->html->body ? lxb_dom_interface_element( view->doc->html->body ) : NULL;
 }

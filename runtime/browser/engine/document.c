@@ -537,6 +537,7 @@ static void find_base( struct document *doc, lxb_dom_node_t *node )
 
 static struct document *load_once( const WCHAR *url, const struct post_data *post, int width, int height,
                                    struct document *parent );
+static BOOL no_scripts(void);
 
 /* --- frames --- */
 
@@ -591,6 +592,8 @@ static void load_frames( struct document *doc, lxb_dom_node_t *node )
 
         if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
         element = lxb_dom_interface_element( node );
+        /* what is for browsers without scripts is not ours, when the page has scripts run */
+        if (lxb_dom_element_tag_id( element ) == LXB_TAG_NOSCRIPT && !no_scripts()) continue;
         if (lxb_dom_element_tag_id( element ) == LXB_TAG_IFRAME)
         {
             if ((frame = document_frame( doc, element, TRUE )) && !frame->doc && !frame->loading)

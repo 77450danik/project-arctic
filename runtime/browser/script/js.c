@@ -48,6 +48,9 @@ struct message
     char           *json;
     char           *origin;         /* of the page that sent it */
     lxb_dom_node_t *source;         /* the <iframe> it came from, or NULL from the parent */
+    int             port_id;        /* to a port of this window rather than to the window */
+    int             ports[4];       /* ports it brings: their ids on this side */
+    unsigned int    port_count;
     char           *target_origin;  /* in the outbox: who may read it */
     lxb_dom_node_t *to_frame;       /* in the outbox: the <iframe> it goes to, or NULL to the parent */
 };
@@ -832,8 +835,26 @@ static char *origin_of( const char *address )
     return origin;
 }
 
+/* an origin as browsers compare them: lower case, without the scheme's own port or a path */
+static void normalize_origin( const char *in, char *out, size_t size )
+{
+    const char *host = strstr( in, "://" );
+    size_t len;
+    char *p;
+
+    lstrcpynA( out, in, (int)size );
+    if (!host) return;
+    host += 3;
+    len = (host - in) + strcspn( host, "/?#" );
+    if (len < size) out[len] = 0;
+    CharLowerA( out );
+    if (!strncmp( out, "https://", 8 ) && (p = strrchr( out + 8, ':' )) && !strcmp( p, ":443" )) *p = 0;
+    if (!strncmp( out, "http://", 7 ) && (p = strrchr( out + 7, ':' )) && !strcmp( p, ":80" )) *p = 0;
+}
+
 static void queue_message( struct document *target, const char *json, size_t len, const char *origin,
-                           lxb_dom_node_t *source, const char *target_origin )
+                           lxb_dom_node_t *source, const char *target_origin, const int *ports, unsigned int port_count,
+                           int port_id )
 {
     struct script_env *env = target ? target->script : NULL;
     struct message *message;
@@ -843,10 +864,12 @@ static void queue_message( struct document *target, const char *json, size_t len
     /* the sender names who may read it: another origin gets nothing */
     if (target_origin && strcmp( target_origin, "*" ) && strcmp( target_origin, "/" ) && (own = origin_of( target->address )))
     {
-        BOOL same = !_stricmp( own, target_origin );
+        char a[300], b[300];
 
+        normalize_origin( own, a, sizeof(a) );
+        normalize_origin( target_origin, b, sizeof(b) );
         free( own );
-        if (!same) return;
+        if (strcmp( a, b )) { TRACE( "not for %s: dropped\n", a ); return; }
     }
     if (env->message_count == env->message_capacity)
     {
@@ -862,7 +885,44 @@ static void queue_message( struct document *target, const char *json, size_t len
     if (message->json) { memcpy( message->json, json, len ); message->json[len] = 0; }
     message->origin = _strdup( origin );
     message->source = source;
+    message->port_id = port_id;
+    message->port_count = min( port_count, ARRAY_SIZE(message->ports) );
+    for (unsigned int i = 0; i < message->port_count; i++) message->ports[i] = ports[i];
     if (env->window) SetTimer( env->window, (UINT_PTR)env, 0, NULL );
+}
+
+/* --- ports of MessageChannel passed between windows: each end an id, the id its document --- */
+
+struct port_entry
+{
+    int              id, peer;
+    struct document *doc;
+};
+
+static struct port_entry ports_table[1024];
+static unsigned int port_entries;
+static int next_port_id = 1;
+
+static struct port_entry *port_entry( int id )
+{
+    for (unsigned int i = 0; i < port_entries; i++) if (ports_table[i].id == id) return &ports_table[i];
+    return NULL;
+}
+
+static int port_add( struct document *doc )
+{
+    if (port_entries == ARRAY_SIZE(ports_table)) return 0;
+    ports_table[port_entries].id = next_port_id++;
+    ports_table[port_entries].doc = doc;
+    ports_table[port_entries].peer = 0;
+    return ports_table[port_entries++].id;
+}
+
+static void ports_forget( struct document *doc )
+{
+    for (unsigned int i = 0; i < port_entries; )
+        if (ports_table[i].doc == doc) ports_table[i] = ports_table[--port_entries];
+        else i++;
 }
 
 NATIVE(n_is_frame)
@@ -879,39 +939,88 @@ NATIVE(n_origin)
     return result;
 }
 
-/* a message of this page to its parent or to one of its frames, sent now */
+/* a message of this page - to its parent, to one of its frames, or by a port - sent now;
+ * the ports it brings are ids of this side, linked here to new ones of the other */
 static void send_message( struct script_env *env, const char *json, size_t len, const char *target_origin,
-                          lxb_dom_node_t *to_frame )
+                          lxb_dom_node_t *to_frame, int from_port, const int *ports, unsigned int port_count )
 {
-    struct document *doc = env->doc;
+    struct document *doc = env->doc, *target = NULL;
+    lxb_dom_node_t *source = NULL;
     char *origin = origin_of( doc->address );
+    int linked[4];
+    unsigned int count = 0;
 
+    if (from_port)
+    {
+        struct port_entry *entry = port_entry( from_port ), *peer = entry ? port_entry( entry->peer ) : NULL;
+
+        if (peer) queue_message( peer->doc, json, len, origin ? origin : "null", NULL, "*", NULL, 0, peer->id );
+        free( origin );
+        return;
+    }
     if (to_frame)
     {
         struct frame *frame = document_frame( doc, lxb_dom_interface_element( to_frame ), FALSE );
 
-        if (frame && frame->doc) queue_message( frame->doc, json, len, origin ? origin : "null", NULL, target_origin );
+        if (frame) target = frame->doc;
     }
     else if (doc->parent)
     {
         for (unsigned int i = 0; i < doc->parent->frame_count; i++)
             if (doc->parent->frames[i]->doc == doc)
-                queue_message( doc->parent, json, len, origin ? origin : "null",
-                               lxb_dom_interface_node( doc->parent->frames[i]->element ), target_origin );
+            {
+                target = doc->parent;
+                source = lxb_dom_interface_node( doc->parent->frames[i]->element );
+            }
+    }
+    if (target)
+    {
+        for (unsigned int i = 0; i < port_count && count < ARRAY_SIZE(linked); i++)
+        {
+            struct port_entry *mine = port_entry( ports[i] );
+            int theirs = mine ? port_add( target ) : 0;
+
+            if (!theirs) continue;
+            mine = port_entry( ports[i] );
+            mine->peer = theirs;
+            port_entry( theirs )->peer = mine->id;
+            linked[count++] = theirs;
+        }
+        queue_message( target, json, len, origin ? origin : "null", source, target_origin, linked, count, 0 );
     }
     free( origin );
 }
 
 /* posted while the page loads on its own thread: kept until it shows */
-static void post( JSContext *ctx, JSValueConst json_value, JSValueConst origin_value, lxb_dom_node_t *to_frame )
+static void post( JSContext *ctx, JSValueConst json_value, JSValueConst origin_value, lxb_dom_node_t *to_frame,
+                  int from_port, JSValueConst ports_value )
 {
     struct script_env *env = env_of( ctx );
-    const char *json, *target_origin;
+    const char *json, *target_origin = NULL;
+    int ports[4];
+    unsigned int port_count = 0;
     size_t len;
 
     if (!(json = JS_ToCStringLen( ctx, &len, json_value ))) return;
-    target_origin = JS_ToCString( ctx, origin_value );
-    if (env->window) send_message( env, json, len, target_origin, to_frame );
+    if (!JS_IsUndefined( origin_value )) target_origin = JS_ToCString( ctx, origin_value );
+    if (JS_IsArray( ports_value ))
+    {
+        JSValue length = JS_GetPropertyStr( ctx, ports_value, "length" );
+        int32_t n = 0;
+
+        JS_ToInt32( ctx, &n, length );
+        JS_FreeValue( ctx, length );
+        for (int32_t i = 0; i < n && port_count < ARRAY_SIZE(ports); i++)
+        {
+            JSValue v = JS_GetPropertyUint32( ctx, ports_value, i );
+            int32_t id = 0;
+
+            JS_ToInt32( ctx, &id, v );
+            JS_FreeValue( ctx, v );
+            if (id) ports[port_count++] = id;
+        }
+    }
+    if (env->window) send_message( env, json, len, target_origin, to_frame, from_port, ports, port_count );
     else if (env->outbox_count < 256)
     {
         if (env->outbox_count == env->outbox_capacity)
@@ -929,28 +1038,46 @@ static void post( JSContext *ctx, JSValueConst json_value, JSValueConst origin_v
             if ((message->json = malloc( len + 1 ))) { memcpy( message->json, json, len ); message->json[len] = 0; }
             message->target_origin = _strdup( target_origin ? target_origin : "*" );
             message->to_frame = to_frame;
+            message->port_id = from_port;
+            message->port_count = port_count;
+            memcpy( message->ports, ports, port_count * sizeof(int) );
         }
     }
     JS_FreeCString( ctx, json );
     if (target_origin) JS_FreeCString( ctx, target_origin );
 }
 
-/* postMessage to the page this frame is in */
+/* postMessage to the page this frame is in: (json, origin, [port ids]) */
 NATIVE(n_post_parent)
 {
-    if (env_of( ctx )->doc->parent) post( ctx, argv[0], argv[1], NULL );
+    if (env_of( ctx )->doc->parent) post( ctx, argv[0], argv[1], NULL, 0, argc > 2 ? argv[2] : JS_UNDEFINED );
     return JS_UNDEFINED;
 }
 
-/* postMessage to the document of an <iframe> of this page */
+/* postMessage to the document of an <iframe> of this page: (iframe, json, origin, [port ids]) */
 NATIVE(n_post_frame)
 {
     lxb_dom_node_t *frame = unwrap( ctx, argv[0] );
 
-    if (frame) post( ctx, argv[1], argv[2], frame );
+    if (frame) post( ctx, argv[1], argv[2], frame, 0, argc > 3 ? argv[3] : JS_UNDEFINED );
     return JS_UNDEFINED;
 }
-NATIVE(n_set_proto_for)
+
+/* a port of this window others can reach: its id */
+NATIVE(n_port_register)
+{
+    return JS_NewInt32( ctx, port_add( env_of( ctx )->doc ) );
+}
+
+/* a message by a port whose other end is in another window: (port id, json) */
+NATIVE(n_port_post)
+{
+    int32_t id = 0;
+
+    JS_ToInt32( ctx, &id, argv[0] );
+    if (id) post( ctx, argv[1], JS_UNDEFINED, NULL, id, JS_UNDEFINED );
+    return JS_UNDEFINED;
+}NATIVE(n_set_proto_for)
 {
     struct script_env *env = env_of( ctx );
 
@@ -1013,8 +1140,10 @@ static const JSCFunctionListEntry natives[] =
     JS_CFUNC_DEF( "evalModule", 2, n_eval_module ),
     JS_CFUNC_DEF( "isFrame", 0, n_is_frame ),
     JS_CFUNC_DEF( "origin", 0, n_origin ),
-    JS_CFUNC_DEF( "postParent", 2, n_post_parent ),
-    JS_CFUNC_DEF( "postFrame", 3, n_post_frame ),
+    JS_CFUNC_DEF( "postParent", 3, n_post_parent ),
+    JS_CFUNC_DEF( "postFrame", 4, n_post_frame ),
+    JS_CFUNC_DEF( "portRegister", 0, n_port_register ),
+    JS_CFUNC_DEF( "portPost", 2, n_port_post ),
     JS_CFUNC_DEF( "setCurrentScript", 1, n_set_current_script ),
 };
 
@@ -1361,7 +1490,9 @@ void script_attach( struct document *doc, HWND window )
     {
         struct message *message = &env->outbox[i];
 
-        if (message->json) send_message( env, message->json, strlen( message->json ), message->target_origin, message->to_frame );
+        if (message->json)
+            send_message( env, message->json, strlen( message->json ), message->target_origin, message->to_frame,
+                          message->port_id, message->ports, message->port_count );
         free( message->json );
         free( message->target_origin );
     }
@@ -1383,16 +1514,20 @@ void script_on_timer( struct document *doc )
     while (env->message_count)
     {
         struct message message = env->messages[0];
-        JSValue args[3];
+        JSValue args[5];
 
         memmove( env->messages, env->messages + 1, --env->message_count * sizeof(*env->messages) );
         args[0] = JS_NewString( env->ctx, message.json ? message.json : "null" );
         args[1] = JS_NewString( env->ctx, message.origin ? message.origin : "null" );
         args[2] = message.source ? wrap( env->ctx, message.source ) : JS_NULL;
-        result = JS_Call( env->ctx, env->deliver, JS_UNDEFINED, 3, args );
+        args[3] = JS_NewArray( env->ctx );
+        for (unsigned int i = 0; i < message.port_count; i++)
+            JS_SetPropertyUint32( env->ctx, args[3], i, JS_NewInt32( env->ctx, message.ports[i] ) );
+        args[4] = JS_NewInt32( env->ctx, message.port_id );
+        result = JS_Call( env->ctx, env->deliver, JS_UNDEFINED, 5, args );
         if (JS_IsException( result )) report_exception( env->ctx, "message" );
         JS_FreeValue( env->ctx, result );
-        for (int i = 0; i < 3; i++) JS_FreeValue( env->ctx, args[i] );
+        for (int i = 0; i < 5; i++) JS_FreeValue( env->ctx, args[i] );
         free( message.json );
         free( message.origin );
         while (run_job( env ) > 0) continue;
@@ -1439,6 +1574,7 @@ unsigned int script_mutations( struct document *doc )
 void script_free( struct script_env *env )
 {
     if (!env) return;
+    ports_forget( env->doc );
     if (env->window) KillTimer( env->window, (UINT_PTR)env );
     JS_UpdateStackTop( env->rt );
     env_free( env );

@@ -617,12 +617,27 @@ const HTMLImageElement = defineElement('HTMLImageElement', ['img'], class extend
 });
 reflect(HTMLImageElement, ['alt', 'srcset', 'sizes', 'loading', 'decoding', 'crossOrigin', 'referrerPolicy', 'useMap']);
 /* the window of another document: a page reaches it by postMessage, as across origins */
+/* ports given away with a message: the end that stays here is reached by an id from now on */
+function transferPorts(transfer) {
+    const ids = [];
+    for (const port of transfer || []) {
+        if (!(port instanceof MessagePort) || !port._other) continue;
+        const kept = port._other;
+        kept._id = N.portRegister();
+        portsById.set(kept._id, kept);
+        port._transferred = true;
+        ids.push(kept._id);
+    }
+    return ids;
+}
 function remoteWindow(post) {
     const w = {
-        postMessage(data, targetOrigin) {
+        postMessage(data, targetOrigin, transfer) {
             let json;
             try { json = JSON.stringify(data === undefined ? null : data); } catch (e) { throw new DOMException('could not clone', 'DataCloneError'); }
-            post(json, typeof targetOrigin === 'object' && targetOrigin ? String(targetOrigin.targetOrigin || '*') : String(targetOrigin || '*'));
+            const options = typeof targetOrigin === 'object' && targetOrigin ? targetOrigin : null;
+            if (options) transfer = options.transfer;
+            post(json, options ? String(options.targetOrigin || '/') : String(targetOrigin || '*'), transferPorts(transfer));
         },
         closed: false,
         close() {}, focus() {}, blur() {},
@@ -635,7 +650,7 @@ defineElement('HTMLIFrameElement', ['iframe'], class extends HTMLElement {
     get contentWindow() {
         if (!this.isConnected) return null;
         const x = extra(this);
-        return x.contentWindow || (x.contentWindow = remoteWindow((json, origin) => N.postFrame(this, json, origin)));
+        return x.contentWindow || (x.contentWindow = remoteWindow((json, origin, ports) => N.postFrame(this, json, origin, ports)));
     }
     get contentDocument() { return null; }
 });
@@ -1378,7 +1393,32 @@ class DOMParser {
     parseFromString(text) { const box = N.create('div'); N.setInner(box, String(text)); return { body: box, documentElement: box, querySelector: s => N.select(box, s, true)[0] || null, querySelectorAll: s => new NodeList(N.select(box, s, false)), getElementsByTagName: t => box.getElementsByTagName(t) }; }
 }
 class XMLSerializer { serializeToString(node) { return N.outer(node); } }
-class MessageChannel { constructor() { this.port1 = new EventTarget(); this.port2 = new EventTarget(); this.port1.postMessage = this.port2.postMessage = () => {}; this.port1.start = this.port2.start = this.port1.close = this.port2.close = () => {}; } }
+/* two ports of one window: what one posts, the other gets as a message, in a later task */
+/* the ports another window holds the other end of: by the id the engine gave them */
+const portsById = new Map();
+class MessagePort extends EventTarget {
+    constructor() { super(); this._other = null; this._closed = false; this.onmessage = null; this.onmessageerror = null; }
+    postMessage(data) {
+        const other = this._other;
+        if (this._closed) return;
+        /* the other end is in another window: the engine carries it there */
+        if (this._remote || (other && other._transferred)) {
+            if (this._id) N.portPost(this._id, JSON.stringify(data === undefined ? null : data));
+            return;
+        }
+        if (!other) return;
+        setTimeout(() => {
+            if (other._closed) return;
+            const event = new MessageEvent('message', { data, origin: '' });
+            event.ports = [];
+            other.dispatchEvent(event);
+        }, 0);
+    }
+    start() {} close() { this._closed = true; }
+}
+class MessageChannel {
+    constructor() { this.port1 = new MessagePort(); this.port2 = new MessagePort(); this.port1._other = this.port2; this.port2._other = this.port1; }
+}
 class BroadcastChannel extends EventTarget { constructor(name) { super(); this.name = name; } postMessage() {} close() {} }
 class Worker extends EventTarget { constructor() { super(); } postMessage() {} terminate() {} }
 class WebSocket extends EventTarget {
@@ -1394,7 +1434,7 @@ function getSelection() {
 
 const window = global;
 /* in a frame, the page it is in is another window: reached by postMessage */
-const parentWindow = N.isFrame() ? remoteWindow((json, origin) => N.postParent(json, origin)) : window;
+const parentWindow = N.isFrame() ? remoteWindow((json, origin, ports) => N.postParent(json, origin, ports)) : window;
 const definitions = {
     window, self: window, globalThis: window, top: parentWindow, parent: parentWindow, frames: window, opener: null,
     frameElement: null, closed: false, length: 0, name: '', status: '',
@@ -1418,7 +1458,7 @@ const definitions = {
     HTMLDocument, DocumentFragment, NodeList, HTMLCollection, DOMTokenList, CSSStyleDeclaration, DOMRect, Range,
     URL, URLSearchParams, Headers, Request, Response, XMLHttpRequest, Blob, File, FormData, DOMException,
     AbortController, AbortSignal, MutationObserver, ResizeObserver, IntersectionObserver, PerformanceObserver,
-    TextEncoder, TextDecoder, Image, Option, DOMParser, XMLSerializer, MessageChannel, BroadcastChannel, Worker,
+    TextEncoder, TextDecoder, Image, Option, DOMParser, XMLSerializer, MessageChannel, MessagePort, BroadcastChannel, Worker,
     WebSocket, Window: function Window() {}, CSS: { supports: () => false, escape: cssEscape },
     SVGElement: class SVGElement extends Element {}, ShadowRoot: DocumentFragment,
     HTMLSlotElement: HTMLElement,
@@ -1450,7 +1490,7 @@ for (const cls of [EventTarget, Event, CustomEvent, UIEvent, MouseEvent, Pointer
                    CSSStyleDeclaration, DOMRect, Range, URL, URLSearchParams, Headers, Request, Response,
                    XMLHttpRequest, Blob, File, FormData, DOMException, AbortController, AbortSignal, MutationObserver,
                    ResizeObserver, IntersectionObserver, PerformanceObserver, TextEncoder, TextDecoder, Image, Option,
-                   DOMParser, XMLSerializer, MessageChannel, BroadcastChannel, Worker, WebSocket, ...Object.values(classes)]) {
+                   DOMParser, XMLSerializer, MessageChannel, MessagePort, BroadcastChannel, Worker, WebSocket, ...Object.values(classes)]) {
     platform.add(cls);
     markPlatform(cls);
     markPlatform(cls.prototype);
@@ -1505,19 +1545,46 @@ function dispatch(target, type, x, y) {
 }
 
 /* postMessage to itself goes round the loop like any other */
-definitions.postMessage = function postMessage(data, targetOrigin) {
+definitions.postMessage = function postMessage(data, targetOrigin, transfer) {
     const json = JSON.stringify(data === undefined ? null : data);
-    setTimeout(() => deliverMessage(json, N.origin(), null, true), 0);
+    if (targetOrigin && typeof targetOrigin === 'object') transfer = targetOrigin.transfer;
+    const ports = (transfer || []).filter(p => p instanceof MessagePort);
+    setTimeout(() => {
+        let data;
+        try { data = JSON.parse(json); } catch (e) { data = json; }
+        const event = new MessageEvent('message', { data, origin: N.origin() });
+        event.source = window;
+        event.ports = ports;
+        event.isTrusted = true;
+        window.dispatchEvent(event);
+    }, 0);
 };
 Object.defineProperty(global, 'postMessage', { value: definitions.postMessage, writable: true, configurable: true });
 
-function deliverMessage(json, origin, sourceFrame, self) {
+function deliverMessage(json, origin, sourceFrame, portIds, toPort) {
     let data;
     try { data = JSON.parse(json); } catch (e) { data = json; }
-    const source = self ? window : sourceFrame ? sourceFrame.contentWindow : parentWindow;
+    if (toPort) {
+        /* by a port: to the port here whose other end sent it */
+        const port = portsById.get(toPort);
+        if (port) {
+            const event = new MessageEvent('message', { data, origin: '' });
+            event.ports = [];
+            event.isTrusted = true;
+            port.dispatchEvent(event);
+        }
+        return;
+    }
+    const ports = (portIds || []).map(id => {
+        const port = new MessagePort();
+        port._id = id;
+        port._remote = true;
+        portsById.set(id, port);
+        return port;
+    });
     const event = new MessageEvent('message', { data, origin });
-    event.source = source;
-    event.ports = [];
+    event.source = sourceFrame ? sourceFrame.contentWindow : parentWindow;
+    event.ports = ports;
     event.isTrusted = true;
     window.dispatchEvent(event);
 }
