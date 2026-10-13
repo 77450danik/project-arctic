@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>Етап 1: сторінка з диска</title>
+<link rel="stylesheet" href="stage1.css">
+<style>
+  .box { background: #eef4fb; border: 2px solid #4a7fb5; padding: 12px 16px; margin: 16px 0 }
+  .center { text-align: center }
+  .right { text-align: right; color: rgb(120, 40, 40) }
+  .narrow { width: 320px; margin: 12px auto; background: hsl(40, 90%, 88%); padding: 8px }
+  span.tag { background: #ffe58a; font-family: monospace }
+</style>
+</head>
+<body>
+<h1>Сторінка з диска</h1>
+<p>Цей файл лежить у <code>tests/pages/stage1.html</code> і показує, що вміє етап 1 рушія Arctic:
+блоки, поля й рамки, рядки, що переносяться по словах, <b>жирний</b>, <i>курсив</i>,
+<u>підкреслений</u>, <s>закреслений</s> текст, <a href="#">посилання</a> і <span class="tag">тло рядка</span>.</p>
+
+<div class="box">
+  <h2>Блок із рамкою</h2>
+  <p>Тло, рамка 2 px і внутрішні поля задані в &lt;style&gt; самої сторінки; шрифт заголовків — із
+  зовнішньої таблиці <code>stage1.css</code>, підключеної через &lt;link&gt;.</p>
+</div>
+
+<p class="center">Цей абзац вирівняно по центру.</p>
+<p class="right">А цей — праворуч і темно-червоний, кольором rgb().</p>
+<div class="narrow">Блок шириною 320 px, відцентрований полями <code>auto</code>, тло — hsl().</div>
+
+<h3>Списки</h3>
+<ul>
+  <li>маркований список</li>
+  <li>другий пункт, досить довгий, щоб перенестися на наступний рядок, якщо вікно вузьке</li>
+</ul>
+<ol>
+  <li>нумерований</li>
+  <li>список</li>
+  <li>з трьох пунктів</li>
+</ol>
+
+<h3>Попередньо відформатований текст</h3>
+<pre>int main(void)
+{
+    puts("рядки й пробіли тут як є");
+    return 0;
+}</pre>
+
+<h3>Картинка</h3>
+<p>Логотип Arctic поряд із текстом: <img src="../../ARCTIC.png" width="64" alt="[логотип]"> — сидить на базовій лінії.</p>
+
+<hr>
+<p style="font-size: 12px; color: gray">Рядок<br>розірваний &lt;br&gt;, а розмір 12 px заданий атрибутом style.</p>
+</body>
+</html>

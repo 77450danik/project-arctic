@@ -4,8 +4,8 @@
  * The engine owns its window, as the engine of Windows does: the class is
  * named "Internet Explorer_Server", so that what looks for the window of a
  * page finds it where it is used to. The host only says where the window
- * goes and where to navigate; the drawing, and later the scrolling and the
- * input, are the engine's own.
+ * goes and where to navigate; the drawing, the scrolling and the input are
+ * the engine's own.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -21,16 +21,22 @@
 
 static const WCHAR view_class[] = L"Internet Explorer_Server";
 
+#define LINE_STEP   40      /* an arrow key */
+#define WHEEL_STEP  100     /* a notch of the wheel, as browsers on Windows scroll */
+
 struct arctic_html_view
 {
     HWND                 window;
-    HWND                 host;       /* where the title and the navigation go */
+    HWND                 host;       /* where the title goes */
     struct surface       surface;
     struct display_list  list;
     struct present      *present;
+    struct document     *doc;
     WCHAR                url[2084];
     WCHAR                title[256];
-    BOOL                 relayout;   /* the list is not for this size any more */
+    BOOL                 relayout;   /* the list is not for this width any more */
+    int                  scroll_y;
+    int                  wheel_rest; /* a part of a notch from a precise wheel */
 };
 
 static void set_title( struct arctic_html_view *view, const WCHAR *title )
@@ -39,13 +45,49 @@ static void set_title( struct arctic_html_view *view, const WCHAR *title )
     if (view->host) SendMessageW( view->host, ARCTIC_HTML_WM_TITLE, 0, (LPARAM)view->title );
 }
 
-/* Stage 0 has no parser: every address shows the engine's own page, which
- * says so and shows the address it was given. Stage 1 loads a document
- * here instead, and the rest of the view does not change. */
+static int client_height( struct arctic_html_view *view )
+{
+    RECT rect;
+
+    GetClientRect( view->window, &rect );
+    return rect.bottom;
+}
+
+static void update_scrollbar( struct arctic_html_view *view )
+{
+    SCROLLINFO info = { .cbSize = sizeof(info), .fMask = SIF_RANGE | SIF_PAGE | SIF_POS };
+    int page = client_height( view ), limit = max( 0, view->list.content_height - page );
+
+    view->scroll_y = max( 0, min( view->scroll_y, limit ) );
+    info.nMax = view->list.content_height > page ? view->list.content_height - 1 : 0;
+    info.nPage = page;
+    info.nPos = view->scroll_y;
+    SetScrollInfo( view->window, SB_VERT, &info, TRUE );
+}
+
+static void scroll_to( struct arctic_html_view *view, int y )
+{
+    int limit = max( 0, view->list.content_height - client_height( view ) );
+
+    y = max( 0, min( y, limit ) );
+    if (y == view->scroll_y) return;
+    view->scroll_y = y;
+    SetScrollPos( view->window, SB_VERT, y, TRUE );
+    InvalidateRect( view->window, NULL, FALSE );
+}
+
 static void load( struct arctic_html_view *view )
 {
+    struct document *doc = document_load( view->url );
+
+    /* the old list points at fonts of the old page: both go together */
+    display_list_reset( &view->list );
+    font_cache_clear();
+    document_free( view->doc );
+    view->doc = doc;
+    view->scroll_y = 0;
     view->relayout = TRUE;
-    set_title( view, L"Arctic" );
+    set_title( view, doc && doc->title[0] ? doc->title : view->url );
     InvalidateRect( view->window, NULL, FALSE );
 }
 
@@ -54,8 +96,9 @@ static void layout( struct arctic_html_view *view )
     RECT rect;
 
     GetClientRect( view->window, &rect );
-    build_start_page( &view->list, rect.right, rect.bottom, view->url );
+    layout_document( view->doc, &view->list, rect.right, rect.bottom );
     view->relayout = FALSE;
+    update_scrollbar( view );
 }
 
 static void paint( struct arctic_html_view *view )
@@ -63,6 +106,7 @@ static void paint( struct arctic_html_view *view )
     RECT rect;
     HDC dc;
 
+    if (view->relayout) layout( view );
     GetClientRect( view->window, &rect );
     if (rect.right <= 0 || rect.bottom <= 0) return;
 
@@ -70,11 +114,8 @@ static void paint( struct arctic_html_view *view )
     {
         surface_destroy( &view->surface );
         if (!surface_create( &view->surface, rect.right, rect.bottom )) return;
-        view->relayout = TRUE;
     }
-    if (view->relayout) layout( view );
-
-    raster_paint( &view->surface, &view->list );
+    raster_paint( &view->surface, &view->list, view->scroll_y );
 
     if (present_surface( view->present, &view->surface )) return;
 
@@ -86,9 +127,31 @@ static void paint( struct arctic_html_view *view )
     }
 }
 
+static void on_scroll( struct arctic_html_view *view, int code )
+{
+    SCROLLINFO info = { .cbSize = sizeof(info), .fMask = SIF_TRACKPOS };
+    int page = client_height( view );
+
+    switch (code)
+    {
+    case SB_LINEUP:    scroll_to( view, view->scroll_y - LINE_STEP ); break;
+    case SB_LINEDOWN:  scroll_to( view, view->scroll_y + LINE_STEP ); break;
+    case SB_PAGEUP:    scroll_to( view, view->scroll_y - max( page - LINE_STEP, LINE_STEP ) ); break;
+    case SB_PAGEDOWN:  scroll_to( view, view->scroll_y + max( page - LINE_STEP, LINE_STEP ) ); break;
+    case SB_TOP:       scroll_to( view, 0 ); break;
+    case SB_BOTTOM:    scroll_to( view, view->list.content_height ); break;
+    case SB_THUMBTRACK:
+    case SB_THUMBPOSITION:
+        if (GetScrollInfo( view->window, SB_VERT, &info )) scroll_to( view, info.nTrackPos );
+        break;
+    }
+}
+
 static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
     struct arctic_html_view *view = (struct arctic_html_view *)GetWindowLongPtrW( hwnd, GWLP_USERDATA );
+
+    if (!view) return DefWindowProcW( hwnd, msg, wp, lp );
 
     switch (msg)
     {
@@ -100,30 +163,64 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         PAINTSTRUCT ps;
 
         BeginPaint( hwnd, &ps );
-        if (view) paint( view );
+        paint( view );
         EndPaint( hwnd, &ps );
         return 0;
     }
     case WM_SIZE:
-        if (view) view->relayout = TRUE;
+        /* a new width lays the page out again; a new height only shows more of it */
+        if (LOWORD(lp) != view->list.width) view->relayout = TRUE;
+        else update_scrollbar( view );
+        InvalidateRect( hwnd, NULL, FALSE );
         return 0;
 
     case WM_DISPLAYCHANGE:
     case WM_DPICHANGED:
-        if (view)
-        {
-            view->relayout = TRUE;
-            InvalidateRect( hwnd, NULL, FALSE );
-        }
+        view->relayout = TRUE;
+        InvalidateRect( hwnd, NULL, FALSE );
         return 0;
+
+    case WM_VSCROLL:
+        on_scroll( view, LOWORD(wp) );
+        return 0;
+
+    case WM_MOUSEWHEEL:
+    {
+        int delta = GET_WHEEL_DELTA_WPARAM( wp ) + view->wheel_rest;
+        int notches = delta / WHEEL_DELTA;
+
+        view->wheel_rest = delta - notches * WHEEL_DELTA;
+        scroll_to( view, view->scroll_y - notches * WHEEL_STEP );
+        return 0;
+    }
+    case WM_KEYDOWN:
+        switch (wp)
+        {
+        case VK_UP:    on_scroll( view, SB_LINEUP ); return 0;
+        case VK_DOWN:  on_scroll( view, SB_LINEDOWN ); return 0;
+        case VK_PRIOR: on_scroll( view, SB_PAGEUP ); return 0;
+        case VK_NEXT:
+        case VK_SPACE: on_scroll( view, GetKeyState( VK_SHIFT ) < 0 && wp == VK_SPACE ? SB_PAGEUP : SB_PAGEDOWN );
+                       return 0;
+        case VK_HOME:  on_scroll( view, SB_TOP ); return 0;
+        case VK_END:   on_scroll( view, SB_BOTTOM ); return 0;
+        }
+        break;
+
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+        SetFocus( hwnd );   /* the keys scroll the page from now on */
+        return 0;
+
+    case WM_GETDLGCODE:
+        return DLGC_WANTARROWS | DLGC_WANTCHARS;
     }
     return DefWindowProcW( hwnd, msg, wp, lp );
 }
 
 BOOL view_register_class(void)
 {
-    WNDCLASSW class = { .style = CS_HREDRAW | CS_VREDRAW, .lpfnWndProc = view_proc,
-                        .hInstance = arctichtml_instance,
+    WNDCLASSW class = { .lpfnWndProc = view_proc, .hInstance = arctichtml_instance,
                         .hCursor = LoadCursorW( 0, (LPCWSTR)IDC_ARROW ),
                         .lpszClassName = view_class };
 
@@ -147,7 +244,7 @@ struct arctic_html_view *view_create( HWND parent, const RECT *rect )
     else if (parent) GetClientRect( parent, &where );
 
     view->host = parent;
-    view->window = CreateWindowExW( 0, view_class, NULL, WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+    view->window = CreateWindowExW( 0, view_class, NULL, WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL,
                                     where.left, where.top, where.right - where.left,
                                     where.bottom - where.top, parent, NULL, arctichtml_instance, NULL );
     if (!view->window)
@@ -159,8 +256,7 @@ struct arctic_html_view *view_create( HWND parent, const RECT *rect )
     SetWindowLongPtrW( view->window, GWLP_USERDATA, (LONG_PTR)view );
 
     view->present = present_create( view->window );
-    TRACE( "view %p, window %p, %s\n", view, view->window,
-           present_on_gpu( view->present ) ? "Vulkan" : "GDI" );
+    TRACE( "view %p, window %p, %s\n", view, view->window, present_on_gpu( view->present ) ? "Vulkan" : "GDI" );
 
     lstrcpynW( view->url, L"about:blank", ARRAY_SIZE(view->url) );
     load( view );
@@ -178,6 +274,7 @@ void view_destroy( struct arctic_html_view *view )
     present_destroy( view->present );
     surface_destroy( &view->surface );
     display_list_free( &view->list );
+    document_free( view->doc );
     free( view );
 }
 
@@ -186,7 +283,6 @@ void view_set_rect( struct arctic_html_view *view, const RECT *rect )
     if (!view || !rect) return;
     SetWindowPos( view->window, 0, rect->left, rect->top, rect->right - rect->left,
                   rect->bottom - rect->top, SWP_NOZORDER | SWP_NOACTIVATE );
-    view->relayout = TRUE;
     InvalidateRect( view->window, NULL, FALSE );
 }
 

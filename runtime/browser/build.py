@@ -267,7 +267,7 @@ def build(args):
     if newer(dll, engine_objs + [liblexbor, deffile]):
         log("linking arctichtml.dll")
         run([cc, "-shared", "-s", "-Wl,--gc-sections", "-o", dll] + engine_objs + [liblexbor, deffile,
-            "-Wl,--out-implib," + implib] + runtime + ["-luser32", "-lgdi32"])
+            "-Wl,--out-implib," + implib] + runtime + ["-lshlwapi", "-lole32", "-luser32", "-lgdi32"])
 
     # the browser
     frame_dir = os.path.join(HERE, "iexplore")
@@ -286,6 +286,16 @@ def build(args):
         log("linking iexplore.exe")
         run([cc, "-mwindows", "-municode", "-s", "-Wl,--gc-sections", "-o", exe] + frame_objs + [res, implib]
             + runtime + ["-lcomctl32", "-luser32", "-lgdi32"])
+
+    # the engine with no window, for the tests (docs/browser.md, component 7)
+    run_dir = os.path.join(HERE, "htmlrun")
+    sources = [os.path.join(run_dir, f) for f in sorted(os.listdir(run_dir)) if f.endswith(".c")]
+    units = [(s, o, frame_flags) for s, o, _ in objects_for(sources, run_dir, os.path.join(obj_dir, "htmlrun"))]
+    run_objs = compile_all(cc, args.jobs, units)
+    runner = os.path.join(ie_dir, "htmlrun.exe")
+    if newer(runner, run_objs + [implib]):
+        log("linking htmlrun.exe")
+        run([cc, "-mconsole", "-municode", "-s", "-o", runner] + run_objs + [implib] + runtime)
 
     # the licences the borrowed code asks to travel with it
     licences = os.path.join(ie_dir, "Licenses")

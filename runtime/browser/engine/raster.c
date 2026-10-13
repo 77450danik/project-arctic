@@ -6,6 +6,9 @@
  * as one buffer. Stage 3 puts the glyphs into an atlas and the rectangles
  * into Vulkan; the display list it reads stays the same.
  *
+ * The list is in the coordinates of the document; the rasterizer draws the
+ * part of it the scroll position shows, and skips what is outside.
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -43,7 +46,7 @@ BOOL surface_create( struct surface *surface, int width, int height )
     surface->width = width;
     surface->height = height;
     SetBkMode( surface->dc, TRANSPARENT );
-    SetGraphicsMode( surface->dc, GM_ADVANCED );
+    SetTextAlign( surface->dc, TA_BASELINE | TA_LEFT | TA_NOUPDATECP );
     return TRUE;
 }
 
@@ -56,41 +59,32 @@ void surface_destroy( struct surface *surface )
     memset( surface, 0, sizeof(*surface) );
 }
 
-static void fill_rect( struct surface *surface, const RECT *rect, COLORREF color )
+/* a rectangle of 0xAARRGGBB, blended over what is there when not opaque */
+static void fill_rect( struct surface *surface, const RECT *rect, DWORD color )
 {
-    DWORD pixel = 0xff000000 | (GetRValue(color) << 16) | (GetGValue(color) << 8) | GetBValue(color);
+    unsigned a = color >> 24, na = 255 - a;
+    unsigned r = (color >> 16) & 0xff, g = (color >> 8) & 0xff, b = color & 0xff;
     int left = max( rect->left, 0 ), top = max( rect->top, 0 );
     int right = min( rect->right, surface->width ), bottom = min( rect->bottom, surface->height );
 
+    if (!a) return;
     for (int y = top; y < bottom; y++)
     {
         DWORD *row = surface->bits + (size_t)y * surface->width;
 
-        for (int x = left; x < right; x++) row[x] = pixel;
+        if (a == 255)
+        {
+            for (int x = left; x < right; x++) row[x] = 0xff000000 | (color & 0xffffff);
+            continue;
+        }
+        for (int x = left; x < right; x++)
+        {
+            DWORD p = row[x];
+
+            row[x] = 0xff000000 | (((r * a + ((p >> 16) & 0xff) * na) / 255) << 16) |
+                     (((g * a + ((p >> 8) & 0xff) * na) / 255) << 8) | ((b * a + (p & 0xff) * na) / 255);
+        }
     }
-}
-
-static const WCHAR *font_face( enum item_font font )
-{
-    switch (font)
-    {
-    case FONT_HEADING: return L"Arial";
-    case FONT_MONO:    return L"Courier New";
-    case FONT_UI:      return L"Source Sans Pro";
-    case FONT_BODY:
-    default:           return L"Times New Roman";
-    }
-}
-
-static HFONT create_font( HDC dc, const struct item *item )
-{
-    LOGFONTW desc = { .lfWeight = item->bold || item->font == FONT_HEADING ? FW_BOLD : FW_NORMAL,
-                      .lfCharSet = DEFAULT_CHARSET, .lfQuality = CLEARTYPE_QUALITY,
-                      .lfPitchAndFamily = item->font == FONT_MONO ? FIXED_PITCH : VARIABLE_PITCH };
-
-    desc.lfHeight = -MulDiv( item->size, GetDeviceCaps( dc, LOGPIXELSY ), 72 );
-    lstrcpynW( desc.lfFaceName, font_face( item->font ), ARRAY_SIZE(desc.lfFaceName) );
-    return CreateFontIndirectW( &desc );
 }
 
 /* GDI leaves the alpha byte of a DIB section at whatever it was, and a
@@ -102,38 +96,57 @@ static void make_opaque( struct surface *surface )
     for (size_t i = 0; i < count; i++) surface->bits[i] |= 0xff000000;
 }
 
-void raster_paint( struct surface *surface, const struct display_list *list )
+static void draw_image( struct surface *surface, HDC image_dc, const struct item *item, const RECT *where )
+{
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    HBITMAP old = SelectObject( image_dc, item->image->bitmap );
+
+    GdiAlphaBlend( surface->dc, where->left, where->top, where->right - where->left, where->bottom - where->top,
+                   image_dc, 0, 0, item->image->width, item->image->height, blend );
+    SelectObject( image_dc, old );
+}
+
+void raster_paint( struct surface *surface, const struct display_list *list, int scroll_y )
 {
     RECT whole = { 0, 0, surface->width, surface->height };
+    HDC image_dc = NULL;
 
     if (!surface->dc || !surface->bits) return;
 
-    fill_rect( surface, &whole, list->background );
+    fill_rect( surface, &whole, list->background | 0xff000000 );
 
     for (unsigned int i = 0; i < list->count; i++)
     {
         const struct item *item = &list->items[i];
+        RECT where = item->rect;
+
+        OffsetRect( &where, 0, -scroll_y );
+        if (where.bottom < 0 || where.top >= surface->height) continue;     /* not on the screen */
 
         switch (item->type)
         {
         case ITEM_RECT:
-            fill_rect( surface, &item->rect, item->color );
+            GdiFlush();     /* text GDI may still hold back goes under, not over */
+            fill_rect( surface, &where, item->color );
             break;
 
-        case ITEM_TEXT:
+        case ITEM_RUN:
         {
-            HFONT font = create_font( surface->dc, item );
-            HFONT old = SelectObject( surface->dc, font );
-            RECT rect = item->rect;
+            HFONT old = SelectObject( surface->dc, item->font->handle );
 
-            SetTextColor( surface->dc, item->color );
-            DrawTextW( surface->dc, item->text, -1, &rect, item->format );
+            SetTextColor( surface->dc, RGB( (item->color >> 16) & 0xff, (item->color >> 8) & 0xff,
+                                            item->color & 0xff ) );
+            ExtTextOutW( surface->dc, item->x, item->baseline - scroll_y, 0, NULL, item->text, item->length, NULL );
             SelectObject( surface->dc, old );
-            DeleteObject( font );
             break;
         }
+        case ITEM_IMAGE:
+            if (!image_dc) image_dc = CreateCompatibleDC( surface->dc );
+            if (image_dc && item->image && item->image->bitmap) draw_image( surface, image_dc, item, &where );
+            break;
         }
     }
+    if (image_dc) DeleteDC( image_dc );
     GdiFlush();
     make_opaque( surface );
 }

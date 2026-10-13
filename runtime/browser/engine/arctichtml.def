@@ -7,3 +7,4 @@ EXPORTS
     ArcticHtmlNavigate
     ArcticHtmlGetTitle
     ArcticHtmlOnGpu
+    ArcticHtmlRenderToFile

@@ -39,6 +39,10 @@ HRESULT WINAPI ArcticHtmlNavigate( ARCTIC_HTML_VIEW view, const WCHAR *url );
 HRESULT WINAPI ArcticHtmlGetTitle( ARCTIC_HTML_VIEW view, WCHAR *buffer, UINT count );
 /* TRUE while the engine presents through Vulkan, FALSE on the software path */
 BOOL WINAPI ArcticHtmlOnGpu( ARCTIC_HTML_VIEW view );
+/* A page into a PNG, with no window: width x height, or the whole page down
+ * when full_page is set (htmlrun.exe, the tests) */
+HRESULT WINAPI ArcticHtmlRenderToFile( const WCHAR *url, UINT width, UINT height, BOOL full_page,
+                                       const WCHAR *png );
 
 #ifdef __cplusplus
 }
