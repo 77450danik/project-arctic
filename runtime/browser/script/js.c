@@ -53,6 +53,7 @@ struct message
     unsigned int    port_count;
     char           *target_origin;  /* in the outbox: who may read it */
     lxb_dom_node_t *to_frame;       /* in the outbox: the <iframe> it goes to, or NULL to the parent */
+    char           *sibling;        /* in the outbox: the name of a frame of the parent it goes to */
 };
 
 struct script_env
@@ -925,6 +926,12 @@ static void ports_forget( struct document *doc )
         else i++;
 }
 
+NATIVE(n_frame_name)
+{
+    const char *name = env_of( ctx )->doc->frame_name;
+    return JS_NewString( ctx, name ? name : "" );
+}
+
 NATIVE(n_is_frame)
 {
     return JS_NewBool( ctx, env_of( ctx )->doc->parent != NULL );
@@ -942,7 +949,8 @@ NATIVE(n_origin)
 /* a message of this page - to its parent, to one of its frames, or by a port - sent now;
  * the ports it brings are ids of this side, linked here to new ones of the other */
 static void send_message( struct script_env *env, const char *json, size_t len, const char *target_origin,
-                          lxb_dom_node_t *to_frame, int from_port, const int *ports, unsigned int port_count )
+                          lxb_dom_node_t *to_frame, int from_port, const int *ports, unsigned int port_count,
+                          const char *sibling )
 {
     struct document *doc = env->doc, *target = NULL;
     lxb_dom_node_t *source = NULL;
@@ -963,6 +971,19 @@ static void send_message( struct script_env *env, const char *json, size_t len, 
         struct frame *frame = document_frame( doc, lxb_dom_interface_element( to_frame ), FALSE );
 
         if (frame) target = frame->doc;
+    }
+    else if (sibling && doc->parent)
+    {
+        /* a frame of the same page, by its name: parent.frames[name] */
+        for (unsigned int i = 0; i < doc->parent->frame_count; i++)
+        {
+            size_t name_len;
+            const char *name = (const char *)lxb_dom_element_get_attribute( doc->parent->frames[i]->element,
+                                                                            (const lxb_char_t *)"name", 4, &name_len );
+
+            if (name && name_len == strlen( sibling ) && !memcmp( name, sibling, name_len ) && doc->parent->frames[i]->doc)
+                target = doc->parent->frames[i]->doc;
+        }
     }
     else if (doc->parent)
     {
@@ -993,7 +1014,7 @@ static void send_message( struct script_env *env, const char *json, size_t len, 
 
 /* posted while the page loads on its own thread: kept until it shows */
 static void post( JSContext *ctx, JSValueConst json_value, JSValueConst origin_value, lxb_dom_node_t *to_frame,
-                  int from_port, JSValueConst ports_value )
+                  int from_port, JSValueConst ports_value, const char *sibling )
 {
     struct script_env *env = env_of( ctx );
     const char *json, *target_origin = NULL;
@@ -1020,7 +1041,7 @@ static void post( JSContext *ctx, JSValueConst json_value, JSValueConst origin_v
             if (id) ports[port_count++] = id;
         }
     }
-    if (env->window) send_message( env, json, len, target_origin, to_frame, from_port, ports, port_count );
+    if (env->window) send_message( env, json, len, target_origin, to_frame, from_port, ports, port_count, sibling );
     else if (env->outbox_count < 256)
     {
         if (env->outbox_count == env->outbox_capacity)
@@ -1038,6 +1059,7 @@ static void post( JSContext *ctx, JSValueConst json_value, JSValueConst origin_v
             if ((message->json = malloc( len + 1 ))) { memcpy( message->json, json, len ); message->json[len] = 0; }
             message->target_origin = _strdup( target_origin ? target_origin : "*" );
             message->to_frame = to_frame;
+            message->sibling = sibling ? _strdup( sibling ) : NULL;
             message->port_id = from_port;
             message->port_count = port_count;
             memcpy( message->ports, ports, port_count * sizeof(int) );
@@ -1050,7 +1072,7 @@ static void post( JSContext *ctx, JSValueConst json_value, JSValueConst origin_v
 /* postMessage to the page this frame is in: (json, origin, [port ids]) */
 NATIVE(n_post_parent)
 {
-    if (env_of( ctx )->doc->parent) post( ctx, argv[0], argv[1], NULL, 0, argc > 2 ? argv[2] : JS_UNDEFINED );
+    if (env_of( ctx )->doc->parent) post( ctx, argv[0], argv[1], NULL, 0, argc > 2 ? argv[2] : JS_UNDEFINED, NULL );
     return JS_UNDEFINED;
 }
 
@@ -1059,7 +1081,18 @@ NATIVE(n_post_frame)
 {
     lxb_dom_node_t *frame = unwrap( ctx, argv[0] );
 
-    if (frame) post( ctx, argv[1], argv[2], frame, 0, argc > 3 ? argv[3] : JS_UNDEFINED );
+    if (frame) post( ctx, argv[1], argv[2], frame, 0, argc > 3 ? argv[3] : JS_UNDEFINED, NULL );
+    return JS_UNDEFINED;
+}
+
+/* postMessage to another frame of the page this frame is in: (name, json, origin, [port ids]) */
+NATIVE(n_post_sibling)
+{
+    const char *name;
+
+    if (!env_of( ctx )->doc->parent || !(name = JS_ToCString( ctx, argv[0] ))) return JS_UNDEFINED;
+    post( ctx, argv[1], argv[2], NULL, 0, argc > 3 ? argv[3] : JS_UNDEFINED, name );
+    JS_FreeCString( ctx, name );
     return JS_UNDEFINED;
 }
 
@@ -1075,7 +1108,7 @@ NATIVE(n_port_post)
     int32_t id = 0;
 
     JS_ToInt32( ctx, &id, argv[0] );
-    if (id) post( ctx, argv[1], JS_UNDEFINED, NULL, id, JS_UNDEFINED );
+    if (id) post( ctx, argv[1], JS_UNDEFINED, NULL, id, JS_UNDEFINED, NULL );
     return JS_UNDEFINED;
 }NATIVE(n_set_proto_for)
 {
@@ -1139,13 +1172,31 @@ static const JSCFunctionListEntry natives[] =
     JS_CFUNC_DEF( "setProtoFor", 1, n_set_proto_for ),
     JS_CFUNC_DEF( "evalModule", 2, n_eval_module ),
     JS_CFUNC_DEF( "isFrame", 0, n_is_frame ),
+    JS_CFUNC_DEF( "frameName", 0, n_frame_name ),
     JS_CFUNC_DEF( "origin", 0, n_origin ),
     JS_CFUNC_DEF( "postParent", 3, n_post_parent ),
     JS_CFUNC_DEF( "postFrame", 4, n_post_frame ),
     JS_CFUNC_DEF( "portRegister", 0, n_port_register ),
+    JS_CFUNC_DEF( "postSibling", 4, n_post_sibling ),
     JS_CFUNC_DEF( "portPost", 2, n_port_post ),
     JS_CFUNC_DEF( "setCurrentScript", 1, n_set_current_script ),
 };
+
+/* a promise rejected with nobody to catch it: the page's error, in the log */
+static void rejected( JSContext *ctx, JSValueConst promise, JSValueConst reason, bool is_handled, void *opaque )
+{
+    const char *text, *trace = NULL;
+    JSValue stack;
+
+    if (is_handled) return;
+    text = JS_ToCString( ctx, reason );
+    stack = JS_IsObject( reason ) ? JS_GetPropertyStr( ctx, reason, "stack" ) : JS_UNDEFINED;
+    if (JS_IsString( stack )) trace = JS_ToCString( ctx, stack );
+    WARN( "a promise rejected: %s %s\n", text ? text : "(?)", trace ? trace : "" );
+    if (text) JS_FreeCString( ctx, text );
+    if (trace) JS_FreeCString( ctx, trace );
+    JS_FreeValue( ctx, stack );
+}
 
 /* --- running --- */
 
@@ -1329,6 +1380,7 @@ static void env_free( struct script_env *env )
     {
         free( env->outbox[i].json );
         free( env->outbox[i].target_origin );
+        free( env->outbox[i].sibling );
     }
     free( env->outbox );
     JS_FreeContext( env->ctx );
@@ -1386,6 +1438,7 @@ static void run_document( struct document *doc, int width, int height )
     JS_SetMaxStackSize( env->rt, 12 * 1024 * 1024 );
     JS_SetInterruptHandler( env->rt, interrupt, env );
     JS_SetModuleLoaderFunc( env->rt, normalize_module, load_module, env );
+    JS_SetHostPromiseRejectionTracker( env->rt, rejected, env );
     JS_SetContextOpaque( env->ctx, env );
     JS_NewClassID( env->rt, &env->node_class );
     JS_NewClass( env->rt, env->node_class, &node_def );
@@ -1492,9 +1545,10 @@ void script_attach( struct document *doc, HWND window )
 
         if (message->json)
             send_message( env, message->json, strlen( message->json ), message->target_origin, message->to_frame,
-                          message->port_id, message->ports, message->port_count );
+                          message->port_id, message->ports, message->port_count, message->sibling );
         free( message->json );
         free( message->target_origin );
+        free( message->sibling );
     }
     env->outbox_count = 0;
     result = JS_Call( env->ctx, env->go_live, JS_UNDEFINED, 0, NULL );

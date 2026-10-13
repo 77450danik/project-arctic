@@ -646,15 +646,46 @@ function remoteWindow(post) {
     w.window = w.self = w.frames = w;
     return w;
 }
+/* a frame of about:blank is of this page's origin: its window, to the page, has what a window
+ * has - libraries take a pristine JSON or Array from one - in this window's realm */
+function blankWindow(iframe) {
+    const w = Object.create(global);
+    Object.assign(w, {
+        parent: window, top: window.top, frameElement: iframe, opener: null, closed: false,
+        postMessage(data, targetOrigin, transfer) {
+            const json = JSON.stringify(data === undefined ? null : data);
+            N.postFrame(iframe, json, typeof targetOrigin === 'string' ? targetOrigin : '*', transferPorts(transfer));
+        },
+    });
+    w.window = w.self = w.frames = w.globalThis = w;
+    return w;
+}
+function isBlankFrame(iframe) {
+    const src = N.attr(iframe, 'src');
+    return !src || src === 'about:blank' || /^javascript:/i.test(src);
+}
 defineElement('HTMLIFrameElement', ['iframe'], class extends HTMLElement {
+    /* one window for the frame whatever it shows, as in a browser: blank of this origin, or another's */
     get contentWindow() {
         if (!this.isConnected) return null;
-        const x = extra(this);
-        return x.contentWindow || (x.contentWindow = remoteWindow((json, origin, ports) => N.postFrame(this, json, origin, ports)));
+        const x = extra(this), iframe = this;
+        if (!x.contentWindow) {
+            const pick = () => isBlankFrame(iframe)
+                ? (x.blankWindow || (x.blankWindow = blankWindow(iframe)))
+                : (x.remoteWindow || (x.remoteWindow = remoteWindow((json, origin, ports) => N.postFrame(iframe, json, origin, ports))));
+            x.contentWindow = new Proxy({}, {
+                get(t, p) { const w = pick(); const v = w[p]; return typeof v === 'function' && p !== 'constructor' ? v.bind(w) : v; },
+                set(t, p, v) { pick()[p] = v; return true; },
+                has(t, p) { return p in pick(); },
+            });
+        }
+        return x.contentWindow;
     }
     get contentDocument() { return null; }
 });
 reflectURL(classes.HTMLIFrameElement, ['src']);
+reflect(classes.HTMLIFrameElement, ['name', 'width', 'height', 'allow', 'frameBorder', 'scrolling', 'referrerPolicy', 'loading', 'srcdoc', 'sandbox']);
+reflectBool(classes.HTMLIFrameElement, ['allowFullscreen']);
 defineElement('HTMLCanvasElement', ['canvas'], class extends HTMLElement {
     get width() { return parseInt(N.attr(this, 'width'), 10) || 300; } set width(v) { N.setAttr(this, 'width', String(v)); }
     get height() { return parseInt(N.attr(this, 'height'), 10) || 150; } set height(v) { N.setAttr(this, 'height', String(v)); }
@@ -1034,8 +1065,9 @@ function runTimers() {
     for (const [id, t] of timers) if (!first || t.due < first[1].due) first = [id, t];
     if (!first) return -1;
     const [id, t] = first;
-    /* what a page wants ten seconds after it loads is no part of loading it */
-    if (t.due > 5000) return -1;
+    /* what a page waits a second or more for - a timeout for an answer of another frame -
+     * waits in real time once the page shows, or the answer could never come first */
+    if (t.due > 1000) return -1;
     virtualNow = Math.max(virtualNow, t.due);
     /* an interval runs a few times while the page loads, not forever */
     if (t.interval && ++t.count < 5) t.due = virtualNow + t.interval; else timers.delete(id);
@@ -1433,11 +1465,31 @@ function getSelection() {
 /* --- window: the global object --- */
 
 const window = global;
-/* in a frame, the page it is in is another window: reached by postMessage */
+/* in a frame, the page it is in is another window: reached by postMessage; its frames by name */
 const parentWindow = N.isFrame() ? remoteWindow((json, origin, ports) => N.postParent(json, origin, ports)) : window;
+if (parentWindow !== window) {
+    const siblings = new Map();
+    parentWindow.frames = new Proxy({}, {
+        get(t, name) {
+            if (typeof name !== 'string' || name === 'then') return undefined;
+            if (!siblings.has(name)) siblings.set(name, remoteWindow((json, origin, ports) => N.postSibling(name, json, origin, ports)));
+            return siblings.get(name);
+        },
+    });
+}
+/* this window's frames by name, as frames[name] and window[name] find them */
+const ownFrames = new Proxy(global, {
+    get(t, name) {
+        if (typeof name === 'string' && !(name in t)) {
+            const frame = N.select(document, 'iframe[name="' + name.replace(/["\\]/g, '\\$&') + '"]', true)[0];
+            if (frame) return frame.contentWindow;
+        }
+        return Reflect.get(t, name);
+    },
+});
 const definitions = {
-    window, self: window, globalThis: window, top: parentWindow, parent: parentWindow, frames: window, opener: null,
-    frameElement: null, closed: false, length: 0, name: '', status: '',
+    window, self: window, globalThis: window, top: parentWindow, parent: parentWindow, frames: ownFrames, opener: null,
+    frameElement: null, closed: false, length: 0, name: N.frameName(), status: '',
     document, location, history, navigator, screen, performance, crypto, console, customElements,
     localStorage: storage(), sessionStorage: storage(),
     innerWidth: N.width, innerHeight: N.height, outerWidth: N.width, outerHeight: N.height + 80,

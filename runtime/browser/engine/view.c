@@ -203,6 +203,7 @@ struct frame_job
     struct document *parent;
     lxb_dom_element_t *element;
     char            *url;
+    char            *name;      /* of the <iframe>: the window.name of its document */
     int              width, height;
     struct document *doc;
 };
@@ -211,11 +212,12 @@ static DWORD WINAPI frame_loader( void *arg )
 {
     struct frame_job *job = arg;
 
-    job->doc = document_load_frame( job->url, job->parent, job->width, job->height );
+    job->doc = document_load_frame( job->url, job->parent, job->width, job->height, job->name );
     if (!PostMessageW( job->window, WM_FRAME_LOADED, job->navigation, (LPARAM)job ))
     {
         document_free( job->doc );
         free( job->url );
+        free( job->name );
         free( job );
     }
     return 0;
@@ -233,6 +235,12 @@ static void load_frame( struct arctic_html_view *view, struct document *parent, 
     job->parent = parent;
     job->element = frame->element;
     job->url = _strdup( url );
+    {
+        size_t len;
+        const char *name = (const char *)lxb_dom_element_get_attribute( frame->element, (const lxb_char_t *)"name", 4, &len );
+
+        job->name = name ? _strdup( name ) : NULL;
+    }
     job->width = 300;
     job->height = 150;
     free( frame->url );
@@ -243,6 +251,7 @@ static void load_frame( struct arctic_html_view *view, struct document *parent, 
     {
         frame->loading = FALSE;
         free( job->url );
+        free( job->name );
         free( job );
     }
 }
@@ -1060,6 +1069,7 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         }
         else document_free( job->doc );
         free( job->url );
+        free( job->name );
         free( job );
         return 0;
     }

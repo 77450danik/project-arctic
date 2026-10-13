@@ -538,6 +538,8 @@ static void find_base( struct document *doc, lxb_dom_node_t *node )
 static struct document *load_once( const WCHAR *url, const struct post_data *post, int width, int height,
                                    struct document *parent );
 static BOOL no_scripts(void);
+/* the name of the frame being loaded on this thread: its document takes it before its scripts run */
+static _Thread_local const char *tls_frame_name;
 
 /* --- frames --- */
 
@@ -598,9 +600,14 @@ static void load_frames( struct document *doc, lxb_dom_node_t *node )
         {
             if ((frame = document_frame( doc, element, TRUE )) && !frame->doc && !frame->loading)
             {
+                size_t name_len;
+                const char *name_attr = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"name", 4, &name_len );
+                char *name = name_attr ? _strdup( name_attr ) : NULL;
+
                 frame->url = frame_url( doc, element );
                 frame->doc = document_load_frame( frame->url, doc, frame_size( element, "width", 300 ),
-                                                  frame_size( element, "height", 150 ) );
+                                                  frame_size( element, "height", 150 ), name );
+                free( name );
             }
             continue;
         }
@@ -608,13 +615,21 @@ static void load_frames( struct document *doc, lxb_dom_node_t *node )
     }
 }
 
-struct document *document_load_frame( const char *url, struct document *parent, int width, int height )
+static struct document *frame_doc_named( struct document *doc, const char *name )
+{
+    if (doc && name && *name) doc->frame_name = _strdup( name );
+    return doc;
+}
+
+struct document *document_load_frame( const char *url, struct document *parent, int width, int height,
+                                      const char *name )
 {
     WCHAR *wide = url ? utf8_to_wide( url, strlen( url ), NULL ) : NULL;
     struct document *doc;
 
     if (!wide) return NULL;
     TRACE( "frame %s in %s\n", url, parent->address );
+    tls_frame_name = name;      /* its scripts see their name as they load */
     doc = load_once( wide, NULL, width, height, parent );
     free( wide );
     /* a frame that navigates itself while it loads goes there, once */
@@ -630,7 +645,8 @@ struct document *document_load_frame( const char *url, struct document *parent, 
         free( wide );
         if (doc && doc->redirect) { free( doc->redirect ); doc->redirect = NULL; }
     }
-    return doc;
+    tls_frame_name = NULL;
+    return frame_doc_named( doc, name );
 }
 
 struct document *document_owning( struct document *root, lxb_dom_element_t *element )
@@ -767,6 +783,7 @@ static struct document *load_once( const WCHAR *url, const struct post_data *pos
     if (!doc) return NULL;
     doc->parent = parent;
     doc->depth = parent ? parent->depth + 1 : 0;
+    if (parent && tls_frame_name && *tls_frame_name) doc->frame_name = _strdup( tls_frame_name );
     lstrcpynW( doc->url, url, ARRAY_SIZE(doc->url) );
 
     if (!_wcsicmp( url, L"about:arctic" ) || !_wcsicmp( url, L"about:home" ))
@@ -857,6 +874,7 @@ void document_free( struct document *doc )
     free( doc->address );
     free( doc->base );
     free( doc->redirect );
+    free( doc->frame_name );
     free( doc );
 }
 

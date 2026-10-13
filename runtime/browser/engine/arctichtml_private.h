@@ -206,6 +206,7 @@ struct document
     char                *redirect;  /* where its scripts sent the page, UTF-8, or NULL */
     struct script_env   *script;    /* its scripts, alive while it shows */
     struct document     *parent;    /* of a frame's document: the page the frame is in */
+    char                *frame_name;    /* the name="" of its <iframe>: its window.name */
     int                  depth;     /* how deep in frames */
     struct frame       **frames;    /* its <iframe>s and their documents */
     unsigned int         frame_count, frame_capacity;
@@ -270,7 +271,8 @@ BOOL form_submission( struct document *doc, lxb_dom_element_t *form, lxb_dom_ele
                       char **url, struct post_data *post );
 void document_free( struct document *doc );
 /* the document of a frame, its scripts run, its own frames loaded */
-struct document *document_load_frame( const char *url, struct document *parent, int width, int height );
+struct document *document_load_frame( const char *url, struct document *parent, int width, int height,
+                                     const char *name );
 /* the frame of an <iframe>, made if there is none yet */
 struct frame *document_frame( struct document *doc, lxb_dom_element_t *element, BOOL create );
 /* where a frame's document goes: its src, about:blank without one */
