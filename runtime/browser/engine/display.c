@@ -24,6 +24,8 @@ void display_list_reset( struct display_list *list )
     for (unsigned int i = 0; i < list->string_count; i++) free( list->strings[i] );
     list->string_count = 0;
     list->count = 0;
+    list->link_count = 0;
+    list->anchor_count = 0;
     list->background = 0xffffffff;
     list->content_height = 0;
 }
@@ -33,6 +35,8 @@ void display_list_free( struct display_list *list )
     display_list_reset( list );
     free( list->items );
     free( list->strings );
+    free( list->links );
+    free( list->anchors );
     memset( list, 0, sizeof(*list) );
 }
 
@@ -76,6 +80,50 @@ const WCHAR *display_list_string( struct display_list *list, const WCHAR *text, 
     copy[length] = 0;
     list->strings[list->string_count++] = copy;
     return copy;
+}
+
+void display_list_link( struct display_list *list, const RECT *rect, lxb_dom_element_t *element )
+{
+    struct link_area *area;
+
+    /* the words of one link on one line touch: one area for them */
+    if (list->link_count)
+    {
+        area = &list->links[list->link_count - 1];
+        if (area->element == element && area->rect.top == rect->top && area->rect.bottom == rect->bottom &&
+            area->rect.right >= rect->left - 1)
+        {
+            area->rect.right = max( area->rect.right, rect->right );
+            return;
+        }
+    }
+    if (list->link_count == list->link_capacity)
+    {
+        unsigned int capacity = list->link_capacity ? list->link_capacity * 2 : 64;
+        struct link_area *grown = realloc( list->links, capacity * sizeof(*grown) );
+
+        if (!grown) return;
+        list->links = grown;
+        list->link_capacity = capacity;
+    }
+    area = &list->links[list->link_count++];
+    area->rect = *rect;
+    area->element = element;
+}
+
+void display_list_anchor( struct display_list *list, int y, lxb_dom_element_t *element )
+{
+    if (list->anchor_count == list->anchor_capacity)
+    {
+        unsigned int capacity = list->anchor_capacity ? list->anchor_capacity * 2 : 64;
+        struct anchor *grown = realloc( list->anchors, capacity * sizeof(*grown) );
+
+        if (!grown) return;
+        list->anchors = grown;
+        list->anchor_capacity = capacity;
+    }
+    list->anchors[list->anchor_count].y = y;
+    list->anchors[list->anchor_count++].element = element;
 }
 
 WCHAR *utf8_to_wide( const char *text, size_t len, int *out_len )

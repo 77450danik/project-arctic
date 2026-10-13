@@ -1,0 +1,21 @@
+diff --git a/dlls/win32u/dibdrv/graphics.c b/dlls/win32u/dibdrv/graphics.c
+--- a/dlls/win32u/dibdrv/graphics.c
++++ b/dlls/win32u/dibdrv/graphics.c
+@@ -804,5 +804,17 @@
+ 
+ done:
+     glyph->metrics = metrics;
++    /* Arctic: the pen moves as GetTextExtentPoint measures - the advance of
++     * GGO_METRICS, normally hinted. The bitmap's own advance follows the
++     * hinting of its kind - monochrome where the gasp table turns smoothing
++     * off, LCD for ClearType - and differs by a pixel here and there, so
++     * text laid out by measure, as a browser lays it, came apart between
++     * its runs. Windows draws with the widths it measures. */
++    if (NtGdiGetGlyphOutline( dc->hSelf, index, GGO_METRICS | (ggo_flags & GGO_GLYPH_INDEX), &metrics, 0, NULL,
++                              &identity, FALSE ) != GDI_ERROR)
++    {
++        glyph->metrics.gmCellIncX = metrics.gmCellIncX;
++        glyph->metrics.gmCellIncY = metrics.gmCellIncY;
++    }
+     return add_cached_glyph( font, index, flags, glyph );
+ }

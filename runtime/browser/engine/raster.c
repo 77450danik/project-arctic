@@ -137,6 +137,14 @@ void raster_paint( struct surface *surface, const struct display_list *list, int
             SetTextColor( surface->dc, RGB( (item->color >> 16) & 0xff, (item->color >> 8) & 0xff,
                                             item->color & 0xff ) );
             ExtTextOutW( surface->dc, item->x, item->baseline - scroll_y, 0, NULL, item->text, item->length, NULL );
+            if (log_tracing())
+            {
+                SIZE size;
+                GetTextExtentPoint32W( surface->dc, item->text, item->length, &size );
+                TRACE( "run %s: laid %ld drawn %ld, font %p %s %d\n", debugstr_w( item->text ),
+                       item->rect.right - item->rect.left, size.cx, item->font->handle, debugstr_w(item->font->key.face),
+                       item->font->key.px );
+            }
             SelectObject( surface->dc, old );
             break;
         }

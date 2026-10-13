@@ -27,7 +27,17 @@ static HDC measure_dc;
 
 HDC font_dc(void)
 {
-    if (!measure_dc) measure_dc = CreateCompatibleDC( NULL );
+    /* a DC like the page's surface, a 32-bit DIB: on the 1-bit bitmap a new
+     * memory DC has, text is measured unsmoothed, with other advances than
+     * the smoothed text the surface draws */
+    if (!measure_dc && (measure_dc = CreateCompatibleDC( NULL )))
+    {
+        BITMAPINFO info = { .bmiHeader = { sizeof(info.bmiHeader), 1, -1, 1, 32, BI_RGB } };
+        void *bits;
+        HBITMAP bitmap = CreateDIBSection( measure_dc, &info, DIB_RGB_COLORS, &bits, NULL, 0 );
+
+        if (bitmap) SelectObject( measure_dc, bitmap );     /* it lives as long as the DC: the process */
+    }
     return measure_dc;
 }
 
@@ -61,6 +71,9 @@ const struct font *font_get( const struct font_key *key )
     desc.lfUnderline = (BYTE)key->underline;
     desc.lfStrikeOut = (BYTE)key->strike;
     desc.lfCharSet = DEFAULT_CHARSET;
+    /* as browsers draw on Windows. Grey smoothing is no way out of the gaps
+     * Wine left between runs (patch 0092): its gasp table turns smoothing off
+     * for Times and Arial at text sizes, and they come out jagged */
     desc.lfQuality = CLEARTYPE_QUALITY;
     lstrcpynW( desc.lfFaceName, key->face, LF_FACESIZE );
     font->handle = CreateFontIndirectW( &desc );

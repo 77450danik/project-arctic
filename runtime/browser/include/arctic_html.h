@@ -27,9 +27,15 @@ typedef struct arctic_html_view *ARCTIC_HTML_VIEW;
 
 /* sent to the host window when the title of the document changed */
 #define ARCTIC_HTML_WM_TITLE    (WM_APP + 0x100)
-/* sent when the document asks to go somewhere else; LPARAM is a WCHAR *
- * that stays valid until the message returns */
+/* sent when the document asks to go somewhere else - a link was clicked;
+ * LPARAM is a WCHAR * that stays valid until the message returns. The host
+ * keeps its history and calls ArcticHtmlNavigate. */
 #define ARCTIC_HTML_WM_NAVIGATE (WM_APP + 0x101)
+/* what the status bar says: loading, done and what the filter took, the
+ * address under the pointer; LPARAM is a WCHAR *, valid during the call */
+#define ARCTIC_HTML_WM_STATUS   (WM_APP + 0x102)
+/* where the page is at the end, after redirects; LPARAM is a WCHAR * */
+#define ARCTIC_HTML_WM_LOCATION (WM_APP + 0x103)
 
 HRESULT WINAPI ArcticHtmlCreateView( HWND parent, const RECT *rect, ARCTIC_HTML_VIEW *view );
 void WINAPI ArcticHtmlDestroyView( ARCTIC_HTML_VIEW view );

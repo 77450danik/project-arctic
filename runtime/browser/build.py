@@ -254,8 +254,12 @@ def build(args):
     include_dir = os.path.join(HERE, "include")
     engine_flags = common + DEFINES + WARNINGS + ["-DLEXBOR_STATIC", "-I" + include_dir, "-I" + engine_dir,
                                         "-I" + os.path.join(vulkan, "include"), "-I" + lexbor_src]
-    sources = [os.path.join(engine_dir, f) for f in sorted(os.listdir(engine_dir)) if f.endswith(".c")]
-    units = [(s, o, engine_flags) for s, o, _ in objects_for(sources, engine_dir, os.path.join(obj_dir, "engine"))]
+    # the engine is these folders together: the page, the network, the filter
+    sources = []
+    for part in ("engine", "net", "filter"):
+        part_dir = os.path.join(HERE, part)
+        sources += [os.path.join(part_dir, f) for f in sorted(os.listdir(part_dir)) if f.endswith(".c")]
+    units = [(s, o, engine_flags) for s, o, _ in objects_for(sources, HERE, os.path.join(obj_dir, "engine"))]
     engine_objs = compile_all(cc, args.jobs, units)
 
     ie_dir = os.path.join(out, "Internet Explorer")
@@ -267,7 +271,8 @@ def build(args):
     if newer(dll, engine_objs + [liblexbor, deffile]):
         log("linking arctichtml.dll")
         run([cc, "-shared", "-s", "-Wl,--gc-sections", "-o", dll] + engine_objs + [liblexbor, deffile,
-            "-Wl,--out-implib," + implib] + runtime + ["-lshlwapi", "-lole32", "-luser32", "-lgdi32"])
+            "-Wl,--out-implib," + implib] + runtime + ["-lws2_32", "-lsecur32", "-lcrypt32", "-lnormaliz", "-lshell32",
+                                                       "-lshlwapi", "-lole32", "-luuid", "-luser32", "-lgdi32"])
 
     # the browser
     frame_dir = os.path.join(HERE, "iexplore")
@@ -277,10 +282,12 @@ def build(args):
     frame_objs = compile_all(cc, args.jobs, units)
     rc = os.path.join(frame_dir, "iexplore.rc")
     res = os.path.join(obj_dir, "iexplore", "iexplore.res.o")
-    rc_inputs = [rc, os.path.join(frame_dir, "resource.h"), os.path.join(frame_dir, "iexplore.manifest")]
+    rc_inputs = [rc, os.path.join(frame_dir, "resource.h"), os.path.join(frame_dir, "iexplore.manifest"),
+                 os.path.abspath(__file__)]     # the flags above are here
     if newer(res, rc_inputs):
-        # the code page is the .rc's own #pragma: UTF-8
-        run([windres, "--input-format=rc", "--output-format=coff", "-I", frame_dir, "-i", rc, "-o", res])
+        # UTF-8: llvm-windres loses the .rc's own #pragma code_page in its preprocessing
+        run([windres, "--codepage=65001", "--input-format=rc", "--output-format=coff", "-I", frame_dir,
+             "-i", rc, "-o", res])
     exe = os.path.join(ie_dir, "iexplore.exe")
     if newer(exe, frame_objs + [res, implib]):
         log("linking iexplore.exe")

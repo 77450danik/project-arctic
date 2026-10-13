@@ -127,8 +127,11 @@ static DWORD color_value( const lxb_css_value_color_t *color, DWORD current )
         const lxb_css_value_color_hex_rgba_t *c = &color->u.hex.rgba;
         BOOL alpha = color->u.hex.type == LXB_CSS_PROPERTY_COLOR_HEX_TYPE_4 ||
                      color->u.hex.type == LXB_CSS_PROPERTY_COLOR_HEX_TYPE_8;
+        /* #fff keeps a digit per channel: f is ff */
+        unsigned scale = color->u.hex.type == LXB_CSS_PROPERTY_COLOR_HEX_TYPE_3 ||
+                         color->u.hex.type == LXB_CSS_PROPERTY_COLOR_HEX_TYPE_4 ? 17 : 1;
 
-        return rgba( c->r, c->g, c->b, alpha ? c->a : 255 );
+        return rgba( c->r * scale, c->g * scale, c->b * scale, alpha ? c->a * scale : 255 );
     }
     case LXB_CSS_VALUE_RGB:
     case LXB_CSS_VALUE_RGBA:
@@ -344,14 +347,11 @@ static void apply_font_size( lxb_dom_element_t *element, const struct style *par
     case LXB_CSS_VALUE_XX_LARGE: style->font_size = 32; break;
     case LXB_CSS_VALUE_SMALLER:  style->font_size = parent_size / 1.2f; break;
     case LXB_CSS_VALUE_LARGER:   style->font_size = parent_size * 1.2f; break;
-    case LXB_CSS_VALUE_INHERIT:  style->font_size = parent_size; break;
-    case LXB_CSS_VALUE__LENGTH:
-        style->font_size = length_value( &size->length.u.length, parent_size );
-        break;
-    case LXB_CSS_VALUE__PERCENTAGE:
-        style->font_size = (float)size->length.u.percentage.num * parent_size / 100.0f;
-        break;
+    case LXB_CSS_VALUE_INHERIT:
+    case LXB_CSS_VALUE_UNSET:    style->font_size = parent_size; break;
+    case LXB_CSS_VALUE_INITIAL:  style->font_size = DEFAULT_FONT_SIZE; break;
     default:
+        /* lexbor says _LENGTH for a percentage too: the length's own type tells them apart */
         if (size->length.type == LXB_CSS_VALUE__LENGTH)
             style->font_size = length_value( &size->length.u.length, parent_size );
         else if (size->length.type == LXB_CSS_VALUE__PERCENTAGE)
@@ -441,18 +441,114 @@ static void apply_lengths( lxb_dom_element_t *element, struct style *style )
 
     if ((decl = declared( element, LXB_CSS_PROPERTY_WIDTH ))) length_percentage( decl->u.width, fs, &style->width );
     if ((decl = declared( element, LXB_CSS_PROPERTY_HEIGHT ))) length_percentage( decl->u.height, fs, &style->height );
+    if ((decl = declared( element, LXB_CSS_PROPERTY_MIN_WIDTH )))
+        length_percentage( decl->u.width /* the same type */, fs, &style->min_width );
+    if ((decl = declared( element, LXB_CSS_PROPERTY_MAX_WIDTH )))
+        length_percentage( decl->u.width, fs, &style->max_width );  /* none is not a length: stays auto */
+    if ((decl = declared( element, LXB_CSS_PROPERTY_BOX_SIZING )))
+        style->border_box = decl->u.box_sizing->type == LXB_CSS_VALUE_BORDER_BOX;
 }
 
-static void apply_border( const lxb_css_property_border_t *border, struct style *style, int side, float fs )
+/* --- what lexbor has no property for: css.c names it --arctic-<name> --- */
+
+static BOOL custom_value( lxb_dom_element_t *element, const char *name, const char **value, size_t *len )
 {
-    if (border->style == LXB_CSS_VALUE_NONE || border->style == LXB_CSS_VALUE_HIDDEN)
+    const lxb_css_rule_declaration_t *decl;
+    const char *s, *end;
+
+    if (!(decl = lxb_dom_element_style_by_name( element, (const lxb_char_t *)name, strlen( name ) )) ||
+        decl->type != LXB_CSS_PROPERTY__CUSTOM)
+        return FALSE;
+    s = (const char *)decl->u.custom->value.data;
+    end = s + decl->u.custom->value.length;
+    while (s < end && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) s++;
+    while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) end--;
+    if (s == end) return FALSE;
+    *value = s;
+    *len = end - s;
+    return TRUE;
+}
+
+static BOOL text_is( const char *s, size_t len, const char *word )
+{
+    return strlen( word ) == len && !_strnicmp( s, word, len );
+}
+
+/* a length written as text: a number and a unit */
+static BOOL parse_length( const char *s, size_t len, float font_size, float *px )
+{
+    char buffer[64], *unit;
+    double num;
+
+    if (!len || len >= sizeof(buffer)) return FALSE;
+    memcpy( buffer, s, len );
+    buffer[len] = 0;
+    num = strtod( buffer, &unit );
+    if (unit == buffer) return FALSE;
+    if (!*unit || !_stricmp( unit, "px" )) *px = (float)num;
+    else if (!_stricmp( unit, "em" )) *px = (float)num * font_size;
+    else if (!_stricmp( unit, "rem" )) *px = (float)num * DEFAULT_FONT_SIZE;
+    else if (!_stricmp( unit, "pt" )) *px = (float)num * 96.0f / 72.0f;
+    else if (!_stricmp( unit, "vw" )) *px = (float)num * style_viewport_width / 100.0f;
+    else if (!_stricmp( unit, "vh" )) *px = (float)num * style_viewport_height / 100.0f;
+    else return FALSE;
+    return TRUE;
+}
+
+static void apply_list_style( lxb_dom_element_t *element, struct style *style )
+{
+    const char *value;
+    size_t len;
+
+    if (custom_value( element, "--arctic-list-style-type", &value, &len ))
     {
-        style->border[side] = 0;
-        return;
+        if (text_is( value, len, "none" )) style->list = LIST_NONE;
+        else if (text_is( value, len, "disc" ) || text_is( value, len, "circle" ) || text_is( value, len, "square" ))
+            style->list = LIST_DISC;
+        else if (!text_is( value, len, "inherit" )) style->list = LIST_DECIMAL;
     }
-    style->border[side] = border->width.type ? border_width( &border->width, fs ) :
-                          border->style ? 3 : style->border[side];
-    if (border->color.type) style->border_color[side] = color_value( &border->color, style->color );
+}
+
+/* the sides of a border as CSS has them: a width, and a style that is none
+ * unless set; the width drawn is 0 while the style is none */
+struct sides
+{
+    float width[4];
+    BOOL  styled[4];
+};
+
+static void border_longhands( lxb_dom_element_t *element, float font_size, struct sides *sides )
+{
+    static const char *const width_names[4] = { "--arctic-border-top-width", "--arctic-border-right-width",
+                                                "--arctic-border-bottom-width", "--arctic-border-left-width" };
+    static const char *const style_names[4] = { "--arctic-border-top-style", "--arctic-border-right-style",
+                                                "--arctic-border-bottom-style", "--arctic-border-left-style" };
+    const char *value;
+    size_t len;
+    float px;
+
+    /* taken as written after the shorthands, as they mostly are */
+    for (int i = 0; i < 4; i++)
+    {
+        if (custom_value( element, width_names[i], &value, &len ))
+        {
+            if (text_is( value, len, "thin" )) sides->width[i] = 1;
+            else if (text_is( value, len, "medium" )) sides->width[i] = 3;
+            else if (text_is( value, len, "thick" )) sides->width[i] = 5;
+            else if (parse_length( value, len, font_size, &px )) sides->width[i] = max( px, 0 );
+        }
+        if (custom_value( element, style_names[i], &value, &len ))
+            sides->styled[i] = !text_is( value, len, "none" ) && !text_is( value, len, "hidden" );
+    }
+}
+
+/* a border shorthand sets all three of its side: what it leaves out goes back to the initial */
+static void apply_border( const lxb_css_property_border_t *border, struct style *style, float *width, BOOL *styled,
+                          int side )
+{
+    *styled = border->style && border->style != LXB_CSS_VALUE_NONE && border->style != LXB_CSS_VALUE_HIDDEN;
+    *width = border->width.type ? border_width( &border->width, style->font_size ) : 3;
+    style->border_color[side] = border->color.type ? color_value( &border->color, style->color ) : style->color;
 }
 
 static void apply_borders( lxb_dom_element_t *element, struct style *style )
@@ -463,14 +559,24 @@ static void apply_borders( lxb_dom_element_t *element, struct style *style )
                                             LXB_CSS_PROPERTY_BORDER_BOTTOM_COLOR,
                                             LXB_CSS_PROPERTY_BORDER_LEFT_COLOR };
     const lxb_css_rule_declaration_t *decl;
+    struct sides sides;
 
-    if ((decl = declared( element, LXB_CSS_PROPERTY_BORDER )))
-        for (int i = 0; i < 4; i++) apply_border( decl->u.border, style, i, style->font_size );
+    /* what the user agent drew (<hr>) is a styled border */
     for (int i = 0; i < 4; i++)
-        if ((decl = declared( element, side_ids[i] ))) apply_border( decl->u.border_top, style, i, style->font_size );
+    {
+        sides.styled[i] = style->border[i] > 0;
+        sides.width[i] = sides.styled[i] ? style->border[i] : 3;
+    }
+    if ((decl = declared( element, LXB_CSS_PROPERTY_BORDER )))
+        for (int i = 0; i < 4; i++) apply_border( decl->u.border, style, &sides.width[i], &sides.styled[i], i );
+    for (int i = 0; i < 4; i++)
+        if ((decl = declared( element, side_ids[i] )))
+            apply_border( decl->u.border_top, style, &sides.width[i], &sides.styled[i], i );
     for (int i = 0; i < 4; i++)
         if ((decl = declared( element, color_ids[i] )))
             style->border_color[i] = color_value( decl->u.border_top_color, style->color );
+    border_longhands( element, style->font_size, &sides );
+    for (int i = 0; i < 4; i++) style->border[i] = sides.styled[i] ? sides.width[i] : 0;
 }
 
 static void apply_text( lxb_dom_element_t *element, const struct style *parent, struct style *style )
@@ -601,7 +707,9 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     else style_initial( style );
     style->display = DISPLAY_INLINE;
     style->background = 0;
-    style->width.unit = style->height.unit = LEN_AUTO;
+    style->out_of_flow = FALSE;
+    style->width.unit = style->height.unit = style->min_width.unit = style->max_width.unit = LEN_AUTO;
+    style->border_box = FALSE;
     for (int i = 0; i < 4; i++)
     {
         style->margin[i].unit = LEN_PX;
@@ -673,8 +781,18 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     if ((decl = declared( element, LXB_CSS_PROPERTY_BACKGROUND_COLOR )))
         style->background = color_value( decl->u.background_color, style->color );
     apply_display( element, style );
+    if ((decl = declared( element, LXB_CSS_PROPERTY_VISIBILITY )))
+        style->invisible = decl->u.visibility->type == LXB_CSS_VALUE_HIDDEN ||
+                           decl->u.visibility->type == LXB_CSS_VALUE_COLLAPSE;
+    if ((decl = declared( element, LXB_CSS_PROPERTY_OPACITY )) && decl->u.opacity->type == LXB_CSS_VALUE__NUMBER &&
+        decl->u.opacity->u.number.num <= 0.001)
+        style->transparent = TRUE;
+    if ((decl = declared( element, LXB_CSS_PROPERTY_POSITION )))
+        style->out_of_flow = decl->u.position->type == LXB_CSS_VALUE_ABSOLUTE ||
+                             decl->u.position->type == LXB_CSS_VALUE_FIXED;
     apply_font_family( element, style );
     apply_text( element, parent, style );
+    apply_list_style( element, style );
     apply_lengths( element, style );
     apply_borders( element, style );
 

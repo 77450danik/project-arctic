@@ -7,6 +7,11 @@
  * goes and where to navigate; the drawing, the scrolling and the input are
  * the engine's own.
  *
+ * A page is fetched and parsed on a thread of its own (document_load), so
+ * the window never waits for the network; the old page stays until the new
+ * one is there. Each navigation has a number, and a page that comes back for
+ * a navigation already replaced by another is thrown away.
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -16,18 +21,21 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "arctichtml_private.h"
+#include "../net/net.h"
 
 static const WCHAR view_class[] = L"Internet Explorer_Server";
 
 #define LINE_STEP   40      /* an arrow key */
 #define WHEEL_STEP  100     /* a notch of the wheel, as browsers on Windows scroll */
+#define WM_LOADED   (WM_APP + 1)
 
 struct arctic_html_view
 {
     HWND                 window;
-    HWND                 host;       /* where the title goes */
+    HWND                 host;       /* where the title, the status and the links go */
     struct surface       surface;
     struct display_list  list;
     struct present      *present;
@@ -37,12 +45,39 @@ struct arctic_html_view
     BOOL                 relayout;   /* the list is not for this width any more */
     int                  scroll_y;
     int                  wheel_rest; /* a part of a notch from a precise wheel */
+    LONG                 navigation; /* the number of the latest one */
+    BOOL                 loading;
+    lxb_dom_element_t   *hover;      /* the link under the pointer */
+    lxb_dom_element_t   *pressed;    /* the link the button went down on */
 };
+
+struct load_job
+{
+    HWND  window;
+    LONG  navigation;
+    int   width, height;    /* for the page's media queries */
+    WCHAR url[2084];
+};
+
+static void tell_host( struct arctic_html_view *view, UINT msg, const WCHAR *text )
+{
+    if (view->host) SendMessageW( view->host, msg, 0, (LPARAM)text );
+}
 
 static void set_title( struct arctic_html_view *view, const WCHAR *title )
 {
     lstrcpynW( view->title, title, ARRAY_SIZE(view->title) );
-    if (view->host) SendMessageW( view->host, ARCTIC_HTML_WM_TITLE, 0, (LPARAM)view->title );
+    tell_host( view, ARCTIC_HTML_WM_TITLE, view->title );
+}
+
+static void show_done( struct arctic_html_view *view )
+{
+    WCHAR status[128];
+
+    if (view->doc && view->doc->blocked)
+        swprintf( status, ARRAY_SIZE(status), L"Готово · фільтр заблокував запитів: %u", view->doc->blocked );
+    else lstrcpynW( status, L"Готово", ARRAY_SIZE(status) );
+    tell_host( view, ARCTIC_HTML_WM_STATUS, status );
 }
 
 static int client_height( struct arctic_html_view *view )
@@ -76,18 +111,56 @@ static void scroll_to( struct arctic_html_view *view, int y )
     InvalidateRect( view->window, NULL, FALSE );
 }
 
-static void load( struct arctic_html_view *view )
+static DWORD WINAPI loader( void *arg )
 {
-    struct document *doc = document_load( view->url );
+    struct load_job *job = arg;
+    struct document *doc = document_load( job->url, job->width, job->height );
 
+    /* a view that is gone, or a page nobody waits for any more, is dropped */
+    if (!PostMessageW( job->window, WM_LOADED, job->navigation, (LPARAM)doc )) document_free( doc );
+    free( job );
+    return 0;
+}
+
+static void start_loading( struct arctic_html_view *view )
+{
+    struct load_job *job = malloc( sizeof(*job) );
+    WCHAR status[2200];
+    HANDLE thread;
+    RECT rect;
+
+    if (!job) return;
+    GetClientRect( view->window, &rect );
+    job->width = rect.right;
+    job->height = rect.bottom;
+    job->window = view->window;
+    job->navigation = InterlockedIncrement( &view->navigation );
+    lstrcpynW( job->url, view->url, ARRAY_SIZE(job->url) );
+    view->loading = TRUE;
+    swprintf( status, ARRAY_SIZE(status), L"Завантаження %s…", view->url );
+    tell_host( view, ARCTIC_HTML_WM_STATUS, status );
+    if ((thread = CreateThread( NULL, 0, loader, job, 0, NULL ))) CloseHandle( thread );
+    else free( job );
+}
+
+static void install( struct arctic_html_view *view, struct document *doc )
+{
     /* the old list points at fonts of the old page: both go together */
     display_list_reset( &view->list );
     font_cache_clear();
     document_free( view->doc );
     view->doc = doc;
     view->scroll_y = 0;
+    view->hover = view->pressed = NULL;
     view->relayout = TRUE;
+    view->loading = FALSE;
+    if (doc)
+    {
+        lstrcpynW( view->url, doc->url, ARRAY_SIZE(view->url) );
+        tell_host( view, ARCTIC_HTML_WM_LOCATION, view->url );
+    }
     set_title( view, doc && doc->title[0] ? doc->title : view->url );
+    show_done( view );
     InvalidateRect( view->window, NULL, FALSE );
 }
 
@@ -147,11 +220,75 @@ static void on_scroll( struct arctic_html_view *view, int code )
     }
 }
 
+/* --- links --- */
+
+static lxb_dom_element_t *link_at( struct arctic_html_view *view, int x, int y )
+{
+    POINT point = { x, y + view->scroll_y };
+
+    if (view->relayout) return NULL;
+    for (unsigned int i = view->list.link_count; i--; )
+        if (PtInRect( &view->list.links[i].rect, point )) return view->list.links[i].element;
+    return NULL;
+}
+
+/* the address a link goes to, in full, for the status bar and the host */
+static WCHAR *link_target( struct arctic_html_view *view, lxb_dom_element_t *link )
+{
+    const char *href;
+    size_t len;
+    char *url;
+    WCHAR *wide;
+
+    if (!view->doc || !(href = (const char *)lxb_dom_element_get_attribute( link, (const lxb_char_t *)"href", 4, &len )))
+        return NULL;
+    if (!(url = document_resolve( view->doc, href, len ))) return NULL;
+    wide = utf8_to_wide( url, strlen( url ), NULL );
+    free( url );
+    return wide;
+}
+
+static void hover( struct arctic_html_view *view, int x, int y )
+{
+    lxb_dom_element_t *link = link_at( view, x, y );
+    WCHAR *target;
+
+    if (link == view->hover) return;
+    view->hover = link;
+    if (link && (target = link_target( view, link )))
+    {
+        tell_host( view, ARCTIC_HTML_WM_STATUS, target );
+        free( target );
+    }
+    else if (!view->loading) show_done( view );
+}
+
+static void follow( struct arctic_html_view *view, lxb_dom_element_t *link )
+{
+    WCHAR *target = link_target( view, link );
+
+    if (!target) return;
+    if (!_wcsnicmp( target, L"javascript:", 11 ))
+    {
+        tell_host( view, ARCTIC_HTML_WM_STATUS, L"Посилання на JavaScript — рушій виконує JS з етапу 4" );
+        free( target );
+        return;
+    }
+    /* the host keeps the history; a host that does not, the view goes itself */
+    if (!view->host || !SendMessageW( view->host, ARCTIC_HTML_WM_NAVIGATE, 0, (LPARAM)target ))
+        view_navigate( view, target );
+    free( target );
+}
+
 static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
     struct arctic_html_view *view = (struct arctic_html_view *)GetWindowLongPtrW( hwnd, GWLP_USERDATA );
 
-    if (!view) return DefWindowProcW( hwnd, msg, wp, lp );
+    if (!view)
+    {
+        if (msg == WM_LOADED) document_free( (struct document *)lp );
+        return DefWindowProcW( hwnd, msg, wp, lp );
+    }
 
     switch (msg)
     {
@@ -167,6 +304,11 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         EndPaint( hwnd, &ps );
         return 0;
     }
+    case WM_LOADED:
+        if ((LONG)wp != view->navigation) document_free( (struct document *)lp );
+        else install( view, (struct document *)lp );
+        return 0;
+
     case WM_SIZE:
         /* a new width lays the page out again; a new height only shows more of it */
         if (LOWORD(lp) != view->list.width) view->relayout = TRUE;
@@ -191,6 +333,7 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 
         view->wheel_rest = delta - notches * WHEEL_DELTA;
         scroll_to( view, view->scroll_y - notches * WHEEL_STEP );
+        hover( view, -1, -1 );
         return 0;
     }
     case WM_KEYDOWN:
@@ -207,9 +350,33 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         }
         break;
 
+    case WM_MOUSEMOVE:
+        hover( view, (short)LOWORD(lp), (short)HIWORD(lp) );
+        return 0;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT && view->hover)
+        {
+            SetCursor( LoadCursorW( NULL, (LPCWSTR)IDC_HAND ) );
+            return TRUE;
+        }
+        break;
+
     case WM_LBUTTONDOWN:
-    case WM_RBUTTONDOWN:
         SetFocus( hwnd );   /* the keys scroll the page from now on */
+        view->pressed = link_at( view, (short)LOWORD(lp), (short)HIWORD(lp) );
+        return 0;
+
+    case WM_LBUTTONUP:
+    {
+        lxb_dom_element_t *link = link_at( view, (short)LOWORD(lp), (short)HIWORD(lp) );
+
+        if (link && link == view->pressed) follow( view, link );
+        view->pressed = NULL;
+        return 0;
+    }
+    case WM_RBUTTONDOWN:
+        SetFocus( hwnd );
         return 0;
 
     case WM_GETDLGCODE:
@@ -258,14 +425,15 @@ struct arctic_html_view *view_create( HWND parent, const RECT *rect )
     view->present = present_create( view->window );
     TRACE( "view %p, window %p, %s\n", view, view->window, present_on_gpu( view->present ) ? "Vulkan" : "GDI" );
 
-    lstrcpynW( view->url, L"about:blank", ARRAY_SIZE(view->url) );
-    load( view );
+    /* a blank page at once: the window has something to draw before the first navigation */
+    install( view, document_load( L"about:blank", 0, 0 ) );
     return view;
 }
 
 void view_destroy( struct arctic_html_view *view )
 {
     if (!view) return;
+    InterlockedIncrement( &view->navigation );  /* what is still loading is dropped */
     if (view->window)
     {
         SetWindowLongPtrW( view->window, GWLP_USERDATA, 0 );
@@ -291,12 +459,69 @@ HWND view_window( struct arctic_html_view *view )
     return view ? view->window : NULL;
 }
 
+static int hex_digit( char c )
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* An address that differs from the page's only after '#' is a place in the
+ * same document: no load, the view scrolls to the block with that id - the
+ * contents of an article are made of such links. */
+static BOOL same_document( struct arctic_html_view *view, const WCHAR *url )
+{
+    const WCHAR *hash = wcschr( url, '#' ), *own = wcschr( view->url, '#' );
+    size_t base = own ? (size_t)(own - view->url) : wcslen( view->url );
+    char fragment[1024];
+    int len, out = 0;
+
+    if (!view->doc || view->loading || (!hash && !own) || !wcscmp( url, view->url )) return FALSE;
+    if ((hash ? (size_t)(hash - url) : wcslen( url )) != base || wcsncmp( url, view->url, base )) return FALSE;
+
+    lstrcpynW( view->url, url, ARRAY_SIZE(view->url) );
+    tell_host( view, ARCTIC_HTML_WM_LOCATION, view->url );
+    if (!hash || !hash[1] || (len = WideCharToMultiByte( CP_UTF8, 0, hash + 1, -1, fragment, sizeof(fragment),
+                                                        NULL, NULL )) <= 1)
+    {
+        scroll_to( view, 0 );   /* "#" alone, or none: the top */
+        return TRUE;
+    }
+    for (int i = 0; i < len - 1; i++)  /* the id as the page wrote it, not as the address carries it */
+    {
+        if (fragment[i] == '%' && i + 2 < len - 1 && hex_digit( fragment[i + 1] ) >= 0 &&
+            hex_digit( fragment[i + 2] ) >= 0)
+        {
+            fragment[out++] = (char)(hex_digit( fragment[i + 1] ) * 16 + hex_digit( fragment[i + 2] ));
+            i += 2;
+        }
+        else fragment[out++] = fragment[i];
+    }
+    if (view->relayout) layout( view );
+    TRACE( "fragment %.*s among %u anchors\n", out, fragment, view->list.anchor_count );
+    for (unsigned int i = 0; i < view->list.anchor_count; i++)
+    {
+        size_t id_len;
+        const char *id = (const char *)lxb_dom_element_get_attribute( view->list.anchors[i].element,
+                                                                      (const lxb_char_t *)"id", 2, &id_len );
+
+        if (id && id_len == (size_t)out && !memcmp( id, fragment, out ))
+        {
+            scroll_to( view, view->list.anchors[i].y );
+            break;
+        }
+    }
+    return TRUE;    /* an id the page does not have: it stays where it is, as browsers do */
+}
+
 HRESULT view_navigate( struct arctic_html_view *view, const WCHAR *url )
 {
     if (!view || !url) return E_INVALIDARG;
     TRACE( "%p %s\n", view, debugstr_w(url) );
+    if (same_document( view, url )) return S_OK;
     lstrcpynW( view->url, url, ARRAY_SIZE(view->url) );
-    load( view );
+    start_loading( view );
     return S_OK;
 }
 

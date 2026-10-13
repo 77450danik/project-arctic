@@ -41,12 +41,16 @@ struct atom
     BOOL                keep;       /* a space that does not collapse or break (pre, nowrap);
                                      * a break of <br> or a newline of pre, which ends even an empty line */
     const struct image *image;
+    lxb_dom_element_t  *link;       /* the <a href> it is inside, or NULL */
+    lxb_dom_element_t  *anchors[2]; /* inlines with an id that begin with it: #fragment goes to its line */
 };
 
 struct layout
 {
     struct document     *doc;
     struct display_list *list;
+    lxb_dom_element_t   *link;      /* the <a href> being laid out, or NULL */
+    lxb_dom_element_t   *anchors[2];    /* inlines with an id waiting for their first atom */
     struct style       **styles;    /* every computed style, freed at the end */
     unsigned int         style_count, style_capacity;
     struct atom         *atoms;     /* the inline content being gathered */
@@ -73,18 +77,83 @@ static struct style *new_style( struct layout *ctx )
     return style;
 }
 
+/* ARCTIC_HTML_DEBUG_ID=<id>: the computed style of that element in the log,
+ * to see why a page looks as it does */
+static void debug_style( lxb_dom_element_t *element, const struct style *style )
+{
+    static char wanted[128] = "?";
+    const char *id;
+    size_t len;
+
+    if (wanted[0] == '?' && !GetEnvironmentVariableA( "ARCTIC_HTML_DEBUG_ID", wanted, sizeof(wanted) )) wanted[0] = 0;
+    if (!wanted[0]) return;
+    if (wanted[0] == '.')   /* .name: the first element with that class */
+    {
+        static BOOL seen;
+        if (seen || !(id = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"class", 5, &len )))
+            return;
+        {
+            char *copy = malloc( len + 1 ), *token, *next = NULL;
+            BOOL found = FALSE;
+            if (!copy) return;
+            memcpy( copy, id, len );
+            copy[len] = 0;
+            for (token = strtok_s( copy, " \t\n", &next ); token && !found; token = strtok_s( NULL, " \t\n", &next ))
+                found = !strcmp( token, wanted + 1 );
+            free( copy );
+            if (!found) return;
+        }
+        seen = TRUE;
+    }
+    else if (!(id = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"id", 2, &len )) ||
+             len != strlen( wanted ) || memcmp( id, wanted, len ))
+        return;
+    ERR( "#%s: display %d font %s %.1fpx/%d weight %d line %.1f color %08lx bg %08lx width %d:%.1f "
+         "margin %.1f %.1f %.1f %.1f padding %.1f %.1f %.1f %.1f invisible %d transparent %d out_of_flow %d\n",
+         wanted, style->display, debugstr_w(style->font.face), style->font_size, style->font.px, style->font.weight,
+         style->line_height, style->color, style->background, style->width.unit, style->width.value,
+         style->margin[0].value, style->margin[1].value, style->margin[2].value, style->margin[3].value,
+         style->padding[0], style->padding[1], style->padding[2], style->padding[3],
+         style->invisible, style->transparent, style->out_of_flow );
+}
+
+/* ARCTIC_HTML_OUTLINE=1: every block box taller than a line, with its place, in the log */
+static void debug_outline( lxb_dom_element_t *element, const struct style *style, float x, float y, float width,
+                           float height )
+{
+    static int enabled = -1;
+    const char *class;
+    size_t tag_len, class_len = 0;
+    const lxb_char_t *tag;
+
+    if (enabled < 0) enabled = GetEnvironmentVariableA( "ARCTIC_HTML_OUTLINE", NULL, 0 ) > 0;
+    if (!enabled || height < 24) return;
+    tag = lxb_dom_element_local_name( element, &tag_len );
+    if (!(class = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"class", 5, &class_len )))
+        class = "";
+    ERR( "%.*s.%.*s at %.0f,%.0f %.0fx%.0f font %.1f\n", (int)tag_len, tag, (int)min( class_len, 60 ), class,
+         x, y, width, height, style->font_size );
+}
+
 static const struct style *compute( struct layout *ctx, const struct style *parent, lxb_dom_element_t *element )
 {
     struct style *style = new_style( ctx );
 
     if (!style) return NULL;
     style_compute( parent, element, style );
+    debug_style( element, style );
     return style;
 }
 
 static BOOL is_block( const struct style *style )
 {
     return style->display == DISPLAY_BLOCK || style->display == DISPLAY_LIST_ITEM;
+}
+
+/* visibility: hidden and opacity: 0 keep their place and draw nothing */
+static BOOL paints( const struct style *style )
+{
+    return !style->invisible && !style->transparent;
 }
 
 static float line_height_of( const struct style *style, const struct font *font )
@@ -124,6 +193,9 @@ static struct atom *add_atom( struct layout *ctx, enum atom_type type, const str
     atom->type = type;
     atom->style = style;
     atom->font = font_get( &style->font );
+    atom->link = ctx->link;
+    memcpy( atom->anchors, ctx->anchors, sizeof(atom->anchors) );
+    memset( ctx->anchors, 0, sizeof(ctx->anchors) );
     return atom;
 }
 
@@ -225,15 +297,22 @@ static void add_image( struct layout *ctx, lxb_dom_element_t *element, const str
 
     if ((src = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"src", 3, &len )))
         image = document_image( ctx->doc, src, len );
+    w = style->width.unit == LEN_PX ? style->width.value : (float)attribute_number( element, "width" );
+    h = style->height.unit == LEN_PX ? style->height.value : (float)attribute_number( element, "height" );
     if (!image)
     {
-        /* what the page says the image is, in its place */
-        if ((alt = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"alt", 3, &len )) && len)
+        /* an image of a size the page gave keeps its place, as in browsers;
+         * one of no size says in words what it is */
+        if (w > 0 && h > 0)
+        {
+            if (!(atom = add_atom( ctx, ATOM_IMAGE, style ))) return;
+            atom->width = (int)(w + 0.5f);
+            atom->height = (int)(h + 0.5f);
+        }
+        else if ((alt = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"alt", 3, &len )) && len)
             add_text( ctx, style, alt, len );
         return;
     }
-    w = style->width.unit == LEN_PX ? style->width.value : (float)attribute_number( element, "width" );
-    h = style->height.unit == LEN_PX ? style->height.value : (float)attribute_number( element, "height" );
     if (!w && !h) { w = (float)image->width; h = (float)image->height; }
     else if (!w) w = h * image->width / image->height;
     else if (!h) h = w * image->height / image->width;
@@ -246,11 +325,33 @@ static void add_image( struct layout *ctx, lxb_dom_element_t *element, const str
 
 static void gather_inline( struct layout *ctx, lxb_dom_node_t *node, const struct style *style );
 
+/* an <a href> makes what is inside it a link */
+static lxb_dom_element_t *enter_link( struct layout *ctx, lxb_dom_element_t *element )
+{
+    lxb_dom_element_t *outer = ctx->link;
+
+    if (lxb_dom_element_tag_id( element ) == LXB_TAG_A &&
+        lxb_dom_element_has_attribute( element, (const lxb_char_t *)"href", 4 ))
+        ctx->link = element;
+    return outer;
+}
+
+static void gather_styled( struct layout *ctx, lxb_dom_element_t *element, const struct style *style );
+
 static void gather_element( struct layout *ctx, lxb_dom_element_t *element, const struct style *parent )
 {
     const struct style *style = compute( ctx, parent, element );
 
     if (!style || style->display == DISPLAY_NONE) return;
+    gather_styled( ctx, element, style );
+}
+
+static void gather_styled( struct layout *ctx, lxb_dom_element_t *element, const struct style *style )
+{
+    lxb_dom_element_t *outer;
+
+    /* positioned out of a line: it would cover the text; where it goes is stage 5 */
+    if (style->out_of_flow) return;
     switch (lxb_dom_element_tag_id( element ))
     {
     case LXB_TAG_BR:
@@ -262,10 +363,17 @@ static void gather_element( struct layout *ctx, lxb_dom_element_t *element, cons
     default:
         break;
     }
+    if (lxb_dom_element_has_attribute( element, (const lxb_char_t *)"id", 2 ))
+    {
+        for (int i = 0; i < ARRAY_SIZE(ctx->anchors); i++)
+            if (!ctx->anchors[i]) { ctx->anchors[i] = element; break; }
+    }
     /* a block inside an inline: its own lines, until blocks in inlines are split properly */
+    outer = enter_link( ctx, element );
     if (is_block( style )) add_break( ctx, style, FALSE );
     gather_inline( ctx, lxb_dom_interface_node( element ), style );
     if (is_block( style )) add_break( ctx, style, FALSE );
+    ctx->link = outer;
 }
 
 static void gather_inline( struct layout *ctx, lxb_dom_node_t *node, const struct style *style )
@@ -294,6 +402,10 @@ static float place_line( struct layout *ctx, unsigned int first, unsigned int en
     float used = 0, pen, baseline;
     WCHAR *run = NULL;
     int run_capacity = 0;
+
+    for (unsigned int i = first; i < end; i++)
+        for (int a = 0; a < ARRAY_SIZE(ctx->atoms[i].anchors) && ctx->atoms[i].anchors[a]; a++)
+            display_list_anchor( ctx->list, (int)top, ctx->atoms[i].anchors[a] );
 
     /* no space at either end of a line, unless it is kept */
     while (first < end && ctx->atoms[first].type == ATOM_SPACE && !ctx->atoms[first].keep) first++;
@@ -332,10 +444,11 @@ static float place_line( struct layout *ctx, unsigned int first, unsigned int en
 
         if (atom->type == ATOM_IMAGE)
         {
-            if ((item = display_list_add( ctx->list, ITEM_IMAGE )))
+            if (atom->image && paints( atom->style ) && (item = display_list_add( ctx->list, ITEM_IMAGE )))
             {
                 SetRect( &item->rect, (int)pen, (int)(baseline - atom->height), (int)pen + atom->width, (int)baseline );
                 item->image = atom->image;
+                if (atom->link) display_list_link( ctx->list, &item->rect, atom->link );
             }
             pen += atom->width;
             i++;
@@ -349,7 +462,7 @@ static float place_line( struct layout *ctx, unsigned int first, unsigned int en
             unsigned int j = i;
             int length = 0, run_width = 0;
 
-            while (j < end && ctx->atoms[j].style == style &&
+            while (j < end && ctx->atoms[j].style == style && ctx->atoms[j].link == atom->link &&
                    (ctx->atoms[j].type == ATOM_TEXT || ctx->atoms[j].type == ATOM_SPACE))
             {
                 length += ctx->atoms[j].type == ATOM_TEXT ? ctx->atoms[j].length : 1;
@@ -377,6 +490,12 @@ static float place_line( struct layout *ctx, unsigned int first, unsigned int en
             }
             /* measured whole: the widths of its words, rounded one by one, add up to more */
             run_width = font_measure( atom->font, run, length );
+            if (!paints( style ))
+            {
+                pen += run_width;
+                i = j;
+                continue;
+            }
             emit_rect( ctx, pen, top, pen + run_width, top + ascent + descent, style->background );
             if ((item = display_list_add( ctx->list, ITEM_RUN )))
             {
@@ -387,6 +506,7 @@ static float place_line( struct layout *ctx, unsigned int first, unsigned int en
                 item->color = style->color;
                 item->x = (int)(pen + 0.5f);
                 item->baseline = (int)(baseline + 0.5f);
+                if (atom->link) display_list_link( ctx->list, &item->rect, atom->link );
             }
             pen += run_width;
             i = j;
@@ -484,14 +604,19 @@ static float flow_children( struct layout *ctx, lxb_dom_node_t *parent, const st
         element = lxb_dom_interface_element( node );
         if (!(child = compute( ctx, style, element )) || child->display == DISPLAY_NONE) continue;
 
+        if (child->out_of_flow)
+        {
+            /* absolute and fixed: where they would stand, taking no place in the flow */
+            lxb_dom_element_t *outer = enter_link( ctx, element );
+
+            if (is_block( child ))
+                layout_block( ctx, element, child, x, y + cursor + pending_margin, width, 0 );
+            ctx->link = outer;
+            continue;
+        }
         if (!is_block( child ))
         {
-            switch (lxb_dom_element_tag_id( element ))
-            {
-            case LXB_TAG_BR:  add_break( ctx, child, TRUE ); break;
-            case LXB_TAG_IMG: add_image( ctx, element, child ); break;
-            default:          gather_inline( ctx, node, child ); break;
-            }
+            gather_styled( ctx, element, child );
             continue;
         }
 
@@ -509,7 +634,12 @@ static float flow_children( struct layout *ctx, lxb_dom_node_t *parent, const st
         margin_top = length_px( &child->margin[0], width );
         cursor += max( pending_margin, margin_top );    /* neighbouring margins collapse */
         if (child->display == DISPLAY_LIST_ITEM) list_index++;
-        cursor += layout_block( ctx, element, child, x, y + cursor, width, list_index );
+        {
+            lxb_dom_element_t *outer = enter_link( ctx, element );
+
+            cursor += layout_block( ctx, element, child, x, y + cursor, width, list_index );
+            ctx->link = outer;
+        }
         pending_margin = length_px( &child->margin[2], width );
     }
     if (ctx->atom_count)
@@ -555,33 +685,51 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
     float content_w, content_h, box_x, total;
     unsigned int background, borders;
 
-    if (style->width.unit == LEN_AUTO) content_w = containing - ml - mr - frame_h;
-    else
+    float sizing = style->border_box ? frame_h : 0;    /* what of the frame a width already counts */
+    BOOL fixed = style->width.unit != LEN_AUTO;
+
+    if (!fixed) content_w = containing - ml - mr - frame_h;
+    else content_w = length_px( &style->width, containing ) - sizing;
+    if (style->max_width.unit != LEN_AUTO && content_w > length_px( &style->max_width, containing ) - sizing)
     {
-        content_w = length_px( &style->width, containing );
+        content_w = length_px( &style->max_width, containing ) - sizing;
+        fixed = TRUE;
+    }
+    if (style->min_width.unit != LEN_AUTO && content_w < length_px( &style->min_width, containing ) - sizing)
+    {
+        content_w = length_px( &style->min_width, containing ) - sizing;
+        fixed = TRUE;
+    }
+    if (content_w < 0) content_w = 0;
+    if (fixed)
+    {
         /* margin: 0 auto centres a block of a set width */
         if (style->margin[1].unit == LEN_AUTO && style->margin[3].unit == LEN_AUTO)
             ml = mr = max( 0, (containing - content_w - frame_h) / 2 );
         else if (style->margin[3].unit == LEN_AUTO)
             ml = max( 0, containing - content_w - frame_h - mr );
     }
-    if (content_w < 0) content_w = 0;
     box_x = x + ml;
+    if (lxb_dom_element_has_attribute( element, (const lxb_char_t *)"id", 2 ))
+        display_list_anchor( ctx->list, (int)y, element );
 
     /* the background and the borders are drawn under the content: their places are taken now */
     background = ctx->list->count;
-    emit_rect( ctx, 0, 0, 1, 1, style->background );
+    if (paints( style )) emit_rect( ctx, 0, 0, 1, 1, style->background );
     background = ctx->list->count > background ? background : ~0u;
     borders = ctx->list->count;
-    for (int i = 0; i < 4; i++) emit_rect( ctx, 0, 0, 1, 1, style->border[i] > 0 ? style->border_color[i] : 0 );
+    for (int i = 0; i < 4; i++)
+        emit_rect( ctx, 0, 0, 1, 1, style->border[i] > 0 && paints( style ) ? style->border_color[i] : 0 );
 
-    if (style->display == DISPLAY_LIST_ITEM)
+    if (style->display == DISPLAY_LIST_ITEM && paints( style ))
         emit_marker( ctx, style, box_x + style->border[3] + style->padding[3], y + frame_v_top, list_index );
 
     content_h = flow_children( ctx, lxb_dom_interface_node( element ), style, box_x + style->border[3] + style->padding[3],
                                y + frame_v_top, content_w );
-    if (style->height.unit == LEN_PX) content_h = style->height.value;
+    if (style->height.unit == LEN_PX)
+        content_h = max( 0, style->height.value - (style->border_box ? frame_v_top + frame_v_bottom : 0) );
     total = frame_v_top + content_h + frame_v_bottom;
+    debug_outline( element, style, box_x, y, content_w, total );
 
     if (background != ~0u)
         SetRect( &ctx->list->items[background].rect, (int)box_x, (int)y, (int)ceilf( box_x + content_w + frame_h ),
@@ -591,7 +739,7 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
         float right = box_x + content_w + frame_h, bottom = y + total;
         RECT *rect;
 
-        if (!(style->border[i] > 0 && (style->border_color[i] >> 24))) continue;
+        if (!(style->border[i] > 0 && (style->border_color[i] >> 24) && paints( style ))) continue;
         rect = &ctx->list->items[item++].rect;
         switch (i)
         {

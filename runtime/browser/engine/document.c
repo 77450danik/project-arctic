@@ -1,13 +1,15 @@
 /*
  * Arctic web engine: a document, from its address to lexbor's tree
  *
- * Stage 1 of docs/browser.md reads pages from the disk (file: and plain
- * paths) and the engine's own pages (about:); the network is stage 2, and
- * until then an http address gets a page that says so.
+ * Everything the page needs is fetched here, off the window's thread (the
+ * view's loader): the page, its style sheets and its images, so the window
+ * only lays out and draws. The network is net/ (stage 2); the engine's own
+ * pages are about:.
  *
  * lexbor parses the HTML, and with its style module on it also parses every
- * <style> as it meets it and matches the rules to the elements; the sheets
- * <link> names are read here and attached after.
+ * <style> as it meets it and matches the rules to the elements. Those
+ * sheets lack the shorthands lexbor drops (css.c), so they are swapped for
+ * rewritten ones, in document order with the sheets of <link>.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -20,38 +22,16 @@
 #include <string.h>
 #include <wchar.h>
 
-#include <shlwapi.h>
-
 #include "arctichtml_private.h"
+#include "../net/net.h"
 
-#define MAX_DOCUMENT_SIZE (64 * 1024 * 1024)
-
-static char *read_file( const WCHAR *path, size_t *len )
-{
-    HANDLE file = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
-                               FILE_ATTRIBUTE_NORMAL, NULL );
-    LARGE_INTEGER size;
-    DWORD got;
-    char *data;
-
-    if (file == INVALID_HANDLE_VALUE) return NULL;
-    if (!GetFileSizeEx( file, &size ) || size.QuadPart > MAX_DOCUMENT_SIZE ||
-        !(data = malloc( (size_t)size.QuadPart + 1 )))
-    {
-        CloseHandle( file );
-        return NULL;
-    }
-    if (!ReadFile( file, data, (DWORD)size.QuadPart, &got, NULL )) got = 0;
-    CloseHandle( file );
-    data[got] = 0;
-    *len = got;
-    return data;
-}
+#define IMAGE_THREADS 6
+#define MAX_IMAGES 400
 
 /* The code pages of the charsets Ukrainian and Western pages are written in;
  * anything else is taken as UTF-8, as the encoding standard does for new
  * pages. */
-static UINT charset_code_page( const char *name, size_t len )
+UINT charset_code_page( const char *name, size_t len )
 {
     static const struct { const char *name; UINT cp; } charsets[] =
     {
@@ -87,8 +67,9 @@ static UINT sniff_code_page( const char *data, size_t len )
     return CP_UTF8;
 }
 
-/* lexbor wants UTF-8: anything else is converted before it parses */
-static char *to_utf8( char *data, size_t *len )
+/* lexbor wants UTF-8: anything else is converted before it parses. The
+ * byte order mark wins, then what the server said, then the page's <meta>. */
+static char *to_utf8( char *data, size_t *len, UINT declared )
 {
     UINT cp;
     int wide_len, out_len;
@@ -108,7 +89,8 @@ static char *to_utf8( char *data, size_t *len )
     }
     else
     {
-        if ((cp = sniff_code_page( data, *len )) == CP_UTF8) return data;
+        cp = declared != CP_UTF8 ? declared : sniff_code_page( data, *len );
+        if (cp == CP_UTF8) return data;
         wide_len = MultiByteToWideChar( cp, 0, data, (int)*len, NULL, 0 );
         if (!(wide = malloc( (wide_len + 1) * sizeof(WCHAR) ))) return data;
         MultiByteToWideChar( cp, 0, data, (int)*len, wide, wide_len );
@@ -126,66 +108,39 @@ static char *to_utf8( char *data, size_t *len )
     return out;
 }
 
-/* "C:\x.html", "C:/x.html", "file:///C:/x.html" - a path on this machine */
-static BOOL url_to_path( const WCHAR *url, WCHAR path[MAX_PATH] )
+char *document_resolve( const struct document *doc, const char *ref, size_t len )
 {
-    DWORD len = MAX_PATH;
-
-    if (((url[0] >= 'a' && url[0] <= 'z') || (url[0] >= 'A' && url[0] <= 'Z')) && url[1] == ':' &&
-        (url[2] == '\\' || url[2] == '/'))
-    {
-        lstrcpynW( path, url, MAX_PATH );
-        for (WCHAR *p = path; *p; p++) if (*p == '/') *p = '\\';
-        return TRUE;
-    }
-    if (_wcsnicmp( url, L"file:", 5 )) return FALSE;
-    return SUCCEEDED(PathCreateFromUrlW( url, path, &len, 0 ));
+    return url_resolve( doc->base ? doc->base : doc->address, ref, len );
 }
 
-/* a path a page names: relative to the page's folder, or absolute */
-static BOOL resolve_path( const struct document *doc, const char *ref, size_t len, WCHAR path[MAX_PATH] )
-{
-    WCHAR *wide, combined[MAX_PATH];
-    BOOL ok;
+/* --- style sheets --- */
 
-    if (!len || !(wide = utf8_to_wide( ref, len, NULL ))) return FALSE;
-    /* //host/x is the network, and so is a UNC path: a page never makes the
-     * system open a share - that would hand the user's NTLM hash to its host */
-    if ((wide[0] == '/' || wide[0] == '\\') && (wide[1] == '/' || wide[1] == '\\'))
-    {
-        free( wide );
-        return FALSE;
-    }
-    if (url_to_path( wide, path ))
-    {
-        free( wide );
-        return path[0] != '\\';
-    }
-    if (!doc->base_dir[0] || wcschr( wide, ':' ))     /* another scheme: http, data, ... */
-    {
-        free( wide );
-        return FALSE;
-    }
-    for (WCHAR *p = wide; *p; p++)
-    {
-        if (*p == '/') *p = '\\';
-        if (*p == '?' || *p == '#') *p = 0;     /* a query means nothing on a disk */
-    }
-    ok = PathCombineW( combined, doc->base_dir, wide ) != NULL && combined[0] != '\\';
-    free( wide );
-    if (ok) lstrcpynW( path, combined, MAX_PATH );
-    return ok;
-}
-
-static void add_sheet( struct document *doc, const char *original, size_t original_len )
+static void add_sheet( struct document *doc, const struct css_context *ctx, const char *original, size_t original_len )
 {
     lxb_css_stylesheet_t *sheet;
     size_t len;
     char *css;
 
-    /* with the longhands of the shorthands lexbor drops (css.c) */
-    if (!(css = css_rewrite( original, original_len, &len ))) return;
+    /* @media evaluated, var() replaced, shorthands expanded (css.c) */
+    if (!(css = css_rewrite( ctx, original, original_len, &len ))) return;
+    {
+        /* ARCTIC_HTML_DUMP_CSS=<folder>: what lexbor is given, to see why a page looks as it does */
+        WCHAR folder[MAX_PATH], path[MAX_PATH];
+        static LONG dumped;
+        HANDLE file;
+        DWORD written;
 
+        if (GetEnvironmentVariableW( L"ARCTIC_HTML_DUMP_CSS", folder, ARRAY_SIZE(folder) ))
+        {
+            swprintf( path, ARRAY_SIZE(path), L"%s\\sheet-%ld.css", folder, InterlockedIncrement( &dumped ) );
+            file = CreateFileW( path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL );
+            if (file != INVALID_HANDLE_VALUE)
+            {
+                WriteFile( file, css, (DWORD)len, &written, NULL );
+                CloseHandle( file );
+            }
+        }
+    }
     if (!doc->css_parser)
     {
         doc->css_parser = lxb_css_parser_create();
@@ -204,7 +159,7 @@ static void add_sheet( struct document *doc, const char *original, size_t origin
     if (lxb_css_stylesheet_parse( sheet, doc->css_parser, (const lxb_char_t *)css, len ) != LXB_STATUS_OK ||
         lxb_html_document_stylesheet_attach( doc->html, sheet ) != LXB_STATUS_OK)
     {
-        WARN( "a style sheet of %s did not parse\n", debugstr_w(doc->url) );
+        WARN( "a style sheet of %s did not parse\n", doc->address );
         lxb_css_stylesheet_destroy( sheet, true );
         goto done;
     }
@@ -227,20 +182,75 @@ static BOOL attribute_has_word( lxb_dom_element_t *element, const char *name, co
     return FALSE;
 }
 
+static const char *attribute( lxb_dom_element_t *element, const char *name, size_t *len )
+{
+    return (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)name, strlen( name ), len );
+}
+
+/* the text of every sheet, in document order */
+struct sheet_texts
+{
+    char        **texts;
+    size_t       *lengths;
+    unsigned int  count, capacity;
+};
+
+static void keep_sheet( struct sheet_texts *sheets, char *text, size_t len )
+{
+    if (sheets->count == sheets->capacity)
+    {
+        unsigned int capacity = sheets->capacity ? sheets->capacity * 2 : 16;
+        char **texts = realloc( sheets->texts, capacity * sizeof(*texts) );
+        size_t *lengths = texts ? realloc( sheets->lengths, capacity * sizeof(*lengths) ) : NULL;
+
+        if (texts) sheets->texts = texts;
+        if (!texts || !lengths) { free( text ); return; }
+        sheets->lengths = lengths;
+        sheets->capacity = capacity;
+    }
+    sheets->texts[sheets->count] = text;
+    sheets->lengths[sheets->count++] = len;
+}
+
+static BOOL media_holds( lxb_dom_element_t *element, const struct css_context *ctx )
+{
+    size_t len;
+    const char *media = attribute( element, "media", &len );
+
+    return !media || css_media_matches( ctx, media, len );
+}
+
+static void fetch_sheet( struct document *doc, struct sheet_texts *sheets, const char *href, size_t href_len )
+{
+    struct response response;
+    char *url = document_resolve( doc, href, href_len );
+
+    if (!url) return;
+    if (net_fetch( url, doc->address, REQUEST_STYLESHEET, &response ) && response.status < 400 && response.body)
+    {
+        response.body = to_utf8( response.body, &response.length, content_type_code_page( response.content_type ) );
+        keep_sheet( sheets, response.body, response.length );
+        response.body = NULL;
+    }
+    else if (response.blocked) doc->blocked++;
+    else WARN( "no style sheet %s: %d %s\n", url, response.status, response.error );
+    response_free( &response );
+    free( url );
+}
+
 /* The sheets of <style> and <link rel=stylesheet>, in document order, so
- * that a later one wins a tie. lexbor parsed every <style> as it met it,
- * without the shorthands it drops: that sheet goes, the rewritten one takes
- * its place. A style="" keeps what lexbor parsed and gets the longhands of
- * its shorthands on top. */
-static void load_sheets( struct document *doc, lxb_dom_node_t *node )
+ * that a later one wins a tie. lexbor parsed every <style> as it met it, but
+ * its style module cannot take @media, var() and some shorthands (css.c):
+ * that sheet goes, a rewritten one takes its place. */
+static void gather_sheets( struct document *doc, const struct css_context *ctx, struct sheet_texts *sheets,
+                           lxb_dom_node_t *node, BOOL fetch )
 {
     for (node = lxb_dom_node_first_child( node ); node; node = lxb_dom_node_next( node ))
     {
         lxb_dom_element_t *element;
         const char *text;
-        WCHAR path[MAX_PATH] = L"";
-        size_t len, css_len;
-        char *css;
+        size_t len;
+        char *copy;
 
         if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
         element = lxb_dom_interface_element( node );
@@ -249,53 +259,219 @@ static void load_sheets( struct document *doc, lxb_dom_node_t *node )
         case LXB_TAG_STYLE:
             if (lxb_html_interface_style( element )->stylesheet)
                 lxb_html_style_element_remove( lxb_html_interface_style( element ) );
-            if ((text = (const char *)lxb_dom_node_text_content( node, &len )))
-                add_sheet( doc, text, len );
+            if (media_holds( element, ctx ) && (text = (const char *)lxb_dom_node_text_content( node, &len )) &&
+                (copy = malloc( len + 1 )))
+            {
+                memcpy( copy, text, len );
+                copy[len] = 0;
+                keep_sheet( sheets, copy, len );
+            }
             continue;   /* nothing inside a <style> is an element */
 
         case LXB_TAG_LINK:
-            if (!attribute_has_word( element, "rel", "stylesheet" )) break;
-            text = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"href", 4, &len );
-            if (text && resolve_path( doc, text, len, path ) && (css = read_file( path, &css_len )))
-            {
-                css = to_utf8( css, &css_len );
-                add_sheet( doc, css, css_len );
-                free( css );
-            }
-            else WARN( "no style sheet %s\n", debugstr_w(path) );
+            if (fetch && attribute_has_word( element, "rel", "stylesheet" ) &&
+                !attribute_has_word( element, "rel", "alternate" ) && media_holds( element, ctx ) &&
+                (text = attribute( element, "href", &len )))
+                fetch_sheet( doc, sheets, text, len );
             break;
 
         default:
             break;
         }
-        if ((text = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"style", 5, &len )) &&
-            (css = css_expand_inline( text, len, &css_len )))
-        {
-            lxb_dom_element_style_parse( element, (const lxb_char_t *)css, css_len );
-            free( css );
-        }
-        load_sheets( doc, node );
+        gather_sheets( doc, ctx, sheets, node, fetch );
     }
 }
 
-static BOOL parse( struct document *doc, const char *html, size_t len )
+/* a style="" keeps what lexbor parsed and gets what it lacked on top */
+static void inline_styles( const struct css_context *ctx, lxb_dom_node_t *node )
+{
+    for (node = lxb_dom_node_first_child( node ); node; node = lxb_dom_node_next( node ))
+    {
+        const char *text;
+        size_t len, css_len;
+        char *css;
+
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+        if ((text = attribute( lxb_dom_interface_element( node ), "style", &len )) &&
+            (css = css_expand_inline( ctx, text, len, &css_len )))
+        {
+            lxb_dom_element_style_parse( lxb_dom_interface_element( node ), (const lxb_char_t *)css, css_len );
+            free( css );
+        }
+        inline_styles( ctx, node );
+    }
+}
+
+static void load_sheets( struct document *doc, int width, int height, BOOL fetch )
+{
+    struct sheet_texts sheets = { 0 };
+    struct css_context ctx;
+    lxb_dom_node_t *root = lxb_dom_interface_node( doc->html );
+
+    css_context_init( &ctx, width, height );
+    gather_sheets( doc, &ctx, &sheets, root, fetch );
+    /* the custom properties of all of them first: a sheet uses what a later one sets */
+    for (unsigned int i = 0; i < sheets.count; i++) css_collect( &ctx, sheets.texts[i], sheets.lengths[i] );
+    for (unsigned int i = 0; i < sheets.count; i++)
+    {
+        add_sheet( doc, &ctx, sheets.texts[i], sheets.lengths[i] );
+        free( sheets.texts[i] );
+    }
+    inline_styles( &ctx, root );
+    TRACE( "%u sheets, %u custom properties\n", sheets.count, ctx.var_count );
+    free( sheets.texts );
+    free( sheets.lengths );
+    css_context_free( &ctx );
+}
+
+/* --- images, fetched side by side --- */
+
+struct image_job
+{
+    struct image   *image;
+    struct response response;
+};
+
+struct image_jobs
+{
+    struct document  *doc;
+    struct image_job *jobs;
+    unsigned int      count;
+    LONG              next;
+};
+
+static struct image *find_image( struct document *doc, const char *url )
+{
+    for (unsigned int i = 0; i < doc->image_count; i++)
+        if (!strcmp( doc->images[i]->url, url )) return doc->images[i];
+    return NULL;
+}
+
+static struct image *add_image( struct document *doc, char *url )
+{
+    struct image *image;
+
+    if (doc->image_count == doc->image_capacity)
+    {
+        unsigned int capacity = doc->image_capacity ? doc->image_capacity * 2 : 16;
+        struct image **grown = realloc( doc->images, capacity * sizeof(*grown) );
+
+        if (!grown) return NULL;
+        doc->images = grown;
+        doc->image_capacity = capacity;
+    }
+    if (!(image = calloc( 1, sizeof(*image) ))) return NULL;
+    image->url = url;
+    image->failed = TRUE;   /* until it comes */
+    doc->images[doc->image_count++] = image;
+    return image;
+}
+
+static void collect_images( struct document *doc, lxb_dom_node_t *node )
+{
+    for (node = lxb_dom_node_first_child( node ); node && doc->image_count < MAX_IMAGES; node = lxb_dom_node_next( node ))
+    {
+        lxb_dom_element_t *element;
+        const char *src;
+        size_t len;
+        char *url;
+
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+        element = lxb_dom_interface_element( node );
+        if (lxb_dom_element_tag_id( element ) == LXB_TAG_IMG && (src = attribute( element, "src", &len )) && len &&
+            (url = document_resolve( doc, src, len )))
+        {
+            if (find_image( doc, url ) || !add_image( doc, url )) free( url );
+        }
+        collect_images( doc, node );
+    }
+}
+
+static DWORD WINAPI image_thread( void *arg )
+{
+    struct image_jobs *jobs = arg;
+    LONG i;
+
+    while ((i = InterlockedIncrement( &jobs->next ) - 1) < (LONG)jobs->count)
+    {
+        struct image_job *job = &jobs->jobs[i];
+
+        net_fetch( job->image->url, jobs->doc->address, REQUEST_IMAGE, &job->response );
+    }
+    return 0;
+}
+
+static void load_images( struct document *doc )
+{
+    struct image_jobs jobs = { doc };
+    HANDLE threads[IMAGE_THREADS];
+    unsigned int thread_count = 0;
+
+    collect_images( doc, lxb_dom_interface_node( doc->html ) );
+    if (!doc->image_count || !(jobs.jobs = calloc( doc->image_count, sizeof(*jobs.jobs) ))) return;
+    jobs.count = doc->image_count;
+    for (unsigned int i = 0; i < jobs.count; i++) jobs.jobs[i].image = doc->images[i];
+
+    for (unsigned int i = 0; i < min( IMAGE_THREADS, jobs.count ); i++)
+        if ((threads[thread_count] = CreateThread( NULL, 0, image_thread, &jobs, 0, NULL ))) thread_count++;
+    if (!thread_count) image_thread( &jobs );
+    WaitForMultipleObjects( thread_count, threads, TRUE, INFINITE );
+    for (unsigned int i = 0; i < thread_count; i++) CloseHandle( threads[i] );
+
+    /* decoded here, on one thread: WIC lives in this thread's apartment */
+    for (unsigned int i = 0; i < jobs.count; i++)
+    {
+        struct image_job *job = &jobs.jobs[i];
+
+        if (job->response.blocked) doc->blocked++;
+        else if (job->response.body && job->response.status < 400)
+            job->image->failed = !image_decode( job->image, job->response.body, job->response.length );
+        response_free( &job->response );
+    }
+    free( jobs.jobs );
+}
+
+/* --- the document --- */
+
+static void find_base( struct document *doc, lxb_dom_node_t *node )
+{
+    for (node = lxb_dom_node_first_child( node ); node && !doc->base; node = lxb_dom_node_next( node ))
+    {
+        const char *href;
+        size_t len;
+
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+        if (lxb_dom_element_tag_id( lxb_dom_interface_element( node ) ) == LXB_TAG_BASE &&
+            (href = attribute( lxb_dom_interface_element( node ), "href", &len )) && len)
+        {
+            doc->base = url_resolve( doc->address, href, len );
+            return;
+        }
+        find_base( doc, node );
+    }
+}
+
+static BOOL parse( struct document *doc, const char *html, size_t len, BOOL fetch, int width, int height )
 {
     const lxb_char_t *title;
     size_t title_len;
     WCHAR *wide;
-
-    ULONGLONG start = GetTickCount64(), parsed;
+    ULONGLONG start = GetTickCount64(), parsed, sheets;
 
     if (!(doc->html = lxb_html_document_create())) return FALSE;
     if (lxb_style_init( doc->html ) != LXB_STATUS_OK ||
         lxb_html_document_parse( doc->html, (const lxb_char_t *)html, len ) != LXB_STATUS_OK)
     {
-        ERR( "lexbor did not parse %s\n", debugstr_w(doc->url) );
+        ERR( "lexbor did not parse %s\n", doc->address );
         return FALSE;
     }
     parsed = GetTickCount64();
-    load_sheets( doc, lxb_dom_interface_node( doc->html ) );
-    TRACE( "%Iu bytes: parsed in %I64u ms, sheets in %I64u ms\n", len, parsed - start, GetTickCount64() - parsed );
+    if (fetch) find_base( doc, lxb_dom_interface_node( doc->html ) );
+    load_sheets( doc, width, height, fetch );
+    sheets = GetTickCount64();
+    if (fetch) load_images( doc );
+    TRACE( "%Iu bytes: parsed in %I64u ms, sheets in %I64u ms, %u images in %I64u ms, %u blocked\n", len,
+           parsed - start, sheets - parsed, doc->image_count, GetTickCount64() - sheets, doc->blocked );
 
     if ((title = lxb_html_document_title( doc->html, &title_len )) && title_len &&
         (wide = utf8_to_wide( (const char *)title, title_len, NULL )))
@@ -306,12 +482,50 @@ static BOOL parse( struct document *doc, const char *html, size_t len )
     return TRUE;
 }
 
-struct document *document_load( const WCHAR *url )
+/* what is not HTML, in HTML: text in <pre>, an image on its own */
+static char *wrap( const struct response *response, const char *url, size_t *len )
+{
+    const char *type = response->content_type ? response->content_type : "";
+    size_t size = response->length * 6 + strlen( url ) * 6 + 256, n = 0;
+    char *html;
+
+    if (!(html = malloc( size ))) return NULL;
+    if (!_strnicmp( type, "image/", 6 ))
+        n = snprintf( html, size, "<!DOCTYPE html><html><body style=\"margin:0;background:#0e0e0e\">"
+                      "<img src=\"%s\"></body></html>", url );
+    else
+    {
+        n = snprintf( html, size, "<!DOCTYPE html><html><body><pre>" );
+        for (size_t i = 0; i < response->length; i++)
+        {
+            const char *escaped = response->body[i] == '<' ? "&lt;" : response->body[i] == '&' ? "&amp;" : NULL;
+
+            if (escaped) { memcpy( html + n, escaped, strlen( escaped ) ); n += strlen( escaped ); }
+            else html[n++] = response->body[i];
+        }
+        n += snprintf( html + n, size - n, "</pre></body></html>" );
+    }
+    *len = n;
+    return html;
+}
+
+static char *error_page( const char *url, const char *reason, size_t *len )
+{
+    WCHAR *wide_url = utf8_to_wide( url, strlen( url ), NULL ), *wide_reason = utf8_to_wide( reason, strlen( reason ), NULL );
+    char *html = page_error( wide_url ? wide_url : L"", wide_reason ? wide_reason : L"", len );
+
+    free( wide_url );
+    free( wide_reason );
+    return html;
+}
+
+struct document *document_load( const WCHAR *url, int width, int height )
 {
     struct document *doc = calloc( 1, sizeof(*doc) );
-    WCHAR path[MAX_PATH];
+    struct response response = { 0 };
     char *html = NULL;
     size_t len = 0;
+    BOOL fetch = FALSE;
 
     if (!doc) return NULL;
     lstrcpynW( doc->url, url, ARRAY_SIZE(doc->url) );
@@ -323,25 +537,40 @@ struct document *document_load( const WCHAR *url )
         html = _strdup( "<!DOCTYPE html><html><head><title></title></head><body></body></html>" );
         len = html ? strlen( html ) : 0;
     }
-    else if (url_to_path( url, path ))
-    {
-        if ((html = read_file( path, &len )))
-        {
-            WCHAR *name;
-
-            html = to_utf8( html, &len );
-            lstrcpynW( doc->base_dir, path, ARRAY_SIZE(doc->base_dir) );
-            if ((name = wcsrchr( doc->base_dir, '\\' ))) name[1] = 0;
-        }
-        else html = page_error( url, L"Файл не знайдено або його не прочитати.", &len );
-    }
-    else if (!_wcsnicmp( url, L"http:", 5 ) || !_wcsnicmp( url, L"https:", 6 ))
-        html = page_error( url, L"Мережа — етап 2 рушія (docs/browser.md): поки він відкриває сторінки з диска "
-                                L"(file:///…) і власні (about:arctic).", &len );
+    else if (!(doc->address = url_from_typed( url )))
+        html = page_error( url, L"Адреса не читається.", &len );
+    else if (!net_fetch( doc->address, NULL, REQUEST_DOCUMENT, &response ))
+        html = error_page( doc->address, response.error, &len );
     else
-        html = page_error( url, L"Рушій не знає такої адреси.", &len );
+    {
+        const char *type = response.content_type ? response.content_type : "text/html";
 
-    if (!html || !parse( doc, html, len ))
+        /* where the page is at the end: its addresses are relative to that */
+        free( doc->address );
+        doc->address = response.url;
+        response.url = NULL;
+        if (!MultiByteToWideChar( CP_UTF8, 0, doc->address, -1, doc->url, ARRAY_SIZE(doc->url) ))
+            lstrcpynW( doc->url, url, ARRAY_SIZE(doc->url) );
+
+        if (!_strnicmp( type, "text/html", 9 ) || !_strnicmp( type, "application/xhtml", 17 ) || !*type)
+        {
+            html = to_utf8( response.body, &response.length, content_type_code_page( type ) );
+            len = response.length;
+            response.body = NULL;
+            fetch = TRUE;
+        }
+        else if (!_strnicmp( type, "text/", 5 ) || !_strnicmp( type, "image/", 6 ))
+        {
+            response.body = to_utf8( response.body, &response.length, content_type_code_page( type ) );
+            html = wrap( &response, doc->address, &len );
+            fetch = !_strnicmp( type, "image/", 6 );
+        }
+        else html = error_page( doc->address, "Рушій не показує файлів такого типу.", &len );
+    }
+    response_free( &response );
+    if (!doc->address) doc->address = _strdup( "about:blank" );
+
+    if (!html || !parse( doc, html, len, fetch, width, height ))
     {
         free( html );
         document_free( doc );
@@ -350,11 +579,10 @@ struct document *document_load( const WCHAR *url )
     free( html );
     if (!doc->title[0])
     {
-        const WCHAR *name = wcsrchr( url, '/' );
+        const WCHAR *name = wcsrchr( doc->url, '/' );
 
-        lstrcpynW( doc->title, name && name[1] ? name + 1 : url, ARRAY_SIZE(doc->title) );
+        lstrcpynW( doc->title, name && name[1] ? name + 1 : doc->url, ARRAY_SIZE(doc->title) );
     }
-    TRACE( "%s: %u linked sheets, title %s\n", debugstr_w(url), doc->sheet_count, debugstr_w(doc->title) );
     return doc;
 }
 
@@ -372,34 +600,20 @@ void document_free( struct document *doc )
     for (unsigned int i = 0; i < doc->image_count; i++)
     {
         if (doc->images[i]->bitmap) DeleteObject( doc->images[i]->bitmap );
+        free( doc->images[i]->url );
         free( doc->images[i] );
     }
     free( doc->images );
+    free( doc->address );
+    free( doc->base );
     free( doc );
 }
 
-/* the decoded image for an <img src>, once per path */
 const struct image *document_image( struct document *doc, const char *src, size_t len )
 {
-    WCHAR path[MAX_PATH];
-    struct image *image;
+    char *url = document_resolve( doc, src, len );
+    const struct image *image = url ? find_image( doc, url ) : NULL;
 
-    if (!resolve_path( doc, src, len, path )) return NULL;
-    for (unsigned int i = 0; i < doc->image_count; i++)
-        if (!_wcsicmp( doc->images[i]->path, path )) return doc->images[i]->failed ? NULL : doc->images[i];
-
-    if (doc->image_count == doc->image_capacity)
-    {
-        unsigned int capacity = doc->image_capacity ? doc->image_capacity * 2 : 16;
-        struct image **grown = realloc( doc->images, capacity * sizeof(*grown) );
-
-        if (!grown) return NULL;
-        doc->images = grown;
-        doc->image_capacity = capacity;
-    }
-    if (!(image = calloc( 1, sizeof(*image) ))) return NULL;
-    lstrcpynW( image->path, path, MAX_PATH );
-    image->failed = !image_decode( image );
-    doc->images[doc->image_count++] = image;
-    return image->failed ? NULL : image;
+    free( url );
+    return image && !image->failed ? image : NULL;
 }

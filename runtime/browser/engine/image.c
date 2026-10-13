@@ -26,25 +26,26 @@ static const GUID format_pbgra = { 0x6fddc324, 0x4e03, 0x4bfe, { 0xb1, 0x85, 0x3
 
 #define MAX_IMAGE_SIDE 16384
 
+/* A factory of this thread: documents are loaded on threads of their own,
+ * and one factory made on the thread of the first would be used from
+ * apartments it does not belong to. The thread may have COM already, in
+ * whatever apartment: that is fine for WIC, which works in both. */
 static IWICImagingFactory *get_factory(void)
 {
-    static IWICImagingFactory *factory;
+    IWICImagingFactory *factory = NULL;
     HRESULT hr;
 
-    if (factory) return factory;
-    CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );   /* the host's thread may have done it already */
+    CoInitializeEx( NULL, COINIT_MULTITHREADED );
     hr = CoCreateInstance( &factory_clsid, NULL, CLSCTX_INPROC_SERVER, &factory_iid, (void **)&factory );
-    if (FAILED(hr))
-    {
-        ERR( "no WIC: %#lx\n", hr );
-        factory = NULL;
-    }
-    return factory;
+    if (FAILED(hr)) ERR( "no WIC: %#lx\n", hr );
+    return SUCCEEDED(hr) ? factory : NULL;
 }
 
-BOOL image_decode( struct image *image )
+/* what came over the network or from the disk, as bytes */
+BOOL image_decode( struct image *image, const void *data, size_t len )
 {
-    IWICImagingFactory *factory = get_factory();
+    IWICImagingFactory *factory;
+    IWICStream *stream = NULL;
     IWICBitmapDecoder *decoder = NULL;
     IWICBitmapFrameDecode *frame = NULL;
     IWICFormatConverter *converter = NULL;
@@ -54,9 +55,11 @@ BOOL image_decode( struct image *image )
     void *bits;
     HRESULT hr;
 
-    if (!factory) return FALSE;
-    hr = IWICImagingFactory_CreateDecoderFromFilename( factory, image->path, NULL, GENERIC_READ,
-                                                       WICDecodeMetadataCacheOnDemand, &decoder );
+    if (!data || !len || len > 0xffffffff || !(factory = get_factory())) return FALSE;
+    hr = IWICImagingFactory_CreateStream( factory, &stream );
+    if (SUCCEEDED(hr)) hr = IWICStream_InitializeFromMemory( stream, (BYTE *)data, (DWORD)len );
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateDecoderFromStream( factory, (IStream *)stream, NULL,
+                                                                        WICDecodeMetadataCacheOnDemand, &decoder );
     if (SUCCEEDED(hr)) hr = IWICBitmapDecoder_GetFrame( decoder, 0, &frame );
     if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateFormatConverter( factory, &converter );
     if (SUCCEEDED(hr)) hr = IWICFormatConverter_Initialize( converter, (IWICBitmapSource *)frame, &format_pbgra,
@@ -76,16 +79,18 @@ BOOL image_decode( struct image *image )
     if (converter) IWICFormatConverter_Release( converter );
     if (frame) IWICBitmapFrameDecode_Release( frame );
     if (decoder) IWICBitmapDecoder_Release( decoder );
+    if (stream) IWICStream_Release( stream );
+    if (factory) IWICImagingFactory_Release( factory );
 
     if (FAILED(hr))
     {
-        WARN( "%s: no image (%#lx)\n", debugstr_w(image->path), hr );
+        WARN( "%s: no image (%#lx)\n", image->url, hr );
         if (image->bitmap) DeleteObject( image->bitmap );
         image->bitmap = NULL;
         return FALSE;
     }
     image->width = width;
     image->height = height;
-    TRACE( "%s: %ux%u\n", debugstr_w(image->path), width, height );
+    TRACE( "%s: %ux%u\n", image->url, width, height );
     return TRUE;
 }

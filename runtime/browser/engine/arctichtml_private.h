@@ -10,6 +10,7 @@
 #ifndef __ARCTICHTML_PRIVATE_H
 #define __ARCTICHTML_PRIVATE_H
 
+#include <winsock2.h>   /* before windows.h, or winsock.h comes in its place */
 #include <windows.h>
 
 #include <lexbor/html/html.h>
@@ -71,13 +72,13 @@ void font_generic_face( enum generic_family generic, WCHAR face[LF_FACESIZE] );
 
 struct image
 {
-    WCHAR    path[MAX_PATH];
+    char    *url;           /* absolute, UTF-8 */
     HBITMAP  bitmap;        /* a DIB section, for AlphaBlend */
     int      width, height;
     BOOL     failed;
 };
 
-BOOL image_decode( struct image *image );
+BOOL image_decode( struct image *image, const void *data, size_t len );
 
 /* --- the display list --- */
 
@@ -106,10 +107,28 @@ struct item
     const struct image  *image;
 };
 
+/* where a link is on the page: what a click on it opens */
+struct link_area
+{
+    RECT               rect;
+    lxb_dom_element_t *element;     /* the <a href> */
+};
+
+/* where a block with an id begins: what #fragment of an address scrolls to */
+struct anchor
+{
+    int                y;
+    lxb_dom_element_t *element;
+};
+
 struct display_list
 {
     struct item  *items;
     unsigned int  count, capacity;
+    struct link_area *links;
+    unsigned int  link_count, link_capacity;
+    struct anchor *anchors;
+    unsigned int  anchor_count, anchor_capacity;
     WCHAR       **strings;      /* copies the list owns */
     unsigned int  string_count, string_capacity;
     DWORD         background;   /* the canvas: 0xAARRGGBB */
@@ -121,6 +140,8 @@ void display_list_reset( struct display_list *list );
 void display_list_free( struct display_list *list );
 struct item *display_list_add( struct display_list *list, enum item_type type );
 const WCHAR *display_list_string( struct display_list *list, const WCHAR *text, int length );
+void display_list_link( struct display_list *list, const RECT *rect, lxb_dom_element_t *element );
+void display_list_anchor( struct display_list *list, int y, lxb_dom_element_t *element );
 
 void raster_paint( struct surface *surface, const struct display_list *list, int scroll_y );
 
@@ -130,26 +151,47 @@ struct document
 {
     lxb_html_document_t *html;
     lxb_css_parser_t    *css_parser;
-    lxb_css_stylesheet_t **sheets;  /* the ones <link> brought: we free them */
+    lxb_css_stylesheet_t **sheets;  /* the ones we parsed: we free them */
     unsigned int         sheet_count, sheet_capacity;
-    WCHAR                url[2084];
-    WCHAR                base_dir[MAX_PATH];    /* a folder for relative paths, file: only */
+    char                *address;   /* UTF-8, where the page came from at the end, after redirects */
+    char                *base;      /* what its addresses are relative to: <base href> or the address */
+    WCHAR                url[2084]; /* the address, for the address bar */
     WCHAR                title[256];
     struct image       **images;
     unsigned int         image_count, image_capacity;
+    unsigned int         blocked;   /* requests the filter took */
 };
 
-struct document *document_load( const WCHAR *url );
+/* the document at an address: fetched, parsed, with its sheets and images,
+ * its media queries evaluated for a viewport of this size */
+struct document *document_load( const WCHAR *url, int width, int height );
 void document_free( struct document *doc );
+/* the decoded image of an <img src>, if it came */
 const struct image *document_image( struct document *doc, const char *src, size_t len );
+/* an address the page writes, made absolute against its base; the caller frees */
+char *document_resolve( const struct document *doc, const char *ref, size_t len );
+UINT charset_code_page( const char *name, size_t len );
 /* the built-in pages: about:arctic, and the one that says why a page did not load */
 char *page_about( const WCHAR *url, size_t *len );
 char *page_error( const WCHAR *url, const WCHAR *reason, size_t *len );
 
-/* the text of a sheet with the longhands of the shorthands lexbor drops;
- * for a style="", only those longhands */
-char *css_rewrite( const char *css, size_t len, size_t *out_len );
-char *css_expand_inline( const char *style, size_t len, size_t *out_len );
+/* what CSS needs before lexbor sees it (css.c): @media evaluated for the
+ * viewport, var() replaced, the shorthands lexbor drops expanded */
+struct css_context
+{
+    int             width, height;  /* the viewport the page opens in */
+    struct css_var *vars;           /* the document's custom properties */
+    unsigned int    var_count, var_capacity;
+};
+
+void css_context_init( struct css_context *ctx, int width, int height );
+void css_context_free( struct css_context *ctx );
+/* the first pass over every sheet: the custom properties of the document */
+void css_collect( struct css_context *ctx, const char *css, size_t len );
+char *css_rewrite( const struct css_context *ctx, const char *css, size_t len, size_t *out_len );
+BOOL css_media_matches( const struct css_context *ctx, const char *media, size_t len );
+/* for a style="", only what lexbor did not have */
+char *css_expand_inline( const struct css_context *ctx, const char *style, size_t len, size_t *out_len );
 
 /* --- styles --- */
 
@@ -178,10 +220,15 @@ struct style
     DWORD                 color;
     DWORD                 background;
     struct length         width, height;
+    struct length         min_width, max_width;     /* auto: none */
+    BOOL                  border_box;   /* box-sizing: width and height count the padding and the border */
     struct length         margin[4];    /* top, right, bottom, left */
     float                 padding[4];
     float                 border[4];
     DWORD                 border_color[4];
+    BOOL                  invisible;    /* visibility: hidden - inherited, a child may show itself */
+    BOOL                  transparent;  /* opacity: 0 here or above - no child shows */
+    BOOL                  out_of_flow;  /* position: absolute or fixed */
 };
 
 /* the style of the root element, before any author style */

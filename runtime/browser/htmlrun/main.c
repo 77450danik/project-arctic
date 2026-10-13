@@ -13,6 +13,7 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
@@ -20,6 +21,27 @@
 #include <windows.h>
 
 #include "arctic_html.h"
+
+/* what the CRT's wprintf cannot: an address in Cyrillic. A console takes the
+ * text as it is, a pipe or a file gets UTF-8. */
+static void say( DWORD which, const WCHAR *format, ... )
+{
+    HANDLE handle = GetStdHandle( which );
+    WCHAR text[4400];
+    char utf8[13200];
+    va_list args;
+    DWORD mode, done;
+    int len;
+
+    va_start( args, format );
+    len = _vsnwprintf( text, ARRAYSIZE(text) - 1, format, args );
+    va_end( args );
+    if (len < 0) len = ARRAYSIZE(text) - 1;
+    text[len] = 0;
+    if (GetConsoleMode( handle, &mode )) WriteConsoleW( handle, text, len, &done, NULL );
+    else if ((len = WideCharToMultiByte( CP_UTF8, 0, text, len, utf8, sizeof(utf8), NULL, NULL )) > 0)
+        WriteFile( handle, utf8, len, &done, NULL );
+}
 
 int wmain( int argc, WCHAR *argv[] )
 {
@@ -39,16 +61,16 @@ int wmain( int argc, WCHAR *argv[] )
     }
     if (!url || !out || !width || !height)
     {
-        fwprintf( stderr, L"usage: htmlrun URL OUT.png [WIDTH [HEIGHT]] [--full]\n" );
+        say( STD_ERROR_HANDLE, L"usage: htmlrun URL OUT.png [WIDTH [HEIGHT]] [--full]\n" );
         return 2;
     }
     start = GetTickCount();
     hr = ArcticHtmlRenderToFile( url, width, height, full, out );
     if (FAILED(hr))
     {
-        fwprintf( stderr, L"htmlrun: %ls: error %#lx\n", url, hr );
+        say( STD_ERROR_HANDLE, L"htmlrun: %ls: error %#lx\n", url, hr );
         return 1;
     }
-    wprintf( L"%ls -> %ls in %lu ms\n", url, out, GetTickCount() - start );
+    say( STD_OUTPUT_HANDLE, L"%ls -> %ls in %lu ms\n", url, out, GetTickCount() - start );
     return 0;
 }

@@ -11,10 +11,10 @@
  * browser's windows finds them where it is used to. Like the engine it is a
  * plain Windows program: it runs on any Windows 10 or 11 as in Arctic.
  *
- * Stage 0 of docs/browser.md: the frame is what the rest is built on, so it
- * carries only what the stage needs. Back and forward are there but idle
- * until stage 3 brings the travel log, and the tabs, the favourites and the
- * gear come with the stages that have something to put in them.
+ * The frame carries what the stages of docs/browser.md have reached: the
+ * address, the travel log behind back and forward, the status the engine
+ * reports. The tabs, the favourites and the gear come with the stages that
+ * have something to put in them.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -23,6 +23,9 @@
  */
 
 #include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+#include <wchar.h>
 
 #include <windows.h>
 #include <commctrl.h>
@@ -40,6 +43,13 @@ static ARCTIC_HTML_VIEW view;
 static HWND frame, toolbar, address, go, status;
 static HFONT shell_font;
 static UINT dpi = 96;
+static WCHAR status_text[2200];
+
+/* the travel log: where the page has been, and where in that it is now */
+#define MAX_HISTORY 100
+
+static WCHAR *history[MAX_HISTORY];
+static int history_count, history_index = -1;
 
 static int scale( int value )
 {
@@ -82,7 +92,7 @@ static void show_status(void)
     parts[1] = -1;
     if (parts[0] < scale( 80 )) parts[0] = rect.right / 2;
     SendMessageW( status, SB_SETPARTS, ARRAY_SIZE(parts), (LPARAM)parts );
-    SendMessageW( status, SB_SETTEXTW, 0, (LPARAM)load_string( IDS_READY ) );
+    SendMessageW( status, SB_SETTEXTW, 0, (LPARAM)(*status_text ? status_text : load_string( IDS_READY )) );
     SendMessageW( status, SB_SETTEXTW, 1,
                   (LPARAM)load_string( ArcticHtmlOnGpu( view ) ? IDS_ON_VULKAN : IDS_ON_GDI ) );
 }
@@ -125,9 +135,50 @@ static BOOL has_scheme( const WCHAR *text )
     return FALSE;
 }
 
-/* What was typed is an address when it says so, and stage 0 shows whatever
- * it is told either way; the search engine and the real guesses come with
- * the navigation of stage 2. */
+static void update_buttons(void)
+{
+    SendMessageW( toolbar, TB_ENABLEBUTTON, IDM_BACK, MAKELONG( history_index > 0, 0 ) );
+    SendMessageW( toolbar, TB_ENABLEBUTTON, IDM_FORWARD, MAKELONG( history_index + 1 < history_count, 0 ) );
+}
+
+/* a new place: what was ahead of the current one is gone, as in every browser */
+static void go_to( const WCHAR *url )
+{
+    WCHAR *copy = _wcsdup( url );
+
+    if (!copy) return;
+    while (history_count > history_index + 1) free( history[--history_count] );
+    if (history_count == MAX_HISTORY)
+    {
+        free( history[0] );
+        memmove( history, history + 1, (MAX_HISTORY - 1) * sizeof(*history) );
+        history_count--;
+    }
+    history[history_count++] = copy;
+    history_index = history_count - 1;
+    update_buttons();
+    SetWindowTextW( address, url );
+    ArcticHtmlNavigate( view, url );
+}
+
+static void travel( int step )
+{
+    int index = history_index + step;
+
+    if (index < 0 || index >= history_count) return;
+    history_index = index;
+    update_buttons();
+    SetWindowTextW( address, history[index] );
+    ArcticHtmlNavigate( view, history[index] );
+}
+
+static void reload(void)
+{
+    if (history_index >= 0) ArcticHtmlNavigate( view, history[history_index] );
+}
+
+/* What was typed is an address when it says so; the search engine and the
+ * real guesses come with the stages that have a search box to send it to. */
 static void navigate(void)
 {
     WCHAR typed[2084], url[2084];
@@ -141,8 +192,7 @@ static void navigate(void)
         lstrcpynW( url, L"https://", ARRAY_SIZE(url) );
         lstrcatW( url, typed );
     }
-    SetWindowTextW( address, url );
-    ArcticHtmlNavigate( view, url );
+    go_to( url );
     SetFocus( ArcticHtmlGetWindow( view ) );
 }
 
@@ -163,9 +213,9 @@ static BOOL create_children( HWND hwnd )
 {
     TBBUTTON buttons[] =
     {
-        /* idle until the travel log of stage 3 */
-        { HIST_BACK,    IDM_BACK,    0, BTNS_BUTTON },
-        { HIST_FORWARD, IDM_FORWARD, 0, BTNS_BUTTON },
+        /* enabled when the travel log has somewhere to go */
+        { HIST_BACK,    IDM_BACK,    0, BTNS_BUTTON, { 0 }, 0, (INT_PTR)load_string( IDS_BACK ) },
+        { HIST_FORWARD, IDM_FORWARD, 0, BTNS_BUTTON, { 0 }, 0, (INT_PTR)load_string( IDS_FORWARD ) },
     };
     RECT content = { 0, 0, 0, 0 };
 
@@ -185,6 +235,7 @@ static BOOL create_children( HWND hwnd )
 
     SendMessageW( toolbar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0 );
     SendMessageW( toolbar, TB_LOADIMAGES, IDB_HIST_SMALL_COLOR, (LPARAM)HINST_COMMCTRL );
+    SendMessageW( toolbar, TB_SETMAXTEXTROWS, 0, 0 );  /* the names are tooltips, not labels */
     SendMessageW( toolbar, TB_ADDBUTTONSW, ARRAY_SIZE(buttons), (LPARAM)buttons );
 
     SetWindowSubclass( address, address_proc, 0, 0 );
@@ -196,6 +247,7 @@ static BOOL create_children( HWND hwnd )
         return FALSE;
     }
     set_shell_font();
+    update_buttons();
     return TRUE;
 }
 
@@ -235,8 +287,23 @@ static LRESULT WINAPI frame_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         case IDOK:  /* Enter in the address bar, which IsDialogMessage sends here */
             navigate();
             return 0;
+        case IDM_BACK:
+            travel( -1 );
+            return 0;
+        case IDM_FORWARD:
+            travel( 1 );
+            return 0;
         }
         return 0;
+
+    case WM_APPCOMMAND:     /* the side buttons of a mouse, the keys of a keyboard */
+        switch (GET_APPCOMMAND_LPARAM( lp ))
+        {
+        case APPCOMMAND_BROWSER_BACKWARD: travel( -1 ); return TRUE;
+        case APPCOMMAND_BROWSER_FORWARD:  travel( 1 ); return TRUE;
+        case APPCOMMAND_BROWSER_REFRESH:  reload(); return TRUE;
+        }
+        break;
 
     case ARCTIC_HTML_WM_TITLE:
     {
@@ -246,10 +313,34 @@ static LRESULT WINAPI frame_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         SetWindowTextW( hwnd, caption );
         return 0;
     }
+    case ARCTIC_HTML_WM_NAVIGATE:   /* a link: a new place in the travel log */
+        go_to( (const WCHAR *)lp );
+        return TRUE;
+
+    case ARCTIC_HTML_WM_STATUS:
+        lstrcpynW( status_text, (const WCHAR *)lp, ARRAY_SIZE(status_text) );
+        SendMessageW( status, SB_SETTEXTW, 0, (LPARAM)status_text );
+        return 0;
+
+    case ARCTIC_HTML_WM_LOCATION:
+    {
+        /* where the page ended up, after redirects: that is what the log keeps */
+        WCHAR *copy;
+
+        if (history_index >= 0 && wcscmp( history[history_index], (const WCHAR *)lp ) &&
+            (copy = _wcsdup( (const WCHAR *)lp )))
+        {
+            free( history[history_index] );
+            history[history_index] = copy;
+        }
+        if (GetFocus() != address) SetWindowTextW( address, (const WCHAR *)lp );
+        return 0;
+    }
     case WM_DESTROY:
         ArcticHtmlDestroyView( view );
         view = NULL;
         if (shell_font) DeleteObject( shell_font );
+        while (history_count) free( history[--history_count] );
         PostQuitMessage( 0 );
         return 0;
     }
@@ -291,10 +382,16 @@ int WINAPI wWinMain( HINSTANCE instance_handle, HINSTANCE prev, WCHAR *cmdline, 
 
     while (GetMessageW( &msg, 0, 0, 0 ) > 0)
     {
-        /* F5 reloads wherever the focus is, as in the browser it stands in for */
+        /* F5 reloads and Alt+arrows travel wherever the focus is, as in the
+         * browser it stands in for */
         if (msg.message == WM_KEYDOWN && msg.wParam == VK_F5)
         {
-            navigate();
+            reload();
+            continue;
+        }
+        if (msg.message == WM_SYSKEYDOWN && (msg.wParam == VK_LEFT || msg.wParam == VK_RIGHT))
+        {
+            travel( msg.wParam == VK_LEFT ? -1 : 1 );
             continue;
         }
         if (IsDialogMessageW( frame, &msg )) continue;
