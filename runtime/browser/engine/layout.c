@@ -215,12 +215,12 @@ static void defer( struct layout *ctx, lxb_dom_element_t *element, const struct 
     entry->link = ctx->link;
 }
 
-/* an input, a select, a textarea: drawn by the engine, whatever display the page gives it */
+/* an input, a select, a textarea, a frame: drawn by the engine, whatever display the page gives it */
 static BOOL is_field( lxb_dom_element_t *element )
 {
     lxb_tag_id_t tag = lxb_dom_element_tag_id( element );
 
-    return tag == LXB_TAG_INPUT || tag == LXB_TAG_SELECT || tag == LXB_TAG_TEXTAREA;
+    return tag == LXB_TAG_INPUT || tag == LXB_TAG_SELECT || tag == LXB_TAG_TEXTAREA || tag == LXB_TAG_IFRAME;
 }
 
 static BOOL is_block( const struct style *style )
@@ -674,6 +674,64 @@ static void layout_control( struct layout *ctx, lxb_dom_element_t *element, cons
     *out_baseline = baseline;
 }
 
+/* --- frames --- */
+
+static float attribute_size( lxb_dom_element_t *element, const char *name, float containing, float fallback )
+{
+    size_t len;
+    const char *value = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)name, strlen( name ), &len );
+
+    if (!value || !len) return fallback;
+    if (value[len - 1] == '%') return (float)atof( value ) * containing / 100.0f;
+    return atoi( value ) > 0 ? (float)atoi( value ) : fallback;
+}
+
+/* an <iframe> at the origin: its frame, and inside it its document, cut to its box */
+static void layout_iframe( struct layout *ctx, lxb_dom_element_t *element, const struct style *style, float avail,
+                           float *out_width, float *out_height, float *out_baseline )
+{
+    struct frame *frame = ctx->doc ? document_frame( ctx->doc, element, FALSE ) : NULL;
+    float frame_h = style->border[3] + style->padding[3] + style->padding[1] + style->border[1];
+    float frame_v = style->border[0] + style->padding[0] + style->padding[2] + style->border[2];
+    float ml = length_px( &style->margin[3], avail ), mr = length_px( &style->margin[1], avail );
+    float mt = length_px( &style->margin[0], avail ), mb = length_px( &style->margin[2], avail );
+    float width, height, cx, cy;
+    struct list_mark from, to;
+    RECT box;
+
+    if (style->width.unit != LEN_AUTO) width = length_px( &style->width, avail ) - (style->border_box ? frame_h : 0);
+    else width = attribute_size( element, "width", avail, 300 );
+    if (style->height.unit == LEN_PX) height = style->height.value - (style->border_box ? frame_v : 0);
+    else height = attribute_size( element, "height", style_viewport_height, 150 );
+    width = max( width, 0 );
+    height = max( height, 0 );
+
+    emit_frame( ctx, style, ml, mt, ml + frame_h + width, mt + frame_v + height );
+    cx = ml + style->border[3] + style->padding[3];
+    cy = mt + style->border[0] + style->padding[0];
+    if (frame && frame->doc && paints( style ) && width > 0 && height > 0)
+    {
+        mark_at( ctx, &from );
+        layout_frame_document( ctx->list, frame->doc, cx, cy, width, height );
+        mark_at( ctx, &to );
+        SetRect( &box, (int)floorf( cx ), (int)floorf( cy ), (int)ceilf( cx + width ), (int)ceilf( cy + height ) );
+        for (unsigned int i = from.items; i < to.items; i++)
+        {
+            struct item *item = &ctx->list->items[i];
+
+            if (item->clipped) IntersectRect( &item->clip, &item->clip, &box );
+            else { item->clip = box; item->clipped = TRUE; }
+        }
+        for (unsigned int i = from.links; i < to.links; i++)
+            IntersectRect( &ctx->list->links[i].rect, &ctx->list->links[i].rect, &box );
+        for (unsigned int i = from.controls; i < to.controls; i++)
+            IntersectRect( &ctx->list->controls[i].rect, &ctx->list->controls[i].rect, &box );
+    }
+    *out_width = ml + frame_h + width + mr;
+    *out_height = mt + frame_v + height + mb;
+    *out_baseline = mt + frame_v + height;
+}
+
 /* --- inline-blocks --- */
 
 /* An inline-block, a button, a form control: laid out as a block of its own
@@ -698,7 +756,9 @@ static void add_box( struct layout *ctx, lxb_dom_element_t *element, const struc
     ctx->text_len = ctx->text_capacity = 0;
     mark_at( ctx, &from );
 
-    if (tag == LXB_TAG_INPUT || tag == LXB_TAG_SELECT || tag == LXB_TAG_TEXTAREA)
+    if (tag == LXB_TAG_IFRAME)
+        layout_iframe( ctx, element, style, avail, &width, &height, &baseline );
+    else if (tag == LXB_TAG_INPUT || tag == LXB_TAG_SELECT || tag == LXB_TAG_TEXTAREA)
         layout_control( ctx, element, style, avail, &width, &height, &baseline );
     else
     {
@@ -1943,6 +2003,48 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
 }
 
 /* --- the document --- */
+
+void layout_frame_document( struct display_list *list, struct document *doc, float x, float y, float width,
+                            float height )
+{
+    struct layout ctx = { .doc = doc, .list = list, .line_width = width };
+    float saved_width = style_viewport_width, saved_height = style_viewport_height;
+    lxb_dom_element_t *root, *saved_owner = list->owner;
+    int saved_layer = list->layer, saved_absolute = list->absolute;
+    const struct style *style, *body_style;
+
+    if (!doc || !doc->html || !(root = lxb_dom_document_element( lxb_dom_interface_document( doc->html ) ))) return;
+    style_viewport_width = width;
+    style_viewport_height = height;
+    ctx.viewport_w = width;
+    ctx.viewport_h = height;
+    list->layer = 0;
+    list->absolute = 0;
+    if ((style = compute( &ctx, NULL, root )))
+    {
+        /* its canvas: the root's background, else the body's; a frame of neither shows the page under it */
+        DWORD background = style->background;
+
+        if (!(background >> 24) && doc->html->body &&
+            (body_style = compute( &ctx, style, lxb_dom_interface_element( doc->html->body ) )))
+            background = body_style->background;
+        list->owner = root;
+        emit_rect( &ctx, x, y, x + width, y + height, background );
+        layout_block( &ctx, root, style, x, y + length_px( &style->margin[0], width ), width, 0 );
+        list->layer = 1;
+        place_deferred( &ctx, 0, x, y, width, height, TRUE );
+    }
+    for (unsigned int i = 0; i < ctx.style_count; i++) free( ctx.styles[i] );
+    free( ctx.styles );
+    free( ctx.atoms );
+    free( ctx.text );
+    free( ctx.deferred );
+    style_viewport_width = saved_width;
+    style_viewport_height = saved_height;
+    list->owner = saved_owner;
+    list->layer = saved_layer;
+    list->absolute = saved_absolute;
+}
 
 void layout_document( struct document *doc, struct display_list *list, int width, int height )
 {

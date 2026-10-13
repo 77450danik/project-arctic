@@ -616,8 +616,28 @@ const HTMLImageElement = defineElement('HTMLImageElement', ['img'], class extend
     get src() { const v = N.attr(this, 'src'); return v === null ? '' : (N.resolve(v) || v); }
 });
 reflect(HTMLImageElement, ['alt', 'srcset', 'sizes', 'loading', 'decoding', 'crossOrigin', 'referrerPolicy', 'useMap']);
+/* the window of another document: a page reaches it by postMessage, as across origins */
+function remoteWindow(post) {
+    const w = {
+        postMessage(data, targetOrigin) {
+            let json;
+            try { json = JSON.stringify(data === undefined ? null : data); } catch (e) { throw new DOMException('could not clone', 'DataCloneError'); }
+            post(json, typeof targetOrigin === 'object' && targetOrigin ? String(targetOrigin.targetOrigin || '*') : String(targetOrigin || '*'));
+        },
+        closed: false,
+        close() {}, focus() {}, blur() {},
+    };
+    for (const name of ['location', 'document']) Object.defineProperty(w, name, { get() { throw new DOMException('Blocked a frame from accessing a cross-origin frame.', 'SecurityError'); } });
+    w.window = w.self = w.frames = w;
+    return w;
+}
 defineElement('HTMLIFrameElement', ['iframe'], class extends HTMLElement {
-    get contentWindow() { return null; } get contentDocument() { return null; }
+    get contentWindow() {
+        if (!this.isConnected) return null;
+        const x = extra(this);
+        return x.contentWindow || (x.contentWindow = remoteWindow((json, origin) => N.postFrame(this, json, origin)));
+    }
+    get contentDocument() { return null; }
 });
 reflectURL(classes.HTMLIFrameElement, ['src']);
 defineElement('HTMLCanvasElement', ['canvas'], class extends HTMLElement {
@@ -1068,9 +1088,9 @@ class Response {
     get ok() { return this.status >= 200 && this.status < 300; }
     text() { this.bodyUsed = true; return Promise.resolve(this._text); }
     json() { this.bodyUsed = true; return new Promise((resolve, reject) => { try { resolve(JSON.parse(this._text)); } catch (e) { reject(e); } }); }
-    arrayBuffer() { return Promise.resolve(new TextEncoder().encode(this._text).buffer); }
+    arrayBuffer() { return Promise.resolve(this._bytes || new TextEncoder().encode(this._text).buffer); }
     blob() { return Promise.resolve(new Blob([this._text])); }
-    clone() { return new Response(this._text, this); }
+    clone() { const r = new Response(this._text, this); r._bytes = this._bytes; return r; }
 }
 class Request {
     constructor(input, init) {
@@ -1084,15 +1104,27 @@ class Request {
     }
 }
 
+/* what a script sends: bytes as they are, the rest as text */
+function requestBody(body) {
+    if (body == null) return undefined;
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body;
+    if (body instanceof Blob) return body._text;
+    if (body instanceof URLSearchParams || body instanceof FormData) return String(body);
+    return String(body);
+}
+
 function fetch(input, init) {
     const request = new Request(input, init);
     return new Promise((resolve, reject) => {
         setTimeout(() => {
             if (request.signal && request.signal.aborted) return reject(new DOMException('aborted', 'AbortError'));
-            const body = request.body == null ? undefined : String(request.body);
-            const r = N.fetch(request.method, request.url, body);
+            let headers = '';
+            request.headers.forEach((v, k) => { if (!/^(host|connection|content-length|cookie|user-agent|referer|origin)$/i.test(k)) headers += k + ': ' + v + '\r\n'; });
+            const r = N.fetch(request.method, request.url, requestBody(request.body), headers || undefined, true);
             if (!r.status) return reject(new TypeError('Failed to fetch'));
-            resolve(new Response(r.text, { status: r.status, headers: headerMap(r.type), url: r.url }));
+            const response = new Response(r.text, { status: r.status, headers: headerMap(r.type), url: r.url });
+            response._bytes = r.bytes;
+            resolve(response);
         }, 0);
     });
 }
@@ -1105,8 +1137,11 @@ class XMLHttpRequest extends EventTarget {
         this.upload = new EventTarget();
         this._type = '';
     }
-    open(method, url, async) { this._method = String(method).toUpperCase(); this._url = N.resolve(String(url)) || String(url); this._async = async !== false; this.readyState = 1; }
-    setRequestHeader() {}
+    open(method, url, async) { this._method = String(method).toUpperCase(); this._url = N.resolve(String(url)) || String(url); this._async = async !== false; this.readyState = 1; this._headers = ''; }
+    setRequestHeader(name, value) {
+        if (/^(host|connection|content-length|cookie|user-agent|referer|origin|accept-encoding)$/i.test(name)) return;
+        this._headers += name + ': ' + String(value).replace(/[\r\n]/g, ' ') + '\r\n';
+    }
     overrideMimeType() {}
     getResponseHeader(name) { return /content-type/i.test(name) ? this._type : null; }
     getAllResponseHeaders() { return this._type ? 'content-type: ' + this._type + '\r\n' : ''; }
@@ -1114,10 +1149,13 @@ class XMLHttpRequest extends EventTarget {
     send(body) {
         const run = () => {
             if (this._aborted) return;
-            const r = N.fetch(this._method, this._url, body == null ? undefined : String(body));
+            const binary = this.responseType === 'arraybuffer' || this.responseType === 'blob';
+            const r = N.fetch(this._method, this._url, requestBody(body), this._headers || undefined, binary);
             this.status = r.status; this.statusText = r.status === 200 ? 'OK' : ''; this.responseURL = r.url; this._type = r.type;
-            this.responseText = r.text;
-            this.response = this.responseType === 'json' ? (() => { try { return JSON.parse(r.text); } catch (e) { return null; } })() : r.text;
+            this.responseText = binary ? '' : r.text;
+            this.response = this.responseType === 'json' ? (() => { try { return JSON.parse(r.text); } catch (e) { return null; } })()
+                          : this.responseType === 'arraybuffer' ? r.bytes
+                          : this.responseType === 'blob' ? new Blob([r.text], { type: r.type }) : r.text;
             this.readyState = 4;
             const fire = type => { const e = new ProgressEvent(type); this.dispatchEvent(e); };
             fire('readystatechange');
@@ -1355,14 +1393,16 @@ function getSelection() {
 /* --- window: the global object --- */
 
 const window = global;
+/* in a frame, the page it is in is another window: reached by postMessage */
+const parentWindow = N.isFrame() ? remoteWindow((json, origin) => N.postParent(json, origin)) : window;
 const definitions = {
-    window, self: window, globalThis: window, top: window, parent: window, frames: window, opener: null,
-    frameElement: null, closed: false, length: 0, name: '', status: '', origin: undefined,
+    window, self: window, globalThis: window, top: parentWindow, parent: parentWindow, frames: window, opener: null,
+    frameElement: null, closed: false, length: 0, name: '', status: '',
     document, location, history, navigator, screen, performance, crypto, console, customElements,
     localStorage: storage(), sessionStorage: storage(),
     innerWidth: N.width, innerHeight: N.height, outerWidth: N.width, outerHeight: N.height + 80,
     devicePixelRatio: 1, scrollX: 0, scrollY: 0, pageXOffset: 0, pageYOffset: 0, screenX: 0, screenY: 0,
-    screenLeft: 0, screenTop: 0, isSecureContext: /^https:/.test(N.url()), visualViewport: null,
+    screenLeft: 0, screenTop: 0, isSecureContext: /^https:/.test(N.url()), visualViewport: null, origin: N.origin(),
     setTimeout, setInterval, clearTimeout, clearInterval: clearTimeout, requestAnimationFrame, cancelAnimationFrame,
     requestIdleCallback: callback => setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 50 }), 1),
     cancelIdleCallback: clearTimeout,
@@ -1464,11 +1504,30 @@ function dispatch(target, type, x, y) {
     return !target.dispatchEvent(event);
 }
 
+/* postMessage to itself goes round the loop like any other */
+definitions.postMessage = function postMessage(data, targetOrigin) {
+    const json = JSON.stringify(data === undefined ? null : data);
+    setTimeout(() => deliverMessage(json, N.origin(), null, true), 0);
+};
+Object.defineProperty(global, 'postMessage', { value: definitions.postMessage, writable: true, configurable: true });
+
+function deliverMessage(json, origin, sourceFrame, self) {
+    let data;
+    try { data = JSON.parse(json); } catch (e) { data = json; }
+    const source = self ? window : sourceFrame ? sourceFrame.contentWindow : parentWindow;
+    const event = new MessageEvent('message', { data, origin });
+    event.source = source;
+    event.ports = [];
+    event.isTrusted = true;
+    window.dispatchEvent(event);
+}
+
 return {
     protoFor,
     runTimers,
     nextTimer,
     dispatch,
+    deliverMessage,
     goLive() { live = true; for (const t of timers.values()) t.due = N.now() + Math.max(0, t.due - virtualNow); },
     addImportMap,
     resolveImport,

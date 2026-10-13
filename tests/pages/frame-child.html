@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Фрейм</title>
+<style>body { font-family: Arial, sans-serif; margin: 8px; background: #fffbe6 } button { font-size: 15px }</style></head>
+<body>
+<b>Я фрейм</b> <span id="where"></span><br>
+<button id="b">Натисни у фреймі</button> <span id="n">0</span><br>
+<span id="answer">батько ще не відповів</span>
+<script>
+document.getElementById('where').textContent = window.parent === window ? '(сам по собі)' : '(усередині сторінки)';
+let n = 0;
+document.getElementById('b').addEventListener('click', () => { document.getElementById('n').textContent = ++n; });
+window.addEventListener('message', e => { document.getElementById('answer').textContent = 'батько: ' + e.data.answer; });
+parent.postMessage({ hello: location.hash || '#1' }, '*');
+</script>
+</body></html>

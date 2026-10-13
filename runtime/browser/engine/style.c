@@ -862,7 +862,8 @@ static void apply_display( lxb_dom_element_t *element, struct style *style )
 
 static BOOL is_control_tag( lxb_tag_id_t tag )
 {
-    return tag == LXB_TAG_INPUT || tag == LXB_TAG_SELECT || tag == LXB_TAG_TEXTAREA || tag == LXB_TAG_BUTTON;
+    return tag == LXB_TAG_INPUT || tag == LXB_TAG_SELECT || tag == LXB_TAG_TEXTAREA || tag == LXB_TAG_BUTTON ||
+           tag == LXB_TAG_IFRAME;
 }
 
 /* what Chrome's style sheet gives the controls: their own font, a grey
@@ -1012,6 +1013,16 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     case LXB_TAG_INPUT: case LXB_TAG_SELECT: case LXB_TAG_TEXTAREA: case LXB_TAG_BUTTON:
         ua_control( element, style );
         break;
+    case LXB_TAG_IFRAME:
+    {
+        size_t len;
+        const char *border = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"frameborder", 11, &len );
+
+        style->display = DISPLAY_INLINE_BLOCK;
+        if (!(border && len == 1 && border[0] == '0'))
+            for (int i = 0; i < 4; i++) style->border[i] = 2;
+        break;
+    }
     case LXB_TAG_HR:
         style->border[0] = style->border[2] = 1;
         style->border_color[0] = 0xff9a9a9a;

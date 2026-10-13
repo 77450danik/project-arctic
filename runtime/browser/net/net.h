@@ -48,6 +48,7 @@ enum request_type
     REQUEST_STYLESHEET,
     REQUEST_IMAGE,
     REQUEST_SCRIPT,
+    REQUEST_FRAME,      /* the document of an <iframe> */
     REQUEST_OTHER,
 };
 
@@ -67,6 +68,9 @@ struct response
 BOOL net_fetch( const char *url, const char *page, enum request_type type, struct response *response );
 /* a form's POST, application/x-www-form-urlencoded; page is the form's document */
 BOOL net_post( const char *url, const char *page, const char *body, size_t len, struct response *response );
+/* a script's request: any method, its own headers ("Name: value\r\n" each), a body or none */
+BOOL net_request( const char *method, const char *url, const char *page, const char *headers, const char *body,
+                  size_t len, struct response *response );
 void response_free( struct response *response );
 /* "charset=" of a Content-Type, as a code page; CP_UTF8 when it names none */
 UINT content_type_code_page( const char *content_type );

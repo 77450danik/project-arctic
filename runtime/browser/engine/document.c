@@ -535,6 +535,114 @@ static void find_base( struct document *doc, lxb_dom_node_t *node )
     }
 }
 
+static struct document *load_once( const WCHAR *url, const struct post_data *post, int width, int height,
+                                   struct document *parent );
+
+/* --- frames --- */
+
+#define MAX_FRAME_DEPTH 3
+#define MAX_FRAMES      16
+
+struct frame *document_frame( struct document *doc, lxb_dom_element_t *element, BOOL create )
+{
+    struct frame *frame;
+
+    for (unsigned int i = 0; i < doc->frame_count; i++) if (doc->frames[i]->element == element) return doc->frames[i];
+    if (!create || doc->frame_count >= MAX_FRAMES || doc->depth >= MAX_FRAME_DEPTH) return NULL;
+    if (doc->frame_count == doc->frame_capacity)
+    {
+        unsigned int capacity = doc->frame_capacity ? doc->frame_capacity * 2 : 4;
+        struct frame **grown = realloc( doc->frames, capacity * sizeof(*grown) );
+
+        if (!grown) return NULL;
+        doc->frames = grown;
+        doc->frame_capacity = capacity;
+    }
+    if (!(frame = calloc( 1, sizeof(*frame) ))) return NULL;
+    frame->element = element;
+    doc->frames[doc->frame_count++] = frame;
+    return frame;
+}
+
+char *frame_url( struct document *doc, lxb_dom_element_t *element )
+{
+    size_t len;
+    const char *src = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"src", 3, &len );
+
+    if (!src || !len) return _strdup( "about:blank" );
+    return document_resolve( doc, src, len );
+}
+
+static int frame_size( lxb_dom_element_t *element, const char *name, int fallback )
+{
+    size_t len;
+    const char *value = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)name, strlen( name ), &len );
+
+    return value && atoi( value ) > 0 ? atoi( value ) : fallback;
+}
+
+/* the frames the page has as it loads, each loaded in turn */
+static void load_frames( struct document *doc, lxb_dom_node_t *node )
+{
+    for (node = lxb_dom_node_first_child( node ); node; node = lxb_dom_node_next( node ))
+    {
+        lxb_dom_element_t *element;
+        struct frame *frame;
+
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+        element = lxb_dom_interface_element( node );
+        if (lxb_dom_element_tag_id( element ) == LXB_TAG_IFRAME)
+        {
+            if ((frame = document_frame( doc, element, TRUE )) && !frame->doc && !frame->loading)
+            {
+                frame->url = frame_url( doc, element );
+                frame->doc = document_load_frame( frame->url, doc, frame_size( element, "width", 300 ),
+                                                  frame_size( element, "height", 150 ) );
+            }
+            continue;
+        }
+        load_frames( doc, node );
+    }
+}
+
+struct document *document_load_frame( const char *url, struct document *parent, int width, int height )
+{
+    WCHAR *wide = url ? utf8_to_wide( url, strlen( url ), NULL ) : NULL;
+    struct document *doc;
+
+    if (!wide) return NULL;
+    TRACE( "frame %s in %s\n", url, parent->address );
+    doc = load_once( wide, NULL, width, height, parent );
+    free( wide );
+    /* a frame that navigates itself while it loads goes there, once */
+    if (doc && doc->redirect)
+    {
+        char *next = doc->redirect;
+
+        doc->redirect = NULL;
+        document_free( doc );
+        wide = utf8_to_wide( next, strlen( next ), NULL );
+        free( next );
+        doc = wide ? load_once( wide, NULL, width, height, parent ) : NULL;
+        free( wide );
+        if (doc && doc->redirect) { free( doc->redirect ); doc->redirect = NULL; }
+    }
+    return doc;
+}
+
+struct document *document_owning( struct document *root, lxb_dom_element_t *element )
+{
+    if (!root || !element) return NULL;
+    if (lxb_dom_interface_node( element )->owner_document == lxb_dom_interface_document( root->html )) return root;
+    for (unsigned int i = 0; i < root->frame_count; i++)
+    {
+        struct document *found = document_owning( root->frames[i]->doc, element );
+
+        if (found) return found;
+    }
+    return NULL;
+}
+
 /* ARCTIC_HTML_NOSCRIPT=1: pages as they were before the engine ran scripts */
 static BOOL no_scripts(void)
 {
@@ -543,6 +651,8 @@ static BOOL no_scripts(void)
     if (off < 0) off = GetEnvironmentVariableA( "ARCTIC_HTML_NOSCRIPT", NULL, 0 ) > 0;
     return off;
 }
+
+static void load_frames( struct document *doc, lxb_dom_node_t *node );
 
 static BOOL parse( struct document *doc, const char *html, size_t len, BOOL fetch, int width, int height )
 {
@@ -569,6 +679,7 @@ static BOOL parse( struct document *doc, const char *html, size_t len, BOOL fetc
     load_sheets( doc, width, height, fetch );
     sheets = GetTickCount64();
     if (fetch) load_images( doc );
+    if (fetch) load_frames( doc, lxb_dom_interface_node( doc->html ) );
     TRACE( "%Iu bytes: parsed in %I64u ms, sheets in %I64u ms, %u images in %I64u ms, %u blocked\n", len,
            parsed - start, sheets - parsed, doc->image_count, GetTickCount64() - sheets, doc->blocked );
 
@@ -618,12 +729,11 @@ static char *error_page( const char *url, const char *reason, size_t *len )
     return html;
 }
 
-static struct document *load_once( const WCHAR *url, const struct post_data *post, int width, int height );
 
 /* the page, and where its scripts send it - a few times at most, as a loop of them would go on */
 struct document *document_load( const WCHAR *url, const struct post_data *post, int width, int height )
 {
-    struct document *doc = load_once( url, post, width, height );
+    struct document *doc = load_once( url, post, width, height, NULL );
 
     for (int hop = 0; doc && doc->redirect && hop < 5; hop++)
     {
@@ -631,7 +741,7 @@ struct document *document_load( const WCHAR *url, const struct post_data *post, 
 
         document_free( doc );
         if (!next) return NULL;
-        doc = load_once( next, NULL, width, height );
+        doc = load_once( next, NULL, width, height, NULL );
         free( next );
     }
     if (doc && doc->redirect)
@@ -642,7 +752,8 @@ struct document *document_load( const WCHAR *url, const struct post_data *post, 
     return doc;
 }
 
-static struct document *load_once( const WCHAR *url, const struct post_data *post, int width, int height )
+static struct document *load_once( const WCHAR *url, const struct post_data *post, int width, int height,
+                                   struct document *parent )
 {
     struct document *doc = calloc( 1, sizeof(*doc) );
     struct response response = { 0 };
@@ -651,6 +762,8 @@ static struct document *load_once( const WCHAR *url, const struct post_data *pos
     BOOL fetch = FALSE;
 
     if (!doc) return NULL;
+    doc->parent = parent;
+    doc->depth = parent ? parent->depth + 1 : 0;
     lstrcpynW( doc->url, url, ARRAY_SIZE(doc->url) );
 
     if (!_wcsicmp( url, L"about:arctic" ) || !_wcsicmp( url, L"about:home" ))
@@ -663,7 +776,8 @@ static struct document *load_once( const WCHAR *url, const struct post_data *pos
     else if (!(doc->address = url_from_typed( url )))
         html = page_error( url, L"Адреса не читається.", &len );
     else if (post ? !net_post( doc->address, post->referrer, post->body, post->length, &response )
-                  : !net_fetch( doc->address, NULL, REQUEST_DOCUMENT, &response ))
+                  : !net_fetch( doc->address, parent ? parent->address : NULL, parent ? REQUEST_FRAME : REQUEST_DOCUMENT,
+                                &response ))
         html = error_page( doc->address, response.error, &len );
     else
     {
@@ -715,6 +829,13 @@ void document_free( struct document *doc )
     if (!doc) return;
     script_free( doc->script );     /* before the tree its objects stand for */
     doc->script = NULL;
+    for (unsigned int i = 0; i < doc->frame_count; i++)
+    {
+        document_free( doc->frames[i]->doc );
+        free( doc->frames[i]->url );
+        free( doc->frames[i] );
+    }
+    free( doc->frames );
     if (doc->html)
     {
         lxb_style_destroy( doc->html );

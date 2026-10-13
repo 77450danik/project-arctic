@@ -205,8 +205,21 @@ struct document
     unsigned int         blocked;   /* requests the filter took */
     char                *redirect;  /* where its scripts sent the page, UTF-8, or NULL */
     struct script_env   *script;    /* its scripts, alive while it shows */
+    struct document     *parent;    /* of a frame's document: the page the frame is in */
+    int                  depth;     /* how deep in frames */
+    struct frame       **frames;    /* its <iframe>s and their documents */
+    unsigned int         frame_count, frame_capacity;
     lxb_dom_element_t   *focus;     /* the form control that takes the keys, or NULL */
     int                  caret;     /* in its value, in UTF-16 units */
+};
+
+/* an <iframe> of a document, and the document in it once it came */
+struct frame
+{
+    lxb_dom_element_t *element;
+    struct document   *doc;
+    BOOL               loading;
+    char              *url;     /* what it was loaded from */
 };
 
 /* what a form sends with POST */
@@ -226,7 +239,6 @@ struct document *document_load( const WCHAR *url, const struct post_data *post, 
 /* runs the page's scripts, its load events and its timers, as it loads */
 void script_run_document( struct document *doc, int width, int height );
 /* the page shows: its timers go to this window from now on, in real time */
-#define SCRIPT_TIMER_ID 0x5c71
 void script_attach( struct document *doc, HWND window );
 void script_on_timer( struct document *doc );
 /* the user's event on an element: mousedown, mouseup, click, input, change, submit...;
@@ -235,6 +247,8 @@ BOOL script_event( struct document *doc, lxb_dom_element_t *target, const char *
 /* how many times scripts changed the tree: the page is laid out again when this moves */
 unsigned int script_mutations( struct document *doc );
 void script_free( struct script_env *env );
+/* the timer a page's scripts set in the view, to tell whose a WM_TIMER is */
+UINT_PTR script_timer_id( struct document *doc );
 
 /* --- forms (form.c) --- */
 
@@ -255,6 +269,14 @@ lxb_dom_element_t *form_default_button( lxb_dom_element_t *form );
 BOOL form_submission( struct document *doc, lxb_dom_element_t *form, lxb_dom_element_t *submitter,
                       char **url, struct post_data *post );
 void document_free( struct document *doc );
+/* the document of a frame, its scripts run, its own frames loaded */
+struct document *document_load_frame( const char *url, struct document *parent, int width, int height );
+/* the frame of an <iframe>, made if there is none yet */
+struct frame *document_frame( struct document *doc, lxb_dom_element_t *element, BOOL create );
+/* where a frame's document goes: its src, about:blank without one */
+char *frame_url( struct document *doc, lxb_dom_element_t *element );
+/* which document of a page and its frames an element is in */
+struct document *document_owning( struct document *root, lxb_dom_element_t *element );
 /* the decoded image of an <img src>, if it came */
 const struct image *document_image( struct document *doc, const char *src, size_t len );
 /* an address the page writes, made absolute against its base; the caller frees */
@@ -352,6 +374,10 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
 float length_px( const struct length *length, float containing );
 
 /* --- layout --- */
+
+/* the document of a frame, laid out in the list at x, y, as big as the frame's box */
+void layout_frame_document( struct display_list *list, struct document *doc, float x, float y, float width,
+                            float height );
 
 /* The whole document, laid out for a viewport width, into the list. */
 void layout_document( struct document *doc, struct display_list *list, int width, int height );

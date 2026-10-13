@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Фрейми</title>
+<style>body { font-family: Arial, sans-serif; margin: 20px } iframe { border: 2px solid #4a90d9 } #got { color: #070 }</style></head>
+<body>
+<h1>Сторінка з фреймом</h1>
+<p>Від фрейму: <b id="got">нічого</b></p>
+<iframe id="f" src="frame-child.html" width="420" height="170"></iframe>
+<p id="dyn">Фрейм зі скрипта:</p>
+<script>
+window.addEventListener('message', e => {
+  document.getElementById('got').textContent = JSON.stringify(e.data) + ' (' + (e.source === document.getElementById('f').contentWindow ? 'від свого фрейму' : 'невідомо звідки') + ')';
+  if (e.data && e.data.hello) document.getElementById('f').contentWindow.postMessage({ answer: 'привіт, фрейме' }, '*');
+});
+const d = document.createElement('iframe');
+d.src = 'frame-child.html#2'; d.width = 420; d.height = 120;
+document.getElementById('dyn').after(d);
+</script>
+</body></html>

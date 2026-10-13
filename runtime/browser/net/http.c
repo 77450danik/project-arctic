@@ -151,8 +151,9 @@ static BOOL fetch_file( const char *url, struct response *response )
     LARGE_INTEGER size;
     HANDLE file;
 
-    if (!MultiByteToWideChar( CP_UTF8, 0, url, -1, wide, ARRAY_SIZE(wide) ) ||
-        FAILED(PathCreateFromUrlW( wide, path, &len, 0 )))
+    if (!MultiByteToWideChar( CP_UTF8, 0, url, -1, wide, ARRAY_SIZE(wide) )) wide[0] = 0;
+    if (wcschr( wide, '#' )) *wcschr( wide, '#' ) = 0;     /* the fragment is no part of the file */
+    if (!wide[0] || FAILED(PathCreateFromUrlW( wide, path, &len, 0 )))
     {
         set_error( response, "адреса файлу не читається" );
         return FALSE;
@@ -483,8 +484,8 @@ static size_t dechunk( char *body, size_t len )
     return out;
 }
 
-static BOOL fetch_http( const char *url, const char *page, enum request_type type, const char *post,
-                        size_t post_len, struct response *response )
+static BOOL fetch_http( const char *url, const char *page, enum request_type type, const char *method,
+                        const char *headers, const char *post, size_t post_len, struct response *response )
 {
     char *current = _strdup( url );
 
@@ -520,7 +521,8 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
         case REQUEST_IMAGE:      accept = "image/png,image/jpeg,image/gif,image/*;q=0.8,*/*;q=0.5"; break;
         default:                 accept = "*/*"; break;
         }
-        if (post) append( &request, "POST ", 5 );
+        if (method) { append( &request, method, strlen( method ) ); append( &request, " ", 1 ); }
+        else if (post) append( &request, "POST ", 5 );
         else append( &request, "GET ", 4 );
         append( &request, parts.path, parts.path_len );
         snprintf( line, sizeof(line), " HTTP/1.1\r\nHost: %s", parts.host );
@@ -559,10 +561,13 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
                 append( &request, page, host_end - page );
                 append( &request, "\r\n", 2 );
             }
-            snprintf( line, sizeof(line), "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %lu\r\n",
-                      (unsigned long)post_len );
+            if (!headers || !StrStrIA( headers, "content-type:" ))
+                append( &request, "Content-Type: application/x-www-form-urlencoded\r\n", 49 );
+            snprintf( line, sizeof(line), "Content-Length: %lu\r\n", (unsigned long)post_len );
             append( &request, line, strlen( line ) );
         }
+        /* a script's own headers: "Name: value\r\n" each */
+        if (headers) append( &request, headers, strlen( headers ) );
         append( &request, "\r\n", 2 );
         if (post) append( &request, post, post_len );
 
@@ -609,7 +614,7 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
             free( reply.data );
             free( current );
             current = target;
-            if (response->status != 307 && response->status != 308) post = NULL;
+            if (response->status != 307 && response->status != 308) post = NULL, method = NULL;
             continue;
         }
 
@@ -677,7 +682,7 @@ BOOL net_fetch( const char *url, const char *page, enum request_type type, struc
         return FALSE;
     }
     if (!_strnicmp( url, "http:", 5 ) || !_strnicmp( url, "https:", 6 ))
-        return fetch_http( url, page, type, NULL, 0, response );
+        return fetch_http( url, page, type, NULL, NULL, NULL, 0, response );
     set_error( response, "рушій не знає такої адреси" );
     return FALSE;
 }
@@ -692,5 +697,18 @@ BOOL net_post( const char *url, const char *page, const char *body, size_t len, 
         set_error( response, "форма шле дані лише на http і https" );
         return FALSE;
     }
-    return fetch_http( url, page, REQUEST_DOCUMENT, body ? body : "", len, response );
+    return fetch_http( url, page, REQUEST_DOCUMENT, NULL, NULL, body ? body : "", len, response );
+}
+
+BOOL net_request( const char *method, const char *url, const char *page, const char *headers, const char *body,
+                  size_t len, struct response *response )
+{
+    memset( response, 0, sizeof(*response) );
+    if (!url) return FALSE;
+    InitOnceExecuteOnce( &winsock_once, start_winsock, NULL, NULL );
+    if (_strnicmp( url, "http:", 5 ) && _strnicmp( url, "https:", 6 ))
+        return net_fetch( url, page, REQUEST_OTHER, response );
+    /* a POST with nothing to send still says so: Content-Length: 0 */
+    if (!body && method && (!_stricmp( method, "POST" ) || !_stricmp( method, "PUT" ))) body = "", len = 0;
+    return fetch_http( url, page, REQUEST_OTHER, method, headers, body, body ? len : 0, response );
 }

@@ -43,6 +43,15 @@ struct wrapper
     JSValue         object;
 };
 
+struct message
+{
+    char           *json;
+    char           *origin;         /* of the page that sent it */
+    lxb_dom_node_t *source;         /* the <iframe> it came from, or NULL from the parent */
+    char           *target_origin;  /* in the outbox: who may read it */
+    lxb_dom_node_t *to_frame;       /* in the outbox: the <iframe> it goes to, or NULL to the parent */
+};
+
 struct script_env
 {
     JSRuntime         *rt;
@@ -62,6 +71,11 @@ struct script_env
     unsigned int       executed, ticks;
     unsigned int       mutations;   /* changes of the tree: the view lays the page out again */
     HWND               window;      /* the view's, once the page shows: its timers go there */
+    struct message    *messages;    /* postMessage to this page, waiting for its next turn */
+    unsigned int       message_count, message_capacity;
+    struct message    *outbox;      /* what it sent while it loaded, sent once it shows */
+    unsigned int       outbox_count, outbox_capacity;
+    JSValue            deliver;     /* dom.js: a message as an event of window */
     JSValue            go_live, next_timer, dispatch;   /* dom.js: real time, the next timer, events */
 };
 
@@ -587,14 +601,49 @@ NATIVE(n_navigate)
     return JS_UNDEFINED;
 }
 
-/* XMLHttpRequest and fetch, done there and then: the page waits for them
- * while it loads anyway */
+/* the bytes of a body a script sends: a string as UTF-8, an ArrayBuffer or
+ * a typed array as they are; JS_FreeCString is for the string only */
+static const char *body_bytes( JSContext *ctx, JSValueConst value, size_t *len, BOOL *is_string )
+{
+    uint8_t *bytes;
+
+    *is_string = FALSE;
+    *len = 0;
+    if (JS_IsUndefined( value ) || JS_IsNull( value )) return NULL;
+    if ((bytes = JS_GetArrayBuffer( ctx, len, value ))) return (const char *)bytes;
+    JS_FreeValue( ctx, JS_GetException( ctx ) );
+    if ((bytes = JS_GetUint8Array( ctx, len, value ))) return (const char *)bytes;
+    JS_FreeValue( ctx, JS_GetException( ctx ) );
+    {
+        size_t offset, byte_length, element;
+        JSValue buffer = JS_GetTypedArrayBuffer( ctx, value, &offset, &byte_length, &element );
+
+        if (!JS_IsException( buffer ))
+        {
+            size_t size;
+            uint8_t *data = JS_GetArrayBuffer( ctx, &size, buffer );
+
+            JS_FreeValue( ctx, buffer );
+            if (data && offset + byte_length <= size)
+            {
+                *len = byte_length;
+                return (const char *)data + offset;
+            }
+        }
+        JS_FreeValue( ctx, JS_GetException( ctx ) );
+    }
+    *is_string = TRUE;
+    return JS_ToCStringLen( ctx, len, value );
+}
+
+/* XMLHttpRequest and fetch, done there and then: (method, url, body, headers, binary) */
 NATIVE(n_fetch)
 {
     struct document *doc = env_of( ctx )->doc;
     struct response response;
-    const char *method, *url, *body = NULL;
+    const char *method, *url, *body, *headers = NULL;
     size_t body_len = 0;
+    BOOL body_string;
     char *absolute;
     JSValue result;
     BOOL ok;
@@ -605,10 +654,12 @@ NATIVE(n_fetch)
         JS_FreeCString( ctx, method );
         return JS_EXCEPTION;
     }
-    if (argc > 2 && JS_IsString( argv[2] )) body = JS_ToCStringLen( ctx, &body_len, argv[2] );
+    body = argc > 2 ? body_bytes( ctx, argv[2], &body_len, &body_string ) : (body_string = FALSE, NULL);
+    if (argc > 3 && JS_IsString( argv[3] )) headers = JS_ToCString( ctx, argv[3] );
     absolute = document_resolve( doc, url, strlen( url ) );
-    if (absolute && !_stricmp( method, "POST" )) ok = net_post( absolute, doc->address, body, body_len, &response );
-    else ok = net_fetch( absolute, doc->address, REQUEST_OTHER, &response );
+    if (absolute && !_stricmp( method, "GET" ) && !headers)
+        ok = net_fetch( absolute, doc->address, REQUEST_OTHER, &response );
+    else ok = net_request( method, absolute, doc->address, headers && *headers ? headers : NULL, body, body_len, &response );
     TRACE( "%s %s: %d, %Iu bytes\n", method, absolute, response.status, response.length );
 
     result = JS_NewObject( ctx );
@@ -616,16 +667,19 @@ NATIVE(n_fetch)
     JS_SetPropertyStr( ctx, result, "url", JS_NewString( ctx, response.url ? response.url : absolute ? absolute : url ) );
     JS_SetPropertyStr( ctx, result, "type", JS_NewString( ctx, response.content_type ? response.content_type : "" ) );
     JS_SetPropertyStr( ctx, result, "text", JS_NewStringLen( ctx, response.body ? response.body : "", response.length ) );
+    if (argc > 4 && JS_ToBool( ctx, argv[4] ))
+        JS_SetPropertyStr( ctx, result, "bytes", JS_NewArrayBufferCopy( ctx, (const uint8_t *)(response.body ? response.body : ""),
+                                                                        response.length ) );
     JS_SetPropertyStr( ctx, result, "blocked", JS_NewBool( ctx, response.blocked ) );
     if (response.blocked) doc->blocked++;
     response_free( &response );
     free( absolute );
     JS_FreeCString( ctx, method );
     JS_FreeCString( ctx, url );
-    if (body) JS_FreeCString( ctx, body );
+    if (body && body_string) JS_FreeCString( ctx, body );
+    if (headers) JS_FreeCString( ctx, headers );
     return result;
 }
-
 NATIVE(n_log)
 {
     const char *text = JS_ToCString( ctx, argv[0] );
@@ -764,6 +818,138 @@ NATIVE(n_eval)
     return JS_UNDEFINED;
 }
 
+/* scheme://host:port of a document, as postMessage names it */
+static char *origin_of( const char *address )
+{
+    const char *host, *end;
+    char *origin;
+
+    if (!address || !(host = strstr( address, "://" ))) return _strdup( "null" );
+    end = host + 3 + strcspn( host + 3, "/?#" );
+    if (!(origin = malloc( end - address + 1 ))) return NULL;
+    memcpy( origin, address, end - address );
+    origin[end - address] = 0;
+    return origin;
+}
+
+static void queue_message( struct document *target, const char *json, size_t len, const char *origin,
+                           lxb_dom_node_t *source, const char *target_origin )
+{
+    struct script_env *env = target ? target->script : NULL;
+    struct message *message;
+    char *own;
+
+    if (!env) return;
+    /* the sender names who may read it: another origin gets nothing */
+    if (target_origin && strcmp( target_origin, "*" ) && strcmp( target_origin, "/" ) && (own = origin_of( target->address )))
+    {
+        BOOL same = !_stricmp( own, target_origin );
+
+        free( own );
+        if (!same) return;
+    }
+    if (env->message_count == env->message_capacity)
+    {
+        unsigned int capacity = env->message_capacity ? env->message_capacity * 2 : 8;
+        struct message *grown = realloc( env->messages, capacity * sizeof(*grown) );
+
+        if (!grown) return;
+        env->messages = grown;
+        env->message_capacity = capacity;
+    }
+    message = &env->messages[env->message_count++];
+    message->json = malloc( len + 1 );
+    if (message->json) { memcpy( message->json, json, len ); message->json[len] = 0; }
+    message->origin = _strdup( origin );
+    message->source = source;
+    if (env->window) SetTimer( env->window, (UINT_PTR)env, 0, NULL );
+}
+
+NATIVE(n_is_frame)
+{
+    return JS_NewBool( ctx, env_of( ctx )->doc->parent != NULL );
+}
+
+NATIVE(n_origin)
+{
+    char *origin = origin_of( env_of( ctx )->doc->address );
+    JSValue result = JS_NewString( ctx, origin ? origin : "null" );
+
+    free( origin );
+    return result;
+}
+
+/* a message of this page to its parent or to one of its frames, sent now */
+static void send_message( struct script_env *env, const char *json, size_t len, const char *target_origin,
+                          lxb_dom_node_t *to_frame )
+{
+    struct document *doc = env->doc;
+    char *origin = origin_of( doc->address );
+
+    if (to_frame)
+    {
+        struct frame *frame = document_frame( doc, lxb_dom_interface_element( to_frame ), FALSE );
+
+        if (frame && frame->doc) queue_message( frame->doc, json, len, origin ? origin : "null", NULL, target_origin );
+    }
+    else if (doc->parent)
+    {
+        for (unsigned int i = 0; i < doc->parent->frame_count; i++)
+            if (doc->parent->frames[i]->doc == doc)
+                queue_message( doc->parent, json, len, origin ? origin : "null",
+                               lxb_dom_interface_node( doc->parent->frames[i]->element ), target_origin );
+    }
+    free( origin );
+}
+
+/* posted while the page loads on its own thread: kept until it shows */
+static void post( JSContext *ctx, JSValueConst json_value, JSValueConst origin_value, lxb_dom_node_t *to_frame )
+{
+    struct script_env *env = env_of( ctx );
+    const char *json, *target_origin;
+    size_t len;
+
+    if (!(json = JS_ToCStringLen( ctx, &len, json_value ))) return;
+    target_origin = JS_ToCString( ctx, origin_value );
+    if (env->window) send_message( env, json, len, target_origin, to_frame );
+    else if (env->outbox_count < 256)
+    {
+        if (env->outbox_count == env->outbox_capacity)
+        {
+            unsigned int capacity = env->outbox_capacity ? env->outbox_capacity * 2 : 8;
+            struct message *grown = realloc( env->outbox, capacity * sizeof(*grown) );
+
+            if (grown) { env->outbox = grown; env->outbox_capacity = capacity; }
+        }
+        if (env->outbox_count < env->outbox_capacity)
+        {
+            struct message *message = &env->outbox[env->outbox_count++];
+
+            memset( message, 0, sizeof(*message) );
+            if ((message->json = malloc( len + 1 ))) { memcpy( message->json, json, len ); message->json[len] = 0; }
+            message->target_origin = _strdup( target_origin ? target_origin : "*" );
+            message->to_frame = to_frame;
+        }
+    }
+    JS_FreeCString( ctx, json );
+    if (target_origin) JS_FreeCString( ctx, target_origin );
+}
+
+/* postMessage to the page this frame is in */
+NATIVE(n_post_parent)
+{
+    if (env_of( ctx )->doc->parent) post( ctx, argv[0], argv[1], NULL );
+    return JS_UNDEFINED;
+}
+
+/* postMessage to the document of an <iframe> of this page */
+NATIVE(n_post_frame)
+{
+    lxb_dom_node_t *frame = unwrap( ctx, argv[0] );
+
+    if (frame) post( ctx, argv[1], argv[2], frame );
+    return JS_UNDEFINED;
+}
 NATIVE(n_set_proto_for)
 {
     struct script_env *env = env_of( ctx );
@@ -818,13 +1004,17 @@ static const JSCFunctionListEntry natives[] =
     JS_CFUNC_DEF( "cookie", 0, n_cookie ),
     JS_CFUNC_DEF( "setCookie", 1, n_set_cookie ),
     JS_CFUNC_DEF( "navigate", 1, n_navigate ),
-    JS_CFUNC_DEF( "fetch", 3, n_fetch ),
+    JS_CFUNC_DEF( "fetch", 5, n_fetch ),
     JS_CFUNC_DEF( "log", 1, n_log ),
     JS_CFUNC_DEF( "now", 0, n_now ),
     JS_CFUNC_DEF( "eval", 2, n_eval ),
     JS_CFUNC_DEF( "currentScript", 0, n_current_script ),
     JS_CFUNC_DEF( "setProtoFor", 1, n_set_proto_for ),
     JS_CFUNC_DEF( "evalModule", 2, n_eval_module ),
+    JS_CFUNC_DEF( "isFrame", 0, n_is_frame ),
+    JS_CFUNC_DEF( "origin", 0, n_origin ),
+    JS_CFUNC_DEF( "postParent", 2, n_post_parent ),
+    JS_CFUNC_DEF( "postFrame", 3, n_post_frame ),
     JS_CFUNC_DEF( "setCurrentScript", 1, n_set_current_script ),
 };
 
@@ -999,6 +1189,19 @@ static void env_free( struct script_env *env )
     JS_FreeValue( env->ctx, env->go_live );
     JS_FreeValue( env->ctx, env->next_timer );
     JS_FreeValue( env->ctx, env->dispatch );
+    JS_FreeValue( env->ctx, env->deliver );
+    for (unsigned int i = 0; i < env->message_count; i++)
+    {
+        free( env->messages[i].json );
+        free( env->messages[i].origin );
+    }
+    free( env->messages );
+    for (unsigned int i = 0; i < env->outbox_count; i++)
+    {
+        free( env->outbox[i].json );
+        free( env->outbox[i].target_origin );
+    }
+    free( env->outbox );
     JS_FreeContext( env->ctx );
     JS_FreeRuntime( env->rt );
     if (env->selectors) lxb_selectors_destroy( env->selectors, true );
@@ -1061,7 +1264,7 @@ static void run_document( struct document *doc, int width, int height )
     env->run_timers = JS_UNDEFINED;
     env->fire_load = JS_UNDEFINED;
     env->add_import_map = env->resolve_import = JS_UNDEFINED;
-    env->go_live = env->next_timer = env->dispatch = JS_UNDEFINED;
+    env->go_live = env->next_timer = env->dispatch = env->deliver = JS_UNDEFINED;
 
     global = JS_GetGlobalObject( env->ctx );
     native = JS_NewObject( env->ctx );
@@ -1098,6 +1301,7 @@ static void run_document( struct document *doc, int width, int height )
     env->go_live = JS_GetPropertyStr( env->ctx, hooks, "goLive" );
     env->next_timer = JS_GetPropertyStr( env->ctx, hooks, "nextTimer" );
     env->dispatch = JS_GetPropertyStr( env->ctx, hooks, "dispatch" );
+    env->deliver = JS_GetPropertyStr( env->ctx, hooks, "deliverMessage" );
     JS_FreeValue( env->ctx, hooks );
     JS_FreeValue( env->ctx, global );
 
@@ -1139,8 +1343,9 @@ static void leave( struct script_env *env )
     if (JS_IsException( result )) report_exception( env->ctx, "timers" );
     else JS_ToFloat64( env->ctx, &next, result );
     JS_FreeValue( env->ctx, result );
-    if (next >= 0) SetTimer( env->window, SCRIPT_TIMER_ID, (UINT)max( 1, min( next, 0x7fffffff ) ), NULL );
-    else KillTimer( env->window, SCRIPT_TIMER_ID );
+    if (env->message_count) next = 0;
+    if (next >= 0) SetTimer( env->window, (UINT_PTR)env, (UINT)max( 1, min( next, 0x7fffffff ) ), NULL );
+    else KillTimer( env->window, (UINT_PTR)env );
 }
 
 void script_attach( struct document *doc, HWND window )
@@ -1151,6 +1356,16 @@ void script_attach( struct document *doc, HWND window )
     if (!env) return;
     enter( env );
     env->window = window;
+    /* what it posted while it loaded goes now */
+    for (unsigned int i = 0; i < env->outbox_count; i++)
+    {
+        struct message *message = &env->outbox[i];
+
+        if (message->json) send_message( env, message->json, strlen( message->json ), message->target_origin, message->to_frame );
+        free( message->json );
+        free( message->target_origin );
+    }
+    env->outbox_count = 0;
     result = JS_Call( env->ctx, env->go_live, JS_UNDEFINED, 0, NULL );
     if (JS_IsException( result )) report_exception( env->ctx, "live" );
     JS_FreeValue( env->ctx, result );
@@ -1164,6 +1379,24 @@ void script_on_timer( struct document *doc )
 
     if (!env) return;
     enter( env );
+    /* the messages first, each an event of window */
+    while (env->message_count)
+    {
+        struct message message = env->messages[0];
+        JSValue args[3];
+
+        memmove( env->messages, env->messages + 1, --env->message_count * sizeof(*env->messages) );
+        args[0] = JS_NewString( env->ctx, message.json ? message.json : "null" );
+        args[1] = JS_NewString( env->ctx, message.origin ? message.origin : "null" );
+        args[2] = message.source ? wrap( env->ctx, message.source ) : JS_NULL;
+        result = JS_Call( env->ctx, env->deliver, JS_UNDEFINED, 3, args );
+        if (JS_IsException( result )) report_exception( env->ctx, "message" );
+        JS_FreeValue( env->ctx, result );
+        for (int i = 0; i < 3; i++) JS_FreeValue( env->ctx, args[i] );
+        free( message.json );
+        free( message.origin );
+        while (run_job( env ) > 0) continue;
+    }
     result = JS_Call( env->ctx, env->run_timers, JS_UNDEFINED, 0, NULL );
     if (JS_IsException( result )) report_exception( env->ctx, "timer" );
     JS_FreeValue( env->ctx, result );
@@ -1192,6 +1425,12 @@ BOOL script_event( struct document *doc, lxb_dom_element_t *target, const char *
     return prevented;
 }
 
+/* each page and frame its own timer in the view: the address of its scripts */
+UINT_PTR script_timer_id( struct document *doc )
+{
+    return doc && doc->script ? (UINT_PTR)doc->script : 0;
+}
+
 unsigned int script_mutations( struct document *doc )
 {
     return doc && doc->script ? doc->script->mutations : 0;
@@ -1200,7 +1439,7 @@ unsigned int script_mutations( struct document *doc )
 void script_free( struct script_env *env )
 {
     if (!env) return;
-    if (env->window) KillTimer( env->window, SCRIPT_TIMER_ID );
+    if (env->window) KillTimer( env->window, (UINT_PTR)env );
     JS_UpdateStackTop( env->rt );
     env_free( env );
 }

@@ -31,6 +31,7 @@ static const WCHAR view_class[] = L"Internet Explorer_Server";
 #define LINE_STEP   40      /* an arrow key */
 #define WHEEL_STEP  100     /* a notch of the wheel, as browsers on Windows scroll */
 #define WM_LOADED   (WM_APP + 1)
+#define WM_FRAME_LOADED (WM_APP + 2)
 
 struct arctic_html_view
 {
@@ -157,6 +158,140 @@ static void start_loading( struct arctic_html_view *view, struct post_data *post
 
 static void after_script( struct arctic_html_view *view );
 
+/* --- the page and its frames --- */
+
+static void attach_tree( struct document *doc, HWND window )
+{
+    if (!doc) return;
+    script_attach( doc, window );
+    for (unsigned int i = 0; i < doc->frame_count; i++) attach_tree( doc->frames[i]->doc, window );
+}
+
+static unsigned int tree_mutations( struct document *doc )
+{
+    unsigned int count;
+
+    if (!doc) return 0;
+    count = script_mutations( doc ) + doc->frame_count;
+    for (unsigned int i = 0; i < doc->frame_count; i++) count += tree_mutations( doc->frames[i]->doc );
+    return count;
+}
+
+static struct document *doc_with_timer( struct document *doc, UINT_PTR id )
+{
+    struct document *found;
+
+    if (!doc) return NULL;
+    if (script_timer_id( doc ) == id) return doc;
+    for (unsigned int i = 0; i < doc->frame_count; i++)
+        if ((found = doc_with_timer( doc->frames[i]->doc, id ))) return found;
+    return NULL;
+}
+
+static BOOL in_tree( struct document *root, struct document *doc )
+{
+    if (!root) return FALSE;
+    if (root == doc) return TRUE;
+    for (unsigned int i = 0; i < root->frame_count; i++) if (in_tree( root->frames[i]->doc, doc )) return TRUE;
+    return FALSE;
+}
+
+struct frame_job
+{
+    HWND             window;
+    LONG             navigation;
+    struct document *parent;
+    lxb_dom_element_t *element;
+    char            *url;
+    int              width, height;
+    struct document *doc;
+};
+
+static DWORD WINAPI frame_loader( void *arg )
+{
+    struct frame_job *job = arg;
+
+    job->doc = document_load_frame( job->url, job->parent, job->width, job->height );
+    if (!PostMessageW( job->window, WM_FRAME_LOADED, job->navigation, (LPARAM)job ))
+    {
+        document_free( job->doc );
+        free( job->url );
+        free( job );
+    }
+    return 0;
+}
+
+/* a frame a script made, or sent somewhere else: its document comes on a thread of its own */
+static void load_frame( struct arctic_html_view *view, struct document *parent, struct frame *frame, const char *url )
+{
+    struct frame_job *job = calloc( 1, sizeof(*job) );
+    HANDLE thread;
+
+    if (!job) return;
+    job->window = view->window;
+    job->navigation = view->navigation;
+    job->parent = parent;
+    job->element = frame->element;
+    job->url = _strdup( url );
+    job->width = 300;
+    job->height = 150;
+    free( frame->url );
+    frame->url = _strdup( url );
+    frame->loading = TRUE;
+    if ((thread = CreateThread( NULL, 0, frame_loader, job, 0, NULL ))) CloseHandle( thread );
+    else
+    {
+        frame->loading = FALSE;
+        free( job->url );
+        free( job );
+    }
+}
+
+/* the <iframe>s of a document that have no document yet, or another src now */
+static void check_frames( struct arctic_html_view *view, struct document *doc, lxb_dom_node_t *node )
+{
+    for (node = lxb_dom_node_first_child( node ); node; node = lxb_dom_node_next( node ))
+    {
+        lxb_dom_element_t *element;
+        struct frame *frame;
+        char *url;
+
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+        element = lxb_dom_interface_element( node );
+        if (lxb_dom_element_tag_id( element ) != LXB_TAG_IFRAME)
+        {
+            check_frames( view, doc, node );
+            continue;
+        }
+        if (!(frame = document_frame( doc, element, TRUE )) || frame->loading || !(url = frame_url( doc, element ))) continue;
+        if (!frame->doc || !frame->url || strcmp( frame->url, url ))
+        {
+            if (frame->doc) { document_free( frame->doc ); frame->doc = NULL; }
+            load_frame( view, doc, frame, url );
+        }
+        free( url );
+    }
+    for (unsigned int i = 0; i < doc->frame_count; i++)
+    {
+        struct document *child = doc->frames[i]->doc;
+
+        if (!child) continue;
+        /* a frame whose scripts navigate it: its next document */
+        if (child->redirect)
+        {
+            char *target = child->redirect;
+
+            child->redirect = NULL;
+            document_free( child );
+            doc->frames[i]->doc = NULL;
+            load_frame( view, doc, doc->frames[i], target );
+            free( target );
+            continue;
+        }
+        if (child->html) check_frames( view, child, lxb_dom_interface_node( child->html ) );
+    }
+}
+
 static void install( struct arctic_html_view *view, struct document *doc )
 {
     /* the old list points at fonts of the old page: both go together */
@@ -178,8 +313,8 @@ static void install( struct arctic_html_view *view, struct document *doc )
     InvalidateRect( view->window, NULL, FALSE );
     if (doc)
     {
-        script_attach( doc, view->window );
-        view->mutations = script_mutations( doc );
+        attach_tree( doc, view->window );
+        view->mutations = tree_mutations( doc );
         after_script( view );
     }
 }
@@ -698,9 +833,10 @@ static void after_script( struct arctic_html_view *view )
         }
         return;
     }
-    if (script_mutations( doc ) != view->mutations)
+    if (tree_mutations( doc ) != view->mutations)
     {
-        view->mutations = script_mutations( doc );
+        if (doc->html) check_frames( view, doc, lxb_dom_interface_node( doc->html ) );
+        view->mutations = tree_mutations( doc );
         view->relayout = TRUE;
         InvalidateRect( view->window, NULL, FALSE );
         if (doc->html && (title = lxb_html_document_title( doc->html, &len )) && len)
@@ -735,8 +871,12 @@ static BOOL page_event( struct arctic_html_view *view, lxb_dom_element_t *target
 {
     BOOL prevented;
 
-    if (!view->doc || !view->doc->script || !target) return FALSE;
-    prevented = script_event( view->doc, target, type, x, y );
+    struct document *doc = document_owning( view->doc, target );
+
+    TRACE( "%s at %d,%d on <%s> of %s\n", type, x, y,
+           target ? (const char *)lxb_dom_element_local_name( target, NULL ) : "-", doc ? doc->address : "no document" );
+    if (!doc || !doc->script || !target) return FALSE;
+    prevented = script_event( doc, target, type, x, y );
     after_script( view );
     return prevented;
 }
@@ -888,13 +1028,39 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
     }
     case WM_TIMER:
-        if (wp == SCRIPT_TIMER_ID)
+    {
+        struct document *doc = doc_with_timer( view->doc, wp );
+
+        if (doc)
         {
-            script_on_timer( view->doc );
+            script_on_timer( doc );
             after_script( view );
             return 0;
         }
         break;
+    }
+    case WM_FRAME_LOADED:
+    {
+        struct frame_job *job = (struct frame_job *)lp;
+        struct frame *frame;
+
+        /* the frame is still in the page it was loaded for: its document goes in */
+        if ((LONG)wp == view->navigation && in_tree( view->doc, job->parent ) &&
+            (frame = document_frame( job->parent, job->element, FALSE )) && frame->loading)
+        {
+            frame->loading = FALSE;
+            frame->doc = job->doc;
+            attach_tree( job->doc, hwnd );
+            view->mutations = 0;
+            after_script( view );
+            view->relayout = TRUE;
+            InvalidateRect( hwnd, NULL, FALSE );
+        }
+        else document_free( job->doc );
+        free( job->url );
+        free( job );
+        return 0;
+    }
 
     case WM_RBUTTONDOWN:
         SetFocus( hwnd );

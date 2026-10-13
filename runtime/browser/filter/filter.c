@@ -51,7 +51,8 @@ enum
     TYPE_IMAGE      = 1 << REQUEST_IMAGE,
     TYPE_SCRIPT     = 1 << REQUEST_SCRIPT,
     TYPE_OTHER      = 1 << REQUEST_OTHER,
-    TYPE_ALL_BUT_DOCUMENT = TYPE_STYLESHEET | TYPE_IMAGE | TYPE_SCRIPT | TYPE_OTHER,
+    TYPE_FRAME      = 1 << REQUEST_FRAME,
+    TYPE_ALL_BUT_DOCUMENT = TYPE_STYLESHEET | TYPE_IMAGE | TYPE_SCRIPT | TYPE_OTHER | TYPE_FRAME,
 };
 
 enum party { PARTY_ANY, PARTY_THIRD, PARTY_FIRST };
@@ -187,8 +188,9 @@ static BOOL parse_options( struct rule *rule, char *options )
         else if (!strcmp( name, "image" )) type = TYPE_IMAGE;
         else if (!strcmp( name, "stylesheet" ) || !strcmp( name, "css" )) type = TYPE_STYLESHEET;
         else if (!strcmp( name, "document" ) || !strcmp( name, "doc" )) type = TYPE_DOCUMENT;
-        else if (!strcmp( name, "xmlhttprequest" ) || !strcmp( name, "xhr" ) || !strcmp( name, "subdocument" ) ||
-                 !strcmp( name, "frame" ) || !strcmp( name, "font" ) || !strcmp( name, "media" ) ||
+        else if (!strcmp( name, "subdocument" ) || !strcmp( name, "frame" )) type = TYPE_FRAME;
+        else if (!strcmp( name, "xmlhttprequest" ) || !strcmp( name, "xhr" ) ||
+                 !strcmp( name, "font" ) || !strcmp( name, "media" ) ||
                  !strcmp( name, "object" ) || !strcmp( name, "other" ) || !strcmp( name, "ping" ) ||
                  !strcmp( name, "websocket" ))
             type = TYPE_OTHER;
