@@ -2,9 +2,7 @@
  * Arctic web engine: fetching
  *
  * HTTP/1.1 over Winsock, TLS through Schannel (tls.c): what every Windows
- * has, so the engine runs on any. One request per connection for now
- * ("Connection: close"); keep-alive, HTTP/2 and compression come with stage
- * 6, so no Accept-Encoding goes out and servers send the body as it is.
+ * has, so the engine runs on any. Connections are kept for the next request to\n * the same host; HTTP/2 and compression come with stage 6, so no\n * Accept-Encoding goes out and servers send the body as it is.
  *
  * The User-Agent says what the engine is and does not pretend to be
  * Chrome: a site sends a browser it does not know the plain page, which is
@@ -30,7 +28,6 @@
 #include <shlwapi.h>
 #include <wincrypt.h>
 
-#define USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ArcticIE/0.2 (like Gecko)"
 #define MAX_BODY (64 * 1024 * 1024)
 #define MAX_REDIRECTS 10
 #define TIMEOUT_MS 30000
@@ -271,6 +268,170 @@ static int connection_recv( struct connection *conn, char *data, size_t len )
     return got < 0 ? 0 : got;
 }
 
+static char *header_value( const char *headers, const char *name, const char **next );
+
+/* --- connections kept open: a page asks one host for dozens of things --- */
+
+#define POOL_SIZE    16
+#define POOL_IDLE_MS 30000
+
+struct pooled
+{
+    char              key[300];     /* scheme://host:port */
+    struct connection conn;
+    ULONGLONG         since;
+};
+
+static struct pooled pool[POOL_SIZE];
+static SRWLOCK pool_lock = SRWLOCK_INIT;
+
+static void pool_key( const struct url_parts *url, char *key, size_t size )
+{
+    snprintf( key, size, "%s://%s:%d", url->scheme, url->host, url->port );
+}
+
+static BOOL pool_take( const char *key, struct connection *conn )
+{
+    BOOL found = FALSE;
+    ULONGLONG now = GetTickCount64();
+
+    AcquireSRWLockExclusive( &pool_lock );
+    for (unsigned int i = 0; i < POOL_SIZE; i++)
+    {
+        if (!pool[i].key[0]) continue;
+        if (now - pool[i].since > POOL_IDLE_MS)
+        {
+            connection_close( &pool[i].conn );
+            pool[i].key[0] = 0;
+            continue;
+        }
+        if (!found && !strcmp( pool[i].key, key ))
+        {
+            *conn = pool[i].conn;
+            pool[i].key[0] = 0;
+            found = TRUE;
+        }
+    }
+    ReleaseSRWLockExclusive( &pool_lock );
+    return found;
+}
+
+static void pool_put( const char *key, struct connection *conn )
+{
+    unsigned int oldest = 0;
+
+    AcquireSRWLockExclusive( &pool_lock );
+    for (unsigned int i = 0; i < POOL_SIZE; i++)
+    {
+        if (!pool[i].key[0]) { oldest = i; break; }
+        if (pool[i].since < pool[oldest].since) oldest = i;
+    }
+    if (pool[oldest].key[0]) connection_close( &pool[oldest].conn );
+    lstrcpynA( pool[oldest].key, key, sizeof(pool[oldest].key) );
+    pool[oldest].conn = *conn;
+    pool[oldest].since = GetTickCount64();
+    ReleaseSRWLockExclusive( &pool_lock );
+}
+
+/* One response off the connection, its body exactly as long as it says -
+ * Content-Length, or chunks, or until the server closes. FALSE when not a
+ * byte came: a kept connection the server had closed meanwhile. */
+static BOOL read_response( struct connection *conn, struct buffer *reply, BOOL head_only, BOOL *reusable )
+{
+    char buffer[16384], *head_end;
+    size_t head_len, body_start;
+    int got, status = 0;
+
+    *reusable = FALSE;
+    while (!reply->data || !(head_end = strstr( reply->data, "\r\n\r\n" )))
+    {
+        if ((got = connection_recv( conn, buffer, sizeof(buffer) )) <= 0) return reply->len > 0;
+        if (!append( reply, buffer, got )) return TRUE;
+    }
+    head_len = head_end - reply->data;
+    body_start = head_len + 4;
+    sscanf( reply->data, "HTTP/%*d.%*d %d", &status );
+    {
+        /* the headers that frame the body, read off a copy so the block stays as it came */
+        char *head = malloc( head_len + 1 ), *value;
+        const char *next = NULL;
+        BOOL chunked = FALSE, closes, has_length = FALSE;
+        unsigned long long length = 0;
+
+        if (!head) return TRUE;
+        memcpy( head, reply->data, head_len );
+        head[head_len] = 0;
+        if ((value = header_value( head, "Transfer-Encoding", &next ))) { chunked = !!StrStrIA( value, "chunked" ); free( value ); }
+        next = NULL;
+        if ((value = header_value( head, "Content-Length", &next ))) { has_length = TRUE; length = _strtoui64( value, NULL, 10 ); free( value ); }
+        next = NULL;
+        closes = !strncmp( head, "HTTP/1.0", 8 );
+        if ((value = header_value( head, "Connection", &next )))
+        {
+            closes = !!StrStrIA( value, "close" ) || (closes && !StrStrIA( value, "keep-alive" ));
+            free( value );
+        }
+        free( head );
+
+        if (head_only || status == 204 || status == 304 || (status >= 100 && status < 200))
+        {
+            *reusable = !closes;
+            return TRUE;
+        }
+        if (chunked)
+        {
+            size_t pos = body_start;
+
+            for (;;)
+            {
+                char *line_end;
+                unsigned long size;
+
+                while (!(line_end = strstr( reply->data + pos, "\r\n" )))
+                {
+                    if ((got = connection_recv( conn, buffer, sizeof(buffer) )) <= 0 || !append( reply, buffer, got ))
+                        return TRUE;
+                }
+                size = strtoul( reply->data + pos, NULL, 16 );
+                pos = line_end - reply->data + 2;
+                if (!size)
+                {
+                    /* the trailer, if any, ends with an empty line */
+                    while (!strstr( reply->data + pos - 2, "\r\n\r\n" ))
+                    {
+                        if ((got = connection_recv( conn, buffer, sizeof(buffer) )) <= 0 || !append( reply, buffer, got ))
+                            return TRUE;
+                    }
+                    break;
+                }
+                while (reply->len < pos + size + 2)
+                {
+                    if ((got = connection_recv( conn, buffer, sizeof(buffer) )) <= 0 || !append( reply, buffer, got ))
+                        return TRUE;
+                }
+                pos += size + 2;
+            }
+            *reusable = !closes;
+        }
+        else if (has_length)
+        {
+            while (reply->len < body_start + length)
+            {
+                if ((got = connection_recv( conn, buffer, sizeof(buffer) )) <= 0 || !append( reply, buffer, got ))
+                    return TRUE;
+            }
+            *reusable = !closes;
+        }
+        else
+        {
+            /* to the end: the server says nothing of the length */
+            while ((got = connection_recv( conn, buffer, sizeof(buffer) )) > 0)
+                if (!append( reply, buffer, got )) break;
+        }
+    }
+    return TRUE;
+}
+
 /* the value of a header in a block of them, or NULL; the caller frees */
 static char *header_value( const char *headers, const char *name, const char **next )
 {
@@ -332,9 +493,9 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
         struct url_parts parts;
         struct connection conn;
         struct buffer request = { 0 }, reply = { 0 };
-        char *cookies, *location = NULL, *head_end, line[512], buffer[16384], *value;
+        char *cookies, *location = NULL, *head_end, line[512], *value, key[300];
         const char *next = NULL, *accept;
-        int got;
+        BOOL reused, reusable;
 
         if (!url_parse( current, &parts ) || !parts.host[0])
         {
@@ -348,7 +509,9 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
             set_error( response, "заблоковано фільтром" );
             break;
         }
-        if (!connection_open( &conn, &parts, response )) break;
+        pool_key( &parts, key, sizeof(key) );
+        reused = pool_take( key, &conn );
+        if (!reused && !connection_open( &conn, &parts, response )) break;
 
         switch (type)
         {
@@ -368,7 +531,7 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
             append( &request, line, strlen( line ) );
         }
         snprintf( line, sizeof(line), "\r\nUser-Agent: %s\r\nAccept: %s\r\nAccept-Language: uk,en;q=0.7\r\n"
-                  "Accept-Encoding: identity\r\nConnection: close\r\n", USER_AGENT, accept );
+                  "Accept-Encoding: identity\r\nConnection: keep-alive\r\n", USER_AGENT, accept );
         append( &request, line, strlen( line ) );
         if ((cookies = cookies_get( &parts )))
         {
@@ -403,19 +566,24 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
         append( &request, "\r\n", 2 );
         if (post) append( &request, post, post_len );
 
-        if (!connection_send( &conn, request.data, request.len ))
+        /* a kept connection the server closed meanwhile takes nothing: once more on a new one */
+        if (!connection_send( &conn, request.data, request.len ) || !read_response( &conn, &reply, FALSE, &reusable ))
         {
-            set_error( response, "%s не прийняв запит", parts.host );
-            free( request.data );
             connection_close( &conn );
-            break;
+            free( reply.data );
+            memset( &reply, 0, sizeof(reply) );
+            if (!reused || !connection_open( &conn, &parts, response ) ||
+                !connection_send( &conn, request.data, request.len ) || !read_response( &conn, &reply, FALSE, &reusable ))
+            {
+                if (!response->error[0]) set_error( response, "%s не прийняв запит", parts.host );
+                free( request.data );
+                if (reused) connection_close( &conn );
+                break;
+            }
         }
         free( request.data );
-
-        /* to the end: Connection: close */
-        while ((got = connection_recv( &conn, buffer, sizeof(buffer) )) > 0)
-            if (!append( &reply, buffer, got )) break;
-        connection_close( &conn );
+        if (reusable) pool_put( key, &conn );
+        else connection_close( &conn );
 
         if (!reply.data || !(head_end = strstr( reply.data, "\r\n\r\n" )) ||
             sscanf( reply.data, "HTTP/%*d.%*d %d", &response->status ) != 1)

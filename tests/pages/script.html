@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Скрипти</title>
+<style>body { font-family: Arial, sans-serif; margin: 24px } .ok { color: #070 } .bad { color: #b00 } #list li { margin: 2px 0 }</style>
+<script>document.title = 'Скрипти працюють';</script>
+</head><body>
+<h1 id="head">Ще без JavaScript</h1>
+<ul id="list"></ul>
+<p id="later">Таймер ще не спрацював</p>
+<p id="loaded">load ще не було</p>
+<noscript><p class="bad">Цей текст видно лише без скриптів</p></noscript>
+<script>
+const results = [];
+function check(name, ok) { results.push([name, ok]); }
+document.getElementById('head').textContent = 'JavaScript у рушії Arctic';
+check('querySelectorAll', document.querySelectorAll('p').length === 3);
+check('createElement + appendChild', (() => { const d = document.createElement('div'); d.id = 'x'; document.body.appendChild(d); return document.getElementById('x') === d; })());
+check('innerHTML', (() => { const d = document.createElement('div'); d.innerHTML = '<b>a</b><i>b</i>'; return d.children.length === 2 && d.firstChild.tagName === 'B'; })());
+check('classList', (() => { const d = document.body; d.classList.add('js'); return d.className.includes('js'); })());
+check('style', (() => { const h = document.getElementById('head'); h.style.color = '#1f5fa8'; return h.getAttribute('style').includes('color'); })());
+check('URL', new URL('../a?b=1#c', 'https://example.com/x/y').href === 'https://example.com/a?b=1#c');
+check('JSON, Map, Promise, async', typeof Promise === 'function' && typeof Map === 'function');
+check('events', (() => { let hit = false; document.body.addEventListener('ping', () => hit = true); document.getElementById('head').dispatchEvent(new Event('ping', { bubbles: true })); return hit; })());
+check('cookie', (() => { document.cookie = 'arctic=1'; return true; })());
+setTimeout(() => { document.getElementById('later').textContent = 'Таймер спрацював'; document.getElementById('later').className = 'ok'; }, 1500);
+window.addEventListener('load', () => { const p = document.getElementById('loaded'); p.textContent = 'Подія load прийшла'; p.className = 'ok'; });
+(async () => { await null; const li = document.createElement('li'); li.textContent = 'async/await: так'; li.className = 'ok'; document.getElementById('list').appendChild(li); })();
+const list = document.getElementById('list');
+for (const [name, ok] of results) { const li = document.createElement('li'); li.className = ok ? 'ok' : 'bad'; li.textContent = (ok ? '✓ ' : '✗ ') + name; list.appendChild(li); }
+</script>
+</body></html>

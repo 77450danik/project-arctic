@@ -12,6 +12,9 @@
 
 #include <winsock2.h>
 
+/* what the engine says it is, to servers and to scripts */
+#define USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ArcticIE/0.2 (like Gecko)"
+
 /* --- addresses (url.c), UTF-8 and ASCII on the wire --- */
 
 struct url_parts

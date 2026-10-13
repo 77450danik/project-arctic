@@ -535,6 +535,15 @@ static void find_base( struct document *doc, lxb_dom_node_t *node )
     }
 }
 
+/* ARCTIC_HTML_NOSCRIPT=1: pages as they were before the engine ran scripts */
+static BOOL no_scripts(void)
+{
+    static int off = -1;
+
+    if (off < 0) off = GetEnvironmentVariableA( "ARCTIC_HTML_NOSCRIPT", NULL, 0 ) > 0;
+    return off;
+}
+
 static BOOL parse( struct document *doc, const char *html, size_t len, BOOL fetch, int width, int height )
 {
     const lxb_char_t *title;
@@ -551,6 +560,12 @@ static BOOL parse( struct document *doc, const char *html, size_t len, BOOL fetc
     }
     parsed = GetTickCount64();
     if (fetch) find_base( doc, lxb_dom_interface_node( doc->html ) );
+    /* the scripts change the tree before it is styled; one that navigates ends the page */
+    if (fetch && !no_scripts())
+    {
+        script_run_document( doc, width, height );
+        if (doc->redirect) return TRUE;
+    }
     load_sheets( doc, width, height, fetch );
     sheets = GetTickCount64();
     if (fetch) load_images( doc );
@@ -603,7 +618,31 @@ static char *error_page( const char *url, const char *reason, size_t *len )
     return html;
 }
 
+static struct document *load_once( const WCHAR *url, const struct post_data *post, int width, int height );
+
+/* the page, and where its scripts send it - a few times at most, as a loop of them would go on */
 struct document *document_load( const WCHAR *url, const struct post_data *post, int width, int height )
+{
+    struct document *doc = load_once( url, post, width, height );
+
+    for (int hop = 0; doc && doc->redirect && hop < 5; hop++)
+    {
+        WCHAR *next = utf8_to_wide( doc->redirect, strlen( doc->redirect ), NULL );
+
+        document_free( doc );
+        if (!next) return NULL;
+        doc = load_once( next, NULL, width, height );
+        free( next );
+    }
+    if (doc && doc->redirect)
+    {
+        free( doc->redirect );
+        doc->redirect = NULL;
+    }
+    return doc;
+}
+
+static struct document *load_once( const WCHAR *url, const struct post_data *post, int width, int height )
 {
     struct document *doc = calloc( 1, sizeof(*doc) );
     struct response response = { 0 };
@@ -691,6 +730,7 @@ void document_free( struct document *doc )
     free( doc->images );
     free( doc->address );
     free( doc->base );
+    free( doc->redirect );
     free( doc );
 }
 

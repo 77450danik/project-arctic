@@ -199,6 +199,7 @@ struct document
     struct image       **images;
     unsigned int         image_count, image_capacity;
     unsigned int         blocked;   /* requests the filter took */
+    char                *redirect;  /* where its scripts sent the page, UTF-8, or NULL */
     lxb_dom_element_t   *focus;     /* the form control that takes the keys, or NULL */
     int                  caret;     /* in its value, in UTF-16 units */
 };
@@ -214,6 +215,11 @@ struct post_data
 /* the document at an address: fetched (POSTed to, with post), parsed, with
  * its sheets and images, its media queries evaluated for a viewport of this size */
 struct document *document_load( const WCHAR *url, const struct post_data *post, int width, int height );
+
+/* --- scripts (script/js.c) --- */
+
+/* runs the page's scripts, its load events and its timers, as it loads */
+void script_run_document( struct document *doc, int width, int height );
 
 /* --- forms (form.c) --- */
 

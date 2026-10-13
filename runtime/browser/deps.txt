@@ -5,3 +5,4 @@
 # name           version          url                                                                                              sha256
 vulkan-headers   1.4.363.0        https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz     4a078be12bef21cfebc09d878b77a63cff9d68f899254a0b00d0e37ef73e7f7e
 lexbor           3.0.0            https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.0.tar.gz                                 eafaa79ef9871f0bbb1978eda8677d184f7ecdcaa203d7cd25b3f86e32c014c2
+quickjs-ng      0.16.2           https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.16.2.tar.gz                           97c80625b26775a4c7ca618c004d4ea24cf99cbf867e4eba78bd927a8b23d106
