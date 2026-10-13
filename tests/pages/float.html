@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="uk"><head><meta charset="utf-8"><title>Обтікання</title>
+<style>
+body { font: 14px sans-serif; width: 600px; }
+.l { float: left; width: 120px; height: 80px; background: #cde; margin: 0 10px 6px 0; }
+.r { float: right; width: 100px; height: 60px; background: #edc; margin: 0 0 6px 10px; }
+.clear { clear: both; border-top: 2px solid #888; }
+.bar { overflow: hidden; background: #eee; }
+.bar .btn { float: left; width: 48px; height: 48px; margin: 6px 0 6px 6px; background: #9ab; }
+.bar .go { float: right; margin: 8px 8px 9px 0; background: #1a73e8; color: #fff; padding: 0 10px; line-height: 42px; }
+.side { float: left; width: 150px; background: #ffd; }
+.main { overflow: hidden; background: #dfd; }
+</style></head><body>
+<div class="l">ліворуч</div><div class="r">праворуч</div>
+<p>Текст обтікає плаваючі блоки з обох боків. Рядки біля них коротші, а нижче блоків знову займають усю ширину сторінки. Ще трохи тексту, щоб було видно, як рядки повертаються до повної ширини під плаваючими блоками зліва і справа.</p>
+<div class="clear">після clear: both</div>
+<div class="bar"><div class="btn"></div><div class="btn"></div><div class="btn"></div><div class="go">ПІДТВЕРДИТИ</div></div>
+<p>Панель вище охоплює свої плаваючі кнопки (overflow: hidden).</p>
+<div class="side">бічна колонка<br>у два рядки</div><div class="main">основна колонка з overflow: hidden стоїть поруч, а не під бічною</div>
+<p style="clear:left">Кінець.</p>
+</body></html>

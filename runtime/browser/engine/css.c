@@ -30,6 +30,7 @@
 #include <string.h>
 
 #include "arctichtml_private.h"
+#include "../net/net.h"
 
 #define MAX_VAR_DEPTH 8
 
@@ -215,6 +216,11 @@ void css_context_add_name( struct css_context *ctx, const char *name, size_t len
     if (name_known( set, name, len ) || !(copy = malloc( len ))) return;
     memcpy( copy, name, len );
     name_insert( set, copy, len );
+}
+
+unsigned int css_context_name_count( const struct css_context *ctx )
+{
+    return ctx->names ? ctx->names->count : 0;
 }
 
 static BOOL is_ident_char( char c )
@@ -583,6 +589,112 @@ static BOOL looks_like_color( const char *s, size_t len )
     return TRUE;    /* a name, rgb(), hsl(), transparent, currentcolor: lexbor tells if it is one */
 }
 
+static BOOL is_word_char( char c )
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+}
+
+/* a value with its url()s made whole: a sheet's are relative to it, not to the page */
+static void put_urls( const struct css_context *ctx, struct text *out, const char *value, const char *end )
+{
+    const char *s = value;
+
+    while (s < end)
+    {
+        const char *url = NULL, *close, *ref, *ref_end;
+        char *whole;
+
+        for (const char *p = s; p + 4 <= end; p++)
+            if (!_strnicmp( p, "url(", 4 ) && (p == value || !is_word_char( p[-1] ))) { url = p; break; }
+        if (!url) { put( out, s, end - s ); return; }
+        put( out, s, url - s );
+        if (!(close = memchr( url + 4, ')', end - (url + 4) ))) { put( out, url, end - url ); return; }
+        ref = url + 4;
+        ref_end = close;
+        trim( &ref, &ref_end );
+        if (ref_end - ref >= 2 && (*ref == '"' || *ref == '\'') && ref_end[-1] == *ref) { ref++; ref_end--; }
+        whole = ctx->base && _strnicmp( ref, "data:", 5 ) ? url_resolve( ctx->base, ref, ref_end - ref ) : NULL;
+        puts_( out, "url(\"" );
+        if (whole) puts_( out, whole );
+        else put( out, ref, ref_end - ref );
+        puts_( out, "\")" );
+        free( whole );
+        s = close + 1;
+    }
+}
+
+/* the layer of a background with a picture, else the last: its image, position, size, repeat */
+static void expand_background_image( const struct css_context *ctx, struct text *out, const char *value,
+                                     const char *end, BOOL important )
+{
+    const char *layer = value, *layer_end = end, *start, *s;
+    const char *image = NULL, *image_end = NULL, *repeat = NULL, *repeat_end = NULL;
+    const char *position = NULL, *position_end = NULL, *size = NULL, *size_end = NULL;
+    const char *bang = important ? " !important" : "";
+    BOOL after_slash = FALSE;
+
+    /* the layers, split at commas outside parentheses: the first with url() */
+    for (const char *p = value, *from = value; p <= end; p = p < end ? skip_one( p, end ) : end + 1)
+    {
+        if (p < end && *p == '(') { p = scan_to( p + 1, end, ")" ); if (p >= end) p = end; }
+        if (p >= end || *p == ',')
+        {
+            const char *to = p < end ? p : end;
+
+            layer = from;
+            layer_end = to;
+            if (contains( from, to - from, "url(" )) break;
+            from = to + 1;
+            if (p >= end) break;
+        }
+    }
+    for (s = layer; s < layer_end; )
+    {
+        const char *token_end = next_token( s, layer_end, &start );
+        size_t len = token_end - start;
+
+        if (token_end == start) break;
+        s = token_end;
+        if (!_strnicmp( start, "url(", 4 )) { image = start; image_end = token_end; continue; }
+        if (len == 1 && *start == '/') { after_slash = TRUE; continue; }
+        if (word_is( start, len, "repeat" ) || word_is( start, len, "no-repeat" ) || word_is( start, len, "repeat-x" ) ||
+            word_is( start, len, "repeat-y" ) || word_is( start, len, "space" ) || word_is( start, len, "round" ))
+        {
+            if (!repeat) repeat = start;
+            repeat_end = token_end;
+            continue;
+        }
+        if (word_is( start, len, "left" ) || word_is( start, len, "right" ) || word_is( start, len, "top" ) ||
+            word_is( start, len, "bottom" ) || word_is( start, len, "center" ) || word_is( start, len, "cover" ) ||
+            word_is( start, len, "contain" ) || word_is( start, len, "auto" ) ||
+            (*start >= '0' && *start <= '9') || *start == '-' || *start == '.')
+        {
+            if (after_slash)
+            {
+                if (!size) size = start;
+                size_end = token_end;
+            }
+            else
+            {
+                if (!position) position = start;
+                position_end = token_end;
+            }
+        }
+    }
+    puts_( out, ";--arctic-background-image:" );
+    if (image) put_urls( ctx, out, image, image_end ); else puts_( out, "none" );
+    puts_( out, bang );
+    puts_( out, ";--arctic-background-position:" );
+    if (position) put( out, position, position_end - position ); else puts_( out, "0% 0%" );
+    puts_( out, bang );
+    puts_( out, ";--arctic-background-size:" );
+    if (size) put( out, size, size_end - size ); else puts_( out, "auto" );
+    puts_( out, bang );
+    puts_( out, ";--arctic-background-repeat:" );
+    if (repeat) put( out, repeat, repeat_end - repeat ); else puts_( out, "repeat" );
+    puts_( out, bang );
+}
+
 static void expand_background( struct text *out, const char *value, const char *end, BOOL important )
 {
     const char *color = NULL, *start, *s = value;
@@ -713,7 +825,8 @@ static void expand_font( struct text *out, const char *value, const char *end, B
  * keeps and cascades like any --property: style.c reads it back by that name */
 static const char *const foreign_properties[] =
 {
-    "list-style-type", "vertical-align",
+    "list-style-type", "vertical-align", "clear",
+    "background-image", "background-position", "background-size", "background-repeat",
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-direction", "flex-wrap", "flex-flow",
     "justify-content", "align-items", "align-self", "order", "gap", "row-gap", "column-gap",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
@@ -895,9 +1008,14 @@ static void rewrite_declaration( const struct css_context *ctx, struct text *out
     if (is_foreign( name, name_end - name )) puts_( out, "--arctic-" );
     put( out, name, name_end - name );
     puts_( out, ":" );
-    put( out, value, value_end - value );
+    if (word_is( name, name_end - name, "background-image" )) put_urls( ctx, out, value, value_end );
+    else put( out, value, value_end - value );
     if (important) puts_( out, " !important" );
-    if (word_is( name, name_end - name, "background" )) expand_background( out, value, value_end, important );
+    if (word_is( name, name_end - name, "background" ))
+    {
+        expand_background( out, value, value_end, important );
+        expand_background_image( ctx, out, value, value_end, important );
+    }
     else if (word_is( name, name_end - name, "font" )) expand_font( out, value, value_end, important );
     else if (word_is( name, name_end - name, "list-style" )) expand_list_style( out, value, value_end, important );
     else if (word_is( name, name_end - name, "overflow" )) expand_overflow( out, value, value_end, important );

@@ -68,6 +68,12 @@ HRESULT WINAPI ArcticHtmlRenderToFile( const WCHAR *url, UINT width, UINT height
     if (!(doc = document_load( url, NULL, width, height ))) return E_FAIL;
 
     layout_document( doc, &list, width, height );
+    /* the pictures of backgrounds are known once laid out: fetched, then laid out again */
+    if (doc->image_count > doc->images_announced)
+    {
+        document_load_images( doc );
+        layout_document( doc, &list, width, height );
+    }
     if (full_page && list.content_height > (int)height) height = list.content_height;
     if (!surface_create( &surface, width, height ))
     {

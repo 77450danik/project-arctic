@@ -96,9 +96,48 @@ static void make_opaque( struct surface *surface )
     for (size_t i = 0; i < count; i++) surface->bits[i] |= 0xff000000;
 }
 
+/* a background: its picture tile after tile across what it covers, cut to it */
+static void draw_background( struct surface *surface, HDC image_dc, const struct item *item, int scroll_y )
+{
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, (BYTE)(255 * min( item->opacity, 1 ) + 0.5f), AC_SRC_ALPHA };
+    RECT area = item->rect, visible = { 0, 0, surface->width, surface->height };
+    int x0 = item->x, y0 = item->baseline - scroll_y, tiles = 0;
+    HBITMAP old;
+
+    OffsetRect( &area, 0, -scroll_y );
+    if (item->clipped)
+    {
+        RECT clip = item->clip;
+
+        OffsetRect( &clip, 0, -scroll_y );
+        IntersectRect( &area, &area, &clip );
+    }
+    if (!IntersectRect( &area, &area, &visible ) || !item->image || !item->image->bitmap) return;
+    /* the first tile at or before the edge, when it repeats */
+    if (item->repeat_x) x0 -= ((x0 - area.left) / item->tile_w + (x0 > area.left)) * item->tile_w;
+    if (item->repeat_y) y0 -= ((y0 - area.top) / item->tile_h + (y0 > area.top)) * item->tile_h;
+
+    GdiFlush();
+    IntersectClipRect( surface->dc, area.left, area.top, area.right, area.bottom );
+    old = SelectObject( image_dc, item->image->bitmap );
+    for (int ty = y0; ty < area.bottom && tiles < 4096; ty += item->tile_h)
+    {
+        for (int tx = x0; tx < area.right && tiles < 4096; tx += item->tile_w, tiles++)
+        {
+            if (tx + item->tile_w > area.left && ty + item->tile_h > area.top)
+                GdiAlphaBlend( surface->dc, tx, ty, item->tile_w, item->tile_h, image_dc, 0, 0,
+                               item->image->width, item->image->height, blend );
+            if (!item->repeat_x) break;
+        }
+        if (!item->repeat_y) break;
+    }
+    SelectObject( image_dc, old );
+    SelectClipRgn( surface->dc, NULL );
+}
+
 static void draw_image( struct surface *surface, HDC image_dc, const struct item *item, const RECT *where )
 {
-    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, (BYTE)(255 * min( item->opacity, 1 ) + 0.5f), AC_SRC_ALPHA };
     HBITMAP old = SelectObject( image_dc, item->image->bitmap );
 
     GdiAlphaBlend( surface->dc, where->left, where->top, where->right - where->left, where->bottom - where->top,
@@ -115,16 +154,20 @@ void raster_paint( struct surface *surface, const struct display_list *list, int
 
     fill_rect( surface, &whole, list->background | 0xff000000 );
 
-    /* the flow first, then what is positioned over it */
-    for (unsigned int n = 0; n < list->count * 2; n++)
+    /* the flow first, then what is positioned over it, by its stacking */
+    for (unsigned int n = 0; n < list->count; n++)
     {
-        const struct item *item = &list->items[n % list->count];
+        const struct item *item = &list->items[display_list_nth( list, n )];
         RECT where = item->rect;
-
-        if (item->layer != (n >= list->count)) continue;
 
         OffsetRect( &where, 0, -scroll_y );
         if (where.bottom < 0 || where.top >= surface->height) continue;     /* not on the screen */
+        if (item->type == ITEM_IMAGE && item->background)
+        {
+            if (!image_dc) image_dc = CreateCompatibleDC( surface->dc );
+            if (image_dc) draw_background( surface, image_dc, item, scroll_y );
+            continue;
+        }
         if (item->clipped && item->type != ITEM_RUN)
         {
             RECT clip = item->clip;
@@ -148,12 +191,20 @@ void raster_paint( struct surface *surface, const struct display_list *list, int
         switch (item->type)
         {
         case ITEM_RECT:
+        {
+            DWORD color = item->color;
+
+            if (item->opacity < 0.999f)
+                color = (color & 0xffffff) | ((DWORD)((color >> 24) * item->opacity + 0.5f) << 24);
             GdiFlush();     /* text GDI may still hold back goes under, not over */
-            fill_rect( surface, &where, item->color );
+            fill_rect( surface, &where, color );
             break;
+        }
 
         case ITEM_RUN:
         {
+            /* GDI draws text whole: what is mostly see-through is left out */
+            if (item->opacity < 0.35f) break;
             HFONT old = SelectObject( surface->dc, item->font->handle );
 
             SetTextColor( surface->dc, RGB( (item->color >> 16) & 0xff, (item->color >> 8) & 0xff,

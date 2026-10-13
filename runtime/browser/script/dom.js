@@ -764,18 +764,11 @@ reflect(classes.HTMLSelectElement, ['name']);
 const HTMLFormElement = defineElement('HTMLFormElement', ['form'], class extends HTMLElement {
     get elements() { return new HTMLCollection(N.select(this, 'input,select,textarea,button', false)); }
     get length() { return this.elements.length; }
-    submit() {
-        const data = new URLSearchParams();
-        for (const e of this.elements) {
-            if (!e.name || e.disabled) continue;
-            if ((e.type === 'checkbox' || e.type === 'radio') && !e.checked) continue;
-            if (e.type === 'submit' || e.type === 'button' || e.type === 'reset') continue;
-            data.append(e.name, e.value);
-        }
-        const action = N.resolve(N.attr(this, 'action') || '') || N.url();
-        if ((N.attr(this, 'method') || 'get').toLowerCase() === 'get') N.navigate(action.split('?')[0] + '?' + data);
+    /* sent by the engine, GET or POST, as its button would */
+    submit() { N.submitForm(this); }
+    requestSubmit(submitter) {
+        if (this.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))) N.submitForm(this);
     }
-    requestSubmit() { this.submit(); }
     reset() {}
     checkValidity() { return true; } reportValidity() { return true; }
 });

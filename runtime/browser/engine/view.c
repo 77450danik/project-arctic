@@ -25,6 +25,7 @@
 
 #include "arctichtml_private.h"
 #include "../net/net.h"
+#include <lexbor/html/serialize.h>
 
 static const WCHAR view_class[] = L"Internet Explorer_Server";
 
@@ -166,6 +167,17 @@ static void attach_tree( struct document *doc, HWND window )
     if (!doc) return;
     script_attach( doc, window );
     for (unsigned int i = 0; i < doc->frame_count; i++) attach_tree( doc->frames[i]->doc, window );
+}
+
+/* the sheets of every document in the tree that has classes it had no rules for */
+static BOOL restyle_tree( struct document *doc )
+{
+    BOOL changed;
+
+    if (!doc) return FALSE;
+    changed = document_restyle( doc );
+    for (unsigned int i = 0; i < doc->frame_count; i++) changed |= restyle_tree( doc->frames[i]->doc );
+    return changed;
 }
 
 static unsigned int tree_mutations( struct document *doc )
@@ -410,6 +422,7 @@ static void layout( struct arctic_html_view *view )
     GetClientRect( view->window, &rect );
     layout_document( view->doc, &view->list, rect.right, rect.bottom );
     view->relayout = FALSE;
+    load_new_images( view, view->doc );     /* the backgrounds it met for the first time */
     update_scrollbar( view );
 }
 
@@ -546,12 +559,10 @@ static void set_focus( struct arctic_html_view *view, lxb_dom_element_t *element
     changed( view );
 }
 
+static void send_form( struct arctic_html_view *view, lxb_dom_element_t *form, lxb_dom_element_t *submitter );
+
 static void submit( struct arctic_html_view *view, lxb_dom_element_t *form, lxb_dom_element_t *submitter )
 {
-    struct post_data post;
-    WCHAR *wide;
-    char *url;
-
     if (!view->doc || !form) return;
     /* the page's scripts may take the form over: then it is theirs to send */
     if (view->doc->script)
@@ -562,6 +573,16 @@ static void submit( struct arctic_html_view *view, lxb_dom_element_t *form, lxb_
         after_script( view );
         if (prevented || view->doc != doc) return;
     }
+    send_form( view, form, submitter );
+}
+
+/* a form's fields to its action: a GET goes as an address, a POST the view makes itself */
+static void send_form( struct arctic_html_view *view, lxb_dom_element_t *form, lxb_dom_element_t *submitter )
+{
+    struct post_data post;
+    WCHAR *wide;
+    char *url;
+
     if (!form_submission( view->doc, form, submitter, &url, &post )) return;
     wide = utf8_to_wide( url, strlen( url ), NULL );
     free( url );
@@ -895,6 +916,37 @@ static BOOL field_key( struct arctic_html_view *view, WPARAM key )
     return TRUE;
 }
 
+/* F12: the tree of the page and of its frames as they are now, each into a file of %TEMP%,
+ * to see what scripts made of them */
+static lxb_status_t dump_write( const lxb_char_t *data, size_t len, void *ctx )
+{
+    DWORD written;
+
+    WriteFile( (HANDLE)ctx, data, (DWORD)len, &written, NULL );
+    return LXB_STATUS_OK;
+}
+
+static void dump_tree( struct document *doc, int *index )
+{
+    WCHAR path[MAX_PATH], dir[MAX_PATH];
+    HANDLE file;
+
+    if (!doc || !doc->html) return;
+    GetTempPathW( ARRAY_SIZE(dir), dir );
+    swprintf( path, ARRAY_SIZE(path), L"%sarctic-dom-%d.html", dir, (*index)++ );
+    if ((file = CreateFileW( path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL )) != INVALID_HANDLE_VALUE)
+    {
+        DWORD written;
+        char header[2200];
+        int len = snprintf( header, sizeof(header), "<!-- %s -->\n", doc->address ? doc->address : "" );
+
+        WriteFile( file, header, len, &written, NULL );
+        lxb_html_serialize_tree_cb( lxb_dom_interface_node( doc->html ), dump_write, file );
+        CloseHandle( file );
+    }
+    for (unsigned int i = 0; i < doc->frame_count; i++) dump_tree( doc->frames[i]->doc, index );
+}
+
 /* what a script did that the view shows: a navigation, a changed tree, a title */
 static void after_script( struct arctic_html_view *view )
 {
@@ -903,6 +955,16 @@ static void after_script( struct arctic_html_view *view )
     size_t len;
 
     if (!doc) return;
+    if (doc->submitting)
+    {
+        lxb_dom_element_t *form = doc->submitting;
+
+        doc->submitting = NULL;
+        free( doc->redirect );
+        doc->redirect = NULL;
+        send_form( view, form, NULL );
+        return;
+    }
     if (doc->redirect)
     {
         WCHAR *target = utf8_to_wide( doc->redirect, strlen( doc->redirect ), NULL );
@@ -920,6 +982,7 @@ static void after_script( struct arctic_html_view *view )
     if (tree_mutations( doc ) != view->mutations)
     {
         if (doc->html) check_frames( view, doc, lxb_dom_interface_node( doc->html ) );
+        restyle_tree( doc );
         load_new_images( view, doc );
         view->mutations = tree_mutations( doc );
         view->relayout = TRUE;
@@ -1028,6 +1091,14 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         break;
 
     case WM_KEYDOWN:
+        if (wp == VK_F12)
+        {
+            int index = 0;
+
+            dump_tree( view->doc, &index );
+            tell_host( view, ARCTIC_HTML_WM_STATUS, L"Дерево сторінки збережено в %TEMP%\\arctic-dom-*.html" );
+            return 0;
+        }
         if (field_key( view, wp )) return 0;
         switch (wp)
         {
@@ -1293,6 +1364,7 @@ static BOOL same_document( struct arctic_html_view *view, const WCHAR *url )
     TRACE( "fragment %.*s among %u anchors\n", out, fragment, view->list.anchor_count );
     for (unsigned int i = 0; i < view->list.anchor_count; i++)
     {
+        if (!view->list.anchors[i].element) continue;   /* the baseline of a line */
         size_t id_len;
         const char *id = (const char *)lxb_dom_element_get_attribute( view->list.anchors[i].element,
                                                                       (const lxb_char_t *)"id", 2, &id_len );

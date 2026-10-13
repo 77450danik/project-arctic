@@ -838,6 +838,117 @@ static void apply_text( lxb_dom_element_t *element, const struct style *parent, 
     }
 }
 
+/* one value of background-position: a keyword, a percent or a length; across or down */
+static BOOL position_value( const char *s, size_t len, float font_size, struct length *out, int *axis )
+{
+    float px;
+
+    *axis = -1;
+    if (text_is( s, len, "left" )) { out->unit = LEN_PERCENT; out->value = 0; *axis = 0; return TRUE; }
+    if (text_is( s, len, "right" )) { out->unit = LEN_PERCENT; out->value = 100; *axis = 0; return TRUE; }
+    if (text_is( s, len, "top" )) { out->unit = LEN_PERCENT; out->value = 0; *axis = 1; return TRUE; }
+    if (text_is( s, len, "bottom" )) { out->unit = LEN_PERCENT; out->value = 100; *axis = 1; return TRUE; }
+    if (text_is( s, len, "center" )) { out->unit = LEN_PERCENT; out->value = 50; return TRUE; }
+    if (len && s[len - 1] == '%') { out->unit = LEN_PERCENT; out->value = (float)atof( s ); return TRUE; }
+    if (parse_length( s, len, font_size, &px )) { out->unit = LEN_PX; out->value = px; return TRUE; }
+    return FALSE;
+}
+
+/* background-image and its position, size and repeat, from where css.c put them */
+static void apply_background_image( lxb_dom_element_t *element, struct style *style )
+{
+    const char *value, *end, *s, *word;
+    size_t len, word_len;
+
+    style->bg_pos[0].unit = style->bg_pos[1].unit = LEN_PERCENT;
+    style->bg_pos[0].value = style->bg_pos[1].value = 0;
+    style->bg_size_kind = BG_SIZE_AUTO;
+    style->bg_repeat_x = style->bg_repeat_y = TRUE;
+    if (!custom_value( element, "--arctic-background-image", &value, &len ) || len < 5 ||
+        _strnicmp( value, "url(", 4 ))
+        return;
+    /* url("...") or url(...): the first picture of the layers */
+    s = value + 4;
+    end = memchr( s, ')', len - 4 );
+    if (!end) return;
+    while (s < end && (*s == ' ' || *s == '"' || *s == '\'')) s++;
+    while (end > s && (end[-1] == ' ' || end[-1] == '"' || end[-1] == '\'')) end--;
+    if (end <= s) return;
+    style->bg_url = s;
+    style->bg_url_len = end - s;
+
+    if (custom_value( element, "--arctic-background-position", &value, &len ))
+    {
+        struct length parts[2];
+        int axes[2], count = 0;
+
+        for (end = value + len; count < 2 && next_word( &value, end, &word, &word_len ); )
+            if (position_value( word, word_len, style->font_size, &parts[count], &axes[count] )) count++;
+        if (count == 1)
+        {
+            /* one value: the other is the centre; top and bottom are of the height */
+            struct length centre = { LEN_PERCENT, 50 };
+
+            if (axes[0] == 1) { style->bg_pos[0] = centre; style->bg_pos[1] = parts[0]; }
+            else { style->bg_pos[0] = parts[0]; style->bg_pos[1] = centre; }
+        }
+        else if (count == 2)
+        {
+            BOOL swap = axes[0] == 1 || axes[1] == 0;
+
+            style->bg_pos[0] = parts[swap ? 1 : 0];
+            style->bg_pos[1] = parts[swap ? 0 : 1];
+        }
+    }
+    if (custom_value( element, "--arctic-background-size", &value, &len ))
+    {
+        if (text_is( value, len, "cover" )) style->bg_size_kind = BG_SIZE_COVER;
+        else if (text_is( value, len, "contain" )) style->bg_size_kind = BG_SIZE_CONTAIN;
+        else
+        {
+            int count = 0;
+
+            style->bg_size[0].unit = style->bg_size[1].unit = LEN_AUTO;
+            for (end = value + len; count < 2 && next_word( &value, end, &word, &word_len ); count++)
+            {
+                float px;
+
+                if (text_is( word, word_len, "auto" )) continue;
+                if (word[word_len - 1] == '%')
+                {
+                    style->bg_size[count].unit = LEN_PERCENT;
+                    style->bg_size[count].value = (float)atof( word );
+                }
+                else if (parse_length( word, word_len, style->font_size, &px ))
+                {
+                    style->bg_size[count].unit = LEN_PX;
+                    style->bg_size[count].value = px;
+                }
+            }
+            if (style->bg_size[0].unit != LEN_AUTO || style->bg_size[1].unit != LEN_AUTO)
+                style->bg_size_kind = BG_SIZE_GIVEN;
+        }
+    }
+    if (custom_value( element, "--arctic-background-repeat", &value, &len ))
+    {
+        const char *first = NULL, *second = NULL;
+        size_t first_len = 0, second_len = 0;
+
+        end = value + len;
+        if (next_word( &value, end, &first, &first_len )) next_word( &value, end, &second, &second_len );
+        if (!first) return;
+        if (second)
+        {
+            /* two values: across, then down */
+            style->bg_repeat_x = !text_is( first, first_len, "no-repeat" );
+            style->bg_repeat_y = !text_is( second, second_len, "no-repeat" );
+        }
+        else if (text_is( first, first_len, "no-repeat" )) style->bg_repeat_x = style->bg_repeat_y = FALSE;
+        else if (text_is( first, first_len, "repeat-x" )) style->bg_repeat_y = FALSE;
+        else if (text_is( first, first_len, "repeat-y" )) style->bg_repeat_x = FALSE;
+    }
+}
+
 static void apply_display( lxb_dom_element_t *element, struct style *style )
 {
     const lxb_css_rule_declaration_t *decl = declared( element, LXB_CSS_PROPERTY_DISPLAY );
@@ -845,6 +956,7 @@ static void apply_display( lxb_dom_element_t *element, struct style *style )
     if (!decl) return;
     style->flex = decl->u.display->a == LXB_CSS_VALUE_FLEX || decl->u.display->a == LXB_CSS_VALUE_INLINE_FLEX;
     style->table = decl->u.display->a == LXB_CSS_VALUE_TABLE || decl->u.display->a == LXB_CSS_VALUE_INLINE_TABLE;
+    style->flow_root = decl->u.display->a == LXB_CSS_VALUE_FLOW_ROOT;
     switch (decl->u.display->a)
     {
     case LXB_CSS_VALUE_TABLE_ROW_GROUP:
@@ -937,6 +1049,7 @@ void style_initial( struct style *style )
 {
     memset( style, 0, sizeof(*style) );
     style->display = DISPLAY_BLOCK;
+    style->opacity = 1;
     style->font_size = DEFAULT_FONT_SIZE;
     style->font.weight = 400;
     font_generic_face( GENERIC_SERIF, style->font.face );
@@ -959,6 +1072,13 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     style->valign = VALIGN_BASELINE;
     style->position = POSITION_STATIC;
     style->clips = FALSE;
+    style->floating = FLOAT_NONE;
+    style->bg_url = NULL;
+    style->bg_url_len = 0;
+    style->z_set = FALSE;
+    style->z_index = 0;
+    style->clear = 0;
+    style->flow_root = FALSE;
     for (int i = 0; i < 4; i++) style->inset[i].unit = LEN_AUTO;
     style->flex = FALSE;
     style->table = FALSE;
@@ -1089,9 +1209,15 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     if ((decl = declared( element, LXB_CSS_PROPERTY_VISIBILITY )))
         style->invisible = decl->u.visibility->type == LXB_CSS_VALUE_HIDDEN ||
                            decl->u.visibility->type == LXB_CSS_VALUE_COLLAPSE;
-    if ((decl = declared( element, LXB_CSS_PROPERTY_OPACITY )) && decl->u.opacity->type == LXB_CSS_VALUE__NUMBER &&
-        decl->u.opacity->u.number.num <= 0.001)
-        style->transparent = TRUE;
+    style->opacity = parent ? parent->opacity : 1;
+    if ((decl = declared( element, LXB_CSS_PROPERTY_OPACITY )))
+    {
+        double value = decl->u.opacity->type == LXB_CSS_VALUE__NUMBER ? decl->u.opacity->u.number.num :
+                       decl->u.opacity->type == LXB_CSS_VALUE__PERCENTAGE ? decl->u.opacity->u.percentage.num / 100 : 1;
+
+        if (value <= 0.001) style->transparent = TRUE;
+        style->opacity *= (float)min( max( value, 0 ), 1 );
+    }
     if ((decl = declared( element, LXB_CSS_PROPERTY_POSITION )))
     {
         switch (decl->u.position->type)
@@ -1104,6 +1230,41 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
         }
         style->out_of_flow = style->position == POSITION_ABSOLUTE || style->position == POSITION_FIXED;
     }
+    if ((decl = declared( element, LXB_CSS_PROPERTY_Z_INDEX )) && decl->u.z_index->type != LXB_CSS_VALUE_AUTO)
+    {
+        long z = decl->u.z_index->integer.num;
+
+        style->z_set = TRUE;
+        style->z_index = (int)max( min( z, 0x7fffffff ), -0x7fffffff );
+    }
+    if ((decl = declared( element, LXB_CSS_PROPERTY_FLOAT )))
+    {
+        switch (decl->u.floatp->type)
+        {
+        case LXB_CSS_FLOAT_LEFT:
+        case LXB_CSS_FLOAT_INLINE_START: style->floating = FLOAT_LEFT; break;
+        case LXB_CSS_FLOAT_RIGHT:
+        case LXB_CSS_FLOAT_INLINE_END:   style->floating = FLOAT_RIGHT; break;
+        default:                         style->floating = FLOAT_NONE; break;
+        }
+    }
+    /* a positioned box does not float; a float is a block, whatever its display */
+    if (style->out_of_flow) style->floating = FLOAT_NONE;
+    if (style->floating && style->display != DISPLAY_NONE && style->display != DISPLAY_LIST_ITEM)
+        style->display = DISPLAY_BLOCK;
+    /* clear: lexbor knows only the values of page floats, without both */
+    {
+        const char *value;
+        size_t len;
+
+        if (custom_value( element, "--arctic-clear", &value, &len ))
+        {
+            if (text_is( value, len, "left" ) || text_is( value, len, "inline-start" )) style->clear = CLEAR_LEFT;
+            else if (text_is( value, len, "right" ) || text_is( value, len, "inline-end" )) style->clear = CLEAR_RIGHT;
+            else if (text_is( value, len, "both" )) style->clear = CLEAR_LEFT | CLEAR_RIGHT;
+        }
+    }
+    apply_background_image( element, style );
     apply_font_family( element, style );
     apply_text( element, parent, style );
     apply_list_style( element, style );

@@ -93,6 +93,17 @@ enum item_type
     ITEM_IMAGE,     /* an image scaled into its rectangle */
 };
 
+/* Where a positioned box paints among the others: by the z-index of the outermost stacking
+ * context it is in, then of the one inside that, then in the order of the document - which the
+ * order of the list is not, since absolute and fixed boxes are laid out when their containing
+ * block is done. Deeper contexts paint in the order of the list. */
+struct stacking
+{
+    int          z[2];
+    int          depth;     /* how many of z are taken */
+    unsigned int seq;       /* the place in the document of the positioned box it is in */
+};
+
 struct item
 {
     enum item_type       type;
@@ -105,12 +116,19 @@ struct item
     int                  x, baseline;
     /* ITEM_IMAGE */
     const struct image  *image;
+    /* a background: the picture tile_w x tile_h, one of them at x, baseline, repeated
+     * across and down as it says, within rect */
+    BOOL                 background;
+    int                  tile_w, tile_h;
+    BOOL                 repeat_x, repeat_y;
     /* the item shows only inside this: the box of a form control, or of overflow: hidden */
     BOOL                 clipped;
     RECT                 clip;
     int                  layer;     /* 0 the flow, 1 positioned boxes: drawn over the flow */
+    struct stacking      stack;     /* and among those, where */
     int                  absolute;  /* how many absolute boxes it is inside: they do not size their parents */
     lxb_dom_element_t   *owner;     /* the element it was drawn for: what a click on it hits */
+    float                opacity;   /* of it and the boxes it is in, 1 for none */
 };
 
 /* where a link is on the page: what a click on it opens */
@@ -163,11 +181,18 @@ struct display_list
     int           width, height;    /* the viewport it was built for */
     int           content_height;   /* how far the document goes down */
     int           layer;            /* what display_list_add gives a new item */
+    struct stacking stack;          /* and where among the positioned */
+    unsigned int  seq;              /* the positioned boxes met so far, in the order of the document */
+    unsigned int *order;            /* the items in the order they are painted, after display_list_sort */
+    unsigned int  order_count, order_capacity;
     int           absolute;         /* and how deep in absolute boxes it is */
     lxb_dom_element_t *owner;       /* and for which element */
+    float         opacity;          /* and how opaque */
 };
 
 void display_list_reset( struct display_list *list );
+void display_list_sort( struct display_list *list );
+unsigned int display_list_nth( const struct display_list *list, unsigned int n );
 void display_list_free( struct display_list *list );
 struct item *display_list_add( struct display_list *list, enum item_type type );
 const WCHAR *display_list_string( struct display_list *list, const WCHAR *text, int length );
@@ -205,12 +230,24 @@ struct document
     unsigned int         blocked;   /* requests the filter took */
     char                *redirect;  /* where its scripts sent the page, UTF-8, or NULL */
     struct script_env   *script;    /* its scripts, alive while it shows */
+    unsigned int         images_announced;  /* the images handed to be fetched so far */
+    /* its sheets as they came, and what they were rewritten with: rewritten again when its
+     * scripts give elements classes the rules of which were left out (css.c) */
+    struct css_context  *css;
+    char               **sheet_texts;
+    size_t              *sheet_lengths;
+    char               **sheet_bases;
+    unsigned int         sheet_text_count;
+    char                *script_words;  /* the words in the strings of its scripts, '\0' after each:
+                                     * classes they may give elements later, whose rules stay */
+    size_t               script_words_len, script_words_size;
     struct document     *parent;    /* of a frame's document: the page the frame is in */
     char                *frame_name;    /* the name="" of its <iframe>: its window.name */
     int                  depth;     /* how deep in frames */
     struct frame       **frames;    /* its <iframe>s and their documents */
     unsigned int         frame_count, frame_capacity;
     lxb_dom_element_t   *focus;     /* the form control that takes the keys, or NULL */
+    lxb_dom_element_t   *submitting;    /* a form its scripts sent with submit(): the view sends it */
     int                  caret;     /* in its value, in UTF-16 units */
 };
 
@@ -281,6 +318,12 @@ char *frame_url( struct document *doc, lxb_dom_element_t *element );
 struct document *document_owning( struct document *root, lxb_dom_element_t *element );
 /* images scripts add after the page loaded (document.c): new ones to fetch, fetched ones placed */
 unsigned int document_new_images( struct document *doc, char ***urls );
+/* the sheets rewritten when its elements have classes or ids they did not; TRUE when they were */
+BOOL document_restyle( struct document *doc );
+/* the picture of a background-image, asked for the first time it is wanted: NULL until it comes */
+const struct image *document_background( struct document *doc, const char *url, size_t len );
+/* the pictures asked for since the last load, fetched and decoded here */
+void document_load_images( struct document *doc );
 BOOL document_fetch_image( const char *url, const char *page, struct image *image );
 BOOL document_set_image( struct document *doc, const char *url, struct image *decoded );
 /* the decoded image of an <img src>, if it came */
@@ -300,6 +343,7 @@ struct css_context
     struct css_var *vars;           /* the document's custom properties */
     unsigned int    var_count, var_capacity;
     int             heads[4096];    /* a hash of their names: the first of each chain, -1 for none */
+    const char     *base;           /* what the url()s of the sheet being rewritten are relative to */
     struct name_set *names;         /* the classes and ids the document has: rules for others go */
 };
 
@@ -311,6 +355,7 @@ char *css_rewrite( const struct css_context *ctx, const char *css, size_t len, s
 BOOL css_media_matches( const struct css_context *ctx, const char *media, size_t len );
 /* a class or an id the document uses: a rule that asks for none of them cannot match */
 void css_context_add_name( struct css_context *ctx, const char *name, size_t len );
+unsigned int css_context_name_count( const struct css_context *ctx );
 /* for a style="", only what lexbor did not have */
 char *css_expand_inline( const struct css_context *ctx, const char *style, size_t len, size_t *out_len );
 
@@ -324,6 +369,9 @@ enum length_unit { LEN_AUTO, LEN_PX, LEN_PERCENT };
 enum list_kind { LIST_NONE, LIST_DISC, LIST_DECIMAL };
 enum valign_kind { VALIGN_BASELINE, VALIGN_MIDDLE, VALIGN_TOP, VALIGN_BOTTOM };
 enum position_kind { POSITION_STATIC, POSITION_RELATIVE, POSITION_ABSOLUTE, POSITION_FIXED };
+enum float_kind { FLOAT_NONE, FLOAT_LEFT, FLOAT_RIGHT };
+#define CLEAR_LEFT  1
+#define CLEAR_RIGHT 2
 enum flex_direction { FLEX_ROW, FLEX_ROW_REVERSE, FLEX_COLUMN, FLEX_COLUMN_REVERSE };
 enum justify_kind { JUSTIFY_START, JUSTIFY_END, JUSTIFY_CENTER, JUSTIFY_BETWEEN, JUSTIFY_AROUND, JUSTIFY_EVENLY };
 enum flex_align { FALIGN_AUTO, FALIGN_STRETCH, FALIGN_START, FALIGN_END, FALIGN_CENTER, FALIGN_BASELINE };
@@ -355,9 +403,22 @@ struct style
     DWORD                 border_color[4];
     BOOL                  invisible;    /* visibility: hidden - inherited, a child may show itself */
     BOOL                  transparent;  /* opacity: 0 here or above - no child shows */
+    float                 opacity;      /* of this box and the ones it is in, multiplied */
     BOOL                  out_of_flow;  /* position: absolute or fixed */
     enum position_kind    position;     /* sticky is relative here */
     BOOL                  clips;        /* overflow other than visible: what goes out of it is cut */
+    enum float_kind       floating;     /* float: left or right, out of the lines that flow around it */
+    BOOL                  z_set;        /* z-index other than auto: a positioned box with it stacks */
+    int                   z_index;
+    unsigned int          clear;        /* CLEAR_LEFT | CLEAR_RIGHT: below the floats of that side */
+    BOOL                  flow_root;    /* display: flow-root - its floats stay inside it */
+    /* background-image: the address of its picture, in the declaration; where and how big */
+    const char           *bg_url;
+    size_t                bg_url_len;
+    struct length         bg_pos[2];    /* x, y: a percent of the room left, or px */
+    enum { BG_SIZE_AUTO, BG_SIZE_COVER, BG_SIZE_CONTAIN, BG_SIZE_GIVEN } bg_size_kind;
+    struct length         bg_size[2];   /* BG_SIZE_GIVEN: width, height; either may be auto */
+    BOOL                  bg_repeat_x, bg_repeat_y;
     struct length         inset[4];     /* top, right, bottom, left; auto when not set */
     enum valign_kind      valign;       /* of an inline-block or an image on its line */
     /* flexbox: the container's */

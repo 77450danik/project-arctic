@@ -28,7 +28,7 @@
 
 extern float style_viewport_width, style_viewport_height;
 
-enum atom_type { ATOM_TEXT, ATOM_SPACE, ATOM_BREAK, ATOM_IMAGE, ATOM_BOX };
+enum atom_type { ATOM_TEXT, ATOM_SPACE, ATOM_BREAK, ATOM_IMAGE, ATOM_BOX, ATOM_FLOAT };
 
 struct atom
 {
@@ -45,9 +45,18 @@ struct atom
     lxb_dom_element_t  *anchors[2]; /* inlines with an id that begin with it: #fragment goes to its line */
     lxb_dom_element_t  *owner;      /* the element it is the text or the image of */
     /* ATOM_BOX: an inline-block or a form control, laid out at the origin - its
-     * items, links and controls in the list, moved to the line when it is placed */
+     * items, links and controls in the list, moved to the line when it is placed;
+     * ATOM_FLOAT: a float laid out so too, moved to its side when its line is reached */
     struct list_mark    box_from, box_to;
     int                 baseline;   /* from its top */
+    int                 shift_x, shift_y;   /* an image of position: relative, moved from its place */
+};
+
+/* a float in place: its margin box, which the lines of its formatting context go around */
+struct float_box
+{
+    float left, top, right, bottom;
+    BOOL  right_side;
 };
 
 /* an absolute or fixed box, laid out when its containing block is done */
@@ -57,6 +66,8 @@ struct deferred
     const struct style *style;
     float               static_x, static_y;     /* where it would have stood in the flow */
     lxb_dom_element_t  *link;
+    unsigned int        seq;        /* its place among the positioned boxes, met where it stands */
+    struct stacking     stack;      /* and the stacking it was met in */
 };
 
 struct layout
@@ -72,6 +83,7 @@ struct layout
     WCHAR               *text;
     size_t               text_len, text_capacity;
     float                line_width;    /* what the lines being gathered may fill */
+    float                block_height;  /* the height the block being laid out was given, or -1 */
     float                static_x, static_y;    /* where a box in the flow would go now */
     struct deferred     *deferred;      /* positioned boxes waiting for their containing block */
     unsigned int         deferred_count, deferred_capacity;
@@ -79,6 +91,13 @@ struct layout
     float                fixed_right;   /* the right edge of the blocks of a set width laid out since it was 0 */
     float                last_width;    /* the border box of the last block laid out, */
     float                last_margin[2];    /* and its left and right margins as they came out */
+    struct float_box    *floats;        /* the floats placed, */
+    unsigned int         float_count, float_capacity;
+    unsigned int         bfc_first;     /* the first of the block formatting context being laid out */
+    BOOL                 new_bfc;       /* the next block laid out is a context of its own: a flex item, a cell */
+    unsigned int         placing_seq;   /* the place in the document of the absolute box laid out next */
+    float                line_right;    /* the right edge of the lines placed since it was 0: what a box
+                                         * measured for its width holds, its inline-blocks too */
 };
 
 static struct style *new_style( struct layout *ctx )
@@ -214,6 +233,8 @@ static void defer( struct layout *ctx, lxb_dom_element_t *element, const struct 
     entry->static_x = ctx->static_x;
     entry->static_y = ctx->static_y;
     entry->link = ctx->link;
+    entry->seq = ++ctx->list->seq;
+    entry->stack = ctx->list->stack;
 }
 
 /* an input, a select, a textarea, a frame: drawn by the engine, whatever display the page gives it */
@@ -235,6 +256,52 @@ static BOOL is_block( const struct style *style )
 static BOOL paints( const struct style *style )
 {
     return !style->invisible && !style->transparent;
+}
+
+/* --- floats --- */
+
+/* what the floats of the context leave of x..x + width between top and top + height */
+static void float_span( const struct layout *ctx, float x, float width, float top, float height, float *left,
+                        float *right )
+{
+    *left = x;
+    *right = x + width;
+    for (unsigned int i = ctx->bfc_first; i < ctx->float_count; i++)
+    {
+        const struct float_box *f = &ctx->floats[i];
+
+        if (f->top >= top + height || f->bottom <= top) continue;
+        if (f->right_side) *right = min( *right, f->left );
+        else *left = max( *left, f->right );
+    }
+}
+
+/* the first bottom of a float beside y, where there may be more room; y when there is none */
+static float float_below( const struct layout *ctx, float y )
+{
+    float next = -1;
+
+    for (unsigned int i = ctx->bfc_first; i < ctx->float_count; i++)
+        if (ctx->floats[i].bottom > y && ctx->floats[i].top <= y && (next < 0 || ctx->floats[i].bottom < next))
+            next = ctx->floats[i].bottom;
+    return next < 0 ? y : next;
+}
+
+/* below the floats of those sides, CLEAR_LEFT | CLEAR_RIGHT; -1 with none */
+static float float_clear( const struct layout *ctx, unsigned int sides )
+{
+    float bottom = -1;
+
+    for (unsigned int i = ctx->bfc_first; i < ctx->float_count; i++)
+        if (sides & (ctx->floats[i].right_side ? CLEAR_RIGHT : CLEAR_LEFT))
+            bottom = max( bottom, ctx->floats[i].bottom );
+    return bottom;
+}
+
+/* the bottom of the floats of the context being laid out; -1 with none */
+static float floats_bottom( const struct layout *ctx )
+{
+    return float_clear( ctx, CLEAR_LEFT | CLEAR_RIGHT );
 }
 
 static float line_height_of( const struct style *style, const struct font *font )
@@ -369,6 +436,12 @@ static int attribute_number( lxb_dom_element_t *element, const char *name )
     return value && len ? atoi( value ) : 0;
 }
 
+/* where an item ends on the right, as far as it shows: what a box clips is not there */
+static float item_right( const struct item *item )
+{
+    return (float)(item->clipped ? min( item->rect.right, item->clip.right ) : item->rect.right);
+}
+
 static void add_image( struct layout *ctx, lxb_dom_element_t *element, const struct style *style )
 {
     const struct image *image = NULL;
@@ -381,7 +454,9 @@ static void add_image( struct layout *ctx, lxb_dom_element_t *element, const str
         image = document_image( ctx->doc, src, len );
     w = style->width.unit == LEN_PX ? style->width.value :
         style->width.unit == LEN_PERCENT ? style->width.value * ctx->line_width / 100.0f : (float)attribute_number( element, "width" );
-    h = style->height.unit == LEN_PX ? style->height.value : (float)attribute_number( element, "height" );
+    h = style->height.unit == LEN_PX ? style->height.value :
+        style->height.unit == LEN_PERCENT && ctx->block_height >= 0 ? style->height.value * ctx->block_height / 100.0f :
+        (float)attribute_number( element, "height" );
     if (style->max_width.unit != LEN_AUTO && w > length_px( &style->max_width, ctx->line_width ))
     {
         float max_w = length_px( &style->max_width, ctx->line_width );
@@ -411,6 +486,16 @@ static void add_image( struct layout *ctx, lxb_dom_element_t *element, const str
     atom->image = image;
     atom->width = (int)(w + 0.5f);
     atom->height = (int)(h + 0.5f);
+    if (style->position == POSITION_RELATIVE)
+    {
+        /* percent across is of the line, down of the block's height when it has one */
+        float height = max( 0, ctx->block_height );
+
+        atom->shift_x = (int)(style->inset[3].unit != LEN_AUTO ? length_px( &style->inset[3], ctx->line_width ) :
+                              style->inset[1].unit != LEN_AUTO ? -length_px( &style->inset[1], ctx->line_width ) : 0);
+        atom->shift_y = (int)(style->inset[0].unit != LEN_AUTO ? length_px( &style->inset[0], height ) :
+                              style->inset[2].unit != LEN_AUTO ? -length_px( &style->inset[2], height ) : 0);
+    }
 }
 
 static void gather_inline( struct layout *ctx, lxb_dom_node_t *node, const struct style *style );
@@ -748,7 +833,8 @@ static void layout_iframe( struct layout *ctx, lxb_dom_element_t *element, const
 /* An inline-block, a button, a form control: laid out as a block of its own
  * at the origin, as wide as its content up to the line, and placed on the
  * line as one atom. The inline content gathered around it waits meanwhile. */
-static void add_box( struct layout *ctx, lxb_dom_element_t *element, const struct style *style )
+static void add_box_as( struct layout *ctx, lxb_dom_element_t *element, const struct style *style,
+                        enum atom_type type )
 {
     struct atom *saved_atoms = ctx->atoms, *atom;
     unsigned int saved_count = ctx->atom_count, saved_capacity = ctx->atom_capacity;
@@ -783,6 +869,10 @@ static void add_box( struct layout *ctx, lxb_dom_element_t *element, const struc
             *measure = *style;
             measure->text_align = ALIGN_LEFT;
         }
+        float outer_right = ctx->line_right;
+
+        ctx->new_bfc = TRUE;
+        ctx->line_right = 0;
         height = layout_block( ctx, element, measure ? measure : style, 0, mt, avail, 0 );
         if (measure)
         {
@@ -791,9 +881,10 @@ static void add_box( struct layout *ctx, lxb_dom_element_t *element, const struc
             float inner = ctx->last_margin[0] + style->border[3] + style->padding[3], right = inner;
             struct list_mark now;
 
+            right = max( right, ctx->line_right );
             mark_at( ctx, &now );
             for (unsigned int i = from.items; i < now.items; i++)
-                if (ctx->list->items[i].type != ITEM_RECT && ctx->list->items[i].absolute == ctx->list->absolute) right = max( right, (float)ctx->list->items[i].rect.right );
+                if (ctx->list->items[i].type != ITEM_RECT && ctx->list->items[i].absolute == ctx->list->absolute) right = max( right, item_right( &ctx->list->items[i] ) );
             for (unsigned int i = from.controls; i < now.controls; i++)
                 right = max( right, (float)ctx->list->controls[i].rect.right );
             /* laid out again, at that width and as the page aligns it */
@@ -807,10 +898,12 @@ static void add_box( struct layout *ctx, lxb_dom_element_t *element, const struc
                     fitted->width.value = ceilf( min( right - inner, ctx->last_width - frame_h ) );
                     fitted->border_box = FALSE;
                     truncate_list( ctx, &from );
+                    ctx->new_bfc = TRUE;
                     height = layout_block( ctx, element, fitted, 0, mt, avail, 0 );
                 }
             }
         }
+        ctx->line_right = outer_right;
         width = ctx->last_margin[0] + ctx->last_width + ctx->last_margin[1];
         if (tag == LXB_TAG_BUTTON)
         {
@@ -827,14 +920,14 @@ static void add_box( struct layout *ctx, lxb_dom_element_t *element, const struc
             }
         }
         mark_at( ctx, &to );
-        /* its baseline is its last line's; with no line, its bottom margin edge */
-        for (unsigned int i = to.items; i-- > from.items; )
-            if (ctx->list->items[i].type == ITEM_RUN && !ctx->list->items[i].clipped &&
-                ctx->list->items[i].absolute == ctx->list->absolute)
-            {
-                baseline = (float)ctx->list->items[i].baseline;
-                break;
-            }
+        /* its baseline is its last line's; with no line, or when it clips, its bottom margin edge */
+        if (!style->clips)
+            for (unsigned int i = to.anchors; i-- > from.anchors; )
+                if (!ctx->list->anchors[i].element)
+                {
+                    baseline = (float)ctx->list->anchors[i].y;
+                    break;
+                }
         height += mt + mb;
         if (baseline < 0) baseline = height;
     }
@@ -850,12 +943,17 @@ static void add_box( struct layout *ctx, lxb_dom_element_t *element, const struc
     ctx->text_capacity = saved_text_capacity;
     memcpy( ctx->anchors, pending, sizeof(pending) );
 
-    if (!(atom = add_atom( ctx, ATOM_BOX, style ))) return;
+    if (!(atom = add_atom( ctx, type, style ))) return;
     atom->width = (int)ceilf( width );
     atom->height = (int)ceilf( height );
     atom->baseline = (int)(baseline + 0.5f);
     atom->box_from = from;
     atom->box_to = to;
+}
+
+static void add_box( struct layout *ctx, lxb_dom_element_t *element, const struct style *style )
+{
+    add_box_as( ctx, element, style, ATOM_BOX );
 }
 
 /* an <a href> makes what is inside it a link */
@@ -897,6 +995,15 @@ static void gather_owned( struct layout *ctx, lxb_dom_element_t *element, const 
     if (style->out_of_flow)
     {
         defer( ctx, element, style );
+        return;
+    }
+    /* a float: laid out now, put at its side when the line it is on is reached */
+    if (style->floating)
+    {
+        lxb_dom_element_t *outer_link = enter_link( ctx, element );
+
+        add_box_as( ctx, element, style, ATOM_FLOAT );
+        ctx->link = outer_link;
         return;
     }
     switch (lxb_dom_element_tag_id( element ))
@@ -970,9 +1077,11 @@ static float place_line( struct layout *ctx, unsigned int first, unsigned int en
                          const struct style *block )
 {
     lxb_dom_element_t *owner = ctx->list->owner;
+    float opacity = ctx->list->opacity;
     float height = place_line_owned( ctx, first, end, x, top, width, block );
 
     ctx->list->owner = owner;
+    ctx->list->opacity = opacity;
     return height;
 }
 
@@ -998,6 +1107,7 @@ static float place_line_owned( struct layout *ctx, unsigned int first, unsigned 
     {
         const struct atom *atom = &ctx->atoms[i];
 
+        if (atom->type == ATOM_FLOAT) continue;
         used += atom->width;
         if (atom->type == ATOM_IMAGE || atom->type == ATOM_BOX)
         {
@@ -1043,6 +1153,7 @@ static float place_line_owned( struct layout *ctx, unsigned int first, unsigned 
         struct item *item;
 
         ctx->list->owner = atom->owner;
+        ctx->list->opacity = atom->style->opacity;
         if (atom->type == ATOM_IMAGE)
         {
             if (atom->image && paints( atom->style ) && (item = display_list_add( ctx->list, ITEM_IMAGE )))
@@ -1050,6 +1161,7 @@ static float place_line_owned( struct layout *ctx, unsigned int first, unsigned 
                 int y = (int)atomic_top( atom, (float)atom->height, top, baseline, ascent + descent, x_height );
 
                 SetRect( &item->rect, (int)pen, y, (int)pen + atom->width, y + atom->height );
+                OffsetRect( &item->rect, atom->shift_x, atom->shift_y );
                 item->image = atom->image;
                 if (atom->link) display_list_link( ctx->list, &item->rect, atom->link );
             }
@@ -1066,7 +1178,7 @@ static float place_line_owned( struct layout *ctx, unsigned int first, unsigned 
             i++;
             continue;
         }
-        if (atom->type == ATOM_BREAK) { i++; continue; }
+        if (atom->type == ATOM_BREAK || atom->type == ATOM_FLOAT) { i++; continue; }
 
         /* words and spaces of one style, one after another: one run */
         {
@@ -1125,14 +1237,80 @@ static float place_line_owned( struct layout *ctx, unsigned int first, unsigned 
         }
     }
     free( run );
+    ctx->line_right = max( ctx->line_right, pen );
+    /* its baseline, where the list keeps it moved with the line: an inline-block's is its last line's */
+    display_list_anchor( ctx->list, (int)floorf( baseline + 0.5f ), NULL );
     return ascent + descent;
 }
 
-/* the gathered atoms, broken into lines from top down; returns their height */
+/* a float laid out at the origin, put at its side of x..x + width from y down, where it fits */
+static void place_float( struct layout *ctx, const struct atom *atom, float x, float width, float y )
+{
+    float w = (float)atom->width, h = (float)atom->height, left = x, right = x + width, fx;
+    struct float_box *f;
+
+    /* not above a float before it, nor beside the floats it clears */
+    for (unsigned int i = ctx->bfc_first; i < ctx->float_count; i++) y = max( y, ctx->floats[i].top );
+    if (atom->style->clear) y = max( y, float_clear( ctx, atom->style->clear ) );
+    for (int tries = 0; tries < 256; tries++)
+    {
+        float next;
+
+        float_span( ctx, x, width, y, max( h, 1 ), &left, &right );
+        if (right - left >= w || (left <= x && right >= x + width)) break;
+        if ((next = float_below( ctx, y )) <= y) break;
+        y = next;
+    }
+    fx = atom->style->floating == FLOAT_RIGHT ? right - w : left;
+    shift_box( ctx, &atom->box_from, &atom->box_to, (int)floorf( fx + 0.5f ), (int)floorf( y + 0.5f ) );
+
+    if (ctx->float_count == ctx->float_capacity)
+    {
+        unsigned int capacity = ctx->float_capacity ? ctx->float_capacity * 2 : 16;
+        struct float_box *grown = realloc( ctx->floats, capacity * sizeof(*grown) );
+
+        if (!grown) return;
+        ctx->floats = grown;
+        ctx->float_capacity = capacity;
+    }
+    f = &ctx->floats[ctx->float_count++];
+    f->left = fx;
+    f->top = y;
+    f->right = fx + w;
+    f->bottom = y + h;
+    f->right_side = atom->style->floating == FLOAT_RIGHT;
+}
+
+/* the room a line at y has beside the floats */
+static void line_room( const struct layout *ctx, float x, float width, float y, const struct style *block,
+                       float *line_x, float *line_w )
+{
+    float left, right;
+
+    if (ctx->float_count == ctx->bfc_first)
+    {
+        *line_x = x;
+        *line_w = width;
+        return;
+    }
+    float_span( ctx, x, width, y, line_height_of( block, font_get( &block->font ) ), &left, &right );
+    *line_x = left;
+    *line_w = max( 0, right - left );
+}
+
+/* whether atoms first..end hold more than spaces and floats */
+static BOOL line_has_content( const struct layout *ctx, unsigned int first, unsigned int end )
+{
+    for (unsigned int k = first; k < end; k++)
+        if (ctx->atoms[k].type != ATOM_SPACE && ctx->atoms[k].type != ATOM_FLOAT) return TRUE;
+    return FALSE;
+}
+
+/* the gathered atoms, broken into lines from top down, around the floats; returns their height */
 static float flush_inline( struct layout *ctx, float x, float top, float width, const struct style *block )
 {
     unsigned int start = 0, count = ctx->atom_count;
-    float y = top, used = 0;
+    float y = top, used = 0, line_x, line_w;
     BOOL content = FALSE;
 
     for (unsigned int i = 0; i < count; i++)
@@ -1144,14 +1322,19 @@ static float flush_inline( struct layout *ctx, float x, float top, float width, 
         return 0;
     }
 
+    line_room( ctx, x, width, y, block, &line_x, &line_w );
     for (unsigned int i = 0; i < count; i++)
     {
         struct atom *atom = &ctx->atoms[i];
-        BOOL line_empty = TRUE;
+        BOOL line_empty = !line_has_content( ctx, start, i );
 
-        for (unsigned int k = start; k < i; k++)
-            if (ctx->atoms[k].type != ATOM_SPACE) { line_empty = FALSE; break; }
-
+        if (atom->type == ATOM_FLOAT)
+        {
+            /* at the top of the line it comes in, the line making room for it */
+            place_float( ctx, atom, x, width, y );
+            line_room( ctx, x, width, y, block, &line_x, &line_w );
+            continue;
+        }
         if (atom->type == ATOM_BREAK)
         {
             if (!atom->keep && line_empty)
@@ -1160,9 +1343,10 @@ static float flush_inline( struct layout *ctx, float x, float top, float width, 
                 used = 0;
                 continue;
             }
-            y += place_line( ctx, start, i, x, y, width, block );
+            y += place_line( ctx, start, i, line_x, y, line_w, block );
             start = i + 1;
             used = 0;
+            line_room( ctx, x, width, y, block, &line_x, &line_w );
             continue;
         }
         if (atom->type == ATOM_SPACE)
@@ -1171,18 +1355,31 @@ static float flush_inline( struct layout *ctx, float x, float top, float width, 
             continue;
         }
         /* a word that does not fit starts a new line, if there is a space to break at */
-        if (!line_empty && used + atom->width > width && i > start &&
+        if (!line_empty && used + atom->width > line_w && i > start &&
             ((ctx->atoms[i - 1].type == ATOM_SPACE && !ctx->atoms[i - 1].keep) ||
              atom->type == ATOM_BOX || atom->type == ATOM_IMAGE ||
-             ctx->atoms[i - 1].type == ATOM_BOX || ctx->atoms[i - 1].type == ATOM_IMAGE))
+             ctx->atoms[i - 1].type == ATOM_BOX || ctx->atoms[i - 1].type == ATOM_IMAGE ||
+             ctx->atoms[i - 1].type == ATOM_FLOAT))
         {
-            y += place_line( ctx, start, i, x, y, width, block );
+            y += place_line( ctx, start, i, line_x, y, line_w, block );
             start = i;
             used = 0;
+            line_room( ctx, x, width, y, block, &line_x, &line_w );
+            line_empty = TRUE;
+        }
+        /* nor beside the floats: below them, where the line is wider */
+        while (line_empty && atom->width > line_w && line_w < width)
+        {
+            float next = float_below( ctx, y );
+
+            if (next <= y) break;
+            y = next;
+            line_room( ctx, x, width, y, block, &line_x, &line_w );
         }
         used += atom->width;
     }
-    if (start < count) y += place_line( ctx, start, count, x, y, width, block );
+    if (start < count && line_has_content( ctx, start, count ))
+        y += place_line( ctx, start, count, line_x, y, line_w, block );
 
     ctx->atom_count = 0;
     ctx->text_len = 0;
@@ -1228,7 +1425,7 @@ static float flow_children( struct layout *ctx, lxb_dom_node_t *parent, const st
             defer( ctx, element, child );
             continue;
         }
-        if (!is_block( child ) || is_field( element ))
+        if (!is_block( child ) || is_field( element ) || child->floating)
         {
             gather_styled( ctx, element, child );
             continue;
@@ -1247,11 +1444,29 @@ static float flow_children( struct layout *ctx, lxb_dom_node_t *parent, const st
         }
         margin_top = length_px( &child->margin[0], width );
         cursor += max( pending_margin, margin_top );    /* neighbouring margins collapse */
+        if (child->clear)
+        {
+            /* below the floats it clears */
+            float below = float_clear( ctx, child->clear );
+
+            if (below > y + cursor) cursor = below - y;
+        }
         if (child->display == DISPLAY_LIST_ITEM) list_index++;
         {
             lxb_dom_element_t *outer = enter_link( ctx, element );
+            float bx = x, bw = width;
 
-            cursor += layout_block( ctx, element, child, x, y + cursor, width, list_index );
+            /* a context of its own goes beside the floats, not under them */
+            if (ctx->float_count > ctx->bfc_first &&
+                (child->clips || child->flow_root || child->flex || child->table))
+            {
+                float left, right;
+
+                float_span( ctx, x, width, y + cursor, 1, &left, &right );
+                bx = left;
+                bw = max( 0, right - left );
+            }
+            cursor += layout_block( ctx, element, child, bx, y + cursor, bw, list_index );
             ctx->link = outer;
         }
         pending_margin = length_px( &child->margin[2], width );
@@ -1345,7 +1560,7 @@ static float lay_item( struct layout *ctx, struct flex_item *item, float main, f
         mark_at( ctx, &now );
         for (unsigned int i = item->from.items; i < now.items; i++)
             if (ctx->list->items[i].absolute == ctx->list->absolute)
-                width = max( width, (float)ctx->list->items[i].rect.right );
+                width = max( width, item_right( &ctx->list->items[i] ) );
         if (main >= 0) width = main;
     }
     else
@@ -1389,7 +1604,11 @@ static float lay_item( struct layout *ctx, struct flex_item *item, float main, f
         {
             float outer_fixed = ctx->fixed_right;
 
+            float outer_right = ctx->line_right;
+
             ctx->fixed_right = 0;
+            ctx->new_bfc = TRUE;
+            ctx->line_right = 0;
             height = layout_block( ctx, item->element, style, 0, item->margin[0],
                                    main >= 0 ? main + item->margin[1] + item->margin[3] : containing, 0 );
             width = ctx->last_width;
@@ -1402,16 +1621,18 @@ static float lay_item( struct layout *ctx, struct flex_item *item, float main, f
 
                 /* the item itself is no block of a set width here: only what is inside it */
                 right = max( right, ctx->fixed_right < width + item->margin[3] - 0.5f ? ctx->fixed_right : inner );
+                right = max( right, ctx->line_right );
 
                 mark_at( ctx, &now );
                 for (unsigned int i = item->from.items; i < now.items; i++)
                     if (ctx->list->items[i].type != ITEM_RECT && ctx->list->items[i].absolute == ctx->list->absolute)
-                        right = max( right, (float)ctx->list->items[i].rect.right );
+                        right = max( right, item_right( &ctx->list->items[i] ) );
                 for (unsigned int i = item->from.controls; i < now.controls; i++)
                     right = max( right, (float)ctx->list->controls[i].rect.right );
                 width = min( width, right - item->margin[3] + style->padding[1] + style->border[1] );
             }
             ctx->fixed_right = max( outer_fixed, ctx->fixed_right );
+            ctx->line_right = outer_right;
         }
     }
     mark_at( ctx, &item->to );
@@ -1802,7 +2023,9 @@ static float layout_table( struct layout *ctx, lxb_dom_element_t *table, const s
     const struct style *row_styles[512];
     unsigned int row_count = table_rows( ctx, table, style, rows, row_styles, ARRAY_SIZE(rows) ), columns = 0;
     float natural[MAX_COLUMNS] = { 0 }, fixed[MAX_COLUMNS] = { 0 }, used[MAX_COLUMNS], total = 0, cursor;
-    float spacing = (float)attribute_int( table, "cellspacing", 2 );
+    /* the spacing of <table>; a display: table of the page's has none */
+    float spacing = lxb_dom_element_tag_id( table ) == LXB_TAG_TABLE ? (float)attribute_int( table, "cellspacing", 2 ) : 0;
+    float fixed_h = ctx->block_height;     /* the height the table was given, -1 for none */
     struct table_cell *cells = NULL;
     unsigned int *row_first = calloc( row_count + 1, sizeof(unsigned int) ), cell_count = 0, cell_capacity = 0;
     const char *collapse;
@@ -1812,6 +2035,13 @@ static float layout_table( struct layout *ctx, lxb_dom_element_t *table, const s
     if ((collapse = (const char *)lxb_dom_element_get_attribute( table, (const lxb_char_t *)"cellspacing", 11, &len )) &&
         !atoi( collapse ))
         spacing = 0;
+    if (!row_count)
+    {
+        /* cells straight in the table: the row CSS puts around them is the table itself */
+        rows[0] = table;
+        row_styles[0] = style;
+        row_count = 1;
+    }
 
     /* the cells, each in its columns */
     for (unsigned int r = 0; r < row_count; r++)
@@ -1922,6 +2152,8 @@ static float layout_table( struct layout *ctx, lxb_dom_element_t *table, const s
             }
             row_h = max( row_h, cell->item.cross );
         }
+        /* a table of one row and a set height: the row is as tall, its cells aligned in it */
+        if (row_count == 1 && fixed_h > 0) row_h = max( row_h, fixed_h - 2 * spacing );
         /* cells with a background or a frame reach down to the row's bottom */
         for (unsigned int i = row_first[r]; i < row_first[r + 1]; i++)
             if (cells[i].item.cross + 0.5f < row_h &&
@@ -1956,6 +2188,13 @@ static float layout_table( struct layout *ctx, lxb_dom_element_t *table, const s
             shift_box( ctx, &cell->item.from, &cell->item.to, (int)(x + offset_x + 0.5f), (int)(y + cursor + top + 0.5f) );
         }
         cursor += row_h + spacing;
+    }
+    /* as wide as its columns, for a box measured for its width */
+    {
+        float right = x + spacing;
+
+        for (unsigned int c = 0; c < columns; c++) right += used[c] + spacing;
+        ctx->line_right = max( ctx->line_right, right );
     }
     free( cells );
     free( row_first );
@@ -2032,13 +2271,16 @@ static void place_absolute( struct layout *ctx, const struct deferred *entry, fl
                 *measure = *copy;
                 measure->text_align = ALIGN_LEFT;
                 mark_at( ctx, &from );
+                ctx->list->stack = entry->stack;
+                ctx->placing_seq = entry->seq;
+                ctx->line_right = 0;
                 layout_block( ctx, entry->element, measure, 0, 0, cb_w, 0 );
                 mark_at( ctx, &now );
                 inner = ml + style->border[3] + style->padding[3];
-                right = inner;
+                right = max( inner, ctx->line_right );
                 for (unsigned int i = from.items; i < now.items; i++)
                     if (ctx->list->items[i].type != ITEM_RECT && ctx->list->items[i].absolute == ctx->list->absolute)
-                        right = max( right, (float)ctx->list->items[i].rect.right );
+                        right = max( right, item_right( &ctx->list->items[i] ) );
                 for (unsigned int i = from.controls; i < now.controls; i++)
                     right = max( right, (float)ctx->list->controls[i].rect.right );
                 truncate_list( ctx, &from );
@@ -2064,6 +2306,8 @@ static void place_absolute( struct layout *ctx, const struct deferred *entry, fl
     ctx->link = entry->link;
     enter_link( ctx, entry->element );
     mark_at( ctx, &from );
+    ctx->list->stack = entry->stack;
+    ctx->placing_seq = entry->seq;
     height = layout_block( ctx, entry->element, copy, 0, mt, cb_w, 0 );
     width = ctx->last_width;
     mark_at( ctx, &to );
@@ -2095,7 +2339,14 @@ static void place_deferred( struct layout *ctx, unsigned int first, float cb_x, 
             ctx->deferred[kept++] = entry;
             continue;
         }
-        place_absolute( ctx, &entry, cb_x, cb_y, cb_w, cb_h );
+        {
+            struct stacking saved = ctx->list->stack;
+            float line_right = ctx->line_right;     /* what is placed out of the flow does not size it */
+
+            place_absolute( ctx, &entry, cb_x, cb_y, cb_w, cb_h );
+            ctx->list->stack = saved;
+            ctx->line_right = line_right;
+        }
     }
     /* what the placed ones deferred themselves they have placed: only the fixed stay */
     ctx->deferred_count = min( kept, ctx->deferred_count );
@@ -2136,22 +2387,83 @@ static float layout_image_block( struct layout *ctx, lxb_dom_element_t *element,
     return h;
 }
 
+/* a background picture in a border box: its size and its first place, in the padding box */
+static void place_background( struct item *item, const struct style *style, float x, float y, float width,
+                              float height )
+{
+    float area_x = x + style->border[3], area_y = y + style->border[0];
+    float area_w = width - style->border[3] - style->border[1], area_h = height - style->border[0] - style->border[2];
+    float iw = (float)item->image->width, ih = (float)item->image->height, tw = iw, th = ih;
+
+    switch (style->bg_size_kind)
+    {
+    case BG_SIZE_COVER:
+    case BG_SIZE_CONTAIN:
+    {
+        float sx = area_w / max( iw, 1 ), sy = area_h / max( ih, 1 );
+        float scale = style->bg_size_kind == BG_SIZE_COVER ? max( sx, sy ) : min( sx, sy );
+
+        tw = iw * scale;
+        th = ih * scale;
+        break;
+    }
+    case BG_SIZE_GIVEN:
+        if (style->bg_size[0].unit != LEN_AUTO) tw = length_px( &style->bg_size[0], area_w );
+        if (style->bg_size[1].unit != LEN_AUTO) th = style->bg_size[1].unit == LEN_PERCENT ?
+                                                     style->bg_size[1].value * area_h / 100.0f : style->bg_size[1].value;
+        if (style->bg_size[0].unit == LEN_AUTO && ih > 0) tw = th * iw / ih;
+        if (style->bg_size[1].unit == LEN_AUTO && iw > 0) th = tw * ih / iw;
+        break;
+    default:
+        break;
+    }
+    SetRect( &item->rect, (int)x, (int)y, (int)ceilf( x + width ), (int)ceilf( y + height ) );
+    item->tile_w = max( 1, (int)(tw + 0.5f) );
+    item->tile_h = max( 1, (int)(th + 0.5f) );
+    item->x = (int)floorf( area_x + (style->bg_pos[0].unit == LEN_PERCENT ? (area_w - tw) * style->bg_pos[0].value / 100.0f
+                                                                           : style->bg_pos[0].value) + 0.5f );
+    item->baseline = (int)floorf( area_y + (style->bg_pos[1].unit == LEN_PERCENT ? (area_h - th) * style->bg_pos[1].value / 100.0f
+                                                                                  : style->bg_pos[1].value) + 0.5f );
+    item->repeat_x = style->bg_repeat_x;
+    item->repeat_y = style->bg_repeat_y;
+}
+
 static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const struct style *style,
                            float x, float y, float containing, int list_index )
 {
     unsigned int waiting = ctx->deferred_count;
     int outer_layer = ctx->list->layer;
+    struct stacking outer_stack = ctx->list->stack;
     lxb_dom_element_t *outer_owner = ctx->list->owner;
+    float outer_opacity = ctx->list->opacity;
     struct list_mark start;
     float ml = length_px( &style->margin[3], containing ), mr = length_px( &style->margin[1], containing );
     float frame_h = style->border[3] + style->padding[3] + style->padding[1] + style->border[1];
     float frame_v_top = style->border[0] + style->padding[0];
     float frame_v_bottom = style->padding[2] + style->border[2];
-    float content_w, content_h, box_x, total;
-    unsigned int background, borders;
+    float content_w, content_h, box_x, total, outer_block_height;
+    unsigned int background, borders, background_image;
+    unsigned int outer_bfc = ctx->bfc_first, outer_floats = ctx->float_count;
+    /* what holds its floats in: the root, a float, a flex item or a cell, what clips, what is placed */
+    BOOL bfc = ctx->new_bfc || style->floating || style->clips || style->flow_root || style->flex || style->table ||
+               style->out_of_flow || style->display == DISPLAY_INLINE_BLOCK || style->display == DISPLAY_TABLE_CELL ||
+               lxb_dom_element_tag_id( element ) == LXB_TAG_HTML;
 
     float sizing = style->border_box ? frame_h : 0;    /* what of the frame a width already counts */
     BOOL fixed = style->width.unit != LEN_AUTO;
+
+    if (style->height.unit == LEN_PERCENT && ctx->block_height >= 0)
+    {
+        struct style *copy = new_style( ctx );
+
+        if (copy)
+        {
+            *copy = *style;
+            copy->height.unit = LEN_PX;
+            copy->height.value = style->height.value * ctx->block_height / 100.0f;
+            style = copy;
+        }
+    }
 
     if (!fixed) content_w = containing - ml - mr - frame_h;
     else content_w = length_px( &style->width, containing ) - sizing;
@@ -2175,16 +2487,45 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
             ml = max( 0, containing - content_w - frame_h - mr );
     }
     box_x = x + ml;
+    ctx->new_bfc = FALSE;
+    if (bfc) ctx->bfc_first = ctx->float_count;
+    outer_block_height = ctx->block_height;
+    ctx->block_height = style->height.unit == LEN_PX ?
+                        max( 0, style->height.value - (style->border_box ? frame_v_top + frame_v_bottom : 0) ) : -1;
     if (lxb_dom_element_has_attribute( element, (const lxb_char_t *)"id", 2 ))
         display_list_anchor( ctx->list, (int)y, element );
     mark_at( ctx, &start );
     ctx->list->owner = element;
-    if (style->position != POSITION_STATIC) ctx->list->layer = 1;   /* over the flow */
+    ctx->list->opacity = style->opacity;
+    if (style->position != POSITION_STATIC)
+    {
+        /* over the flow, where its z-index and its place in the document put it */
+        ctx->list->layer = 1;
+        if (ctx->placing_seq) ctx->list->stack.seq = ctx->placing_seq;
+        else ctx->list->stack.seq = ++ctx->list->seq;
+        if (style->z_set && ctx->list->stack.depth < 2)
+            ctx->list->stack.z[ctx->list->stack.depth++] = style->z_index;
+    }
+    ctx->placing_seq = 0;
 
     /* the background and the borders are drawn under the content: their places are taken now */
     background = ctx->list->count;
     if (paints( style )) emit_rect( ctx, 0, 0, 1, 1, style->background );
     background = ctx->list->count > background ? background : ~0u;
+    /* its picture over its colour: placed when its size is known */
+    background_image = ~0u;
+    if (style->bg_url && paints( style ) && ctx->doc)
+    {
+        const struct image *image = document_background( ctx->doc, style->bg_url, style->bg_url_len );
+        struct item *item;
+
+        if (image && (item = display_list_add( ctx->list, ITEM_IMAGE )))
+        {
+            item->image = image;
+            item->background = TRUE;
+            background_image = ctx->list->count - 1;
+        }
+    }
     borders = ctx->list->count;
     for (int i = 0; i < 4; i++)
         emit_rect( ctx, 0, 0, 1, 1, style->border[i] > 0 && paints( style ) ? style->border_color[i] : 0 );
@@ -2207,6 +2548,13 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
                                  content_w );
     else content_h = flow_children( ctx, lxb_dom_interface_node( element ), style, box_x + style->border[3] + style->padding[3],
                                y + frame_v_top, content_w );
+    if (bfc && style->height.unit != LEN_PX)
+    {
+        /* its floats are inside it */
+        float bottom = floats_bottom( ctx );
+
+        if (bottom >= 0) content_h = max( content_h, bottom - (y + frame_v_top) );
+    }
     if (style->height.unit == LEN_PX)
         content_h = max( 0, style->height.value - (style->border_box ? frame_v_top + frame_v_bottom : 0) );
     total = frame_v_top + content_h + frame_v_bottom;
@@ -2218,6 +2566,8 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
     if (background != ~0u)
         SetRect( &ctx->list->items[background].rect, (int)box_x, (int)y, (int)ceilf( box_x + content_w + frame_h ),
                  (int)ceilf( y + total ) );
+    if (background_image != ~0u)
+        place_background( &ctx->list->items[background_image], style, box_x, y, content_w + frame_h, total );
     for (int i = 0, item = borders; i < 4; i++)
     {
         float right = box_x + content_w + frame_h, bottom = y + total;
@@ -2254,6 +2604,7 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
             if (dx || dy) shift_box( ctx, &start, &now, (int)dx, (int)dy );
         }
         ctx->list->layer = outer_layer;
+        ctx->list->stack = outer_stack;
     }
     if (style->clips && lxb_dom_element_tag_id( element ) != LXB_TAG_HTML &&
         lxb_dom_element_tag_id( element ) != LXB_TAG_BODY)
@@ -2280,6 +2631,13 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
             IntersectRect( &ctx->list->links[i].rect, &ctx->list->links[i].rect, &box );
     }
     ctx->list->owner = outer_owner;
+    ctx->list->opacity = outer_opacity;
+    ctx->block_height = outer_block_height;
+    if (bfc)
+    {
+        ctx->float_count = outer_floats;
+        ctx->bfc_first = outer_bfc;
+    }
     if (fixed && !ctx->list->absolute) ctx->fixed_right = max( ctx->fixed_right, box_x + content_w + frame_h );
     ctx->last_width = content_w + frame_h;  /* as the box itself came out, not its last descendant */
     ctx->last_margin[0] = ml;
@@ -2292,10 +2650,11 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
 void layout_frame_document( struct display_list *list, struct document *doc, float x, float y, float width,
                             float height )
 {
-    struct layout ctx = { .doc = doc, .list = list, .line_width = width };
+    struct layout ctx = { .doc = doc, .list = list, .line_width = width, .block_height = -1 };
     float saved_width = style_viewport_width, saved_height = style_viewport_height;
     lxb_dom_element_t *root, *saved_owner = list->owner;
     int saved_layer = list->layer, saved_absolute = list->absolute;
+    struct stacking saved_stack = list->stack;
     const struct style *style, *body_style;
 
     if (!doc || !doc->html || !(root = lxb_dom_document_element( lxb_dom_interface_document( doc->html ) ))) return;
@@ -2303,7 +2662,7 @@ void layout_frame_document( struct display_list *list, struct document *doc, flo
     style_viewport_height = height;
     ctx.viewport_w = width;
     ctx.viewport_h = height;
-    list->layer = 0;
+    /* a frame paints where its element does: over the flow when that is positioned */
     list->absolute = 0;
     if ((style = compute( &ctx, NULL, root )))
     {
@@ -2324,16 +2683,18 @@ void layout_frame_document( struct display_list *list, struct document *doc, flo
     free( ctx.atoms );
     free( ctx.text );
     free( ctx.deferred );
+    free( ctx.floats );
     style_viewport_width = saved_width;
     style_viewport_height = saved_height;
     list->owner = saved_owner;
     list->layer = saved_layer;
+    list->stack = saved_stack;
     list->absolute = saved_absolute;
 }
 
 void layout_document( struct document *doc, struct display_list *list, int width, int height )
 {
-    struct layout ctx = { .doc = doc, .list = list, .line_width = (float)width };
+    struct layout ctx = { .doc = doc, .list = list, .line_width = (float)width, .block_height = -1 };
     lxb_dom_element_t *root;
     const struct style *style, *body_style = NULL;
     ULONGLONG start = GetTickCount64();
@@ -2364,11 +2725,13 @@ void layout_document( struct document *doc, struct display_list *list, int width
     place_deferred( &ctx, 0, 0, 0, (float)width, (float)height, TRUE );
     list->layer = 0;
     free( ctx.deferred );
+    free( ctx.floats );
 
     for (unsigned int i = 0; i < ctx.style_count; i++) free( ctx.styles[i] );
     free( ctx.styles );
     free( ctx.atoms );
     free( ctx.text );
+    display_list_sort( list );
     TRACE( "%u items, %u styles, %d px tall, in %I64u ms\n", list->count, ctx.style_count, list->content_height,
            GetTickCount64() - start );
 }

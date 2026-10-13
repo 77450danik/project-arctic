@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="uk"><head><meta charset="utf-8"><title>Фонові зображення</title>
+<style>
+body { font: 14px sans-serif; margin: 10px; }
+div { margin: 0 0 10px; border: 1px solid #888; }
+.tile { height: 120px; background: #eef url(picture.png) repeat; background-size: 80px 50px; }
+.one { width: 200px; height: 140px; background: url("picture.png") no-repeat center / 120px auto #fde; }
+.sprite { width: 60px; height: 40px; background-image: url(picture.png); background-position: -40px -20px; display: inline-block; border: 1px solid red; }
+.cover { width: 300px; height: 80px; background: url(picture.png) center / cover no-repeat; }
+.x { height: 40px; background: url(picture.png) repeat-x 0 50%; background-size: 60px 30px; }
+</style></head><body>
+<div class="tile">плитка, 80×50</div>
+<div class="one">одна по центру</div>
+<span class="sprite"></span> <span class="sprite" style="background-position: 0 0"></span> спрайти
+<div class="cover"></div>
+<div class="x"></div>
+</body></html>

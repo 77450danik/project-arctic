@@ -28,7 +28,11 @@ void display_list_reset( struct display_list *list )
     list->anchor_count = 0;
     list->control_count = 0;
     list->layer = 0;
+    memset( &list->stack, 0, sizeof(list->stack) );
+    list->seq = 0;
+    list->order_count = 0;
     list->absolute = 0;
+    list->opacity = 1;
     list->background = 0xffffffff;
     list->content_height = 0;
 }
@@ -41,6 +45,7 @@ void display_list_free( struct display_list *list )
     free( list->links );
     free( list->anchors );
     free( list->controls );
+    free( list->order );
     memset( list, 0, sizeof(*list) );
 }
 
@@ -61,8 +66,10 @@ struct item *display_list_add( struct display_list *list, enum item_type type )
     memset( item, 0, sizeof(*item) );
     item->type = type;
     item->layer = list->layer;
+    item->stack = list->stack;
     item->absolute = list->absolute;
     item->owner = list->owner;
+    item->opacity = list->opacity > 0 ? list->opacity : 1;
     return item;
 }
 
@@ -129,7 +136,7 @@ void display_list_anchor( struct display_list *list, int y, lxb_dom_element_t *e
         list->anchors = grown;
         list->anchor_capacity = capacity;
     }
-    list->anchors[list->anchor_count].y = y;
+    list->anchors[list->anchor_count].y = y;     /* with no element: a line's baseline */
     list->anchors[list->anchor_count++].element = element;
 }
 
@@ -180,20 +187,88 @@ void display_list_shift( struct display_list *list, const struct list_mark *from
     }
 }
 
+/* the band an item paints in: under the flow (a negative z-index), the flow, over it */
+static int band_of( const struct item *item )
+{
+    if (!item->layer) return 0;
+    return item->stack.depth && item->stack.z[0] < 0 ? -1 : 1;
+}
+
+static int compare_paint( const struct item *a, unsigned int ia, const struct item *b, unsigned int ib )
+{
+    int band_a = band_of( a ), band_b = band_of( b );
+
+    if (band_a != band_b) return band_a < band_b ? -1 : 1;
+    if (band_a)
+    {
+        for (int level = 0; level < 2; level++)
+        {
+            int za = level < a->stack.depth ? a->stack.z[level] : 0;
+            int zb = level < b->stack.depth ? b->stack.z[level] : 0;
+
+            if (za != zb) return za < zb ? -1 : 1;
+        }
+        if (a->stack.seq != b->stack.seq) return a->stack.seq < b->stack.seq ? -1 : 1;
+    }
+    return ia < ib ? -1 : ia > ib;
+}
+
+/* the order the items paint in: merge sort, stable and of no worst case */
+void display_list_sort( struct display_list *list )
+{
+    unsigned int *temp, count = list->count;
+
+    if (list->order_capacity < count)
+    {
+        unsigned int *grown = realloc( list->order, count * sizeof(*grown) );
+
+        if (!grown) { list->order_count = 0; return; }
+        list->order = grown;
+        list->order_capacity = count;
+    }
+    for (unsigned int i = 0; i < count; i++) list->order[i] = i;
+    list->order_count = count;
+    if (count < 2 || !(temp = malloc( count * sizeof(*temp) ))) return;
+    for (unsigned int width = 1; width < count; width *= 2)
+    {
+        for (unsigned int lo = 0; lo < count; lo += 2 * width)
+        {
+            unsigned int mid = min( lo + width, count ), hi = min( lo + 2 * width, count ), a = lo, b = mid, k = lo;
+
+            while (a < mid && b < hi)
+            {
+                unsigned int ia = list->order[a], ib = list->order[b];
+
+                temp[k++] = compare_paint( &list->items[ia], ia, &list->items[ib], ib ) <= 0 ? list->order[a++]
+                                                                                               : list->order[b++];
+            }
+            while (a < mid) temp[k++] = list->order[a++];
+            while (b < hi) temp[k++] = list->order[b++];
+        }
+        memcpy( list->order, temp, count * sizeof(*temp) );
+    }
+    free( temp );
+}
+
+/* the item painted nth */
+unsigned int display_list_nth( const struct display_list *list, unsigned int n )
+{
+    return list->order_count == list->count ? list->order[n] : n;
+}
+
 lxb_dom_element_t *display_list_hit( const struct display_list *list, int x, int y )
 {
     POINT point = { x, y };
 
-    /* what is drawn over the flow first, then the flow; the last drawn of each on top */
-    for (int layer = 1; layer >= 0; layer--)
-        for (unsigned int i = list->count; i--; )
-        {
-            const struct item *item = &list->items[i];
+    /* the last painted on top */
+    for (unsigned int n = list->count; n--; )
+    {
+        const struct item *item = &list->items[display_list_nth( list, n )];
 
-            if (item->layer != layer || !item->owner || !PtInRect( &item->rect, point )) continue;
-            if (item->clipped && !PtInRect( &item->clip, point )) continue;
-            return item->owner;
-        }
+        if (!item->owner || !PtInRect( &item->rect, point )) continue;
+        if (item->clipped && !PtInRect( &item->clip, point )) continue;
+        return item->owner;
+    }
     return NULL;
 }
 

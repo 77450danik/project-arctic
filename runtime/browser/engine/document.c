@@ -383,29 +383,64 @@ static void collect_names( struct css_context *ctx, lxb_dom_node_t *node )
 static void load_sheets( struct document *doc, int width, int height, BOOL fetch )
 {
     struct sheet_texts sheets = { 0 };
-    struct css_context ctx;
+    struct css_context *css = calloc( 1, sizeof(*css) );
     lxb_dom_node_t *root = lxb_dom_interface_node( doc->html );
 
-    css_context_init( &ctx, width, height );
-    collect_names( &ctx, root );
+    if (!css) return;
+    doc->css = css;
+    css_context_init( css, width, height );
+    collect_names( css, root );
+    /* and what its scripts may give elements later */
+    for (size_t i = 0; i < doc->script_words_len; i += strlen( doc->script_words + i ) + 1)
+        css_context_add_name( css, doc->script_words + i, strlen( doc->script_words + i ) );
+    free( doc->script_words );
+    doc->script_words = NULL;
+    doc->script_words_len = doc->script_words_size = 0;
     sheets.doc = doc;
-    gather_sheets( doc, &ctx, &sheets, root, fetch );
+    gather_sheets( doc, css, &sheets, root, fetch );
     fetch_sheets( &sheets );
     /* the custom properties of all of them first: a sheet uses what a later one sets */
     for (unsigned int i = 0; i < sheets.count; i++)
-        if (sheets.texts[i]) css_collect( &ctx, sheets.texts[i], sheets.lengths[i] );
+        if (sheets.texts[i]) css_collect( css, sheets.texts[i], sheets.lengths[i] );
     for (unsigned int i = 0; i < sheets.count; i++)
     {
-        if (sheets.texts[i]) add_sheet( doc, &ctx, sheets.texts[i], sheets.lengths[i] );
-        free( sheets.texts[i] );
-        free( sheets.urls[i] );
+        css->base = sheets.urls[i] ? sheets.urls[i] : doc->base ? doc->base : doc->address;
+        if (sheets.texts[i]) add_sheet( doc, css, sheets.texts[i], sheets.lengths[i] );
     }
-    free( sheets.urls );
-    inline_styles( &ctx, root );
-    TRACE( "%u sheets, %u custom properties\n", sheets.count, ctx.var_count );
-    free( sheets.texts );
-    free( sheets.lengths );
-    css_context_free( &ctx );
+    css->base = doc->base ? doc->base : doc->address;
+    inline_styles( css, root );
+    TRACE( "%u sheets, %u custom properties\n", sheets.count, css->var_count );
+    /* kept: rewritten again when scripts bring classes they have rules for */
+    doc->sheet_texts = sheets.texts;
+    doc->sheet_lengths = sheets.lengths;
+    doc->sheet_bases = sheets.urls;
+    doc->sheet_text_count = sheets.count;
+}
+
+BOOL document_restyle( struct document *doc )
+{
+    unsigned int before;
+    ULONGLONG start = GetTickCount64();
+
+    if (!doc || !doc->css || !doc->html) return FALSE;
+    before = css_context_name_count( doc->css );
+    collect_names( doc->css, lxb_dom_interface_node( doc->html ) );
+    if (css_context_name_count( doc->css ) == before) return FALSE;
+
+    for (unsigned int i = 0; i < doc->sheet_count; i++)
+    {
+        lxb_html_document_stylesheet_remove( doc->html, doc->sheets[i] );
+        lxb_css_stylesheet_destroy( doc->sheets[i], true );
+    }
+    doc->sheet_count = 0;
+    for (unsigned int i = 0; i < doc->sheet_text_count; i++)
+    {
+        doc->css->base = doc->sheet_bases[i] ? doc->sheet_bases[i] : doc->base ? doc->base : doc->address;
+        if (doc->sheet_texts[i]) add_sheet( doc, doc->css, doc->sheet_texts[i], doc->sheet_lengths[i] );
+    }
+    TRACE( "%u names more: %u sheets again in %I64u ms\n", css_context_name_count( doc->css ) - before,
+           doc->sheet_count, GetTickCount64() - start );
+    return TRUE;
 }
 
 /* --- images, fetched side by side --- */
@@ -475,14 +510,32 @@ static void collect_images( struct document *doc, lxb_dom_node_t *node )
  * comes; their addresses come back for the view to fetch on a thread of its own */
 unsigned int document_new_images( struct document *doc, char ***urls )
 {
-    unsigned int before = doc->image_count, count;
+    unsigned int before = doc->images_announced, count;
 
     *urls = NULL;
     if (!doc->html) return 0;
     collect_images( doc, lxb_dom_interface_node( doc->html ) );
     if (!(count = doc->image_count - before) || !(*urls = calloc( count, sizeof(char *) ))) return 0;
     for (unsigned int i = 0; i < count; i++) (*urls)[i] = _strdup( doc->images[before + i]->url );
+    doc->images_announced = doc->image_count;
     return count;
+}
+
+/* the picture of a background: its place is taken the first time the layout wants it,
+ * and it is fetched with the next new images */
+const struct image *document_background( struct document *doc, const char *url, size_t len )
+{
+    char *whole = document_resolve( doc, url, len );
+    struct image *image;
+
+    if (!whole) return NULL;
+    if ((image = find_image( doc, whole )))
+    {
+        free( whole );
+        return image->failed ? NULL : image;
+    }
+    if (doc->image_count >= MAX_IMAGES || !add_image( doc, whole )) free( whole );
+    return NULL;
 }
 
 /* an image fetched and decoded on another thread: its picture goes to its place */
@@ -531,16 +584,17 @@ static DWORD WINAPI image_thread( void *arg )
     return 0;
 }
 
-static void load_images( struct document *doc )
+void document_load_images( struct document *doc )
 {
     struct image_jobs jobs = { doc };
     HANDLE threads[IMAGE_THREADS];
-    unsigned int thread_count = 0;
+    unsigned int thread_count = 0, first = doc->images_announced;
 
     collect_images( doc, lxb_dom_interface_node( doc->html ) );
-    if (!doc->image_count || !(jobs.jobs = calloc( doc->image_count, sizeof(*jobs.jobs) ))) return;
-    jobs.count = doc->image_count;
-    for (unsigned int i = 0; i < jobs.count; i++) jobs.jobs[i].image = doc->images[i];
+    doc->images_announced = doc->image_count;
+    if (doc->image_count <= first || !(jobs.jobs = calloc( doc->image_count - first, sizeof(*jobs.jobs) ))) return;
+    jobs.count = doc->image_count - first;
+    for (unsigned int i = 0; i < jobs.count; i++) jobs.jobs[i].image = doc->images[first + i];
 
     for (unsigned int i = 0; i < min( IMAGE_THREADS, jobs.count ); i++)
         if ((threads[thread_count] = CreateThread( NULL, 0, image_thread, &jobs, 0, NULL ))) thread_count++;
@@ -743,7 +797,7 @@ static BOOL parse( struct document *doc, const char *html, size_t len, BOOL fetc
     }
     load_sheets( doc, width, height, fetch );
     sheets = GetTickCount64();
-    if (fetch) load_images( doc );
+    if (fetch) document_load_images( doc );
     if (fetch) load_frames( doc, lxb_dom_interface_node( doc->html ) );
     TRACE( "%Iu bytes: parsed in %I64u ms, sheets in %I64u ms, %u images in %I64u ms, %u blocked\n", len,
            parsed - start, sheets - parsed, doc->image_count, GetTickCount64() - sheets, doc->blocked );
@@ -863,7 +917,9 @@ static struct document *load_once( const WCHAR *url, const struct post_data *pos
             response.body = NULL;
             fetch = TRUE;
         }
-        else if (!_strnicmp( type, "text/", 5 ) || !_strnicmp( type, "image/", 6 ))
+        else if (!_strnicmp( type, "text/", 5 ) || !_strnicmp( type, "image/", 6 ) ||
+                 !_strnicmp( type, "application/json", 16 ) || strstr( type, "+json" ) ||
+                 !_strnicmp( type, "application/javascript", 22 ) || !_strnicmp( type, "application/xml", 15 ))
         {
             response.body = to_utf8( response.body, &response.length, content_type_code_page( type ) );
             html = wrap( &response, doc->address, &len );
@@ -909,6 +965,19 @@ void document_free( struct document *doc )
     }
     for (unsigned int i = 0; i < doc->sheet_count; i++) lxb_css_stylesheet_destroy( doc->sheets[i], true );
     free( doc->sheets );
+    if (doc->css)
+    {
+        css_context_free( doc->css );
+        free( doc->css );
+    }
+    for (unsigned int i = 0; i < doc->sheet_text_count; i++)
+    {
+        free( doc->sheet_texts[i] );
+        free( doc->sheet_bases[i] );
+    }
+    free( doc->sheet_texts );
+    free( doc->sheet_lengths );
+    free( doc->sheet_bases );
     if (doc->css_parser) lxb_css_parser_destroy( doc->css_parser, true );
     for (unsigned int i = 0; i < doc->image_count; i++)
     {
@@ -921,6 +990,7 @@ void document_free( struct document *doc )
     free( doc->base );
     free( doc->redirect );
     free( doc->frame_name );
+    free( doc->script_words );
     free( doc );
 }
 

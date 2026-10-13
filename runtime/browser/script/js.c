@@ -605,6 +605,20 @@ NATIVE(n_navigate)
     return JS_UNDEFINED;
 }
 
+/* form.submit(): sent as a click on its button would, by the view, with no submit event */
+NATIVE(n_submit_form)
+{
+    struct document *doc = env_of( ctx )->doc;
+    lxb_dom_node_t *form = unwrap( ctx, argv[0] );
+
+    if (form && form->type == LXB_DOM_NODE_TYPE_ELEMENT)
+    {
+        doc->submitting = lxb_dom_interface_element( form );
+        TRACE( "a script sends a form of %s\n", doc->address );
+    }
+    return JS_UNDEFINED;
+}
+
 /* the bytes of a body a script sends: a string as UTF-8, an ArrayBuffer or
  * a typed array as they are; JS_FreeCString is for the string only */
 static const char *body_bytes( JSContext *ctx, JSValueConst value, size_t *len, BOOL *is_string )
@@ -719,8 +733,53 @@ static void report_exception( JSContext *ctx, const char *where )
     JS_FreeValue( ctx, exception );
 }
 
+/* the words of the string literals of a script: a class it gives an element later is one */
+static BOOL is_word_char( char c )
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+}
+
+static void keep_words( struct document *doc, const char *code, size_t len )
+{
+    for (size_t i = 0; i < len; i++)
+    {
+        char quote = code[i];
+        size_t start;
+
+        if (quote != '"' && quote != '\'' && quote != '`') continue;
+        for (start = ++i; i < len && code[i] != quote && code[i] != '\n'; i++)
+        {
+            if (code[i] == '\\') { i++; continue; }
+        }
+        /* each run of word characters in it */
+        for (size_t k = start; k < i; )
+        {
+            size_t word = k;
+
+            while (k < i && is_word_char( code[k] )) k++;
+            if (k - word >= 2 && k - word <= 64)
+            {
+                if (doc->script_words_len + (k - word) + 1 > doc->script_words_size)
+                {
+                    size_t size = max( doc->script_words_size * 2, doc->script_words_len + 65536 );
+                    char *grown = realloc( doc->script_words, size );
+
+                    if (!grown) return;
+                    doc->script_words = grown;
+                    doc->script_words_size = size;
+                }
+                memcpy( doc->script_words + doc->script_words_len, code + word, k - word );
+                doc->script_words_len += k - word;
+                doc->script_words[doc->script_words_len++] = 0;
+            }
+            while (k < i && !is_word_char( code[k] )) k++;
+        }
+    }
+}
+
 static void evaluate( JSContext *ctx, const char *code, size_t len, const char *name )
 {
+    keep_words( env_of( ctx )->doc, code, len );
     ULONGLONG start = GetTickCount64();
     JSValue result;
 
@@ -785,6 +844,7 @@ static JSModuleDef *load_module( JSContext *ctx, const char *name, void *opaque 
 
 static void evaluate_module( JSContext *ctx, const char *code, size_t len, const char *name )
 {
+    keep_words( env_of( ctx )->doc, code, len );
     ULONGLONG start = GetTickCount64();
     JSValue result;
 
@@ -1164,6 +1224,7 @@ static const JSCFunctionListEntry natives[] =
     JS_CFUNC_DEF( "cookie", 0, n_cookie ),
     JS_CFUNC_DEF( "setCookie", 1, n_set_cookie ),
     JS_CFUNC_DEF( "navigate", 1, n_navigate ),
+    JS_CFUNC_DEF( "submitForm", 1, n_submit_form ),
     JS_CFUNC_DEF( "fetch", 5, n_fetch ),
     JS_CFUNC_DEF( "log", 1, n_log ),
     JS_CFUNC_DEF( "now", 0, n_now ),
