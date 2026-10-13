@@ -26,6 +26,9 @@ void display_list_reset( struct display_list *list )
     list->count = 0;
     list->link_count = 0;
     list->anchor_count = 0;
+    list->control_count = 0;
+    list->layer = 0;
+    list->absolute = 0;
     list->background = 0xffffffff;
     list->content_height = 0;
 }
@@ -37,6 +40,7 @@ void display_list_free( struct display_list *list )
     free( list->strings );
     free( list->links );
     free( list->anchors );
+    free( list->controls );
     memset( list, 0, sizeof(*list) );
 }
 
@@ -56,6 +60,8 @@ struct item *display_list_add( struct display_list *list, enum item_type type )
     item = &list->items[list->count++];
     memset( item, 0, sizeof(*item) );
     item->type = type;
+    item->layer = list->layer;
+    item->absolute = list->absolute;
     return item;
 }
 
@@ -124,6 +130,53 @@ void display_list_anchor( struct display_list *list, int y, lxb_dom_element_t *e
     }
     list->anchors[list->anchor_count].y = y;
     list->anchors[list->anchor_count++].element = element;
+}
+
+struct control_area *display_list_control( struct display_list *list )
+{
+    struct control_area *control;
+
+    if (list->control_count == list->control_capacity)
+    {
+        unsigned int capacity = list->control_capacity ? list->control_capacity * 2 : 32;
+        struct control_area *grown = realloc( list->controls, capacity * sizeof(*grown) );
+
+        if (!grown) return NULL;
+        list->controls = grown;
+        list->control_capacity = capacity;
+    }
+    control = &list->controls[list->control_count++];
+    memset( control, 0, sizeof(*control) );
+    return control;
+}
+
+void display_list_mark( const struct display_list *list, struct list_mark *mark )
+{
+    mark->items = list->count;
+    mark->links = list->link_count;
+    mark->anchors = list->anchor_count;
+    mark->controls = list->control_count;
+}
+
+void display_list_shift( struct display_list *list, const struct list_mark *from, const struct list_mark *to,
+                         int dx, int dy )
+{
+    for (unsigned int i = from->items; i < to->items; i++)
+    {
+        struct item *item = &list->items[i];
+
+        OffsetRect( &item->rect, dx, dy );
+        OffsetRect( &item->clip, dx, dy );
+        item->x += dx;
+        item->baseline += dy;
+    }
+    for (unsigned int i = from->links; i < to->links; i++) OffsetRect( &list->links[i].rect, dx, dy );
+    for (unsigned int i = from->anchors; i < to->anchors; i++) list->anchors[i].y += dy;
+    for (unsigned int i = from->controls; i < to->controls; i++)
+    {
+        OffsetRect( &list->controls[i].rect, dx, dy );
+        list->controls[i].text_x += dx;
+    }
 }
 
 WCHAR *utf8_to_wide( const char *text, size_t len, int *out_len )

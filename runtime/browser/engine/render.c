@@ -65,7 +65,7 @@ HRESULT WINAPI ArcticHtmlRenderToFile( const WCHAR *url, UINT width, UINT height
     HRESULT hr;
 
     if (!url || !png || !width || !height) return E_INVALIDARG;
-    if (!(doc = document_load( url, width, height ))) return E_FAIL;
+    if (!(doc = document_load( url, NULL, width, height ))) return E_FAIL;
 
     layout_document( doc, &list, width, height );
     if (full_page && list.content_height > (int)height) height = list.content_height;

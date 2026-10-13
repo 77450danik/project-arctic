@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Позиціонування</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px }
+.skip { position: absolute; left: -9999px }
+.box { position: relative; width: 400px; height: 150px; background: #eef3fa; border: 1px solid #9ab }
+.badge { position: absolute; top: 8px; right: 8px; background: #d33; color: #fff; padding: 2px 8px }
+.corner { position: absolute; bottom: 0; left: 0; background: #333; color: #fff; padding: 4px }
+.fill { position: absolute; inset: 40px 120px 40px 120px; background: rgba(0,128,0,.3) }
+.shift { position: relative; top: 10px; left: 30px; background: #ffd }
+.menu { position: relative; display: inline-block }
+.menu ul { position: absolute; top: 100%; left: 0; margin: 0; padding: 4px; list-style: none; background: #fff; border: 1px solid #888; width: 140px }
+</style></head>
+<body>
+<a class="skip" href="#main">Перейти до вмісту</a>
+<div class="box"><span class="badge">Нове</span><span class="corner">Кут</span><div class="fill"></div>Блок із позиціонованими дітьми</div>
+<p class="shift">Абзац зсунуто на 10 і 30 px, а місце в потоці лишилось.</p>
+<p>Наступний абзац іде як ішов.</p>
+<div class="menu"><b>Меню ▾</b><ul><li>Один</li><li>Два</li><li>Три</li></ul></div>
+<p>Текст під меню: випадний список лягає зверху.</p>
+</body></html>

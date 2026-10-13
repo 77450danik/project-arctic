@@ -105,6 +105,11 @@ struct item
     int                  x, baseline;
     /* ITEM_IMAGE */
     const struct image  *image;
+    /* the item shows only inside this: the box of a form control, or of overflow: hidden */
+    BOOL                 clipped;
+    RECT                 clip;
+    int                  layer;     /* 0 the flow, 1 positioned boxes: drawn over the flow */
+    int                  absolute;  /* how many absolute boxes it is inside: they do not size their parents */
 };
 
 /* where a link is on the page: what a click on it opens */
@@ -112,6 +117,26 @@ struct link_area
 {
     RECT               rect;
     lxb_dom_element_t *element;     /* the <a href> */
+};
+
+/* a form control on the page: what a click on it does, where its text is */
+enum control_kind
+{
+    CONTROL_TEXT,       /* input of text, search, email, password...; textarea */
+    CONTROL_CHECKBOX,
+    CONTROL_RADIO,
+    CONTROL_SUBMIT,     /* input type=submit or image, button that submits */
+    CONTROL_BUTTON,     /* input type=button or reset, button type=button: nothing without scripts */
+    CONTROL_SELECT,
+};
+
+struct control_area
+{
+    RECT               rect;        /* the border box */
+    lxb_dom_element_t *element;
+    enum control_kind  kind;
+    int                text_x;      /* where the value's first character stands, scrolled */
+    const struct font *font;
 };
 
 /* where a block with an id begins: what #fragment of an address scrolls to */
@@ -129,11 +154,15 @@ struct display_list
     unsigned int  link_count, link_capacity;
     struct anchor *anchors;
     unsigned int  anchor_count, anchor_capacity;
+    struct control_area *controls;
+    unsigned int  control_count, control_capacity;
     WCHAR       **strings;      /* copies the list owns */
     unsigned int  string_count, string_capacity;
     DWORD         background;   /* the canvas: 0xAARRGGBB */
     int           width, height;    /* the viewport it was built for */
     int           content_height;   /* how far the document goes down */
+    int           layer;            /* what display_list_add gives a new item */
+    int           absolute;         /* and how deep in absolute boxes it is */
 };
 
 void display_list_reset( struct display_list *list );
@@ -142,6 +171,16 @@ struct item *display_list_add( struct display_list *list, enum item_type type );
 const WCHAR *display_list_string( struct display_list *list, const WCHAR *text, int length );
 void display_list_link( struct display_list *list, const RECT *rect, lxb_dom_element_t *element );
 void display_list_anchor( struct display_list *list, int y, lxb_dom_element_t *element );
+struct control_area *display_list_control( struct display_list *list );
+/* what an inline-block laid out at the origin left in the list, moved to its place on the line */
+struct list_mark
+{
+    unsigned int items, links, anchors, controls;
+    unsigned int deferred;      /* the layout's positioned boxes waiting for their containing block */
+};
+void display_list_mark( const struct display_list *list, struct list_mark *mark );
+void display_list_shift( struct display_list *list, const struct list_mark *from, const struct list_mark *to,
+                         int dx, int dy );
 
 void raster_paint( struct surface *surface, const struct display_list *list, int scroll_y );
 
@@ -160,11 +199,40 @@ struct document
     struct image       **images;
     unsigned int         image_count, image_capacity;
     unsigned int         blocked;   /* requests the filter took */
+    lxb_dom_element_t   *focus;     /* the form control that takes the keys, or NULL */
+    int                  caret;     /* in its value, in UTF-16 units */
 };
 
-/* the document at an address: fetched, parsed, with its sheets and images,
- * its media queries evaluated for a viewport of this size */
-struct document *document_load( const WCHAR *url, int width, int height );
+/* what a form sends with POST */
+struct post_data
+{
+    char   *body;
+    size_t  length;
+    char   *referrer;   /* the address of the form's page */
+};
+
+/* the document at an address: fetched (POSTed to, with post), parsed, with
+ * its sheets and images, its media queries evaluated for a viewport of this size */
+struct document *document_load( const WCHAR *url, const struct post_data *post, int width, int height );
+
+/* --- forms (form.c) --- */
+
+enum control_kind control_kind_of( lxb_dom_element_t *element );
+BOOL control_is_password( lxb_dom_element_t *element );
+/* the value of a control as the user sees it; the caller frees */
+WCHAR *control_value( lxb_dom_element_t *element );
+void control_set_value( lxb_dom_element_t *element, const WCHAR *value );
+lxb_dom_element_t *control_form( lxb_dom_element_t *element );
+/* the <option> a <select> shows */
+lxb_dom_element_t *select_chosen( lxb_dom_element_t *select );
+/* the text of an element, its spaces collapsed; the caller frees */
+WCHAR *element_text( lxb_dom_element_t *element );
+/* the first submit button of a form, the one Enter presses */
+lxb_dom_element_t *form_default_button( lxb_dom_element_t *form );
+/* where submitting the form goes: a GET address with the query, or the
+ * address and the body of a POST; FALSE when there is nowhere */
+BOOL form_submission( struct document *doc, lxb_dom_element_t *form, lxb_dom_element_t *submitter,
+                      char **url, struct post_data *post );
 void document_free( struct document *doc );
 /* the decoded image of an <img src>, if it came */
 const struct image *document_image( struct document *doc, const char *src, size_t len );
@@ -182,6 +250,8 @@ struct css_context
     int             width, height;  /* the viewport the page opens in */
     struct css_var *vars;           /* the document's custom properties */
     unsigned int    var_count, var_capacity;
+    int             heads[4096];    /* a hash of their names: the first of each chain, -1 for none */
+    struct name_set *names;         /* the classes and ids the document has: rules for others go */
 };
 
 void css_context_init( struct css_context *ctx, int width, int height );
@@ -190,6 +260,8 @@ void css_context_free( struct css_context *ctx );
 void css_collect( struct css_context *ctx, const char *css, size_t len );
 char *css_rewrite( const struct css_context *ctx, const char *css, size_t len, size_t *out_len );
 BOOL css_media_matches( const struct css_context *ctx, const char *media, size_t len );
+/* a class or an id the document uses: a rule that asks for none of them cannot match */
+void css_context_add_name( struct css_context *ctx, const char *name, size_t len );
 /* for a style="", only what lexbor did not have */
 char *css_expand_inline( const struct css_context *ctx, const char *style, size_t len, size_t *out_len );
 
@@ -200,6 +272,11 @@ enum white_space_kind { WS_NORMAL, WS_NOWRAP, WS_PRE, WS_PRE_WRAP, WS_PRE_LINE }
 enum text_align_kind { ALIGN_LEFT, ALIGN_RIGHT, ALIGN_CENTER, ALIGN_JUSTIFY };
 enum length_unit { LEN_AUTO, LEN_PX, LEN_PERCENT };
 enum list_kind { LIST_NONE, LIST_DISC, LIST_DECIMAL };
+enum valign_kind { VALIGN_BASELINE, VALIGN_MIDDLE, VALIGN_TOP, VALIGN_BOTTOM };
+enum position_kind { POSITION_STATIC, POSITION_RELATIVE, POSITION_ABSOLUTE, POSITION_FIXED };
+enum flex_direction { FLEX_ROW, FLEX_ROW_REVERSE, FLEX_COLUMN, FLEX_COLUMN_REVERSE };
+enum justify_kind { JUSTIFY_START, JUSTIFY_END, JUSTIFY_CENTER, JUSTIFY_BETWEEN, JUSTIFY_AROUND, JUSTIFY_EVENLY };
+enum flex_align { FALIGN_AUTO, FALIGN_STRETCH, FALIGN_START, FALIGN_END, FALIGN_CENTER, FALIGN_BASELINE };
 
 struct length
 {
@@ -229,6 +306,22 @@ struct style
     BOOL                  invisible;    /* visibility: hidden - inherited, a child may show itself */
     BOOL                  transparent;  /* opacity: 0 here or above - no child shows */
     BOOL                  out_of_flow;  /* position: absolute or fixed */
+    enum position_kind    position;     /* sticky is relative here */
+    BOOL                  clips;        /* overflow other than visible: what goes out of it is cut */
+    struct length         inset[4];     /* top, right, bottom, left; auto when not set */
+    enum valign_kind      valign;       /* of an inline-block or an image on its line */
+    /* flexbox: the container's */
+    BOOL                  flex;         /* display: flex or inline-flex */
+    enum flex_direction   flex_direction;
+    BOOL                  flex_wrap;
+    enum justify_kind     justify;
+    enum flex_align       align_items;
+    float                 gap_row, gap_column;
+    /* and the item's */
+    enum flex_align       align_self;
+    float                 grow, shrink;
+    struct length         basis;        /* auto: the width */
+    int                   order;
 };
 
 /* the style of the root element, before any author style */

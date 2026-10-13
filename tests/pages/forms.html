@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Форми</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 24px }
+.nav a { display: inline-block; padding: 6px 12px; background: #1f3a5f; color: #fff; text-decoration: none; margin-right: 4px }
+.search { width: 360px; padding: 8px; border: 2px solid #4a90d9; border-radius: 4px; font-size: 16px }
+.go { padding: 8px 16px; background: #4a90d9; color: white; border: 0; font-size: 16px }
+.card { display: inline-block; width: 180px; border: 1px solid #ccc; padding: 8px; margin: 4px; vertical-align: top }
+</style></head>
+<body>
+<div class="nav"><a href="#a">Головна</a><a href="#b">Новини</a><a href="#c">Пошта</a></div>
+<h2>Пошук</h2>
+<form action="https://www.bing.com/search" method="get">
+<input class="search" type="search" name="q" placeholder="Що шукаємо?"> <button class="go" type="submit">Знайти</button>
+</form>
+<h2>Усі поля</h2>
+<form action="https://httpbin.org/post" method="post">
+<p>Ім'я: <input name="name" value="Арктика"> Пароль: <input type="password" name="pw" value="secret"></p>
+<p><input type="checkbox" name="news" checked> Новини <input type="checkbox" name="ads"> Реклама
+   <input type="radio" name="r" value="1" checked> Один <input type="radio" name="r" value="2"> Два</p>
+<p>Місто: <select name="city"><option>Київ</option><option selected>Львів</option><option>Харків</option></select></p>
+<p><textarea name="msg" rows="3" cols="30">Перший рядок
+Другий рядок</textarea></p>
+<p><input type="submit" value="Надіслати POST"> <input type="reset"> <input type="hidden" name="h" value="x"></p>
+</form>
+<div><span class="card">Картка один з текстом, що переноситься</span><span class="card">Картка два</span><span class="card">Картка три</span><span class="card">Картка чотири</span></div>
+</body></html>

@@ -83,6 +83,9 @@ static const char page_style[] =
     ".address { background: #f4f6f8; border-left: 3px solid #1f3a5f; padding: 10px 16px; margin: 20px 0 }"
     ".address .label { color: #505a64; font-size: 13px }"
     "code { font-family: 'Courier New', monospace; font-size: 15px }"
+    ".search { display: flex; gap: 8px; max-width: 640px; margin: 0 0 24px }"
+    ".query { flex: 1; font-size: 16px; padding: 8px 10px; border: 1px solid #8a97a6; border-radius: 4px }"
+    ".search button { font-size: 16px; padding: 8px 18px; background: #1f5fa8; color: #fff; border: 0 }"
     ".note { color: #505a64; font-size: 13px }"
     "</style>";
 
@@ -96,6 +99,9 @@ char *page_about( const WCHAR *url, size_t *len )
     append_str( &buf,
         "</head><body>"
         "<h1>Arctic</h1><hr>"
+        "<form class=search action=\"https://www.bing.com/search\" method=get>"
+        "<input class=query type=search name=q placeholder=\"Пошук в інтернеті або адреса\">"
+        "<button type=submit>Знайти</button></form>"
         "<p>Цю сторінку намалював <b>рушій Arctic</b>, а не Gecko і не Blink. Вона — звичайний HTML: "
         "його розібрав <i>lexbor</i>, стилі зіставив модуль стилів lexbor, а верстку, рядки й "
         "малювання рушій робить сам.</p>"
@@ -106,13 +112,15 @@ char *page_about( const WCHAR *url, size_t *len )
         "<li>таблиці стилів сторінок: <code>@media</code>, <code>var()</code>, скорочення <code>background</code>, "
         "<code>font</code>, <code>list-style</code>, <code>border-width</code></li>"
         "<li>посилання, «назад» і «вперед», переходи за <code>#якорем</code> у межах сторінки</li>"
+        "<li>форми: поля, кнопки, галочки, списки, пошук з адресного рядка (Bing)</li>"
+        "<li>flexbox, inline-block, <code>position</code>, <code>overflow</code></li>"
         "<li>сторінки з диска: <code>file:///C:/шлях/сторінка.html</code> або просто <code>C:\\шлях</code></li>"
         "</ul>"
         "<h2>Що далі</h2>"
         "<ol>"
         "<li>текст через DirectWrite, шрифти Noto для всіх письмен — етап 3</li>"
         "<li>JavaScript — етап 4</li>"
-        "<li>flexbox, таблиці, <code>position</code> — етап 5</li>"
+        "<li>таблиці, float, grid — етапи 5 і 8</li>"
         "</ol>"
         "<div class=address><div class=label>Адреса, яку дала рамка:</div><code>" );
     append_escaped( &buf, url );

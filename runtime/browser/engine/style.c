@@ -445,6 +445,13 @@ static void apply_lengths( lxb_dom_element_t *element, struct style *style )
         length_percentage( decl->u.width /* the same type */, fs, &style->min_width );
     if ((decl = declared( element, LXB_CSS_PROPERTY_MAX_WIDTH )))
         length_percentage( decl->u.width, fs, &style->max_width );  /* none is not a length: stays auto */
+    if (((decl = declared( element, LXB_CSS_PROPERTY_OVERFLOW_X )) && decl->u.overflow_x->type != LXB_CSS_VALUE_VISIBLE) ||
+        ((decl = declared( element, LXB_CSS_PROPERTY_OVERFLOW_Y )) && decl->u.overflow_y->type != LXB_CSS_VALUE_VISIBLE))
+        style->clips = TRUE;
+    if ((decl = declared( element, LXB_CSS_PROPERTY_TOP ))) length_percentage( decl->u.top, fs, &style->inset[0] );
+    if ((decl = declared( element, LXB_CSS_PROPERTY_RIGHT ))) length_percentage( decl->u.right, fs, &style->inset[1] );
+    if ((decl = declared( element, LXB_CSS_PROPERTY_BOTTOM ))) length_percentage( decl->u.bottom, fs, &style->inset[2] );
+    if ((decl = declared( element, LXB_CSS_PROPERTY_LEFT ))) length_percentage( decl->u.left, fs, &style->inset[3] );
     if ((decl = declared( element, LXB_CSS_PROPERTY_BOX_SIZING )))
         style->border_box = decl->u.box_sizing->type == LXB_CSS_VALUE_BORDER_BOX;
 }
@@ -495,10 +502,175 @@ static BOOL parse_length( const char *s, size_t len, float font_size, float *px 
     return TRUE;
 }
 
+/* a length or a percentage written as text */
+static BOOL parse_length_percent( const char *s, size_t len, float font_size, struct length *out )
+{
+    float px;
+
+    if (len && s[len - 1] == '%')
+    {
+        char buffer[32];
+
+        if (len >= sizeof(buffer)) return FALSE;
+        memcpy( buffer, s, len - 1 );
+        buffer[len - 1] = 0;
+        out->unit = LEN_PERCENT;
+        out->value = (float)atof( buffer );
+        return TRUE;
+    }
+    if (text_is( s, len, "auto" ) || text_is( s, len, "content" ))
+    {
+        out->unit = LEN_AUTO;
+        out->value = 0;
+        return TRUE;
+    }
+    if (!parse_length( s, len, font_size, &px )) return FALSE;
+    out->unit = LEN_PX;
+    out->value = px;
+    return TRUE;
+}
+
+static enum flex_align parse_align( const char *s, size_t len )
+{
+    if (text_is( s, len, "stretch" ) || text_is( s, len, "normal" )) return FALIGN_STRETCH;
+    if (text_is( s, len, "center" )) return FALIGN_CENTER;
+    if (text_is( s, len, "flex-end" ) || text_is( s, len, "end" ) || text_is( s, len, "self-end" )) return FALIGN_END;
+    if (text_is( s, len, "baseline" ) || text_is( s, len, "first baseline" )) return FALIGN_BASELINE;
+    if (text_is( s, len, "auto" )) return FALIGN_AUTO;
+    return FALIGN_START;
+}
+
+/* the words of a value, one at a time */
+static BOOL next_word( const char **s, const char *end, const char **word, size_t *len )
+{
+    while (*s < end && (**s == ' ' || **s == '\t' || **s == '\n')) (*s)++;
+    if (*s >= end) return FALSE;
+    *word = *s;
+    while (*s < end && **s != ' ' && **s != '\t' && **s != '\n') (*s)++;
+    *len = *s - *word;
+    return TRUE;
+}
+
+static void apply_flex( lxb_dom_element_t *element, struct style *style )
+{
+    const char *value, *end, *word;
+    size_t len, word_len;
+
+    if (custom_value( element, "--arctic-flex-flow", &value, &len ))
+    {
+        for (end = value + len; next_word( &value, end, &word, &word_len ); )
+        {
+            if (text_is( word, word_len, "row" )) style->flex_direction = FLEX_ROW;
+            else if (text_is( word, word_len, "row-reverse" )) style->flex_direction = FLEX_ROW_REVERSE;
+            else if (text_is( word, word_len, "column" )) style->flex_direction = FLEX_COLUMN;
+            else if (text_is( word, word_len, "column-reverse" )) style->flex_direction = FLEX_COLUMN_REVERSE;
+            else if (text_is( word, word_len, "wrap" ) || text_is( word, word_len, "wrap-reverse" )) style->flex_wrap = TRUE;
+            else if (text_is( word, word_len, "nowrap" )) style->flex_wrap = FALSE;
+        }
+    }
+    if (custom_value( element, "--arctic-flex-direction", &value, &len ))
+    {
+        if (text_is( value, len, "row-reverse" )) style->flex_direction = FLEX_ROW_REVERSE;
+        else if (text_is( value, len, "column" )) style->flex_direction = FLEX_COLUMN;
+        else if (text_is( value, len, "column-reverse" )) style->flex_direction = FLEX_COLUMN_REVERSE;
+        else style->flex_direction = FLEX_ROW;
+    }
+    if (custom_value( element, "--arctic-flex-wrap", &value, &len ))
+        style->flex_wrap = !text_is( value, len, "nowrap" );
+    if (custom_value( element, "--arctic-justify-content", &value, &len ))
+    {
+        if (text_is( value, len, "center" )) style->justify = JUSTIFY_CENTER;
+        else if (text_is( value, len, "flex-end" ) || text_is( value, len, "end" ) || text_is( value, len, "right" ))
+            style->justify = JUSTIFY_END;
+        else if (text_is( value, len, "space-between" )) style->justify = JUSTIFY_BETWEEN;
+        else if (text_is( value, len, "space-around" )) style->justify = JUSTIFY_AROUND;
+        else if (text_is( value, len, "space-evenly" )) style->justify = JUSTIFY_EVENLY;
+        else style->justify = JUSTIFY_START;
+    }
+    if (custom_value( element, "--arctic-align-items", &value, &len ))
+    {
+        style->align_items = parse_align( value, len );
+        if (style->align_items == FALIGN_AUTO) style->align_items = FALIGN_STRETCH;
+    }
+    if (custom_value( element, "--arctic-align-self", &value, &len )) style->align_self = parse_align( value, len );
+    if (custom_value( element, "--arctic-gap", &value, &len ))
+    {
+        struct length row = { LEN_PX, 0 }, column;
+
+        end = value + len;
+        if (next_word( &value, end, &word, &word_len )) parse_length_percent( word, word_len, style->font_size, &row );
+        column = row;
+        if (next_word( &value, end, &word, &word_len )) parse_length_percent( word, word_len, style->font_size, &column );
+        style->gap_row = row.unit == LEN_PX ? row.value : 0;
+        style->gap_column = column.unit == LEN_PX ? column.value : 0;
+    }
+    if (custom_value( element, "--arctic-row-gap", &value, &len ))
+    {
+        struct length gap;
+        if (parse_length_percent( value, len, style->font_size, &gap ) && gap.unit == LEN_PX) style->gap_row = gap.value;
+    }
+    if (custom_value( element, "--arctic-column-gap", &value, &len ))
+    {
+        struct length gap;
+        if (parse_length_percent( value, len, style->font_size, &gap ) && gap.unit == LEN_PX) style->gap_column = gap.value;
+    }
+
+    /* flex: none | auto | <grow> [<shrink>] [<basis>] | <basis> */
+    if (custom_value( element, "--arctic-flex", &value, &len ))
+    {
+        int numbers = 0;
+
+        if (text_is( value, len, "none" )) { style->grow = 0; style->shrink = 0; style->basis.unit = LEN_AUTO; }
+        else if (text_is( value, len, "auto" )) { style->grow = 1; style->shrink = 1; style->basis.unit = LEN_AUTO; }
+        else if (text_is( value, len, "initial" )) { style->grow = 0; style->shrink = 1; style->basis.unit = LEN_AUTO; }
+        else
+        {
+            BOOL basis = FALSE;
+
+            style->grow = 1;    /* the defaults of the shorthand: 1 1 0 */
+            style->shrink = 1;
+            style->basis.unit = LEN_PX;
+            style->basis.value = 0;
+            for (end = value + len; next_word( &value, end, &word, &word_len ); )
+            {
+                char *stop, buffer[32];
+                double number;
+
+                if (word_len < sizeof(buffer))
+                {
+                    memcpy( buffer, word, word_len );
+                    buffer[word_len] = 0;
+                    number = strtod( buffer, &stop );
+                    if (stop != buffer && !*stop && numbers < 2)
+                    {
+                        if (numbers++ == 0) style->grow = (float)number;
+                        else style->shrink = (float)number;
+                        continue;
+                    }
+                }
+                if (!basis && parse_length_percent( word, word_len, style->font_size, &style->basis )) basis = TRUE;
+            }
+        }
+    }
+    if (custom_value( element, "--arctic-flex-grow", &value, &len )) style->grow = (float)atof( value );
+    if (custom_value( element, "--arctic-flex-shrink", &value, &len )) style->shrink = (float)atof( value );
+    if (custom_value( element, "--arctic-flex-basis", &value, &len ))
+        parse_length_percent( value, len, style->font_size, &style->basis );
+    if (custom_value( element, "--arctic-order", &value, &len )) style->order = atoi( value );
+}
+
 static void apply_list_style( lxb_dom_element_t *element, struct style *style )
 {
     const char *value;
     size_t len;
+
+    if (custom_value( element, "--arctic-vertical-align", &value, &len ))
+    {
+        if (text_is( value, len, "middle" )) style->valign = VALIGN_MIDDLE;
+        else if (text_is( value, len, "top" ) || text_is( value, len, "text-top" )) style->valign = VALIGN_TOP;
+        else if (text_is( value, len, "bottom" ) || text_is( value, len, "text-bottom" )) style->valign = VALIGN_BOTTOM;
+        else style->valign = VALIGN_BASELINE;
+    }
 
     if (custom_value( element, "--arctic-list-style-type", &value, &len ))
     {
@@ -671,6 +843,7 @@ static void apply_display( lxb_dom_element_t *element, struct style *style )
     const lxb_css_rule_declaration_t *decl = declared( element, LXB_CSS_PROPERTY_DISPLAY );
 
     if (!decl) return;
+    style->flex = decl->u.display->a == LXB_CSS_VALUE_FLEX || decl->u.display->a == LXB_CSS_VALUE_INLINE_FLEX;
     switch (decl->u.display->a)
     {
     case LXB_CSS_VALUE_NONE:         style->display = DISPLAY_NONE; break;
@@ -682,6 +855,70 @@ static void apply_display( lxb_dom_element_t *element, struct style *style )
     case LXB_CSS_VALUE_INLINE_TABLE: style->display = DISPLAY_INLINE_BLOCK; break;
     case LXB_CSS_VALUE_LIST_ITEM:    style->display = DISPLAY_LIST_ITEM; break;
     default:                         style->display = DISPLAY_BLOCK; break;   /* block, flex, grid, table...: stage 5 */
+    }
+}
+
+/* --- form controls --- */
+
+static BOOL is_control_tag( lxb_tag_id_t tag )
+{
+    return tag == LXB_TAG_INPUT || tag == LXB_TAG_SELECT || tag == LXB_TAG_TEXTAREA || tag == LXB_TAG_BUTTON;
+}
+
+/* what Chrome's style sheet gives the controls: their own font, a grey
+ * frame, a white field or a grey button; the page's style comes after */
+static void ua_control( lxb_dom_element_t *element, struct style *style )
+{
+    lxb_tag_id_t tag = lxb_dom_element_tag_id( element );
+    enum control_kind kind = control_kind_of( element );
+    size_t len;
+    const char *type = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"type", 4, &len );
+
+    if (tag == LXB_TAG_INPUT && type && len == 6 && !_strnicmp( type, "hidden", 6 ))
+    {
+        style->display = DISPLAY_NONE;
+        return;
+    }
+    style->display = DISPLAY_INLINE_BLOCK;
+    style->font_size = 13.333f;
+    style->font.weight = 400;
+    style->font.italic = style->font.underline = style->font.strike = FALSE;
+    font_generic_face( tag == LXB_TAG_TEXTAREA ? GENERIC_MONO : GENERIC_SANS, style->font.face );
+    style->color = 0xff000000;
+    style->line_height = style->line_factor = 0;
+    style->text_align = ALIGN_LEFT;
+    style->white_space = tag == LXB_TAG_TEXTAREA ? WS_PRE_WRAP : WS_NOWRAP;
+    style->list = LIST_NONE;
+    style->background = 0xffffffff;
+    for (int i = 0; i < 4; i++) style->border[i] = 1;
+
+    switch (kind)
+    {
+    case CONTROL_CHECKBOX:
+    case CONTROL_RADIO:
+        style->width.unit = style->height.unit = LEN_PX;
+        style->width.value = style->height.value = 13;
+        style->border_box = TRUE;
+        style->margin[0].value = style->margin[1].value = style->margin[2].value = 3;
+        style->margin[3].value = 4;
+        break;
+    case CONTROL_SUBMIT:
+    case CONTROL_BUTTON:
+        style->padding[0] = style->padding[2] = 1;
+        style->padding[1] = style->padding[3] = 6;
+        style->background = 0xffefefef;
+        style->text_align = ALIGN_CENTER;
+        style->border_box = TRUE;
+        break;
+    case CONTROL_SELECT:
+        style->padding[0] = style->padding[2] = 1;
+        style->padding[1] = style->padding[3] = 4;
+        style->border_box = TRUE;
+        break;
+    default:
+        style->padding[0] = style->padding[2] = 2;
+        style->padding[1] = style->padding[3] = 3;
+        break;
     }
 }
 
@@ -710,6 +947,21 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     style->out_of_flow = FALSE;
     style->width.unit = style->height.unit = style->min_width.unit = style->max_width.unit = LEN_AUTO;
     style->border_box = FALSE;
+    style->valign = VALIGN_BASELINE;
+    style->position = POSITION_STATIC;
+    style->clips = FALSE;
+    for (int i = 0; i < 4; i++) style->inset[i].unit = LEN_AUTO;
+    style->flex = FALSE;
+    style->flex_direction = FLEX_ROW;
+    style->flex_wrap = FALSE;
+    style->justify = JUSTIFY_START;
+    style->align_items = FALIGN_STRETCH;
+    style->align_self = FALIGN_AUTO;
+    style->gap_row = style->gap_column = 0;
+    style->grow = 0;
+    style->shrink = 1;
+    style->basis.unit = LEN_AUTO;
+    style->order = 0;
     for (int i = 0; i < 4; i++)
     {
         style->margin[i].unit = LEN_PX;
@@ -757,6 +1009,9 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     case LXB_TAG_MARK:
         style->background = 0xffffff00;
         break;
+    case LXB_TAG_INPUT: case LXB_TAG_SELECT: case LXB_TAG_TEXTAREA: case LXB_TAG_BUTTON:
+        ua_control( element, style );
+        break;
     case LXB_TAG_HR:
         style->border[0] = style->border[2] = 1;
         style->border_color[0] = 0xff9a9a9a;
@@ -776,7 +1031,9 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
     /* the page's style */
     if ((decl = declared( element, LXB_CSS_PROPERTY_COLOR ))) style->color = color_value( decl->u.color, style->color );
     /* a border is currentcolor unless said otherwise; <hr> has its own two */
-    if (lxb_dom_element_tag_id( element ) != LXB_TAG_HR)
+    if (is_control_tag( lxb_dom_element_tag_id( element ) ))
+        for (int i = 0; i < 4; i++) style->border_color[i] = 0xff767676;
+    else if (lxb_dom_element_tag_id( element ) != LXB_TAG_HR)
         for (int i = 0; i < 4; i++) style->border_color[i] = style->color;
     if ((decl = declared( element, LXB_CSS_PROPERTY_BACKGROUND_COLOR )))
         style->background = color_value( decl->u.background_color, style->color );
@@ -788,11 +1045,21 @@ void style_compute( const struct style *parent, lxb_dom_element_t *element, stru
         decl->u.opacity->u.number.num <= 0.001)
         style->transparent = TRUE;
     if ((decl = declared( element, LXB_CSS_PROPERTY_POSITION )))
-        style->out_of_flow = decl->u.position->type == LXB_CSS_VALUE_ABSOLUTE ||
-                             decl->u.position->type == LXB_CSS_VALUE_FIXED;
+    {
+        switch (decl->u.position->type)
+        {
+        case LXB_CSS_VALUE_ABSOLUTE: style->position = POSITION_ABSOLUTE; break;
+        case LXB_CSS_VALUE_FIXED:    style->position = POSITION_FIXED; break;
+        case LXB_CSS_VALUE_RELATIVE:
+        case LXB_CSS_VALUE_STICKY:   style->position = POSITION_RELATIVE; break;
+        default:                     style->position = POSITION_STATIC; break;
+        }
+        style->out_of_flow = style->position == POSITION_ABSOLUTE || style->position == POSITION_FIXED;
+    }
     apply_font_family( element, style );
     apply_text( element, parent, style );
     apply_list_style( element, style );
+    apply_flex( element, style );
     apply_lengths( element, style );
     apply_borders( element, style );
 

@@ -136,12 +136,132 @@ static const char *matching_brace( const char *s, const char *end )
 
 struct css_var
 {
-    char *name, *value;
+    char   *name, *value;
+    size_t  name_len;
+    int     next;       /* in the chain of its hash */
 };
+
+static unsigned int var_hash( const char *name, size_t len )
+{
+    unsigned int hash = 2166136261u;
+
+    for (size_t i = 0; i < len; i++) hash = (hash ^ (unsigned char)name[i]) * 16777619u;
+    return hash % 4096;
+}
+
+/* --- the classes and ids of the document --- */
+
+struct name_set
+{
+    char         **names;
+    size_t        *lengths;
+    unsigned int   count, capacity;     /* capacity a power of 2, kept at most half full */
+};
+
+static unsigned int name_hash( const char *name, size_t len )
+{
+    unsigned int hash = 2166136261u;
+
+    for (size_t i = 0; i < len; i++) hash = (hash ^ (unsigned char)name[i]) * 16777619u;
+    return hash;
+}
+
+static BOOL name_known( const struct name_set *set, const char *name, size_t len )
+{
+    unsigned int i;
+
+    if (!set || !set->capacity) return TRUE;
+    for (i = name_hash( name, len ) & (set->capacity - 1); set->names[i]; i = (i + 1) & (set->capacity - 1))
+        if (set->lengths[i] == len && !memcmp( set->names[i], name, len )) return TRUE;
+    return FALSE;
+}
+
+static BOOL name_insert( struct name_set *set, char *name, size_t len )
+{
+    unsigned int i;
+
+    for (i = name_hash( name, len ) & (set->capacity - 1); set->names[i]; i = (i + 1) & (set->capacity - 1))
+        if (set->lengths[i] == len && !memcmp( set->names[i], name, len )) return FALSE;
+    set->names[i] = name;
+    set->lengths[i] = len;
+    set->count++;
+    return TRUE;
+}
+
+void css_context_add_name( struct css_context *ctx, const char *name, size_t len )
+{
+    struct name_set *set = ctx->names;
+    char *copy;
+
+    if (!len) return;
+    if (!set && !(set = ctx->names = calloc( 1, sizeof(*set) ))) return;
+    if (set->count * 2 >= set->capacity)
+    {
+        struct name_set grown = { 0 };
+
+        grown.capacity = set->capacity ? set->capacity * 2 : 1024;
+        if (!(grown.names = calloc( grown.capacity, sizeof(*grown.names) )) ||
+            !(grown.lengths = calloc( grown.capacity, sizeof(*grown.lengths) )))
+        {
+            free( grown.names );
+            return;
+        }
+        for (unsigned int i = 0; i < set->capacity; i++)
+            if (set->names[i]) name_insert( &grown, set->names[i], set->lengths[i] );
+        free( set->names );
+        free( set->lengths );
+        *set = grown;
+    }
+    if (name_known( set, name, len ) || !(copy = malloc( len ))) return;
+    memcpy( copy, name, len );
+    name_insert( set, copy, len );
+}
+
+static BOOL is_ident_char( char c )
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+           (unsigned char)c >= 0x80;
+}
+
+/* Whether a selector can match the document at all: a class or an id its
+ * last compound asks for that no element has, and it cannot. A rule of a
+ * big site's sheet is mostly for pages it is not on; lexbor would try each
+ * against every element. */
+static BOOL selector_possible( const struct css_context *ctx, const char *s, const char *end )
+{
+    const char *compound = s, *p;
+    int depth = 0;
+
+    if (!ctx->names) return TRUE;
+    for (p = s; p < end; p = skip_one( p, end ))
+    {
+        if (*p == '(' || *p == '[') depth++;
+        else if (*p == ')' || *p == ']') depth--;
+        else if (!depth && (is_blank( *p ) || *p == '>' || *p == '+' || *p == '~')) compound = p + 1;
+    }
+    depth = 0;
+    for (p = compound; p < end; )
+    {
+        if (*p == '(' || *p == '[') { depth++; p++; continue; }
+        if (*p == ')' || *p == ']') { depth--; p++; continue; }
+        if (!depth && (*p == '.' || *p == '#') && p + 1 < end && is_ident_char( p[1] ))
+        {
+            const char *name = ++p;
+
+            while (p < end && is_ident_char( *p )) p++;
+            if (p < end && *p == '\\') return TRUE;     /* escaped: not worth unescaping to know */
+            if (!name_known( ctx->names, name, p - name )) return FALSE;
+            continue;
+        }
+        p = skip_one( p, end );
+    }
+    return TRUE;
+}
 
 void css_context_init( struct css_context *ctx, int width, int height )
 {
     memset( ctx, 0, sizeof(*ctx) );
+    memset( ctx->heads, 0xff, sizeof(ctx->heads) );
     ctx->width = width > 0 ? width : 1024;
     ctx->height = height > 0 ? height : 768;
 }
@@ -154,21 +274,40 @@ void css_context_free( struct css_context *ctx )
         free( ctx->vars[i].value );
     }
     free( ctx->vars );
+    if (ctx->names)
+    {
+        for (unsigned int i = 0; i < ctx->names->capacity; i++) free( ctx->names->names[i] );
+        free( ctx->names->names );
+        free( ctx->names->lengths );
+        free( ctx->names );
+    }
     memset( ctx, 0, sizeof(*ctx) );
+    memset( ctx->heads, 0xff, sizeof(ctx->heads) );
 }
 
 static const struct css_var *find_var( const struct css_context *ctx, const char *name, size_t len )
 {
-    /* the last one set wins, as in the cascade of equal selectors */
-    for (unsigned int i = ctx->var_count; i--; )
-        if (strlen( ctx->vars[i].name ) == len && !memcmp( ctx->vars[i].name, name, len )) return &ctx->vars[i];
+    for (int i = ctx->heads[var_hash( name, len )]; i >= 0; i = ctx->vars[i].next)
+        if (ctx->vars[i].name_len == len && !memcmp( ctx->vars[i].name, name, len )) return &ctx->vars[i];
     return NULL;
 }
 
 static void set_var( struct css_context *ctx, const char *name, size_t name_len, const char *value, size_t value_len )
 {
     struct css_var *var;
+    unsigned int hash = var_hash( name, name_len );
+    char *copy;
 
+    /* the last one set wins, as in the cascade of equal selectors */
+    if ((var = (struct css_var *)find_var( ctx, name, name_len )))
+    {
+        if (!(copy = malloc( value_len + 1 ))) return;
+        memcpy( copy, value, value_len );
+        copy[value_len] = 0;
+        free( var->value );
+        var->value = copy;
+        return;
+    }
     if (ctx->var_count == ctx->var_capacity)
     {
         unsigned int capacity = ctx->var_capacity ? ctx->var_capacity * 2 : 256;
@@ -188,7 +327,9 @@ static void set_var( struct css_context *ctx, const char *name, size_t name_len,
     var->name[name_len] = 0;
     memcpy( var->value, value, value_len );
     var->value[value_len] = 0;
-    ctx->var_count++;
+    var->name_len = name_len;
+    var->next = ctx->heads[hash];
+    ctx->heads[hash] = ctx->var_count++;
 }
 
 /* --- media queries --- */
@@ -572,7 +713,9 @@ static void expand_font( struct text *out, const char *value, const char *end, B
  * keeps and cascades like any --property: style.c reads it back by that name */
 static const char *const foreign_properties[] =
 {
-    "list-style-type",
+    "list-style-type", "vertical-align",
+    "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-direction", "flex-wrap", "flex-flow",
+    "justify-content", "align-items", "align-self", "order", "gap", "row-gap", "column-gap",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
     "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
 };
@@ -650,6 +793,35 @@ static void expand_list_style( struct text *out, const char *value, const char *
     if (important) puts_( out, " !important" );
 }
 
+/* inset: the four offsets of a positioned box, as margin writes them */
+static void expand_inset( struct text *out, const char *value, const char *end, BOOL important )
+{
+    static const char *const sides[4] = { ";top:", ";right:", ";bottom:", ";left:" };
+    const char *start[4], *stop[4], *s = value;
+    int count = 0;
+
+    while (s < end && count < 4)
+    {
+        s = next_token( s, end, &start[count] );
+        if (s == start[count]) break;
+        stop[count++] = s;
+    }
+    if (!count) return;
+    for (int i = count; i < 4; i++)
+    {
+        int from = i == 3 && count >= 2 ? 1 : 0;
+
+        start[i] = start[from];
+        stop[i] = stop[from];
+    }
+    for (int i = 0; i < 4; i++)
+    {
+        puts_( out, sides[i] );
+        put( out, start[i], stop[i] - start[i] );
+        if (important) puts_( out, " !important" );
+    }
+}
+
 /* overflow: lexbor knows only the two axes */
 static void expand_overflow( struct text *out, const char *value, const char *end, BOOL important )
 {
@@ -706,6 +878,7 @@ static void rewrite_declaration( const struct css_context *ctx, struct text *out
     has_var = strstr( value, "var(" ) && strstr( value, "var(" ) < value_end;
     shorthand = word_is( name, name_end - name, "background" ) || word_is( name, name_end - name, "font" ) ||
                 word_is( name, name_end - name, "list-style" ) || word_is( name, name_end - name, "overflow" ) ||
+                word_is( name, name_end - name, "inset" ) ||
                 is_side_shorthand( name, name_end - name ) || is_foreign( name, name_end - name );
     if (inline_only && !has_var && !shorthand) return;
 
@@ -728,6 +901,7 @@ static void rewrite_declaration( const struct css_context *ctx, struct text *out
     else if (word_is( name, name_end - name, "font" )) expand_font( out, value, value_end, important );
     else if (word_is( name, name_end - name, "list-style" )) expand_list_style( out, value, value_end, important );
     else if (word_is( name, name_end - name, "overflow" )) expand_overflow( out, value, value_end, important );
+    else if (word_is( name, name_end - name, "inset" )) expand_inset( out, value, value_end, important );
     else if (is_side_shorthand( name, name_end - name ))
         expand_sides_shorthand( out, name, name_end - name, value, value_end, important );
     puts_( out, ";" );
@@ -845,10 +1019,28 @@ static void walk_rules( struct css_context *ctx, struct text *out, const char *s
         }
         else
         {
-            put( out, prelude, open - prelude );
-            puts_( out, "{" );
-            rewrite_declarations( ctx, out, open + 1, close, FALSE );
-            puts_( out, "}\n" );
+            /* the selectors that can match this document; none, and the rule goes */
+            BOOL any = FALSE;
+
+            for (const char *sel = prelude; sel < open; )
+            {
+                const char *sel_end = scan_to( sel, open, "," ), *a = sel, *b = sel_end;
+
+                trim( &a, &b );
+                if (b > a && selector_possible( ctx, a, b ))
+                {
+                    if (any) puts_( out, "," );
+                    put( out, a, b - a );
+                    any = TRUE;
+                }
+                sel = sel_end < open ? sel_end + 1 : open;
+            }
+            if (any)
+            {
+                puts_( out, "{" );
+                rewrite_declarations( ctx, out, open + 1, close, FALSE );
+                puts_( out, "}\n" );
+            }
         }
         s = close < end ? close + 1 : end;
     }

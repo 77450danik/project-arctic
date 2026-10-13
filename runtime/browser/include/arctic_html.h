@@ -31,6 +31,10 @@ typedef struct arctic_html_view *ARCTIC_HTML_VIEW;
  * LPARAM is a WCHAR * that stays valid until the message returns. The host
  * keeps its history and calls ArcticHtmlNavigate. */
 #define ARCTIC_HTML_WM_NAVIGATE (WM_APP + 0x101)
+/* its WPARAM: 0, the host navigates there itself (a link, a form's GET);
+ * ARCTIC_HTML_NAVIGATE_RECORD, the view is already going there (a form's
+ * POST) and the host only writes the address down in its travel log */
+#define ARCTIC_HTML_NAVIGATE_RECORD 1
 /* what the status bar says: loading, done and what the filter took, the
  * address under the pointer; LPARAM is a WCHAR *, valid during the call */
 #define ARCTIC_HTML_WM_STATUS   (WM_APP + 0x102)

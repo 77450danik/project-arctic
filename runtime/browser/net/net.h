@@ -62,6 +62,8 @@ struct response
 /* http:, https:, file:, data:. page is the address of the document the
  * request is for, for the filter and the cookies; NULL for the document */
 BOOL net_fetch( const char *url, const char *page, enum request_type type, struct response *response );
+/* a form's POST, application/x-www-form-urlencoded; page is the form's document */
+BOOL net_post( const char *url, const char *page, const char *body, size_t len, struct response *response );
 void response_free( struct response *response );
 /* "charset=" of a Content-Type, as a code page; CP_UTF8 when it names none */
 UINT content_type_code_page( const char *content_type );

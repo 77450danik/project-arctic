@@ -121,8 +121,11 @@ static void add_sheet( struct document *doc, const struct css_context *ctx, cons
     size_t len;
     char *css;
 
+    ULONGLONG start = GetTickCount64(), rewritten;
+
     /* @media evaluated, var() replaced, shorthands expanded (css.c) */
     if (!(css = css_rewrite( ctx, original, original_len, &len ))) return;
+    rewritten = GetTickCount64();
     {
         /* ARCTIC_HTML_DUMP_CSS=<folder>: what lexbor is given, to see why a page looks as it does */
         WCHAR folder[MAX_PATH], path[MAX_PATH];
@@ -164,6 +167,8 @@ static void add_sheet( struct document *doc, const struct css_context *ctx, cons
         goto done;
     }
     doc->sheets[doc->sheet_count++] = sheet;
+    TRACE( "sheet of %Iu bytes: rewritten in %I64u ms, parsed and matched in %I64u ms\n", original_len,
+           rewritten - start, GetTickCount64() - rewritten );
 done:
     free( css );
 }
@@ -192,23 +197,29 @@ struct sheet_texts
 {
     char        **texts;
     size_t       *lengths;
+    char        **urls;     /* of a <link>, to fetch; NULL for a <style> */
     unsigned int  count, capacity;
+    struct document *doc;
+    LONG          next;     /* the next link a fetching thread takes */
 };
 
-static void keep_sheet( struct sheet_texts *sheets, char *text, size_t len )
+static void keep_sheet( struct sheet_texts *sheets, char *text, size_t len, char *url )
 {
     if (sheets->count == sheets->capacity)
     {
         unsigned int capacity = sheets->capacity ? sheets->capacity * 2 : 16;
         char **texts = realloc( sheets->texts, capacity * sizeof(*texts) );
         size_t *lengths = texts ? realloc( sheets->lengths, capacity * sizeof(*lengths) ) : NULL;
+        char **urls = lengths ? realloc( sheets->urls, capacity * sizeof(*urls) ) : NULL;
 
         if (texts) sheets->texts = texts;
-        if (!texts || !lengths) { free( text ); return; }
-        sheets->lengths = lengths;
+        if (lengths) sheets->lengths = lengths;
+        if (!texts || !lengths || !urls) { free( text ); free( url ); return; }
+        sheets->urls = urls;
         sheets->capacity = capacity;
     }
     sheets->texts[sheets->count] = text;
+    sheets->urls[sheets->count] = url;
     sheets->lengths[sheets->count++] = len;
 }
 
@@ -220,24 +231,63 @@ static BOOL media_holds( lxb_dom_element_t *element, const struct css_context *c
     return !media || css_media_matches( ctx, media, len );
 }
 
-static void fetch_sheet( struct document *doc, struct sheet_texts *sheets, const char *href, size_t href_len )
+/* the sheets of <link>, fetched side by side: a page may have thirty */
+static DWORD WINAPI sheet_thread( void *arg )
 {
-    struct response response;
+    struct sheet_texts *sheets = arg;
+    LONG i;
+
+    while ((i = InterlockedIncrement( &sheets->next ) - 1) < (LONG)sheets->count)
+    {
+        struct response response;
+        ULONGLONG start = GetTickCount64();
+
+        if (!sheets->urls[i]) continue;
+        if (net_fetch( sheets->urls[i], sheets->doc->address, REQUEST_STYLESHEET, &response ) &&
+            response.status < 400 && response.body)
+        {
+            sheets->texts[i] = to_utf8( response.body, &response.length,
+                                        content_type_code_page( response.content_type ) );
+            sheets->lengths[i] = response.length;
+            response.body = NULL;
+        }
+        else if (response.blocked) InterlockedIncrement( (LONG *)&sheets->doc->blocked );
+        else WARN( "no style sheet %s: %d %s\n", sheets->urls[i], response.status, response.error );
+        TRACE( "%s in %I64u ms\n", sheets->urls[i], GetTickCount64() - start );
+        response_free( &response );
+    }
+    return 0;
+}
+
+static void fetch_sheets( struct sheet_texts *sheets )
+{
+    HANDLE threads[6];
+    unsigned int links = 0, count = 0;
+
+    for (unsigned int i = 0; i < sheets->count; i++) if (sheets->urls[i]) links++;
+    if (!links) return;
+    sheets->next = 0;
+    for (unsigned int i = 0; i < min( links, ARRAY_SIZE(threads) ); i++)
+        if ((threads[count] = CreateThread( NULL, 0, sheet_thread, sheets, 0, NULL ))) count++;
+    if (!count) sheet_thread( sheets );
+    WaitForMultipleObjects( count, threads, TRUE, INFINITE );
+    for (unsigned int i = 0; i < count; i++) CloseHandle( threads[i] );
+}
+
+static void link_sheet( struct document *doc, struct sheet_texts *sheets, const char *href, size_t href_len )
+{
     char *url = document_resolve( doc, href, href_len );
 
     if (!url) return;
-    if (net_fetch( url, doc->address, REQUEST_STYLESHEET, &response ) && response.status < 400 && response.body)
-    {
-        response.body = to_utf8( response.body, &response.length, content_type_code_page( response.content_type ) );
-        keep_sheet( sheets, response.body, response.length );
-        response.body = NULL;
-    }
-    else if (response.blocked) doc->blocked++;
-    else WARN( "no style sheet %s: %d %s\n", url, response.status, response.error );
-    response_free( &response );
-    free( url );
+    /* the same sheet twice changes nothing: GitHub links some six times */
+    for (unsigned int i = 0; i < sheets->count; i++)
+        if (sheets->urls[i] && !strcmp( sheets->urls[i], url ))
+        {
+            free( url );
+            return;
+        }
+    keep_sheet( sheets, NULL, 0, url );
 }
-
 /* The sheets of <style> and <link rel=stylesheet>, in document order, so
  * that a later one wins a tie. lexbor parsed every <style> as it met it, but
  * its style module cannot take @media, var() and some shorthands (css.c):
@@ -264,7 +314,7 @@ static void gather_sheets( struct document *doc, const struct css_context *ctx, 
             {
                 memcpy( copy, text, len );
                 copy[len] = 0;
-                keep_sheet( sheets, copy, len );
+                keep_sheet( sheets, copy, len, NULL );
             }
             continue;   /* nothing inside a <style> is an element */
 
@@ -272,7 +322,7 @@ static void gather_sheets( struct document *doc, const struct css_context *ctx, 
             if (fetch && attribute_has_word( element, "rel", "stylesheet" ) &&
                 !attribute_has_word( element, "rel", "alternate" ) && media_holds( element, ctx ) &&
                 (text = attribute( element, "href", &len )))
-                fetch_sheet( doc, sheets, text, len );
+                link_sheet( doc, sheets, text, len );
             break;
 
         default:
@@ -302,6 +352,34 @@ static void inline_styles( const struct css_context *ctx, lxb_dom_node_t *node )
     }
 }
 
+/* the classes and ids of the document, for css.c to leave out the rules of others */
+static void collect_names( struct css_context *ctx, lxb_dom_node_t *node )
+{
+    for (node = lxb_dom_node_first_child( node ); node; node = lxb_dom_node_next( node ))
+    {
+        lxb_dom_element_t *element;
+        const char *value;
+        size_t len;
+
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) continue;
+        element = lxb_dom_interface_element( node );
+        if ((value = attribute( element, "id", &len ))) css_context_add_name( ctx, value, len );
+        if ((value = attribute( element, "class", &len )))
+        {
+            for (size_t i = 0; i < len; )
+            {
+                size_t start;
+
+                while (i < len && (value[i] == ' ' || value[i] == '\t' || value[i] == '\n' || value[i] == '\r')) i++;
+                start = i;
+                while (i < len && value[i] != ' ' && value[i] != '\t' && value[i] != '\n' && value[i] != '\r') i++;
+                css_context_add_name( ctx, value + start, i - start );
+            }
+        }
+        collect_names( ctx, node );
+    }
+}
+
 static void load_sheets( struct document *doc, int width, int height, BOOL fetch )
 {
     struct sheet_texts sheets = { 0 };
@@ -309,14 +387,20 @@ static void load_sheets( struct document *doc, int width, int height, BOOL fetch
     lxb_dom_node_t *root = lxb_dom_interface_node( doc->html );
 
     css_context_init( &ctx, width, height );
+    collect_names( &ctx, root );
+    sheets.doc = doc;
     gather_sheets( doc, &ctx, &sheets, root, fetch );
+    fetch_sheets( &sheets );
     /* the custom properties of all of them first: a sheet uses what a later one sets */
-    for (unsigned int i = 0; i < sheets.count; i++) css_collect( &ctx, sheets.texts[i], sheets.lengths[i] );
+    for (unsigned int i = 0; i < sheets.count; i++)
+        if (sheets.texts[i]) css_collect( &ctx, sheets.texts[i], sheets.lengths[i] );
     for (unsigned int i = 0; i < sheets.count; i++)
     {
-        add_sheet( doc, &ctx, sheets.texts[i], sheets.lengths[i] );
+        if (sheets.texts[i]) add_sheet( doc, &ctx, sheets.texts[i], sheets.lengths[i] );
         free( sheets.texts[i] );
+        free( sheets.urls[i] );
     }
+    free( sheets.urls );
     inline_styles( &ctx, root );
     TRACE( "%u sheets, %u custom properties\n", sheets.count, ctx.var_count );
     free( sheets.texts );
@@ -519,7 +603,7 @@ static char *error_page( const char *url, const char *reason, size_t *len )
     return html;
 }
 
-struct document *document_load( const WCHAR *url, int width, int height )
+struct document *document_load( const WCHAR *url, const struct post_data *post, int width, int height )
 {
     struct document *doc = calloc( 1, sizeof(*doc) );
     struct response response = { 0 };
@@ -539,7 +623,8 @@ struct document *document_load( const WCHAR *url, int width, int height )
     }
     else if (!(doc->address = url_from_typed( url )))
         html = page_error( url, L"Адреса не читається.", &len );
-    else if (!net_fetch( doc->address, NULL, REQUEST_DOCUMENT, &response ))
+    else if (post ? !net_post( doc->address, post->referrer, post->body, post->length, &response )
+                  : !net_fetch( doc->address, NULL, REQUEST_DOCUMENT, &response ))
         html = error_page( doc->address, response.error, &len );
     else
     {

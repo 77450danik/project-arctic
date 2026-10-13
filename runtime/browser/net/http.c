@@ -322,7 +322,8 @@ static size_t dechunk( char *body, size_t len )
     return out;
 }
 
-static BOOL fetch_http( const char *url, const char *page, enum request_type type, struct response *response )
+static BOOL fetch_http( const char *url, const char *page, enum request_type type, const char *post,
+                        size_t post_len, struct response *response )
 {
     char *current = _strdup( url );
 
@@ -340,7 +341,8 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
             set_error( response, "адреса не читається" );
             break;
         }
-        if (page && filter_blocks( current, &parts, page, type ))
+        /* what the user goes to is never filtered: only what a page loads */
+        if (page && type != REQUEST_DOCUMENT && filter_blocks( current, &parts, page, type ))
         {
             response->blocked = TRUE;
             set_error( response, "заблоковано фільтром" );
@@ -355,7 +357,8 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
         case REQUEST_IMAGE:      accept = "image/png,image/jpeg,image/gif,image/*;q=0.8,*/*;q=0.5"; break;
         default:                 accept = "*/*"; break;
         }
-        append( &request, "GET ", 4 );
+        if (post) append( &request, "POST ", 5 );
+        else append( &request, "GET ", 4 );
         append( &request, parts.path, parts.path_len );
         snprintf( line, sizeof(line), " HTTP/1.1\r\nHost: %s", parts.host );
         append( &request, line, strlen( line ) );
@@ -380,7 +383,25 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
             append( &request, page, strcspn( page, "#" ) );
             append( &request, "\r\n", 2 );
         }
+        if (post)
+        {
+            /* a form of the page: where it came from, what it sends */
+            if (page && (!_strnicmp( page, "http:", 5 ) || !_strnicmp( page, "https:", 6 )))
+            {
+                const char *host = strstr( page, "//" ), *host_end;
+
+                host = host ? host + 2 : page;
+                host_end = host + strcspn( host, "/?#" );
+                append( &request, "Origin: ", 8 );
+                append( &request, page, host_end - page );
+                append( &request, "\r\n", 2 );
+            }
+            snprintf( line, sizeof(line), "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %lu\r\n",
+                      (unsigned long)post_len );
+            append( &request, line, strlen( line ) );
+        }
         append( &request, "\r\n", 2 );
+        if (post) append( &request, post, post_len );
 
         if (!connection_send( &conn, request.data, request.len ))
         {
@@ -420,6 +441,7 @@ static BOOL fetch_http( const char *url, const char *page, enum request_type typ
             free( reply.data );
             free( current );
             current = target;
+            if (response->status != 307 && response->status != 308) post = NULL;
             continue;
         }
 
@@ -487,7 +509,20 @@ BOOL net_fetch( const char *url, const char *page, enum request_type type, struc
         return FALSE;
     }
     if (!_strnicmp( url, "http:", 5 ) || !_strnicmp( url, "https:", 6 ))
-        return fetch_http( url, page, type, response );
+        return fetch_http( url, page, type, NULL, 0, response );
     set_error( response, "рушій не знає такої адреси" );
     return FALSE;
+}
+
+BOOL net_post( const char *url, const char *page, const char *body, size_t len, struct response *response )
+{
+    memset( response, 0, sizeof(*response) );
+    if (!url) return FALSE;
+    InitOnceExecuteOnce( &winsock_once, start_winsock, NULL, NULL );
+    if (_strnicmp( url, "http:", 5 ) && _strnicmp( url, "https:", 6 ))
+    {
+        set_error( response, "форма шле дані лише на http і https" );
+        return FALSE;
+    }
+    return fetch_http( url, page, REQUEST_DOCUMENT, body ? body : "", len, response );
 }

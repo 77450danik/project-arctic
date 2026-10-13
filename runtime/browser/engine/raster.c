@@ -115,13 +115,35 @@ void raster_paint( struct surface *surface, const struct display_list *list, int
 
     fill_rect( surface, &whole, list->background | 0xff000000 );
 
-    for (unsigned int i = 0; i < list->count; i++)
+    /* the flow first, then what is positioned over it */
+    for (unsigned int n = 0; n < list->count * 2; n++)
     {
-        const struct item *item = &list->items[i];
+        const struct item *item = &list->items[n % list->count];
         RECT where = item->rect;
+
+        if (item->layer != (n >= list->count)) continue;
 
         OffsetRect( &where, 0, -scroll_y );
         if (where.bottom < 0 || where.top >= surface->height) continue;     /* not on the screen */
+        if (item->clipped && item->type != ITEM_RUN)
+        {
+            RECT clip = item->clip;
+
+            OffsetRect( &clip, 0, -scroll_y );
+            if (item->type == ITEM_RECT && !IntersectRect( &where, &where, &clip )) continue;
+            if (item->type == ITEM_IMAGE)
+            {
+                RECT visible;
+
+                if (!IntersectRect( &visible, &where, &clip )) continue;
+                GdiFlush();
+                IntersectClipRect( surface->dc, clip.left, clip.top, clip.right, clip.bottom );
+                if (!image_dc) image_dc = CreateCompatibleDC( surface->dc );
+                if (image_dc && item->image && item->image->bitmap) draw_image( surface, image_dc, item, &where );
+                SelectClipRgn( surface->dc, NULL );
+                continue;
+            }
+        }
 
         switch (item->type)
         {
@@ -136,7 +158,15 @@ void raster_paint( struct surface *surface, const struct display_list *list, int
 
             SetTextColor( surface->dc, RGB( (item->color >> 16) & 0xff, (item->color >> 8) & 0xff,
                                             item->color & 0xff ) );
-            ExtTextOutW( surface->dc, item->x, item->baseline - scroll_y, 0, NULL, item->text, item->length, NULL );
+            if (item->clipped)
+            {
+                RECT clip = item->clip;
+
+                OffsetRect( &clip, 0, -scroll_y );
+                ExtTextOutW( surface->dc, item->x, item->baseline - scroll_y, ETO_CLIPPED, &clip, item->text,
+                             item->length, NULL );
+            }
+            else ExtTextOutW( surface->dc, item->x, item->baseline - scroll_y, 0, NULL, item->text, item->length, NULL );
             if (log_tracing())
             {
                 SIZE size;

@@ -141,8 +141,9 @@ static void update_buttons(void)
     SendMessageW( toolbar, TB_ENABLEBUTTON, IDM_FORWARD, MAKELONG( history_index + 1 < history_count, 0 ) );
 }
 
-/* a new place: what was ahead of the current one is gone, as in every browser */
-static void go_to( const WCHAR *url )
+/* a new place: what was ahead of the current one is gone, as in every browser;
+ * the engine may be going there already (a form's POST) */
+static void go_to( const WCHAR *url, BOOL navigate )
 {
     WCHAR *copy = _wcsdup( url );
 
@@ -158,7 +159,7 @@ static void go_to( const WCHAR *url )
     history_index = history_count - 1;
     update_buttons();
     SetWindowTextW( address, url );
-    ArcticHtmlNavigate( view, url );
+    if (navigate) ArcticHtmlNavigate( view, url );
 }
 
 static void travel( int step )
@@ -177,22 +178,69 @@ static void reload(void)
     if (history_index >= 0) ArcticHtmlNavigate( view, history[history_index] );
 }
 
-/* What was typed is an address when it says so; the search engine and the
- * real guesses come with the stages that have a search box to send it to. */
+/* "example.com", "localhost:8080/x": a host and maybe a path - a dot or a
+ * colon before any space, and no space at all */
+static BOOL looks_like_host( const WCHAR *text )
+{
+    BOOL dot = FALSE;
+
+    if (!_wcsnicmp( text, L"localhost", 9 )) return TRUE;
+    for (const WCHAR *p = text; *p; p++)
+    {
+        if (*p == ' ') return FALSE;
+        if (*p == '/') break;
+        if (*p == '.' && p > text && p[1] && p[1] != '.') dot = TRUE;
+    }
+    return dot;
+}
+
+/* the words of the address bar as a search: Bing, which IE has searched with
+ * since Windows 8 and which answers without JavaScript (Google does not) */
+static void search_url( const WCHAR *words, WCHAR *url, size_t size )
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char utf8[2048];
+    int len = WideCharToMultiByte( CP_UTF8, 0, words, -1, utf8, sizeof(utf8), NULL, NULL ), n;
+
+    n = _snwprintf( url, size, L"https://www.bing.com/search?q=" );
+    for (int i = 0; i < len - 1 && n + 4 < (int)size; i++)
+    {
+        unsigned char c = utf8[i];
+
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' ||
+            c == '_' || c == '~')
+            url[n++] = c;
+        else if (c == ' ') url[n++] = '+';
+        else
+        {
+            url[n++] = '%';
+            url[n++] = hex[c >> 4];
+            url[n++] = hex[c & 15];
+        }
+    }
+    url[n] = 0;
+}
+
+/* What was typed is an address when it says so or looks like a host;
+ * anything else is searched for. A ? in front always searches. */
 static void navigate(void)
 {
-    WCHAR typed[2084], url[2084];
+    WCHAR typed[2084], url[2084 * 3], *text = typed;
 
-    if (!GetWindowTextW( address, typed, ARRAY_SIZE(typed) ) || !*typed) return;
+    if (!GetWindowTextW( address, typed, ARRAY_SIZE(typed) )) return;
+    while (*text == ' ') text++;
+    if (!*text) return;
 
-    if (has_scheme( typed ))
-        lstrcpynW( url, typed, ARRAY_SIZE(url) );
-    else
+    if (*text == '?') search_url( text + 1, url, ARRAY_SIZE(url) );
+    else if (has_scheme( text ) && !wcschr( text, ' ' )) lstrcpynW( url, text, ARRAY_SIZE(url) );
+    else if (text[0] && text[1] == ':' && (text[2] == '\\' || text[2] == '/')) lstrcpynW( url, text, ARRAY_SIZE(url) );
+    else if (looks_like_host( text ))
     {
         lstrcpynW( url, L"https://", ARRAY_SIZE(url) );
-        lstrcatW( url, typed );
+        lstrcatW( url, text );
     }
-    go_to( url );
+    else search_url( text, url, ARRAY_SIZE(url) );
+    go_to( url, TRUE );
     SetFocus( ArcticHtmlGetWindow( view ) );
 }
 
@@ -313,8 +361,8 @@ static LRESULT WINAPI frame_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         SetWindowTextW( hwnd, caption );
         return 0;
     }
-    case ARCTIC_HTML_WM_NAVIGATE:   /* a link: a new place in the travel log */
-        go_to( (const WCHAR *)lp );
+    case ARCTIC_HTML_WM_NAVIGATE:   /* a link, a form: a new place in the travel log */
+        go_to( (const WCHAR *)lp, wp != ARCTIC_HTML_NAVIGATE_RECORD );
         return TRUE;
 
     case ARCTIC_HTML_WM_STATUS:

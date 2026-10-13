@@ -56,6 +56,7 @@ struct load_job
     HWND  window;
     LONG  navigation;
     int   width, height;    /* for the page's media queries */
+    struct post_data post;  /* a form's, or nothing */
     WCHAR url[2084];
 };
 
@@ -114,17 +115,19 @@ static void scroll_to( struct arctic_html_view *view, int y )
 static DWORD WINAPI loader( void *arg )
 {
     struct load_job *job = arg;
-    struct document *doc = document_load( job->url, job->width, job->height );
+    struct document *doc = document_load( job->url, job->post.body ? &job->post : NULL, job->width, job->height );
 
     /* a view that is gone, or a page nobody waits for any more, is dropped */
     if (!PostMessageW( job->window, WM_LOADED, job->navigation, (LPARAM)doc )) document_free( doc );
+    free( job->post.body );
+    free( job->post.referrer );
     free( job );
     return 0;
 }
 
-static void start_loading( struct arctic_html_view *view )
+static void start_loading( struct arctic_html_view *view, struct post_data *post )
 {
-    struct load_job *job = malloc( sizeof(*job) );
+    struct load_job *job = calloc( 1, sizeof(*job) );
     WCHAR status[2200];
     HANDLE thread;
     RECT rect;
@@ -136,11 +139,17 @@ static void start_loading( struct arctic_html_view *view )
     job->window = view->window;
     job->navigation = InterlockedIncrement( &view->navigation );
     lstrcpynW( job->url, view->url, ARRAY_SIZE(job->url) );
+    if (post) job->post = *post;    /* the job owns it now */
     view->loading = TRUE;
     swprintf( status, ARRAY_SIZE(status), L"Завантаження %s…", view->url );
     tell_host( view, ARCTIC_HTML_WM_STATUS, status );
     if ((thread = CreateThread( NULL, 0, loader, job, 0, NULL ))) CloseHandle( thread );
-    else free( job );
+    else
+    {
+        free( job->post.body );
+        free( job->post.referrer );
+        free( job );
+    }
 }
 
 static void install( struct arctic_html_view *view, struct document *doc )
@@ -280,6 +289,368 @@ static void follow( struct arctic_html_view *view, lxb_dom_element_t *link )
     free( target );
 }
 
+/* --- forms --- */
+
+static const struct control_area *control_at( struct arctic_html_view *view, int x, int y )
+{
+    POINT point = { x, y + view->scroll_y };
+
+    if (view->relayout) return NULL;
+    for (unsigned int i = view->list.control_count; i--; )
+        if (PtInRect( &view->list.controls[i].rect, point )) return &view->list.controls[i];
+    return NULL;
+}
+
+static void changed( struct arctic_html_view *view )
+{
+    view->relayout = TRUE;
+    InvalidateRect( view->window, NULL, FALSE );
+}
+
+static void set_focus( struct arctic_html_view *view, lxb_dom_element_t *element, int caret )
+{
+    if (!view->doc) return;
+    if (view->doc->focus == element && view->doc->caret == caret) return;
+    view->doc->focus = element;
+    view->doc->caret = caret;
+    changed( view );
+}
+
+static void submit( struct arctic_html_view *view, lxb_dom_element_t *form, lxb_dom_element_t *submitter )
+{
+    struct post_data post;
+    WCHAR *wide;
+    char *url;
+
+    if (!view->doc || !form || !form_submission( view->doc, form, submitter, &url, &post )) return;
+    wide = utf8_to_wide( url, strlen( url ), NULL );
+    free( url );
+    if (!wide)
+    {
+        free( post.body );
+        free( post.referrer );
+        return;
+    }
+    if (!post.body)
+    {
+        /* a GET is an address like a link's: the host keeps it in its travel log */
+        if (!view->host || !SendMessageW( view->host, ARCTIC_HTML_WM_NAVIGATE, 0, (LPARAM)wide ))
+            view_navigate( view, wide );
+    }
+    else
+    {
+        /* a POST only the view can make; the host writes the address down */
+        if (view->host) SendMessageW( view->host, ARCTIC_HTML_WM_NAVIGATE, ARCTIC_HTML_NAVIGATE_RECORD, (LPARAM)wide );
+        lstrcpynW( view->url, wide, ARRAY_SIZE(view->url) );
+        start_loading( view, &post );
+    }
+    free( wide );
+}
+
+/* a radio button goes on, the others of its name in its form go off */
+static void check_radio( lxb_dom_element_t *radio )
+{
+    lxb_dom_element_t *form = control_form( radio );
+    lxb_dom_node_t *root, *node;
+    const char *name;
+    size_t name_len;
+
+    if ((name = (const char *)lxb_dom_element_get_attribute( radio, (const lxb_char_t *)"name", 4, &name_len )))
+    {
+        root = form ? lxb_dom_interface_node( form ) : lxb_dom_interface_node( lxb_dom_interface_node( radio )->owner_document );
+        for (node = root; node; )
+        {
+            if (node->type == LXB_DOM_NODE_TYPE_ELEMENT && node != lxb_dom_interface_node( radio ))
+            {
+                lxb_dom_element_t *element = lxb_dom_interface_element( node );
+                const char *other;
+                size_t other_len;
+
+                if (lxb_dom_element_tag_id( element ) == LXB_TAG_INPUT && control_kind_of( element ) == CONTROL_RADIO &&
+                    (other = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"name", 4, &other_len )) &&
+                    other_len == name_len && !memcmp( other, name, name_len ) && control_form( element ) == form)
+                    lxb_dom_element_remove_attribute( element, (const lxb_char_t *)"checked", 7 );
+            }
+            if (lxb_dom_node_first_child( node )) node = lxb_dom_node_first_child( node );
+            else
+            {
+                while (node && node != root && !lxb_dom_node_next( node )) node = lxb_dom_node_parent( node );
+                node = node && node != root ? lxb_dom_node_next( node ) : NULL;
+            }
+        }
+    }
+    lxb_dom_element_set_attribute( radio, (const lxb_char_t *)"checked", 7, (const lxb_char_t *)"", 0 );
+}
+
+/* a <select> opens as a menu of its options, where the pointer is */
+static void choose_option( struct arctic_html_view *view, const struct control_area *control )
+{
+    lxb_dom_element_t *options[256], *chosen = select_chosen( control->element );
+    lxb_dom_node_t *root = lxb_dom_interface_node( control->element ), *node;
+    HMENU menu = CreatePopupMenu();
+    unsigned int count = 0;
+    POINT where = { control->rect.left, control->rect.bottom - view->scroll_y };
+    int picked;
+
+    if (!menu) return;
+    for (node = lxb_dom_node_first_child( root ); node && count < ARRAY_SIZE(options); )
+    {
+        if (node->type == LXB_DOM_NODE_TYPE_ELEMENT)
+        {
+            lxb_dom_element_t *element = lxb_dom_interface_element( node );
+
+            if (lxb_dom_element_tag_id( element ) == LXB_TAG_OPTION)
+            {
+                WCHAR *text = element_text( element );
+                UINT flags = MF_STRING | (element == chosen ? MF_CHECKED : 0) |
+                             (lxb_dom_element_has_attribute( element, (const lxb_char_t *)"disabled", 8 ) ? MF_GRAYED : 0);
+
+                options[count++] = element;
+                AppendMenuW( menu, flags, count, text && text[0] ? text : L" " );
+                free( text );
+            }
+            else if (lxb_dom_element_tag_id( element ) == LXB_TAG_OPTGROUP && lxb_dom_node_first_child( node ))
+            {
+                node = lxb_dom_node_first_child( node );
+                continue;
+            }
+        }
+        while (node && node != root && !lxb_dom_node_next( node )) node = lxb_dom_node_parent( node );
+        node = node && node != root ? lxb_dom_node_next( node ) : NULL;
+    }
+    ClientToScreen( view->window, &where );
+    picked = TrackPopupMenu( menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, where.x, where.y, 0,
+                             view->window, NULL );
+    DestroyMenu( menu );
+    if (picked <= 0 || picked > (int)count) return;
+    for (unsigned int i = 0; i < count; i++)
+        lxb_dom_element_remove_attribute( options[i], (const lxb_char_t *)"selected", 8 );
+    lxb_dom_element_set_attribute( options[picked - 1], (const lxb_char_t *)"selected", 8, (const lxb_char_t *)"", 0 );
+    changed( view );
+}
+
+/* where in the text a click at x falls */
+static int caret_from_x( const struct control_area *control, int x )
+{
+    WCHAR *value = control_value( control->element );
+    int len = value ? (int)wcslen( value ) : 0, best = len, best_distance = INT_MAX;
+
+    if (value && control_is_password( control->element )) for (int i = 0; i < len; i++) value[i] = 0x2022;
+    for (int i = 0; i <= len && value; i++)
+    {
+        int distance = abs( control->text_x + font_measure( control->font, value, i ) - x );
+
+        if (distance < best_distance) { best_distance = distance; best = i; }
+    }
+    free( value );
+    return best;
+}
+
+static void click_control( struct arctic_html_view *view, const struct control_area *control, int x )
+{
+    lxb_dom_element_t *element = control->element;
+
+    if (lxb_dom_element_has_attribute( element, (const lxb_char_t *)"disabled", 8 )) return;
+    switch (control->kind)
+    {
+    case CONTROL_TEXT:
+        if (lxb_dom_element_tag_id( element ) == LXB_TAG_TEXTAREA)
+        {
+            WCHAR *value = control_value( element );
+
+            set_focus( view, element, value ? (int)wcslen( value ) : 0 );
+            free( value );
+        }
+        else set_focus( view, element, caret_from_x( control, x ) );
+        break;
+    case CONTROL_CHECKBOX:
+        if (lxb_dom_element_has_attribute( element, (const lxb_char_t *)"checked", 7 ))
+            lxb_dom_element_remove_attribute( element, (const lxb_char_t *)"checked", 7 );
+        else lxb_dom_element_set_attribute( element, (const lxb_char_t *)"checked", 7, (const lxb_char_t *)"", 0 );
+        set_focus( view, NULL, 0 );
+        changed( view );
+        break;
+    case CONTROL_RADIO:
+        check_radio( element );
+        set_focus( view, NULL, 0 );
+        changed( view );
+        break;
+    case CONTROL_SELECT:
+        set_focus( view, NULL, 0 );
+        choose_option( view, control );
+        break;
+    case CONTROL_SUBMIT:
+        set_focus( view, NULL, 0 );
+        submit( view, control_form( element ), element );
+        break;
+    case CONTROL_BUTTON:
+        tell_host( view, ARCTIC_HTML_WM_STATUS, L"Ця кнопка працює через JavaScript — рушій виконує JS з етапу 4" );
+        break;
+    }
+}
+
+
+static BOOL is_multiline( lxb_dom_element_t *element )
+{
+    return lxb_dom_element_tag_id( element ) == LXB_TAG_TEXTAREA;
+}
+
+static void edit( struct arctic_html_view *view, const WCHAR *insert, int insert_len, int delete_before,
+                  int delete_after )
+{
+    lxb_dom_element_t *element = view->doc->focus;
+    WCHAR *value = control_value( element ), *edited;
+    int len = value ? (int)wcslen( value ) : 0, caret = min( max( view->doc->caret, 0 ), len ), limit = INT_MAX;
+    const char *max_length;
+    size_t attr_len;
+
+    if (!value) return;
+    if ((max_length = (const char *)lxb_dom_element_get_attribute( element, (const lxb_char_t *)"maxlength", 9, &attr_len )) &&
+        atoi( max_length ) > 0)
+        limit = atoi( max_length );
+    delete_before = min( delete_before, caret );
+    delete_after = min( delete_after, len - caret );
+    insert_len = max( 0, min( insert_len, limit - (len - delete_before - delete_after) ) );
+    if (!(edited = malloc( (len - delete_before - delete_after + insert_len + 1) * sizeof(WCHAR) )))
+    {
+        free( value );
+        return;
+    }
+    memcpy( edited, value, (caret - delete_before) * sizeof(WCHAR) );
+    memcpy( edited + caret - delete_before, insert, insert_len * sizeof(WCHAR) );
+    memcpy( edited + caret - delete_before + insert_len, value + caret + delete_after,
+            (len - caret - delete_after) * sizeof(WCHAR) );
+    edited[len - delete_before - delete_after + insert_len] = 0;
+    control_set_value( element, edited );
+    view->doc->caret = caret - delete_before + insert_len;
+    free( edited );
+    free( value );
+    changed( view );
+}
+
+static void paste( struct arctic_html_view *view )
+{
+    HANDLE data;
+    const WCHAR *text;
+
+    if (!OpenClipboard( view->window )) return;
+    if ((data = GetClipboardData( CF_UNICODETEXT )) && (text = GlobalLock( data )))
+    {
+        WCHAR *copy = _wcsdup( text );
+
+        GlobalUnlock( data );
+        if (copy)
+        {
+            int len = 0;
+
+            /* one line takes no newlines: they become spaces */
+            for (WCHAR *p = copy; *p; p++)
+            {
+                if (*p == '\r' && !is_multiline( view->doc->focus )) continue;
+                if (*p == '\r') continue;
+                if (*p == '\n' && !is_multiline( view->doc->focus )) *p = ' ';
+                copy[len++] = *p;
+            }
+            edit( view, copy, len, 0, 0 );
+            free( copy );
+        }
+    }
+    CloseClipboard();
+}
+
+/* the next or the previous field of the page, as Tab goes */
+static void tab( struct arctic_html_view *view, BOOL back )
+{
+    int count = (int)view->list.control_count, at = -1;
+
+    if (!count) return;
+    for (int i = 0; i < count; i++) if (view->list.controls[i].element == view->doc->focus) at = i;
+    for (int step = 1; step <= count; step++)
+    {
+        int i = ((at < 0 && back ? 0 : at) + (back ? -step : step) + count * 2) % count;
+        const struct control_area *control = &view->list.controls[i];
+
+        if (control->kind == CONTROL_TEXT)
+        {
+            WCHAR *value = control_value( control->element );
+
+            set_focus( view, control->element, value ? (int)wcslen( value ) : 0 );
+            free( value );
+            if (control->rect.top < view->scroll_y || control->rect.bottom > view->scroll_y + client_height( view ))
+                scroll_to( view, control->rect.top - client_height( view ) / 3 );
+            return;
+        }
+    }
+}
+
+static BOOL field_char( struct arctic_html_view *view, WCHAR c )
+{
+    lxb_dom_element_t *focus = view->doc ? view->doc->focus : NULL;
+
+    if (!focus) return FALSE;
+    switch (c)
+    {
+    case '\b':
+        edit( view, NULL, 0, 1, 0 );
+        return TRUE;
+    case '\r':
+        if (is_multiline( focus )) edit( view, L"\n", 1, 0, 0 );
+        else
+        {
+            lxb_dom_element_t *form = control_form( focus );
+
+            if (form) submit( view, form, form_default_button( form ) );
+        }
+        return TRUE;
+    case '\t':
+    case '\n':
+        return TRUE;
+    case 0x16:  /* Ctrl+V */
+        paste( view );
+        return TRUE;
+    case 0x1b:  /* Esc */
+        set_focus( view, NULL, 0 );
+        return TRUE;
+    default:
+        if (c < 0x20 || c == 0x7f) return TRUE;
+        edit( view, &c, 1, 0, 0 );
+        return TRUE;
+    }
+}
+
+static BOOL field_key( struct arctic_html_view *view, WPARAM key )
+{
+    lxb_dom_element_t *focus = view->doc ? view->doc->focus : NULL;
+    WCHAR *value;
+    int len;
+
+    if (key == VK_TAB)
+    {
+        tab( view, GetKeyState( VK_SHIFT ) < 0 );
+        return TRUE;
+    }
+    if (!focus) return FALSE;
+    value = control_value( focus );
+    len = value ? (int)wcslen( value ) : 0;
+    free( value );
+    switch (key)
+    {
+    case VK_LEFT:   view->doc->caret = max( 0, min( view->doc->caret, len ) - 1 ); break;
+    case VK_RIGHT:  view->doc->caret = min( len, view->doc->caret + 1 ); break;
+    case VK_HOME:   view->doc->caret = 0; break;
+    case VK_END:    view->doc->caret = len; break;
+    case VK_DELETE: edit( view, NULL, 0, 0, 1 ); return TRUE;
+    case VK_UP: case VK_DOWN: case VK_PRIOR: case VK_NEXT:
+        return is_multiline( focus );
+    case VK_SPACE:
+        return TRUE;    /* a space, which WM_CHAR types; not a page down */
+    default:
+        return FALSE;
+    }
+    changed( view );
+    return TRUE;
+}
+
 static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
     struct arctic_html_view *view = (struct arctic_html_view *)GetWindowLongPtrW( hwnd, GWLP_USERDATA );
@@ -336,7 +707,12 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         hover( view, -1, -1 );
         return 0;
     }
+    case WM_CHAR:
+        if (field_char( view, (WCHAR)wp )) return 0;
+        break;
+
     case WM_KEYDOWN:
+        if (field_key( view, wp )) return 0;
         switch (wp)
         {
         case VK_UP:    on_scroll( view, SB_LINEUP ); return 0;
@@ -355,18 +731,45 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
 
     case WM_SETCURSOR:
-        if (LOWORD(lp) == HTCLIENT && view->hover)
+        if (LOWORD(lp) == HTCLIENT)
         {
-            SetCursor( LoadCursorW( NULL, (LPCWSTR)IDC_HAND ) );
-            return TRUE;
+            POINT point;
+            const struct control_area *control;
+
+            GetCursorPos( &point );
+            ScreenToClient( hwnd, &point );
+            if ((control = control_at( view, point.x, point.y )) && control->kind == CONTROL_TEXT)
+            {
+                SetCursor( LoadCursorW( NULL, (LPCWSTR)IDC_IBEAM ) );
+                return TRUE;
+            }
+            if (view->hover && !control)
+            {
+                SetCursor( LoadCursorW( NULL, (LPCWSTR)IDC_HAND ) );
+                return TRUE;
+            }
         }
         break;
 
     case WM_LBUTTONDOWN:
-        SetFocus( hwnd );   /* the keys scroll the page from now on */
+    {
+        const struct control_area *control = control_at( view, (short)LOWORD(lp), (short)HIWORD(lp) );
+
+        SetFocus( hwnd );   /* the keys go to the page from now on */
+        view->pressed = NULL;
+        TRACE( "click %d,%d: control %p of %u, relayout %d\n", (short)LOWORD(lp), (short)HIWORD(lp),
+               control ? control->element : NULL, view->list.control_count, view->relayout );
+        for (unsigned int i = 0; i < view->list.control_count; i++)
+            TRACE( "  control %u kind %d %s\n", i, view->list.controls[i].kind, debugstr_rect( &view->list.controls[i].rect ) );
+        if (control)
+        {
+            click_control( view, control, (short)LOWORD(lp) );
+            return 0;
+        }
+        set_focus( view, NULL, 0 );
         view->pressed = link_at( view, (short)LOWORD(lp), (short)HIWORD(lp) );
         return 0;
-
+    }
     case WM_LBUTTONUP:
     {
         lxb_dom_element_t *link = link_at( view, (short)LOWORD(lp), (short)HIWORD(lp) );
@@ -380,7 +783,9 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
 
     case WM_GETDLGCODE:
-        return DLGC_WANTARROWS | DLGC_WANTCHARS;
+        /* a field takes Enter and Tab itself; the page alone leaves them to the dialog keys of the host */
+        if (view->doc && view->doc->focus) return DLGC_WANTALLKEYS | DLGC_WANTARROWS | DLGC_WANTCHARS | DLGC_WANTTAB;
+        return DLGC_WANTARROWS | DLGC_WANTCHARS | DLGC_WANTTAB;
     }
     return DefWindowProcW( hwnd, msg, wp, lp );
 }
@@ -426,7 +831,7 @@ struct arctic_html_view *view_create( HWND parent, const RECT *rect )
     TRACE( "view %p, window %p, %s\n", view, view->window, present_on_gpu( view->present ) ? "Vulkan" : "GDI" );
 
     /* a blank page at once: the window has something to draw before the first navigation */
-    install( view, document_load( L"about:blank", 0, 0 ) );
+    install( view, document_load( L"about:blank", NULL, 0, 0 ) );
     return view;
 }
 
@@ -521,7 +926,7 @@ HRESULT view_navigate( struct arctic_html_view *view, const WCHAR *url )
     TRACE( "%p %s\n", view, debugstr_w(url) );
     if (same_document( view, url )) return S_OK;
     lstrcpynW( view->url, url, ARRAY_SIZE(view->url) );
-    start_loading( view );
+    start_loading( view, NULL );
     return S_OK;
 }
 

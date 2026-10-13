@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Flexbox</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 0 }
+header { display: flex; align-items: center; gap: 16px; padding: 8px 24px; background: #1f3a5f; color: #fff }
+header .logo { font-weight: bold; font-size: 20px }
+header nav { display: flex; gap: 12px }
+header nav a { color: #cde; }
+header .search { flex: 1; display: flex }
+header .search input { flex: 1; padding: 6px; border: 0 }
+header .search button { padding: 6px 12px; background: #4a90d9; color: #fff; border: 0 }
+header .user { margin-left: auto }
+main { display: flex; max-width: 1000px; margin: 16px auto; gap: 24px }
+aside { flex: 0 0 200px; background: #f0f3f7; padding: 12px }
+article { flex: 1 }
+.cards { display: flex; flex-wrap: wrap; gap: 12px }
+.card { flex: 1 1 200px; border: 1px solid #ccc; padding: 12px; background: #fff }
+.center { display: flex; justify-content: center; align-items: center; height: 80px; background: #eef }
+.col { display: flex; flex-direction: column; gap: 6px; align-items: flex-start }
+.col span { background: #ffe; border: 1px solid #cc9; padding: 2px 6px }
+</style></head>
+<body>
+<header><span class="logo">Arctic</span><nav><a href="#">Новини</a><a href="#">Пошта</a><a href="#">Карти</a></nav>
+<form class="search"><input name="q" placeholder="Пошук"><button>Знайти</button></form><span class="user">Увійти</span></header>
+<main><aside><b>Меню</b><div class="col"><span>Один</span><span>Другий пункт</span><span>Три</span></div></aside>
+<article><h1>Стаття</h1><p>Основний текст займає решту ширини, бокова колонка — 200 px.</p>
+<div class="cards"><div class="card">Перша картка з довшим текстом, що переноситься в межах картки</div><div class="card">Друга</div><div class="card">Третя</div><div class="card">Четверта</div></div>
+<div class="center">По центру в обидва боки</div></article></main>
+</body></html>
