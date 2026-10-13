@@ -959,24 +959,42 @@ const history = {
 
 /* --- timers, in virtual time: the page loads at once, whatever it waits for --- */
 
-let timerId = 0, virtualNow = 0;
+let timerId = 0, virtualNow = 0, live = false;
 const timers = new Map();
+/* the clock timers run by: virtual while the page loads, real once it shows */
+function clock() { return live ? N.now() : virtualNow; }
 
 function setTimeout(callback, delay, ...args) {
     const id = ++timerId;
     /* at least 4 ms, as browsers clamp them: a timer that sets itself again lets time go on */
-    timers.set(id, { callback, args, due: virtualNow + Math.max(4, Number(delay) || 0), interval: 0 });
+    timers.set(id, { callback, args, due: clock() + Math.max(4, Number(delay) || 0), interval: 0 });
     return id;
 }
 function setInterval(callback, delay, ...args) {
     const id = ++timerId;
     const interval = Math.max(10, Number(delay) || 0);
-    timers.set(id, { callback, args, due: virtualNow + interval, interval, count: 0 });
+    timers.set(id, { callback, args, due: clock() + interval, interval, count: 0 });
     return id;
 }
 function clearTimeout(id) { timers.delete(id); }
 
 function runTimers() {
+    if (live) {
+        /* every timer that is due, a bounded number at a time */
+        const now = N.now();
+        for (let n = 0; n < 50; n++) {
+            let first = null;
+            for (const [id, t] of timers) if (t.due <= now && (!first || t.due < first[1].due)) first = [id, t];
+            if (!first) break;
+            const [id, t] = first;
+            if (t.interval) t.due = now + t.interval; else timers.delete(id);
+            try {
+                if (typeof t.callback === 'function') t.callback.apply(global, t.args);
+                else N.eval(String(t.callback), 'timer');
+            } catch (e) { reportError(e); }
+        }
+        return nextTimer();
+    }
     let first = null;
     for (const [id, t] of timers) if (!first || t.due < first[1].due) first = [id, t];
     if (!first) return -1;
@@ -993,13 +1011,20 @@ function runTimers() {
     return timers.size ? 0 : -1;
 }
 
+function nextTimer() {
+    let due = Infinity;
+    for (const t of timers.values()) due = Math.min(due, t.due);
+    return due === Infinity ? -1 : Math.max(0, due - N.now());
+}
+
 let frameId = 0;
 const frames = new Map();
 function requestAnimationFrame(callback) {
     const id = ++frameId;
-    /* an animation goes on forever: while the page loads, its first frames */
-    if (frameId > 30) return id;
-    frames.set(id, setTimeout(() => { frames.delete(id); callback(performanceNow()); }, 16));
+    /* an animation goes on forever: while the page loads, its first frames; then ten a second,
+     * as each lays the page out again */
+    if (!live && frameId > 30) return id;
+    frames.set(id, setTimeout(() => { frames.delete(id); callback(performanceNow()); }, live ? 100 : 16));
     return id;
 }
 function cancelAnimationFrame(id) { clearTimeout(frames.get(id)); frames.delete(id); }
@@ -1420,9 +1445,31 @@ function resolveImport(name) {
     return best ? best[1] + name.slice(best[0].length) : null;
 }
 
+/* an event of the user: a mouse button, a click, a key, an edit of a field */
+function dispatch(target, type, x, y) {
+    let event;
+    if (/^(mouse|click|dblclick|contextmenu)/.test(type)) {
+        event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: type === 'mousedown' ? 1 : 0 });
+        if (type.startsWith('mouse')) {
+            /* pointer events come with the mouse's on today's pages */
+            const p = new PointerEvent(type.replace('mouse', 'pointer'), { bubbles: true, cancelable: true, clientX: x, clientY: y });
+            p.isTrusted = true;
+            target.dispatchEvent(p);
+        }
+    } else if (type === 'focus' || type === 'blur') event = new FocusEvent(type, {});
+    else if (type === 'keydown' || type === 'keyup' || type === 'keypress') event = new KeyboardEvent(type, { bubbles: true, cancelable: true, key: String.fromCharCode(x), keyCode: x });
+    else event = new Event(type, { bubbles: true, cancelable: type === 'submit' || type === 'click' });
+    event.isTrusted = true;
+    if (type === 'focus') document._active = target;
+    return !target.dispatchEvent(event);
+}
+
 return {
     protoFor,
     runTimers,
+    nextTimer,
+    dispatch,
+    goLive() { live = true; for (const t of timers.values()) t.due = N.now() + Math.max(0, t.due - virtualNow); },
     addImportMap,
     resolveImport,
     fireLoad() {

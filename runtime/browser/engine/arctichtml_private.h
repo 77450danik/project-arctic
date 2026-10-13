@@ -110,6 +110,7 @@ struct item
     RECT                 clip;
     int                  layer;     /* 0 the flow, 1 positioned boxes: drawn over the flow */
     int                  absolute;  /* how many absolute boxes it is inside: they do not size their parents */
+    lxb_dom_element_t   *owner;     /* the element it was drawn for: what a click on it hits */
 };
 
 /* where a link is on the page: what a click on it opens */
@@ -163,6 +164,7 @@ struct display_list
     int           content_height;   /* how far the document goes down */
     int           layer;            /* what display_list_add gives a new item */
     int           absolute;         /* and how deep in absolute boxes it is */
+    lxb_dom_element_t *owner;       /* and for which element */
 };
 
 void display_list_reset( struct display_list *list );
@@ -171,6 +173,8 @@ struct item *display_list_add( struct display_list *list, enum item_type type );
 const WCHAR *display_list_string( struct display_list *list, const WCHAR *text, int length );
 void display_list_link( struct display_list *list, const RECT *rect, lxb_dom_element_t *element );
 void display_list_anchor( struct display_list *list, int y, lxb_dom_element_t *element );
+/* the element drawn topmost at a point of the document, or NULL */
+lxb_dom_element_t *display_list_hit( const struct display_list *list, int x, int y );
 struct control_area *display_list_control( struct display_list *list );
 /* what an inline-block laid out at the origin left in the list, moved to its place on the line */
 struct list_mark
@@ -200,6 +204,7 @@ struct document
     unsigned int         image_count, image_capacity;
     unsigned int         blocked;   /* requests the filter took */
     char                *redirect;  /* where its scripts sent the page, UTF-8, or NULL */
+    struct script_env   *script;    /* its scripts, alive while it shows */
     lxb_dom_element_t   *focus;     /* the form control that takes the keys, or NULL */
     int                  caret;     /* in its value, in UTF-16 units */
 };
@@ -220,6 +225,16 @@ struct document *document_load( const WCHAR *url, const struct post_data *post, 
 
 /* runs the page's scripts, its load events and its timers, as it loads */
 void script_run_document( struct document *doc, int width, int height );
+/* the page shows: its timers go to this window from now on, in real time */
+#define SCRIPT_TIMER_ID 0x5c71
+void script_attach( struct document *doc, HWND window );
+void script_on_timer( struct document *doc );
+/* the user's event on an element: mousedown, mouseup, click, input, change, submit...;
+ * TRUE when the page cancelled what the browser does for it */
+BOOL script_event( struct document *doc, lxb_dom_element_t *target, const char *type, int x, int y );
+/* how many times scripts changed the tree: the page is laid out again when this moves */
+unsigned int script_mutations( struct document *doc );
+void script_free( struct script_env *env );
 
 /* --- forms (form.c) --- */
 

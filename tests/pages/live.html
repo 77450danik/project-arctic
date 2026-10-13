@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8"><title>Живий JavaScript</title>
+<style>body { font-family: Arial, sans-serif; margin: 24px } button { font-size: 16px; padding: 6px 14px }
+#echo { color: #1f5fa8 } .box { padding: 10px; margin: 10px 0; background: #eef3fa }</style></head>
+<body>
+<h1>Живий JavaScript</h1>
+<div class="box"><button id="inc">Натисни мене</button> <span id="count">0 натискань</span></div>
+<div class="box">Годинник: <span id="clock">—</span></div>
+<div class="box"><input id="field" placeholder="Пиши тут"> <span id="echo"></span></div>
+<form id="form" class="box" action="https://example.com/"><input name="q" value="тест"> <button>Надіслати</button> <span id="sent"></span></form>
+<script>
+let n = 0;
+document.getElementById('inc').addEventListener('click', () => {
+  n++; document.getElementById('count').textContent = n + ' натискань';
+});
+setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleTimeString('uk-UA'); }, 1000);
+document.getElementById('field').addEventListener('input', e => {
+  document.getElementById('echo').textContent = 'ти пишеш: ' + e.target.value;
+});
+document.getElementById('form').addEventListener('submit', e => {
+  e.preventDefault(); document.getElementById('sent').textContent = 'скрипт перехопив форму';
+});
+</script>
+</body></html>

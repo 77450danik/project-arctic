@@ -713,6 +713,8 @@ static struct document *load_once( const WCHAR *url, const struct post_data *pos
 void document_free( struct document *doc )
 {
     if (!doc) return;
+    script_free( doc->script );     /* before the tree its objects stand for */
+    doc->script = NULL;
     if (doc->html)
     {
         lxb_style_destroy( doc->html );

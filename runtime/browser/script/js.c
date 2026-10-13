@@ -60,6 +60,9 @@ struct script_env
     lxb_css_parser_t  *css_parser;
     ULONGLONG          deadline;
     unsigned int       executed, ticks;
+    unsigned int       mutations;   /* changes of the tree: the view lays the page out again */
+    HWND               window;      /* the view's, once the page shows: its timers go there */
+    JSValue            go_live, next_timer, dispatch;   /* dom.js: real time, the next timer, events */
 };
 
 static struct script_env *env_of( JSContext *ctx )
@@ -206,6 +209,7 @@ NATIVE(n_attr)
 
 NATIVE(n_set_attr)
 {
+    env_of( ctx )->mutations++;
     lxb_dom_element_t *element = unwrap_element( ctx, argv[0] );
     const char *name, *value;
     size_t name_len, len;
@@ -222,6 +226,7 @@ NATIVE(n_set_attr)
 
 NATIVE(n_remove_attr)
 {
+    env_of( ctx )->mutations++;
     lxb_dom_element_t *element = unwrap_element( ctx, argv[0] );
     const char *name;
     size_t name_len;
@@ -268,6 +273,7 @@ NATIVE(n_text)
 
 NATIVE(n_set_text)
 {
+    env_of( ctx )->mutations++;
     lxb_dom_node_t *node = unwrap( ctx, argv[0] );
     const char *text;
     size_t len;
@@ -284,6 +290,7 @@ NATIVE(n_set_text)
 
 NATIVE(n_append)
 {
+    env_of( ctx )->mutations++;
     lxb_dom_node_t *parent = unwrap( ctx, argv[0] ), *child = unwrap( ctx, argv[1] );
 
     if (!parent || !child) return JS_ThrowTypeError( ctx, "not a node" );
@@ -294,6 +301,7 @@ NATIVE(n_append)
 
 NATIVE(n_insert_before)
 {
+    env_of( ctx )->mutations++;
     lxb_dom_node_t *parent = unwrap( ctx, argv[0] ), *child = unwrap( ctx, argv[1] ), *ref = unwrap( ctx, argv[2] );
 
     if (!parent || !child) return JS_ThrowTypeError( ctx, "not a node" );
@@ -306,6 +314,7 @@ NATIVE(n_insert_before)
 
 NATIVE(n_remove)
 {
+    env_of( ctx )->mutations++;
     lxb_dom_node_t *node = unwrap( ctx, argv[0] );
 
     if (node && node->parent) lxb_dom_node_remove( node );
@@ -405,6 +414,7 @@ NATIVE(n_outer) { return serialize( ctx, argv[0], TRUE ); }
 
 NATIVE(n_set_inner)
 {
+    env_of( ctx )->mutations++;
     lxb_dom_element_t *element = unwrap_element( ctx, argv[0] );
     const char *html;
     size_t len;
@@ -986,6 +996,9 @@ static void env_free( struct script_env *env )
     JS_FreeValue( env->ctx, env->fire_load );
     JS_FreeValue( env->ctx, env->add_import_map );
     JS_FreeValue( env->ctx, env->resolve_import );
+    JS_FreeValue( env->ctx, env->go_live );
+    JS_FreeValue( env->ctx, env->next_timer );
+    JS_FreeValue( env->ctx, env->dispatch );
     JS_FreeContext( env->ctx );
     JS_FreeRuntime( env->rt );
     if (env->selectors) lxb_selectors_destroy( env->selectors, true );
@@ -1048,6 +1061,7 @@ static void run_document( struct document *doc, int width, int height )
     env->run_timers = JS_UNDEFINED;
     env->fire_load = JS_UNDEFINED;
     env->add_import_map = env->resolve_import = JS_UNDEFINED;
+    env->go_live = env->next_timer = env->dispatch = JS_UNDEFINED;
 
     global = JS_GetGlobalObject( env->ctx );
     native = JS_NewObject( env->ctx );
@@ -1081,6 +1095,9 @@ static void run_document( struct document *doc, int width, int height )
     env->fire_load = JS_GetPropertyStr( env->ctx, hooks, "fireLoad" );
     env->add_import_map = JS_GetPropertyStr( env->ctx, hooks, "addImportMap" );
     env->resolve_import = JS_GetPropertyStr( env->ctx, hooks, "resolveImport" );
+    env->go_live = JS_GetPropertyStr( env->ctx, hooks, "goLive" );
+    env->next_timer = JS_GetPropertyStr( env->ctx, hooks, "nextTimer" );
+    env->dispatch = JS_GetPropertyStr( env->ctx, hooks, "dispatch" );
     JS_FreeValue( env->ctx, hooks );
     JS_FreeValue( env->ctx, global );
 
@@ -1095,5 +1112,95 @@ static void run_document( struct document *doc, int width, int height )
     }
     TRACE( "%u scripts and %u timers in %I64u ms%s%s\n", env->executed, env->ticks, GetTickCount64() - start,
            doc->redirect ? ", then to " : "", doc->redirect ? doc->redirect : "" );
+    /* the page lives on with its scripts: the view drives them once it shows it */
+    doc->script = env;
+}
+
+/* --- the page alive: timers in real time, the user's events --- */
+
+#define LIVE_BUDGET_MS  2000    /* one timer, one event: a page that hangs is stopped */
+
+/* the view's thread runs the scripts from now on, with a stack of its own */
+static void enter( struct script_env *env )
+{
+    JS_UpdateStackTop( env->rt );
+    env->deadline = GetTickCount64() + LIVE_BUDGET_MS;
+}
+
+/* after a script ran: its promises, and when the next timer is due */
+static void leave( struct script_env *env )
+{
+    JSValue result;
+    double next = -1;
+
+    while (run_job( env ) > 0) continue;
+    if (!env->window) return;
+    result = JS_Call( env->ctx, env->next_timer, JS_UNDEFINED, 0, NULL );
+    if (JS_IsException( result )) report_exception( env->ctx, "timers" );
+    else JS_ToFloat64( env->ctx, &next, result );
+    JS_FreeValue( env->ctx, result );
+    if (next >= 0) SetTimer( env->window, SCRIPT_TIMER_ID, (UINT)max( 1, min( next, 0x7fffffff ) ), NULL );
+    else KillTimer( env->window, SCRIPT_TIMER_ID );
+}
+
+void script_attach( struct document *doc, HWND window )
+{
+    struct script_env *env = doc ? doc->script : NULL;
+    JSValue result;
+
+    if (!env) return;
+    enter( env );
+    env->window = window;
+    result = JS_Call( env->ctx, env->go_live, JS_UNDEFINED, 0, NULL );
+    if (JS_IsException( result )) report_exception( env->ctx, "live" );
+    JS_FreeValue( env->ctx, result );
+    leave( env );
+}
+
+void script_on_timer( struct document *doc )
+{
+    struct script_env *env = doc ? doc->script : NULL;
+    JSValue result;
+
+    if (!env) return;
+    enter( env );
+    result = JS_Call( env->ctx, env->run_timers, JS_UNDEFINED, 0, NULL );
+    if (JS_IsException( result )) report_exception( env->ctx, "timer" );
+    JS_FreeValue( env->ctx, result );
+    leave( env );
+}
+
+/* an event of the user on an element; TRUE when the page cancelled what it does */
+BOOL script_event( struct document *doc, lxb_dom_element_t *target, const char *type, int x, int y )
+{
+    struct script_env *env = doc ? doc->script : NULL;
+    JSValue args[4], result;
+    BOOL prevented = FALSE;
+
+    if (!env || !target) return FALSE;
+    enter( env );
+    args[0] = wrap( env->ctx, lxb_dom_interface_node( target ) );
+    args[1] = JS_NewString( env->ctx, type );
+    args[2] = JS_NewInt32( env->ctx, x );
+    args[3] = JS_NewInt32( env->ctx, y );
+    result = JS_Call( env->ctx, env->dispatch, JS_UNDEFINED, 4, args );
+    if (JS_IsException( result )) report_exception( env->ctx, type );
+    else prevented = JS_ToBool( env->ctx, result );
+    JS_FreeValue( env->ctx, result );
+    for (int i = 0; i < 4; i++) JS_FreeValue( env->ctx, args[i] );
+    leave( env );
+    return prevented;
+}
+
+unsigned int script_mutations( struct document *doc )
+{
+    return doc && doc->script ? doc->script->mutations : 0;
+}
+
+void script_free( struct script_env *env )
+{
+    if (!env) return;
+    if (env->window) KillTimer( env->window, SCRIPT_TIMER_ID );
+    JS_UpdateStackTop( env->rt );
     env_free( env );
 }

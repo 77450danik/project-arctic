@@ -62,6 +62,7 @@ struct item *display_list_add( struct display_list *list, enum item_type type )
     item->type = type;
     item->layer = list->layer;
     item->absolute = list->absolute;
+    item->owner = list->owner;
     return item;
 }
 
@@ -177,6 +178,23 @@ void display_list_shift( struct display_list *list, const struct list_mark *from
         OffsetRect( &list->controls[i].rect, dx, dy );
         list->controls[i].text_x += dx;
     }
+}
+
+lxb_dom_element_t *display_list_hit( const struct display_list *list, int x, int y )
+{
+    POINT point = { x, y };
+
+    /* what is drawn over the flow first, then the flow; the last drawn of each on top */
+    for (int layer = 1; layer >= 0; layer--)
+        for (unsigned int i = list->count; i--; )
+        {
+            const struct item *item = &list->items[i];
+
+            if (item->layer != layer || !item->owner || !PtInRect( &item->rect, point )) continue;
+            if (item->clipped && !PtInRect( &item->clip, point )) continue;
+            return item->owner;
+        }
+    return NULL;
 }
 
 WCHAR *utf8_to_wide( const char *text, size_t len, int *out_len )

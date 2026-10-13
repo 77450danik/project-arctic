@@ -322,7 +322,7 @@ def build(args):
     exe = os.path.join(ie_dir, "iexplore.exe")
     if newer(exe, frame_objs + [res, implib]):
         log("linking iexplore.exe")
-        run([cc, "-mwindows", "-municode", "-s", "-Wl,--gc-sections", "-o", exe] + frame_objs + [res, implib]
+        run([cc, "-mwindows", "-municode", "-s", "-Wl,--gc-sections", "-Wl,--stack,16777216", "-o", exe] + frame_objs + [res, implib]
             + runtime + ["-lcomctl32", "-luser32", "-lgdi32"])
 
     # the engine with no window, for the tests (docs/browser.md, component 7)

@@ -49,6 +49,9 @@ struct arctic_html_view
     BOOL                 loading;
     lxb_dom_element_t   *hover;      /* the link under the pointer */
     lxb_dom_element_t   *pressed;    /* the link the button went down on */
+    lxb_dom_element_t   *pressed_target;     /* the element the button went down on */
+    lxb_dom_element_t   *pressed_control;    /* and the form control, if one */
+    unsigned int         mutations;  /* of the tree by scripts, when the page was last laid out */
 };
 
 struct load_job
@@ -152,6 +155,8 @@ static void start_loading( struct arctic_html_view *view, struct post_data *post
     }
 }
 
+static void after_script( struct arctic_html_view *view );
+
 static void install( struct arctic_html_view *view, struct document *doc )
 {
     /* the old list points at fonts of the old page: both go together */
@@ -171,6 +176,12 @@ static void install( struct arctic_html_view *view, struct document *doc )
     set_title( view, doc && doc->title[0] ? doc->title : view->url );
     show_done( view );
     InvalidateRect( view->window, NULL, FALSE );
+    if (doc)
+    {
+        script_attach( doc, view->window );
+        view->mutations = script_mutations( doc );
+        after_script( view );
+    }
 }
 
 static void layout( struct arctic_html_view *view )
@@ -322,7 +333,17 @@ static void submit( struct arctic_html_view *view, lxb_dom_element_t *form, lxb_
     WCHAR *wide;
     char *url;
 
-    if (!view->doc || !form || !form_submission( view->doc, form, submitter, &url, &post )) return;
+    if (!view->doc || !form) return;
+    /* the page's scripts may take the form over: then it is theirs to send */
+    if (view->doc->script)
+    {
+        struct document *doc = view->doc;
+        BOOL prevented = script_event( doc, form, "submit", 0, 0 );
+
+        after_script( view );
+        if (prevented || view->doc != doc) return;
+    }
+    if (!form_submission( view->doc, form, submitter, &url, &post )) return;
     wide = utf8_to_wide( url, strlen( url ), NULL );
     free( url );
     if (!wide)
@@ -484,8 +505,7 @@ static void click_control( struct arctic_html_view *view, const struct control_a
         submit( view, control_form( element ), element );
         break;
     case CONTROL_BUTTON:
-        tell_host( view, ARCTIC_HTML_WM_STATUS, L"Ця кнопка працює через JavaScript — рушій виконує JS з етапу 4" );
-        break;
+        break;      /* what it does, the page's scripts did on click */
     }
 }
 
@@ -526,6 +546,11 @@ static void edit( struct arctic_html_view *view, const WCHAR *insert, int insert
     free( edited );
     free( value );
     changed( view );
+    if (view->doc->script)
+    {
+        script_event( view->doc, element, "input", 0, 0 );
+        after_script( view );
+    }
 }
 
 static void paste( struct arctic_html_view *view )
@@ -651,6 +676,71 @@ static BOOL field_key( struct arctic_html_view *view, WPARAM key )
     return TRUE;
 }
 
+/* what a script did that the view shows: a navigation, a changed tree, a title */
+static void after_script( struct arctic_html_view *view )
+{
+    struct document *doc = view->doc;
+    const lxb_char_t *title;
+    size_t len;
+
+    if (!doc) return;
+    if (doc->redirect)
+    {
+        WCHAR *target = utf8_to_wide( doc->redirect, strlen( doc->redirect ), NULL );
+
+        free( doc->redirect );
+        doc->redirect = NULL;
+        if (target)
+        {
+            if (!view->host || !SendMessageW( view->host, ARCTIC_HTML_WM_NAVIGATE, 0, (LPARAM)target ))
+                view_navigate( view, target );
+            free( target );
+        }
+        return;
+    }
+    if (script_mutations( doc ) != view->mutations)
+    {
+        view->mutations = script_mutations( doc );
+        view->relayout = TRUE;
+        InvalidateRect( view->window, NULL, FALSE );
+        if (doc->html && (title = lxb_html_document_title( doc->html, &len )) && len)
+        {
+            WCHAR *wide = utf8_to_wide( (const char *)title, len, NULL );
+
+            if (wide && wcscmp( wide, view->title )) set_title( view, wide );
+            free( wide );
+        }
+    }
+}
+
+static lxb_dom_element_t *target_at( struct arctic_html_view *view, int x, int y )
+{
+    lxb_dom_element_t *target;
+
+    if (!view->doc || view->relayout) return NULL;
+    if ((target = display_list_hit( &view->list, x, y + view->scroll_y ))) return target;
+    return view->doc->html && view->doc->html->body ? lxb_dom_interface_element( view->doc->html->body ) : NULL;
+}
+
+static const struct control_area *control_of( struct arctic_html_view *view, lxb_dom_element_t *element )
+{
+    if (view->relayout) layout( view );
+    for (unsigned int i = 0; i < view->list.control_count; i++)
+        if (view->list.controls[i].element == element) return &view->list.controls[i];
+    return NULL;
+}
+
+/* a mouse event to the page's scripts; TRUE when they cancelled it */
+static BOOL page_event( struct arctic_html_view *view, lxb_dom_element_t *target, const char *type, int x, int y )
+{
+    BOOL prevented;
+
+    if (!view->doc || !view->doc->script || !target) return FALSE;
+    prevented = script_event( view->doc, target, type, x, y );
+    after_script( view );
+    return prevented;
+}
+
 static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
     struct arctic_html_view *view = (struct arctic_html_view *)GetWindowLongPtrW( hwnd, GWLP_USERDATA );
@@ -753,31 +843,59 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 
     case WM_LBUTTONDOWN:
     {
-        const struct control_area *control = control_at( view, (short)LOWORD(lp), (short)HIWORD(lp) );
+        int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
+        const struct control_area *control = control_at( view, x, y );
+        lxb_dom_element_t *target = target_at( view, x, y );
 
         SetFocus( hwnd );   /* the keys go to the page from now on */
         view->pressed = NULL;
-        TRACE( "click %d,%d: control %p of %u, relayout %d\n", (short)LOWORD(lp), (short)HIWORD(lp),
-               control ? control->element : NULL, view->list.control_count, view->relayout );
-        for (unsigned int i = 0; i < view->list.control_count; i++)
-            TRACE( "  control %u kind %d %s\n", i, view->list.controls[i].kind, debugstr_rect( &view->list.controls[i].rect ) );
-        if (control)
+        view->pressed_target = target;
+        view->pressed_control = control ? control->element : NULL;
+        if (page_event( view, target, "mousedown", x, y )) return 0;
+        if (view->doc != NULL && view->pressed_control && (control = control_of( view, view->pressed_control )) &&
+            control->kind == CONTROL_TEXT)
         {
-            click_control( view, control, (short)LOWORD(lp) );
+            /* a field takes the caret as the button goes down, as in Windows */
+            click_control( view, control, x );
+            view->pressed_control = NULL;
             return 0;
         }
-        set_focus( view, NULL, 0 );
-        view->pressed = link_at( view, (short)LOWORD(lp), (short)HIWORD(lp) );
+        if (!view->pressed_control) set_focus( view, NULL, 0 );
+        view->pressed = link_at( view, x, y );
         return 0;
     }
     case WM_LBUTTONUP:
     {
-        lxb_dom_element_t *link = link_at( view, (short)LOWORD(lp), (short)HIWORD(lp) );
+        int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
+        lxb_dom_element_t *link = link_at( view, x, y ), *target = target_at( view, x, y );
+        lxb_dom_element_t *pressed_control = view->pressed_control, *pressed_link = view->pressed;
+        const struct control_area *control;
+        struct document *doc = view->doc;
 
-        if (link && link == view->pressed) follow( view, link );
-        view->pressed = NULL;
+        view->pressed = view->pressed_control = NULL;
+        if (page_event( view, target, "mouseup", x, y ) || view->doc != doc) return 0;
+        if (!target || target != view->pressed_target)
+        {
+            view->pressed_target = NULL;
+            return 0;
+        }
+        view->pressed_target = NULL;
+        /* click: the page first, then what the browser does - unless the page said no */
+        if (page_event( view, target, "click", x, y ) || view->doc != doc) return 0;
+        if (pressed_control && (control = control_of( view, pressed_control )))
+            click_control( view, control, x );
+        else if (link && link == pressed_link) follow( view, link );
         return 0;
     }
+    case WM_TIMER:
+        if (wp == SCRIPT_TIMER_ID)
+        {
+            script_on_timer( view->doc );
+            after_script( view );
+            return 0;
+        }
+        break;
+
     case WM_RBUTTONDOWN:
         SetFocus( hwnd );
         return 0;

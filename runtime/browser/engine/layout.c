@@ -43,6 +43,7 @@ struct atom
     const struct image *image;
     lxb_dom_element_t  *link;       /* the <a href> it is inside, or NULL */
     lxb_dom_element_t  *anchors[2]; /* inlines with an id that begin with it: #fragment goes to its line */
+    lxb_dom_element_t  *owner;      /* the element it is the text or the image of */
     /* ATOM_BOX: an inline-block or a form control, laid out at the origin - its
      * items, links and controls in the list, moved to the line when it is placed */
     struct list_mark    box_from, box_to;
@@ -271,6 +272,7 @@ static struct atom *add_atom( struct layout *ctx, enum atom_type type, const str
     atom->style = style;
     atom->font = font_get( &style->font );
     atom->link = ctx->link;
+    atom->owner = ctx->list->owner;
     memcpy( atom->anchors, ctx->anchors, sizeof(atom->anchors) );
     memset( ctx->anchors, 0, sizeof(ctx->anchors) );
     return atom;
@@ -797,6 +799,7 @@ static lxb_dom_element_t *enter_link( struct layout *ctx, lxb_dom_element_t *ele
 }
 
 static void gather_styled( struct layout *ctx, lxb_dom_element_t *element, const struct style *style );
+static void gather_owned( struct layout *ctx, lxb_dom_element_t *element, const struct style *style );
 
 static void gather_element( struct layout *ctx, lxb_dom_element_t *element, const struct style *parent )
 {
@@ -807,6 +810,15 @@ static void gather_element( struct layout *ctx, lxb_dom_element_t *element, cons
 }
 
 static void gather_styled( struct layout *ctx, lxb_dom_element_t *element, const struct style *style )
+{
+    lxb_dom_element_t *outer_owner = ctx->list->owner;
+
+    ctx->list->owner = element;
+    gather_owned( ctx, element, style );
+    ctx->list->owner = outer_owner;
+}
+
+static void gather_owned( struct layout *ctx, lxb_dom_element_t *element, const struct style *style )
 {
     lxb_dom_element_t *outer;
 
@@ -879,8 +891,22 @@ static float atomic_top( const struct atom *atom, float own_baseline, float top,
     }
 }
 
+static float place_line_owned( struct layout *ctx, unsigned int first, unsigned int end, float x, float top,
+                               float width, const struct style *block );
+
+/* a line of the block, each run and image of it the element's it came from */
 static float place_line( struct layout *ctx, unsigned int first, unsigned int end, float x, float top, float width,
                          const struct style *block )
+{
+    lxb_dom_element_t *owner = ctx->list->owner;
+    float height = place_line_owned( ctx, first, end, x, top, width, block );
+
+    ctx->list->owner = owner;
+    return height;
+}
+
+static float place_line_owned( struct layout *ctx, unsigned int first, unsigned int end, float x, float top,
+                               float width, const struct style *block )
 {
     const struct font *strut = font_get( &block->font );
     float strut_half = (line_height_of( block, strut ) - (strut->ascent + strut->descent)) / 2;
@@ -945,6 +971,7 @@ static float place_line( struct layout *ctx, unsigned int first, unsigned int en
         const struct atom *atom = &ctx->atoms[i];
         struct item *item;
 
+        ctx->list->owner = atom->owner;
         if (atom->type == ATOM_IMAGE)
         {
             if (atom->image && paints( atom->style ) && (item = display_list_add( ctx->list, ITEM_IMAGE )))
@@ -1780,6 +1807,7 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
 {
     unsigned int waiting = ctx->deferred_count;
     int outer_layer = ctx->list->layer;
+    lxb_dom_element_t *outer_owner = ctx->list->owner;
     struct list_mark start;
     float ml = length_px( &style->margin[3], containing ), mr = length_px( &style->margin[1], containing );
     float frame_h = style->border[3] + style->padding[3] + style->padding[1] + style->border[1];
@@ -1816,6 +1844,7 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
     if (lxb_dom_element_has_attribute( element, (const lxb_char_t *)"id", 2 ))
         display_list_anchor( ctx->list, (int)y, element );
     mark_at( ctx, &start );
+    ctx->list->owner = element;
     if (style->position != POSITION_STATIC) ctx->list->layer = 1;   /* over the flow */
 
     /* the background and the borders are drawn under the content: their places are taken now */
@@ -1906,6 +1935,7 @@ static float layout_block( struct layout *ctx, lxb_dom_element_t *element, const
         }
         ctx->list->layer = outer_layer;
     }
+    ctx->list->owner = outer_owner;
     ctx->last_width = content_w + frame_h;  /* as the box itself came out, not its last descendant */
     ctx->last_margin[0] = ml;
     ctx->last_margin[1] = mr;
