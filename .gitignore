@@ -3,6 +3,7 @@
 *.iso
 *.log
 /tools/zig/
+/tools/llvm-mingw/
 /wsl/
 __pycache__/
 /.ccache/

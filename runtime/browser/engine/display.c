@@ -19,10 +19,6 @@
 
 #include "arctichtml_private.h"
 
-#include "wine/debug.h"
-
-WINE_DEFAULT_DEBUG_CHANNEL(arctichtml);
-
 void display_list_reset( struct display_list *list )
 {
     for (unsigned int i = 0; i < list->string_count; i++) free( list->strings[i] );

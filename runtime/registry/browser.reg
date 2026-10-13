@@ -9,9 +9,11 @@ REGEDIT4
 ; Trident, and a program that asks which Internet Explorer this is should
 ; not be told a number that is not true.
 
+; where Windows keeps it: the browser is a Windows program of its own
+; (runtime/browser/build.py), not a module of Wine
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\iexplore.exe]
-@="C:\\Windows\\System32\\iexplore.exe"
-"Path"="C:\\Windows\\System32"
+@="C:\\Program Files\\Internet Explorer\\iexplore.exe"
+"Path"="C:\\Program Files\\Internet Explorer"
 
 [HKEY_CURRENT_USER\Software\Microsoft\Internet Explorer\Main]
 "Start Page"="about:arctic"

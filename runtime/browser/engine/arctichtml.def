@@ -1,0 +1,9 @@
+LIBRARY arctichtml.dll
+EXPORTS
+    ArcticHtmlCreateView
+    ArcticHtmlDestroyView
+    ArcticHtmlSetRect
+    ArcticHtmlGetWindow
+    ArcticHtmlNavigate
+    ArcticHtmlGetTitle
+    ArcticHtmlOnGpu

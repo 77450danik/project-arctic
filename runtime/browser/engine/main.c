@@ -5,8 +5,8 @@
  * control: our own HTML engine, written here, with the plan, the stages and
  * the code it borrows from in docs/browser.md.
  *
- * It replaces nothing of Wine: Wine's mshtml is only a shell over
- * wine-gecko, which this image does not carry.
+ * It is a plain Windows DLL, not a module of Wine: the engine and the browser
+ * run on any Windows 10 or 11 as they do in Arctic (runtime/browser/build.py).
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -17,10 +17,6 @@
 #include <stdarg.h>
 
 #include "arctichtml_private.h"
-
-#include "wine/debug.h"
-
-WINE_DEFAULT_DEBUG_CHANNEL(arctichtml);
 
 HINSTANCE arctichtml_instance;
 
@@ -38,7 +34,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
 
 HRESULT WINAPI ArcticHtmlCreateView( HWND parent, const RECT *rect, ARCTIC_HTML_VIEW *view )
 {
-    TRACE( "%p %s %p\n", parent, wine_dbgstr_rect(rect), view );
+    TRACE( "%p %s %p\n", parent, debugstr_rect(rect), view );
 
     if (!view) return E_POINTER;
     *view = view_create( parent, rect );
@@ -53,7 +49,7 @@ void WINAPI ArcticHtmlDestroyView( ARCTIC_HTML_VIEW view )
 
 void WINAPI ArcticHtmlSetRect( ARCTIC_HTML_VIEW view, const RECT *rect )
 {
-    TRACE( "%p %s\n", view, wine_dbgstr_rect(rect) );
+    TRACE( "%p %s\n", view, debugstr_rect(rect) );
     view_set_rect( view, rect );
 }
 

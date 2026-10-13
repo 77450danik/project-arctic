@@ -17,10 +17,6 @@
 
 #include "arctichtml_private.h"
 
-#include "wine/debug.h"
-
-WINE_DEFAULT_DEBUG_CHANNEL(arctichtml);
-
 BOOL surface_create( struct surface *surface, int width, int height )
 {
     BITMAPINFO info = { .bmiHeader = { .biSize = sizeof(BITMAPINFOHEADER), .biWidth = width,

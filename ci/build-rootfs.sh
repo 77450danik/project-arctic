@@ -10,7 +10,9 @@ RFS="$OUT/rootfs"
 
 if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
-    pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts ttf-liberation python-fonttools 7zip
+    # mingw-w64-gcc builds the browser, a Windows program (runtime/browser/build.py)
+    pacman -Syu --noconfirm --needed arch-install-scripts gcc python-pillow noto-fonts ttf-liberation python-fonttools 7zip \
+        mingw-w64-gcc
 fi
 
 # The container's NoExtract rules drop the locale sources we need
@@ -207,11 +209,16 @@ bash "$ROOT/ci/install-windows-tools.sh" "$PFX"
 # the Snipping Tool in Start, as in Windows 11 (Win+Shift+S starts it too)
 python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Ножиці.lnk" \
     'C:\windows\system32\snippingtool.exe'
-# Internet Explorer on our own engine (docs/browser.md); Chrome keeps http
-# and https until the engine is hardened, so this is a shortcut, not a
-# default browser
+# Internet Explorer on our own engine (docs/browser.md): a plain Windows
+# program, built as it would be for any Windows and put where Windows keeps
+# it. Wine's iexplore is a frame around a Gecko this image has not got, so
+# it goes, as its explorer.exe does. Chrome keeps http and https until the
+# engine is hardened: this is a shortcut, not a default browser.
+python3 "$ROOT/runtime/browser/build.py" --out "$OUT/browser" \
+    --install "$PFX/drive_c/Program Files/Internet Explorer"
+rm -f "$PFX"/drive_c/windows/{system32,syswow64}/iexplore.exe "$RFS"/usr/lib/wine/*-windows/iexplore.exe
 python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Internet Explorer.lnk" \
-    'C:\windows\system32\iexplore.exe'
+    'C:\Program Files\Internet Explorer\iexplore.exe'
 
 mkdir -p "$PFX/drive_c/windows/system32/config"
 cp "$PFX/system.reg" "$PFX/user.reg" "$PFX/userdef.reg" "$PFX/.update-timestamp" "$PFX/drive_c/windows/system32/config/"

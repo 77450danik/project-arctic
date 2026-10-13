@@ -55,5 +55,4 @@ pe dlls/ntshrui main.c page.c perms.c shares.c wizard.c
 pe dlls/appinfo appinfo.c
 pe programs/consent main.c
 pe programs/useraccountcontrolsettings gate.c main.c
-pe dlls/arctichtml main.c view.c display.c raster.c present.c
-pe programs/iexplore main.c
+# the browser is not a module of Wine: runtime/browser/build.py builds it

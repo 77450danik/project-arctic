@@ -5,7 +5,8 @@
  * the engine makes the child, named "Internet Explorer_Server" as in
  * Windows, and from then on draws, scrolls and takes the input itself. The
  * hosts are iexplore.exe and, later, our mshtml.dll for programs that
- * embed the WebBrowser control (docs/browser.md).
+ * embed the WebBrowser control (docs/browser.md). arctichtml.dll is a plain
+ * Windows DLL: any Windows program on any Windows 10 or 11 can host it.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -13,8 +14,10 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
-#ifndef __WINE_ARCTIC_HTML_H
-#define __WINE_ARCTIC_HTML_H
+#ifndef __ARCTIC_HTML_H
+#define __ARCTIC_HTML_H
+
+#include <windows.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,4 +44,4 @@ BOOL WINAPI ArcticHtmlOnGpu( ARCTIC_HTML_VIEW view );
 }
 #endif
 
-#endif /* __WINE_ARCTIC_HTML_H */
+#endif /* __ARCTIC_HTML_H */

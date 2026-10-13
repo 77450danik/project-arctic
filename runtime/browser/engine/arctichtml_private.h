@@ -12,7 +12,12 @@
 
 #include <windows.h>
 
-#include "wine/arctic_html.h"
+#include "arctic_html.h"
+#include "log.h"
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#endif
 
 /* The pixels of a page. A DIB section, so GDI draws text into the same
  * bytes the GPU uploads: until the glyph atlas of stage 3 the rasterizer is

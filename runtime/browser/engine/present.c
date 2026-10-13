@@ -2,9 +2,10 @@
  * Arctic web engine: the way a painted page reaches the screen
  *
  * The page goes to the window through a Vulkan swapchain, the way a game
- * does: vulkan-1 -> winevulkan -> the ICD -> the display driver -> dwm.exe,
- * which is itself a Vulkan compositor (docs/M3-gpu.md). Wine here is built
- * --without-opengl, so Vulkan is the only accelerated path there is.
+ * does. On Windows that is the GPU's own driver; in Arctic it is vulkan-1 ->
+ * winevulkan -> the ICD -> the display driver -> dwm.exe, which is itself a
+ * Vulkan compositor (docs/M3-gpu.md). Arctic's Wine is built --without-opengl,
+ * so Vulkan is the only accelerated path there is.
  *
  * Until the glyph atlas and the pipelines of stage 3 the rasterizer runs on
  * the processor, so what the swapchain gets is one upload of the whole
@@ -26,12 +27,11 @@
 
 #include "arctichtml_private.h"
 
+/* Khronos' own headers (runtime/browser/deps.txt): vulkan-1.dll is loaded at
+ * run time, so a machine without a Vulkan driver still starts the engine */
 #define VK_NO_PROTOTYPES
 #define VK_USE_PLATFORM_WIN32_KHR
-#include "wine/vulkan.h"
-#include "wine/debug.h"
-
-WINE_DEFAULT_DEBUG_CHANNEL(arctichtml);
+#include <vulkan/vulkan.h>
 
 #define INSTANCE_FUNCTIONS \
     USE(vkEnumeratePhysicalDevices) \

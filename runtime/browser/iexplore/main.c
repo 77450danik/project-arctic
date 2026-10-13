@@ -8,7 +8,8 @@
  *
  * The window classes are the ones Windows uses - IEFrame here and
  * "Internet Explorer_Server" in the engine - so that what looks for the
- * browser's windows finds them where it is used to.
+ * browser's windows finds them where it is used to. Like the engine it is a
+ * plain Windows program: it runs on any Windows 10 or 11 as in Arctic.
  *
  * Stage 0 of docs/browser.md: the frame is what the rest is built on, so it
  * carries only what the stage needs. Back and forward are there but idle
@@ -26,12 +27,13 @@
 #include <windows.h>
 #include <commctrl.h>
 
-#include "wine/arctic_html.h"
-#include "wine/debug.h"
+#include "arctic_html.h"
 
 #include "resource.h"
 
-WINE_DEFAULT_DEBUG_CHANNEL(iexplore);
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#endif
 
 static HINSTANCE instance;
 static ARCTIC_HTML_VIEW view;
@@ -190,7 +192,7 @@ static BOOL create_children( HWND hwnd )
 
     if (FAILED(ArcticHtmlCreateView( hwnd, &content, &view )))
     {
-        ERR( "the engine gives no view\n" );
+        OutputDebugStringA( "iexplore: the engine gives no view\n" );
         return FALSE;
     }
     set_shell_font();

@@ -1,0 +1,7 @@
+# Sources the browser is built with (runtime/browser/build.py). Each is
+# downloaded once, checked against its SHA-256 and compiled into the engine:
+# nothing of them is installed apart, so the browser runs on any Windows.
+# Licences: docs/browser.md, "Донори коду й ліцензії".
+# name           version          url                                                                                              sha256
+vulkan-headers   1.4.363.0        https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz     4a078be12bef21cfebc09d878b77a63cff9d68f899254a0b00d0e37ef73e7f7e
+lexbor           3.0.0            https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.0.tar.gz                                 eafaa79ef9871f0bbb1978eda8677d184f7ecdcaa203d7cd25b3f86e32c014c2

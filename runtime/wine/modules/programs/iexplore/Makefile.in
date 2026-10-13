@@ -1,9 +1,0 @@
-MODULE    = iexplore.exe
-IMPORTS   = arctichtml comctl32 user32 gdi32 shlwapi
-EXTRADLLFLAGS = -mwindows -municode
-
-VER_FILEDESCRIPTION_STR = "Internet Explorer"
-
-SOURCES = \
-	main.c \
-	iexplore.rc

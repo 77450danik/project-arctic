@@ -19,10 +19,6 @@
 
 #include "arctichtml_private.h"
 
-#include "wine/debug.h"
-
-WINE_DEFAULT_DEBUG_CHANNEL(arctichtml);
-
 static const WCHAR view_class[] = L"Internet Explorer_Server";
 
 struct arctic_html_view

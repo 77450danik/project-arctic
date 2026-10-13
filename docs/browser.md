@@ -14,8 +14,10 @@ COM-обгортка над wine-gecko, а wine-gecko в образі немає
 відкриває більшість сайтів, живе під ім'ям Internet Explorer (і обслуговує
 програми Windows з елементом WebBrowser), має **вбудовану фільтрацію з
 синтаксисом uBlock Origin** і доходить до того, що **YouTube грає відео**.
-Рушій — наш код у нових модулях форку Wine, як вимагає `docs/PLAN.md` §6;
-чужі рушії ми не вбудовуємо, але читаємо й переносимо з них алгоритми.
+Рушій і браузер — **звичайна Windows-програма** у `runtime/browser`, що
+стоїть у `C:\Program Files\Internet Explorer` і запускається на будь-якій
+Windows 10 або 11 так само, як в Arctic; чужі рушії ми не вбудовуємо, але
+читаємо й переносимо з них алгоритми.
 
 ## Напрям (рішення користувача 2026-10-12)
 
@@ -41,6 +43,11 @@ COM-обгортка над wine-gecko, а wine-gecko в образі немає
    систему.
 8. **Мережеве блокування реклами — уже на етапі 2**, разом із
    завантажувачем; косметика і скриптлети — на етапі 7.
+9. **Браузер і рушій — звичайна Windows-програма, що запускається на
+   будь-якій Windows 10 або 11** (2026-10-13). Не модуль Wine: жодних
+   `wine/*.h`, жодних експортів, яких немає у Windows; кодеки й бібліотеки —
+   Windows-код усередині рушія. Хост (Linux) змінюється лише тоді, коли
+   іншого шляху немає зовсім.
 
 До «YouTube грає» це ≈18–24 місяці. Тому кожен етап нижче закінчується тим,
 що видно на екрані сам по собі, а не передумовою до наступного.
@@ -61,9 +68,43 @@ COM-обгортка над wine-gecko, а wine-gecko в образі немає
 | uBlock Origin | GPL-3.0 | **код не беремо**: лише синтаксис фільтрів і поведінка |
 
 Apache-2.0 не змішується з LGPL-2.1, але наш код — LGPL-2.1-**or-later**,
-тож сукупність роздається як **LGPL-3.0-or-later**: lexbor лежить окремим
-каталогом зі своїм `LICENSE`, і це зазначено в заголовку `arctichtml`.
-Решта дерева лишається LGPL-2.1+, як у Wine.
+тож сукупність роздається як **LGPL-3.0-or-later**; `LICENSE` і `NOTICE`
+lexbor їдуть поряд із браузером, у `Internet Explorer\Licenses`. Решта
+дерева лишається LGPL-2.1+, як у Wine.
+
+## Збірка (2026-10-13)
+
+`runtime/browser/build.py` — сам Python, без пакетів:
+
+- **Тулчейн — Windows-програма.** Під Windows і в самому Arctic — llvm-mingw
+  (clang + lld + mingw-w64 з UCRT) у `tools\llvm-mingw` (як `tools\zig`, у
+  git не йде); у CI — `x86_64-w64-mingw32-gcc`. Результат однаковий: імпорти
+  лише `KERNEL32`, `USER32`, `GDI32`, `COMCTL32` і UCRT (`api-ms-win-crt-*`).
+  Zig із `tools\zig` під Arctic падає на своєму кеші (`manifest_create
+  Unexpected`) — вада файлових API Arctic, окрема задача.
+- **Позичене** — `runtime/browser/deps.txt`: версія, адреса, SHA-256;
+  завантажується раз у `out\browser\downloads`. Зараз це lexbor 3.0.0 і
+  заголовки Vulkan від Khronos (1.4.363.0) замість `wine/vulkan.h`.
+- **Перезбирається лише змінене** — за файлами залежностей компілятора
+  (`-MMD`): холодна збірка з lexbor ≈ 16 с, зміна в рушії — секунди.
+- `build.py --install "C:\Program Files\Internet Explorer"` ставить
+  результат одразу в живу систему — ні збирання Wine, ні перезавантаження
+  для браузера більше не треба; той самий виклик кладе його в образ
+  (`ci/build-rootfs.sh`). Журнал рушія — `OutputDebugString`, а з
+  `ARCTIC_HTML_LOG=<файл>` ще й у файл; `ARCTIC_HTML_TRACE=1` — докладно.
+
+Що знайшлось у Wine 11.18 і змінює план:
+
+- **FFmpeg уже є як PE-бібліотека** (`libs/ffmpeg`, 8.1.1), але зібраний без
+  жодного декодера — лише перетворення кольору й частоти. Декодери VP9, AV1,
+  H.264, Opus, AAC рушій збере в себе сам, як Windows-код: libavcodec у
+  `host.sqfs` не потрібен.
+- **ICU є як `icu.dll`** (`libs/icucommon`, `libs/icui18n`), як у Windows 10,
+  з ітераторами розбивки й bidi, але без файлу даних
+  (`C:\Windows\Globalization\ICU` порожній). bidi працює (таблиці
+  вкомпільовано), для розбивки рядків за UAX #14 Arctic має покласти дані
+  ICU туди, де їх тримає Windows, — етап 3. Рушій бере ICU з `icu.dll`, як
+  будь-яка Windows-програма.
 
 ## Що Arctic має реалізувати, щоб рушій пішов
 
@@ -76,16 +117,23 @@ Apache-2.0 не змішується з LGPL-2.1, але наш код — LGPL-
 | HTTP/2, TLS 1.3, ALPN | `wininet`/`winhttp` — лише HTTP/1.1; TLS через `schannel` → gnutls; ALPN перевірити | ⏳ |
 | Шейпінг і шрифти | Wine `dwrite` із власним шейпером OpenType; fontconfig вимкнено, harfbuzz немає; в образі лише латиниця й кирилиця | 🔨 |
 | Декод картинок | WIC: PNG, JPEG, GIF, BMP, ICO; WebP і AVIF немає | 🔨 |
-| Декод відео й звуку | **немає нічого**: `--without-gstreamer --without-ffmpeg`, Media Foundation — порожня оболонка | ⏳ |
+| Декод відео й звуку | **немає нічого**: `--without-gstreamer --without-ffmpeg`, Media Foundation — порожня оболонка; рушій несе свої декодери (компонент 4) і від цього не залежить | ⏳ |
+| Дані ICU для розбивки рядків | `icu.dll` є, `C:\Windows\Globalization\ICU` — порожньо | ⏳ |
 | Вивід звуку | є: `mmdevapi` → `winealsa`, мікшер і гучність (`docs/M4-sound.md`) | ✅ |
 | Піщаниця процесу рендера | немає: один uid `nt`, AppContainer — заглушка (`docs/PLAN.md`) | ⏳ |
 
 ## Компоненти
 
-### 1. `runtime/wine/modules/dlls/arctichtml` → `arctichtml.dll` (новий)
+Усе — у `runtime/browser`, збирає `build.py`; ставиться в
+`C:\Program Files\Internet Explorer`. Модулі нижче — частини однієї
+Windows-програми: окрема DLL лише там, де її вантажить хтось, крім
+`iexplore.exe`.
 
-Ядро рушія, кодова назва *Firn*. PE-модуль з `IMPORTLIB`, щоб на нього
-лінкувались `iexplore`, `ieframe` і `mshtml`.
+### 1. `runtime/browser/engine` → `arctichtml.dll` (новий)
+
+Ядро рушія, кодова назва *Firn*. Звичайна DLL з `.def` і бібліотекою
+імпорту, щоб на неї лінкувались `iexplore`, а згодом наш `mshtml`. API —
+`runtime/browser/include/arctic_html.h`.
 
 - DOM на дереві lexbor: вузли, атрибути, події із захопленням і бульбашками,
   `MutationObserver`, hit-testing.
@@ -96,12 +144,13 @@ Apache-2.0 не змішується з LGPL-2.1, але наш код — LGPL-
   flexbox → таблиці → `position` і `z-index` → `overflow` → transform →
   grid. Інкрементальна інвалідація з першого дня.
 - Текст через `dwrite`: `IDWriteTextAnalyzer` для шейпінгу,
-  `IDWriteFontFace` для контурів і метрик. Своє: розбивка рядків UAX #14
-  (таблиці генерує скрипт у `tools/`, ICU не потрібна), базовий bidi
-  UAX #9, атлас гліфів.
-- Малювання: display-list → плиткова растеризація на Vulkan (скелет —
-  `runtime/wine/modules/programs/vktest/main.c`, збірка SPIR-V як у dwm,
-  `tools/dwm-shaders.sh`), свій сканлайновий AA-растеризатор контурів для
+  `IDWriteFontFace` для контурів і метрик. Розбивка рядків UAX #14 і bidi
+  UAX #9 — з `icu.dll`, як у Windows 10 (дані ICU в Arctic — етап 3), атлас
+  гліфів свій.
+- Малювання: display-list → плиткова растеризація на Vulkan через
+  `vulkan-1.dll`, що вантажиться під час роботи (без драйвера рушій іде на
+  GDI), збірка SPIR-V як у dwm (`tools/dwm-shaders.sh`), свій сканлайновий
+  AA-растеризатор контурів для
   рамок, радіусів і SVG. Програмний резерв у DIB-секцію + `BitBlt` під
   `ARCTIC_HTML_CPU=1`, за зразком `ARCTIC_DWM_CPU=1`.
 - JS: QuickJS-ng за абстракцією `js_*`, щоб рушій не був одружений з ним.
@@ -109,19 +158,18 @@ Apache-2.0 не змішується з LGPL-2.1, але наш код — LGPL-
   специфікацій класи QuickJS — без генератора поверхня API, потрібна для
   YouTube, недосяжна руками.
 
-### 2. `runtime/wine/modules/dlls/arcticnet` → `arcticnet.dll` (новий)
+### 2. `runtime/browser/net` — завантажувач ресурсів (новий)
 
-Завантажувач ресурсів. PE + `UNIXLIB`.
+Частина рушія, на Winsock і SSPI, як у будь-якій Windows-програмі.
 
-- HTTP/1.1 свій, HTTP/2 через nghttp2, TLS через Wine `schannel`. **Ділова
-  перевірка першою: чи дає `schannel` ALPN** — від цього залежить HTTP/2;
-  якщо ні, невеликий патч Wine (ALPN у gnutls є) або TLS в unix-половині.
+- HTTP/1.1 свій, HTTP/2 через nghttp2, TLS через `schannel` (SSPI). У
+  Windows `schannel` дає ALPN; **в Arctic це перевірити першим** — від цього
+  залежить HTTP/2, і якщо ні, виправляється Wine `schannel`, а не рушій.
 - Куки, HSTS, CORS, редиректи, визначення типу вмісту, gzip і brotli, пул
-  з'єднань. DNS — glibc по `/run/arctic/resolv.conf`, який пише
-  `host/init/arctic-resolv.c`; служби `Dnscache` в Arctic немає.
+  з'єднань. DNS — `GetAddrInfoExW`, як у Windows.
 - Кеш **у RAM із фоновим скиданням на диск**: флешка пише 2,3 МБ/с.
 
-### 3. `runtime/wine/modules/dlls/arcticfilter` → `arcticfilter.dll` (новий)
+### 3. `runtime/browser/filter` — фільтр (новий)
 
 Фільтр із синтаксисом uBO, дві незалежні половини.
 
@@ -130,8 +178,9 @@ Apache-2.0 не змішується з LGPL-2.1, але наш код — LGPL-
   для `||`; маски типів (`$script,image,xhr,…`), `$third-party`,
   `$domain=`, `$important`, винятки `@@`, regex як резерв. Компільований
   кеш у `C:\ProgramData\Arctic\Filters\compiled.bin`, щоб старт був `mmap`,
-  а не розбір 300 тис. правил. EasyList (CC-BY-SA-3.0) в образі, решта
-  списків — завантаженням і за розкладом.
+  а не розбір 300 тис. правил (у Windows — `%ProgramData%\Arctic\Filters`).
+  EasyList (CC-BY-SA-3.0) в образі, решта списків — завантаженням і за
+  розкладом.
 - **Косметична (етап 7):** `##`, `#@#`, generic і specific, процедурні
   `:has()`, `:matches-css()`, `:upward()`, `:remove()` — як таблиця стилів
   рівня UA плюс постпрохід по DOM; `genericHide`. Скриптлети `+js(...)` —
@@ -140,38 +189,39 @@ Apache-2.0 не змішується з LGPL-2.1, але наш код — LGPL-
   керування списками. Доказ — бенчмарк проти Chrome + uBO: ми мусимо бути
   швидші, бо фільтруємо без JS-прошарку.
 
-### 4. `runtime/wine/modules/dlls/arcticmedia` → `arcticmedia.dll` (новий)
+### 4. `runtime/browser/media` — медіа (новий)
 
-PE + `UNIXLIB` (`-lavcodec -lavutil -lswscale -lswresample`).
+Декодери — Windows-код усередині рушія: libavcodec (LGPL-2.1+) з `deps.txt`,
+зібраний `build.py` лише з потрібними декодерами. Linux-бібліотек не треба.
 
 - Демультиплексори WebM/Matroska і fragmented MP4 — свої.
 - Декод через libavcodec: один цей шлях закриває VP9, AV1, H.264, AAC,
   Opus **і** WebP з AVIF для `<img>`.
 - MSE (`SourceBuffer`, `appendBuffer`, керування буферами) — своє.
   EME/DRM не потрібне: звичайні відео YouTube без нього.
-- Звук наявним шляхом `mmdevapi` → `winealsa`; A/V-синхронізація своя.
-  HW-декод (VA-API, NVDEC) — підетапом; у `host/rootfs/packages.txt` це
-  додає ffmpeg-бібліотеки, як уже лежать gnutls і freetype для unix-половин
-  Wine.
+- Звук — WASAPI (`IAudioClient`), як у будь-якій Windows-програмі; в Arctic
+  це `mmdevapi` → `winealsa`. A/V-синхронізація своя.
+- HW-декод — D3D11 Video / DXVA2, як у Windows (в Arctic — через DXVK),
+  підетапом; без нього — програмний декод.
 
-### 5. `runtime/wine/modules/programs/iexplore` → `iexplore.exe` (новий)
+### 5. `runtime/browser/iexplore` → `iexplore.exe` (новий)
 
 Сам браузер: вкладки, адресний рядок, вибране, журнал, завантаження —
 вигляд IE11 на Windows 10. Смугу адреси з автодоповненням можна взяти з
 ReactOS `browseui`, який уже в образі.
 
-### 6. `runtime/wine/modules/dlls/ieframe`, `dlls/mshtml` (**заміщають Wine**)
+### 6. `ieframe.dll`, `mshtml.dll` над рушієм (етап 10)
 
-Збірка підкладає наші модулі поверх upstream (`ci/build-wine.sh`:
-`cp -a runtime/wine/modules/. .`), тож каталог з ім'ям upstream-модуля
-заміщає його цілком. `ieframe` — `IWebBrowser2`, елемент WebBrowser, журнал
-подорожей; `mshtml` — COM-поверхня `IHTMLDocument2/3`, `IPersistMoniker`,
-хост ActiveX, щоб стокові програми Windows з елементом WebBrowser малювали
-сторінку. Етап 10, і тоді ж **зняти** `WINEDLLOVERRIDES=mscoree,mshtml=` з
-`ci/build-rootfs.sh` і `host/init/arctic-init.c`, інакше глушиться вже наш
-`mshtml`.
+`ieframe` — `IWebBrowser2`, елемент WebBrowser, журнал подорожей; `mshtml`
+— COM-поверхня `IHTMLDocument2/3`, `IPersistMoniker`, хост ActiveX, щоб
+стокові програми Windows з елементом WebBrowser малювали сторінку. Теж
+Windows-DLL з `runtime/browser`: в Arctic вони стають на місце Wine-ових
+(`DllOverrides` native), у справжній Windows системних не чіпають. Тоді ж
+**зняти** `"mshtml"=""` з `runtime/registry/arctic.reg` і
+`WINEDLLOVERRIDES=mscoree,mshtml=` з `ci/build-rootfs.sh` та
+`host/init/arctic-init.c`.
 
-### 7. `runtime/wine/modules/programs/htmlrun` → `htmlrun.exe` (новий)
+### 7. `runtime/browser/htmlrun` → `htmlrun.exe` (новий)
 
 Консольний хост рушія: вантажить сторінку, віддає результати
 `testharness.js` і числа бенчмарків у канал. На ньому стоять WPT і
@@ -222,7 +272,7 @@ GPU-процес не може малювати у вікно іншого пр�
 
 | # | Етап | Видно | Стан |
 |---|---|---|---|
-| 0 | Каркас: наш `iexplore.exe` (`IEFrame`), адресний рядок, «Перейти», рядок стану; `arctichtml` у своєму вікні `Internet Explorer_Server` малює display-list через Vulkan, з відступом на GDI (`ARCTIC_HTML_CPU=1`); Wine `mshtml` вимкнено (`arctic.reg`), щоб жодна програма не отримала діалог Gecko | вікно IE і наш текст на екрані | ✅ 13.10.2026, `tests/vm/b0-ie-window.txt`: сторінка, адреса з рамки, перекладка при розгортанні, «Рушій: Vulkan» (у ВМ — lavapipe) |
+| 0 | Каркас: наш `iexplore.exe` (`IEFrame`), адресний рядок, «Перейти», рядок стану; `arctichtml` у своєму вікні `Internet Explorer_Server` малює display-list через Vulkan, з відступом на GDI (`ARCTIC_HTML_CPU=1`); Wine `mshtml` вимкнено (`arctic.reg`), щоб жодна програма не отримала діалог Gecko | вікно IE і наш текст на екрані | ✅ 13.10.2026, `tests/vm/b0-ie-window.txt`: сторінка, адреса з рамки, перекладка при розгортанні, «Рушій: Vulkan» (у ВМ — lavapipe). Того ж дня переїхав із модулів Wine у `runtime/browser`: переносна Windows-програма (llvm-mingw / mingw-gcc), стоїть у живій системі в `Program Files` |
 | 1 | lexbor: HTML, CSS, селектори; DOM; каскад; верстка блоків та інлайну; `file:///`; картинки через WIC | локальна сторінка рендериться | ⏳ |
 | 2 | `arcticnet`: HTTP/1.1, TLS, куки, кеш у RAM, навігація; **мережева половина `arcticfilter`** | **справжній сайт з мережі, уже без реклами** | ⏳ |
 | 3 | Текст: шейпінг `dwrite`, UAX #14, прокрутка й смуги, посилання, hit-test, назад і вперед; шрифти Noto CJK і Color Emoji в образ (заодно emoji з'являються і в Chrome) | **Wikipedia читається**, китайські сайти не квадратики | ⏳ |
@@ -245,7 +295,7 @@ GPU-процес не може малювати у вікно іншого пр�
 | **QuickJS без JIT не витягне плеєр YouTube** — найбільший ризик | абстракція `js_*` з етапу 4, бенчмарк JS **на етапі 4, не на 9**; резерв — JavaScriptCore або свій baseline-JIT |
 | «Усі сайти» — недосяжна мета | контракт — відсоток WPT і список з 20 сайтів, а не «всі» |
 | Піщаниці немає, а рушій — найбільша поверхня атаки | Chrome за замовчуванням до етапу 11, фаззинг з етапу 1, межі |
-| Образ росте на ≈95 МБ (шрифти й ffmpeg) на повільній флешці | шрифти заходять етапом 3, ffmpeg — етапом 9, а не одразу |
+| Образ росте (шрифти CJK і emoji ≈80 МБ, декодери в рушії — кілька МБ) на повільній флешці | шрифти заходять етапом 3, декодери — етапом 9, а не одразу |
 | Програмний VP9 1080p їсть процесор | 720p за замовчуванням, HW-декод підетапом |
 | Рушій — вічна бігова дорожка: безпека й зміни платформи | храповик WPT і фаззинг у CI з самого початку |
 
