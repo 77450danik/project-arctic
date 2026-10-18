@@ -121,6 +121,16 @@ static void show_menu( HWND hwnd )
 
 static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
+    static UINT look_changed;
+
+    if (!look_changed) look_changed = arctic_look_changed_message();
+    if (msg == look_changed)
+    {
+        /* the taskbar went light or dark: the icon follows */
+        current_glyph = 0;
+        tray_update();
+        return 0;
+    }
     if (msg == taskbar_created && taskbar_created)
     {
         /* explorer restarted: the icon goes back */

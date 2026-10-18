@@ -136,7 +136,7 @@ HFONT shell_font( int height, int weight )
     return CreateFontIndirectW( &metrics.lfMessageFont );
 }
 
-/* white at the coverage given, per pixel, over what is there */
+/* the ink (white, or black over a light look) at the coverage given, per pixel, over what is there */
 void blend_white( HDC hdc, int x, int y, int width, int height, const float *alpha )
 {
     BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
@@ -148,11 +148,11 @@ void blend_white( HDC hdc, int x, int y, int width, int height, const float *alp
     {
         HGDIOBJ old = SelectObject( mem, bitmap );
 
-        /* premultiplied white */
+        /* premultiplied white, or black */
         for (int i = 0; i < width * height; i++)
         {
             UINT32 a = (UINT32)(min( alpha[i], 1.f ) * 255 + 0.5f);
-            bits[i] = (a << 24) | (a << 16) | (a << 8) | a;
+            bits[i] = shell_light ? a << 24 : (a << 24) | (a << 16) | (a << 8) | a;
         }
         GdiAlphaBlend( hdc, x, y, width, height, mem, 0, 0, width, height, blend );
         SelectObject( mem, old );
@@ -212,7 +212,7 @@ void draw_chevron( HDC hdc, int cx, int cy, BOOL up, BYTE alpha )
     free( cov );
 }
 
-/* the notification area's icon: white, as on the dark taskbar */
+/* the notification area's icon: white on the dark taskbar, black on a light one */
 HICON make_speaker_icon( int size, float level, BOOL mute )
 {
     ICONINFO info = { .fIcon = TRUE };
@@ -224,9 +224,11 @@ HICON make_speaker_icon( int size, float level, BOOL mute )
     render( size, level, mute, lit, NULL );
     if ((info.hbmColor = create_dib( NULL, size, size, &bits )))
     {
+        UINT32 color = arctic_taskbar_is_light() ? 0 : 0xffffff;
+
         /* icons carry straight alpha */
         for (int i = 0; i < size * size; i++)
-            bits[i] = ((UINT32)(min( lit[i], 1.f ) * 255 + 0.5f) << 24) | 0xffffff;
+            bits[i] = ((UINT32)(min( lit[i], 1.f ) * 255 + 0.5f) << 24) | color;
         info.hbmMask = CreateBitmap( size, size, 1, 1, NULL );
         icon = CreateIconIndirect( &info );
         DeleteObject( info.hbmColor );

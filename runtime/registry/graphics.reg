@@ -1,7 +1,7 @@
 REGEDIT4
 
 ; Direct3D and DXGI are the DLLs in System32 (DXVK, vkd3d-proton), not Wine's
-[HKEY_CURRENT_USER\Software\Wine\DllOverrides]
+[HKEY_CURRENT_USER\Software\Arctic\Runtime\DllOverrides]
 "d3d8"="native,builtin"
 "d3d9"="native,builtin"
 "d3d10core"="native,builtin"
@@ -12,6 +12,16 @@ REGEDIT4
 "nvapi"="native"
 "nvapi64"="native"
 "nvofapi64"="native"
+
+; Programs drawn with wgpu (EffectCraft, PhotoCraft, ArtCraft) take Vulkan,
+; through winevulkan to the GPU's own driver. Left to choose, wgpu took
+; Direct3D 12: vkd3d-proton calls an Intel UHD/HD (Gen9) a discrete GPU, and
+; wgpu prefers one. There its shaders went to Wine's d3dcompiler, which has no
+; Shader Model 5.1 resource arrays, and with DXC its indirect draws need
+; device-generated commands that Mesa has not for Gen9: EffectCraft did not
+; start ("Failed to create surface for any enabled backend").
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment]
+"WGPU_BACKEND"="vulkan"
 
 ; DLSS: NVIDIA's own NGX core, from its driver, in System32
 [HKEY_LOCAL_MACHINE\SOFTWARE\NVIDIA Corporation\Global\NGXCore]

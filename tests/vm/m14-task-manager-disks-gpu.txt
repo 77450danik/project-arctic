@@ -1,0 +1,34 @@
+# Task Manager's Performance tab: every disk (with --disk, a second one) and
+# every graphics card get their tile; tiles at y = 118 + 70 * n
+sleep 8
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Compact /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 1 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 10
+shot p0-cpu
+# the arrows go through the tiles
+move 120 118
+click left
+key down
+sleep 2
+key down
+sleep 3
+shot p1-disk0
+move 120 328
+click left
+sleep 3
+shot p2-disk1
+move 120 468
+click left
+sleep 3
+shot p3-gpu
+key alt-f4
+sleep 2

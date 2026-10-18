@@ -317,7 +317,7 @@ static void draw_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, BYTE 
 {
     HGDIOBJ old = SelectObject( hdc, font );
 
-    SetTextColor( hdc, RGB( alpha, alpha, alpha ) );
+    SetTextColor( hdc, arctic_keyed_grey( shell_light, alpha ) );
     DrawTextW( hdc, text, -1, rect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS );
     SelectObject( hdc, old );
 }
@@ -345,14 +345,14 @@ void media_paint( HDC hdc, const RECT *card, const struct media_info *info, int 
         BOOL enabled = action_enabled( info, action );
 
         button_rect( card, action, &rect );
-        if (enabled && hot == action) fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), (BYTE)((pressed ? 0x33 : 0x19) * opacity / 255) );
+        if (enabled && hot == action) fill_alpha( hdc, &rect, INK, (BYTE)((pressed ? 0x33 : 0x19) * opacity / 255) );
         draw_button_glyph( hdc, &rect, action, info->playing, (BYTE)((enabled ? 255 : 0x99) * opacity / 255) );
     }
 
     /* the program's icon on the tile where Windows has the album art */
     SetRect( &rect, card->right - TILE_AREA + (TILE_AREA - TILE_SIZE) / 2, card->top + (TILE_AREA - TILE_SIZE) / 2,
              card->right - TILE_AREA + (TILE_AREA + TILE_SIZE) / 2, card->top + (TILE_AREA + TILE_SIZE) / 2 );
-    fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), (BYTE)(0x19 * opacity / 255) );
+    fill_alpha( hdc, &rect, INK, (BYTE)(0x19 * opacity / 255) );
     if (info->icon)
         DrawIconEx( hdc, (rect.left + rect.right) / 2 - px( 24 ), (rect.top + rect.bottom) / 2 - px( 24 ), info->icon,
                     px( 48 ), px( 48 ), 0, NULL,

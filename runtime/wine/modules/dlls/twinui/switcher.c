@@ -213,10 +213,10 @@ static void frame_rect( HDC hdc, const RECT *rect, int width, COLORREF color )
  * over it (dwm keys GDI pixels by their brightness). */
 static void paint( HDC hdc, const RECT *client )
 {
-    FillRect( hdc, client, GetStockObject( BLACK_BRUSH ) );
+    arctic_fill_back( hdc, client, shell_light );
     SelectObject( hdc, font );
     SetBkMode( hdc, TRANSPARENT );
-    SetTextColor( hdc, RGB(255, 255, 255) );
+    SetTextColor( hdc, INK );
 
     for (int i = 0; i < count; i++)
     {
@@ -224,7 +224,7 @@ static void paint( HDC hdc, const RECT *client )
         BOOL with_close = i == hot || i == selected;
         RECT text;
 
-        if (i == selected) frame_rect( hdc, &item->rect, FRAME, RGB(255, 255, 255) );
+        if (i == selected) frame_rect( hdc, &item->rect, FRAME, INK );
         else if (i == hot) frame_rect( hdc, &item->rect, 2, RGB(128, 128, 128) );
 
         DrawIconEx( hdc, item->rect.left + ITEM_PADDING, item->rect.top + ITEM_PADDING + (TITLE_HEIGHT - ICON_SIZE) / 2,
@@ -240,7 +240,7 @@ static void paint( HDC hdc, const RECT *client )
         if (with_close)
         {
             if (i == hot && hot_close) fill_alpha( hdc, &item->close, RGB(0xe8, 0x11, 0x23), 255 );
-            draw_glyph_close( hdc, &item->close, RGB(255, 255, 255) );
+            draw_glyph_close( hdc, &item->close, i == hot && hot_close ? RGB(255, 255, 255) : INK );
         }
     }
 }

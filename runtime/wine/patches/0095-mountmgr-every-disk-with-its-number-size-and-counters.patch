@@ -1,0 +1,480 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 19:00:00 +0300
+Subject: [PATCH] mountmgr.sys: Every disk answers with its number, size and what it read and wrote.
+
+The Task Manager showed one disk, C:, with the sum of all of them. Every
+drive now finds the physical disk under its folder (down through the live
+mode's device-mapper snapshot and loop devices) and answers as Windows'
+disk drivers do:
+
+- IOCTL_DISK_PERFORMANCE with the disk's bytes, requests, times and idle
+  time from /sys/block/<disk>/stat (DISK_PERFORMANCE was not declared);
+- IOCTL_STORAGE_GET_DEVICE_NUMBER with one number for all volumes of a disk,
+  the disk Windows is on being 0, NVMe disks next, then the others by name;
+- IOCTL_DISK_GET_DRIVE_GEOMETRY_EX with the disk's real size;
+- StorageDeviceProperty with its model and NVMe bus, and
+  StorageDeviceSeekPenaltyProperty saying whether it is a hard disk.
+---
+diff --git a/include/winioctl.h b/include/winioctl.h
+--- a/include/winioctl.h
++++ b/include/winioctl.h
+@@ -531,6 +531,21 @@
+     BYTE                Data[1];
+ } DISK_GEOMETRY_EX, *PDISK_GEOMETRY_EX;
+ 
++typedef struct _DISK_PERFORMANCE {
++    LARGE_INTEGER       BytesRead;
++    LARGE_INTEGER       BytesWritten;
++    LARGE_INTEGER       ReadTime;
++    LARGE_INTEGER       WriteTime;
++    LARGE_INTEGER       IdleTime;
++    DWORD               ReadCount;
++    DWORD               WriteCount;
++    DWORD               QueueDepth;
++    DWORD               SplitCount;
++    LARGE_INTEGER       QueryTime;
++    DWORD               StorageDeviceNumber;
++    WCHAR               StorageManagerName[8];
++} DISK_PERFORMANCE, *PDISK_PERFORMANCE;
++
+ typedef struct _PARTITION_INFORMATION {
+     LARGE_INTEGER       StartingOffset;
+     LARGE_INTEGER       PartitionLength;
+diff --git a/dlls/mountmgr.sys/unixlib.h b/dlls/mountmgr.sys/unixlib.h
+--- a/dlls/mountmgr.sys/unixlib.h
++++ b/dlls/mountmgr.sys/unixlib.h
+@@ -77,6 +77,30 @@
+ struct arctic_eject_params
+ {
+     const char *udi;
++};
++
++/* the physical disk under a drive and what it has read and written */
++struct arctic_disk_info
++{
++    char      disk[32];        /* the host's name for it: nvme0n1, sda */
++    char      model[128];
++    ULONG     number;          /* its PhysicalDrive number: the system disk is 0 */
++    BOOL      usb;
++    BOOL      removable;
++    BOOL      nvme;
++    BOOL      rotational;      /* a hard disk, not an SSD */
++    ULONGLONG size;            /* bytes */
++    ULONGLONG read_bytes, write_bytes, read_count, write_count;
++    ULONGLONG read_ms, write_ms; /* time the requests waited */
++    ULONGLONG busy_ms;         /* time it had requests at all */
++    ULONGLONG now_ms;          /* the same clock, now */
++    ULONG     queue;           /* requests in flight */
++};
++
++struct arctic_disk_info_params
++{
++    const char *unix_mount;
++    struct arctic_disk_info *info;
+ };
+ 
+ struct add_drive_params
+@@ -217,6 +241,7 @@
+     unix_arctic_loop,
+     unix_arctic_volume_info,
+     unix_arctic_eject,
++    unix_arctic_disk_info,
+     unix_funcs_count
+ };
+ 
+@@ -226,6 +251,7 @@
+ extern void run_arctic_loop(void);
+ extern NTSTATUS arctic_volume_info( void *args );
+ extern NTSTATUS arctic_eject( void *args );
++extern NTSTATUS arctic_disk_info( void *args );
+ extern void queue_device_op( enum device_op op, const char *udi, const char *device,
+                              const char *mount_point, enum device_type type, const GUID *guid,
+                              const char *disk_serial, const char *label,
+diff --git a/dlls/mountmgr.sys/unixlib.c b/dlls/mountmgr.sys/unixlib.c
+--- a/dlls/mountmgr.sys/unixlib.c
++++ b/dlls/mountmgr.sys/unixlib.c
+@@ -648,6 +648,7 @@
+     arctic_loop,
+     arctic_volume_info,
+     arctic_eject,
++    arctic_disk_info,
+ };
+ 
+ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+diff --git a/dlls/mountmgr.sys/arctic.c b/dlls/mountmgr.sys/arctic.c
+--- a/dlls/mountmgr.sys/arctic.c
++++ b/dlls/mountmgr.sys/arctic.c
+@@ -35,9 +35,12 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <time.h>
+ #include <unistd.h>
++#include <sys/stat.h>
+ #ifdef __linux__
+ #include <sys/inotify.h>
++#include <sys/sysmacros.h>
+ #endif
+ 
+ #include "unixlib.h"
+@@ -250,6 +253,206 @@
+     return STATUS_IO_TIMEOUT;
+ }
+ 
++/* The physical disk under a drive, for the Task Manager and the others
++ * that ask Windows for a disk's number, size and counters: the block device
++ * a drive's folder lives on, down through device-mapper (the live mode's
++ * snapshot of C:) and loop devices to the disk itself. */
++
++static BOOL is_physical_disk( const char *name )
++{
++    static const char * const prefixes[] = { "nvme", "sd", "mmcblk", "vd", "hd", "xvd" };
++
++    for (unsigned int i = 0; i < ARRAY_SIZE(prefixes); i++)
++        if (!strncmp( name, prefixes[i], strlen( prefixes[i] ) )) return TRUE;
++    return FALSE;
++}
++
++/* the disk (not the partition) a block device number belongs to */
++static BOOL disk_of_dev( dev_t dev, char *disk, size_t size )
++{
++    char path[PATH_MAX], real[PATH_MAX], *p;
++
++    snprintf( path, sizeof(path), "/sys/dev/block/%u:%u", major( dev ), minor( dev ) );
++    if (!realpath( path, real )) return FALSE;
++    snprintf( path, sizeof(path), "%s/partition", real );
++    if (!access( path, F_OK ) && (p = strrchr( real, '/' ))) *p = 0;
++    if (!(p = strrchr( real, '/' ))) return FALSE;
++    snprintf( disk, size, "%s", p + 1 );
++    return TRUE;
++}
++
++static BOOL read_sys( const char *disk, const char *name, char *buf, size_t size )
++{
++    char path[PATH_MAX];
++    size_t len;
++    FILE *f;
++
++    snprintf( path, sizeof(path), "/sys/block/%s/%s", disk, name );
++    if (!(f = fopen( path, "re" ))) return FALSE;
++    len = fread( buf, 1, size - 1, f );
++    fclose( f );
++    buf[len] = 0;
++    while (len && (buf[len - 1] == '\n' || buf[len - 1] == ' ')) buf[--len] = 0;
++    return TRUE;
++}
++
++static BOOL resolve_disk_depth( dev_t dev, char *disk, size_t size, int depth )
++{
++    char buf[PATH_MAX];
++
++    if (depth > 6 || !disk_of_dev( dev, disk, size )) return FALSE;
++    if (!strncmp( disk, "dm-", 3 ) || !strncmp( disk, "md", 2 ))
++    {
++        char path[PATH_MAX], devno[32], name[32];
++        unsigned int maj, min;
++        struct dirent *de;
++        DIR *dir;
++        BOOL found = FALSE;
++
++        /* the devices it is made of: the first that is on a disk (a
++         * snapshot's changes may be in zram, its origin on the stick) */
++        snprintf( name, sizeof(name), "%s", disk );
++        snprintf( path, sizeof(path), "/sys/block/%s/slaves", name );
++        if (!(dir = opendir( path ))) return FALSE;
++        while (!found && (de = readdir( dir )))
++        {
++            FILE *f;
++
++            if (de->d_name[0] == '.') continue;
++            snprintf( path, sizeof(path), "/sys/class/block/%s/dev", de->d_name );
++            if (!(f = fopen( path, "re" ))) continue;
++            if (fgets( devno, sizeof(devno), f ) && sscanf( devno, "%u:%u", &maj, &min ) == 2)
++                found = resolve_disk_depth( makedev( maj, min ), disk, size, depth + 1 );
++            fclose( f );
++        }
++        closedir( dir );
++        return found;
++    }
++    if (!strncmp( disk, "loop", 4 ))
++    {
++        struct stat st;
++
++        /* the file behind it, on the disk that holds it */
++        if (!read_sys( disk, "loop/backing_file", buf, sizeof(buf) ) || stat( buf, &st )) return FALSE;
++        return resolve_disk_depth( st.st_dev, disk, size, depth + 1 );
++    }
++    return is_physical_disk( disk );
++}
++
++static BOOL resolve_disk( dev_t dev, char *disk, size_t size )
++{
++    return resolve_disk_depth( dev, disk, size, 0 );
++}
++
++static char *dosdevices_path( const char *dev )
++{
++    const char *prefix = getenv( "WINEPREFIX" );
++    char *path = NULL;
++
++    if (prefix) asprintf( &path, "%s/dosdevices/%s", prefix, dev );
++    else asprintf( &path, "%s/.wine/dosdevices/%s", getenv( "HOME" ), dev );
++    return path;
++}
++
++static BOOL disk_of_path( const char *unix_mount, char *disk, size_t size )
++{
++    char *path = NULL;
++    struct stat st;
++    BOOL ret;
++
++    if (!unix_mount) return FALSE;
++    if (unix_mount[0] != '/') path = dosdevices_path( unix_mount );
++    ret = !stat( path ? path : unix_mount, &st ) && resolve_disk( st.st_dev, disk, size );
++    free( path );
++    return ret;
++}
++
++/* NVMe disks first, then the others by the host's names: a number that
++ * stays from one start to the next, as long as the disks do */
++static int disk_order( const char *a, const char *b )
++{
++    int na = !strncmp( a, "nvme", 4 ), nb = !strncmp( b, "nvme", 4 );
++
++    if (na != nb) return nb - na;
++    if (strlen( a ) != strlen( b ) && !strncmp( a, b, 2 )) return strlen( a ) < strlen( b ) ? -1 : 1;
++    return strcmp( a, b );
++}
++
++/* the disk Windows is on is disk 0, as Windows' setup leaves it */
++static ULONG disk_rank( const char *disk )
++{
++    static char system_disk[32];
++    static BOOL looked;
++    struct dirent *de;
++    ULONG rank = 1;
++    DIR *dir;
++
++    if (!looked)
++    {
++        looked = TRUE;
++        if (!disk_of_path( "c:", system_disk, sizeof(system_disk) )) system_disk[0] = 0;
++    }
++    if (!strcmp( disk, system_disk )) return 0;
++    if (!system_disk[0]) rank = 0;
++    if (!(dir = opendir( "/sys/block" ))) return rank;
++    while ((de = readdir( dir )))
++    {
++        if (!is_physical_disk( de->d_name ) || !strcmp( de->d_name, system_disk )) continue;
++        if (disk_order( de->d_name, disk ) < 0) rank++;
++    }
++    closedir( dir );
++    return rank;
++}
++
++NTSTATUS arctic_disk_info( void *args )
++{
++    const struct arctic_disk_info_params *params = args;
++    struct arctic_disk_info *info = params->info;
++    unsigned long long rd, rd_merged, rd_sectors, rd_ms, wr, wr_merged, wr_sectors, wr_ms, busy;
++    unsigned int queue;
++    char buf[PATH_MAX], path[PATH_MAX], real[PATH_MAX];
++    struct timespec ts;
++
++    memset( info, 0, sizeof(*info) );
++    if (!disk_of_path( params->unix_mount, info->disk, sizeof(info->disk) )) return STATUS_NOT_FOUND;
++
++    info->number = disk_rank( info->disk );
++    info->nvme = !strncmp( info->disk, "nvme", 4 );
++    if (read_sys( info->disk, "size", buf, sizeof(buf) )) info->size = strtoull( buf, NULL, 10 ) * 512;
++    info->removable = read_sys( info->disk, "removable", buf, sizeof(buf) ) && !strcmp( buf, "1" );
++    info->rotational = read_sys( info->disk, "queue/rotational", buf, sizeof(buf) ) && !strcmp( buf, "1" );
++    snprintf( path, sizeof(path), "/sys/block/%s", info->disk );
++    info->usb = realpath( path, real ) && strstr( real, "/usb" );
++    /* SATA and NVMe disks name their model, a card its name */
++    if (!read_sys( info->disk, "device/model", info->model, sizeof(info->model) ) || !info->model[0])
++        read_sys( info->disk, "device/name", info->model, sizeof(info->model) );
++    if (info->usb && read_sys( info->disk, "device/vendor", buf, sizeof(buf) ) && buf[0] && info->model[0])
++    {
++        char model[128];
++
++        snprintf( model, sizeof(model), "%s %s", buf, info->model );
++        snprintf( info->model, sizeof(info->model), "%s", model );
++    }
++
++    if (read_sys( info->disk, "stat", buf, sizeof(buf) ) &&
++        sscanf( buf, "%llu %llu %llu %llu %llu %llu %llu %llu %u %llu", &rd, &rd_merged, &rd_sectors, &rd_ms,
++                &wr, &wr_merged, &wr_sectors, &wr_ms, &queue, &busy ) == 10)
++    {
++        info->read_count = rd;
++        info->write_count = wr;
++        info->read_bytes = rd_sectors * 512;
++        info->write_bytes = wr_sectors * 512;
++        info->read_ms = rd_ms;
++        info->write_ms = wr_ms;
++        info->busy_ms = busy;
++        info->queue = queue;
++    }
++    /* the kernel counts busy time in jiffies, which stop while asleep, as this clock does */
++    clock_gettime( CLOCK_MONOTONIC, &ts );
++    info->now_ms = (ULONGLONG)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
++    return STATUS_SUCCESS;
++}
++
+ #else
+ 
+ void run_arctic_loop(void)
+@@ -266,4 +469,9 @@
+     return STATUS_NOT_SUPPORTED;
+ }
+ 
++NTSTATUS arctic_disk_info( void *args )
++{
++    return STATUS_NOT_FOUND;
++}
++
+ #endif
+diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
+--- a/dlls/mountmgr.sys/device.c
++++ b/dlls/mountmgr.sys/device.c
+@@ -1671,6 +1671,19 @@
+     return STATUS_PENDING;
+ }
+ 
++/* the physical disk under a drive, as the host sees it */
++static BOOL get_disk_info( struct disk_device *device, struct arctic_disk_info *info )
++{
++    struct arctic_disk_info_params params;
++
++    if (!device->volume || !device->volume->unix_mount) return FALSE;
++    /* fixed and removable disks, not CDs or network drives */
++    if (device->type != DEVICE_HARDDISK && device->type != DEVICE_HARDDISK_VOL) return FALSE;
++    params.unix_mount = device->volume->unix_mount;
++    params.info = info;
++    return !MOUNTMGR_CALL( arctic_disk_info, &params );
++}
++
+ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
+ {
+     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
+@@ -1696,8 +1709,19 @@
+         STORAGE_DEVICE_DESCRIPTOR *descriptor;
+         DWORD len = sizeof(*descriptor);
+         struct arctic_volume_info arctic;
++        struct arctic_disk_info disk;
+         BOOL is_arctic = get_arctic_info( device, &arctic );
+-
++        BOOL is_disk = get_disk_info( device, &disk );
++
++        /* the disk's model, where the host's record names none */
++        if (!is_arctic && is_disk && disk.model[0])
++        {
++            memset( &arctic, 0, sizeof(arctic) );
++            strcpy( arctic.product, disk.model );
++            arctic.removable = disk.removable;
++            arctic.usb = disk.usb;
++            is_arctic = TRUE;
++        }
+         if (device->disk_serial) len += strlen( device->disk_serial ) + 1;
+         if (is_arctic) len += strlen( arctic.product ) + 1;
+ 
+@@ -1738,7 +1762,7 @@
+             if (is_arctic)
+             {
+                 descriptor->RemovableMedia = arctic.removable;
+-                descriptor->BusType = arctic.usb ? BusTypeUsb : BusTypeAta;
++                descriptor->BusType = arctic.usb ? BusTypeUsb : is_disk && disk.nvme ? BusTypeNvme : BusTypeAta;
+                 descriptor->ProductIdOffset = sizeof(*descriptor);
+                 if (device->disk_serial) descriptor->ProductIdOffset += strlen( device->disk_serial ) + 1;
+                 strcpy( (char *)descriptor + descriptor->ProductIdOffset, arctic.product );
+@@ -1766,10 +1790,13 @@
+             }
+             else
+             {
+-                FIXME( "Faking StorageDeviceSeekPenaltyProperty data.\n" );
++                struct arctic_disk_info disk;
+ 
+                 memset( d, 0, sizeof(*d) );
+                 d->Version = d->Size = sizeof(*d);
++                /* a hard disk seeks, an SSD does not: how Windows tells them apart */
++                if (get_disk_info( device, &disk )) d->IncursSeekPenalty = disk.rotational;
++                else FIXME( "Faking StorageDeviceSeekPenaltyProperty data.\n" );
+                 irp->IoStatus.Information = sizeof(*d);
+             }
+             status = STATUS_SUCCESS;
+@@ -2042,6 +2069,16 @@
+         info.DiskSize.QuadPart = info.Geometry.Cylinders.QuadPart * info.Geometry.TracksPerCylinder *
+                                  info.Geometry.SectorsPerTrack * info.Geometry.BytesPerSector;
+         info.Data[0]  = 0;
++        {
++            struct arctic_disk_info disk;
++
++            /* the size of the disk under the drive */
++            if (get_disk_info( dev, &disk ) && disk.size)
++            {
++                info.Geometry.Cylinders.QuadPart = disk.size / (255 * 63 * 512);
++                info.DiskSize.QuadPart = disk.size;
++            }
++        }
+         memcpy( irp->AssociatedIrp.SystemBuffer, &info, len );
+         irp->IoStatus.Information = len;
+         status = STATUS_SUCCESS;
+@@ -2053,8 +2090,15 @@
+         STORAGE_DEVICE_NUMBER devnum = dev->devnum;
+         struct arctic_volume_info arctic;
+ 
+-        /* the volumes of one disk of the Arctic host share its number */
+-        if (get_arctic_info( dev, &arctic )) devnum.DeviceNumber = arctic.disk_number;
++        struct arctic_disk_info disk;
++
++        /* the volumes of one disk share its number, the disk Windows is on 0 */
++        if (get_disk_info( dev, &disk ))
++        {
++            devnum.DeviceType = FILE_DEVICE_DISK;
++            devnum.DeviceNumber = disk.number;
++        }
++        else if (get_arctic_info( dev, &arctic )) devnum.DeviceNumber = arctic.disk_number;
+         memcpy( irp->AssociatedIrp.SystemBuffer, &devnum, len );
+         irp->IoStatus.Information = len;
+         status = STATUS_SUCCESS;
+@@ -2101,6 +2145,39 @@
+     case IOCTL_STORAGE_QUERY_PROPERTY:
+         status = query_property( dev, irp );
+         break;
++    case IOCTL_DISK_PERFORMANCE:
++    {
++        DISK_PERFORMANCE *perf = irp->AssociatedIrp.SystemBuffer;
++        struct arctic_disk_info disk;
++
++        if (irpsp->Parameters.DeviceIoControl.OutputBufferLength < sizeof(*perf))
++        {
++            status = STATUS_BUFFER_TOO_SMALL;
++            break;
++        }
++        if (!get_disk_info( dev, &disk ))
++        {
++            status = STATUS_INVALID_DEVICE_REQUEST;
++            break;
++        }
++        /* what the disk under the drive has read and written since the start;
++         * the busy share is what IdleTime did not grow by against QueryTime */
++        memset( perf, 0, sizeof(*perf) );
++        perf->BytesRead.QuadPart = disk.read_bytes;
++        perf->BytesWritten.QuadPart = disk.write_bytes;
++        perf->ReadTime.QuadPart = disk.read_ms * 10000;
++        perf->WriteTime.QuadPart = disk.write_ms * 10000;
++        perf->QueryTime.QuadPart = disk.now_ms * 10000;
++        perf->IdleTime.QuadPart = (disk.now_ms - min( disk.now_ms, disk.busy_ms )) * 10000;
++        perf->ReadCount = disk.read_count;
++        perf->WriteCount = disk.write_count;
++        perf->QueueDepth = disk.queue;
++        perf->StorageDeviceNumber = disk.number;
++        memcpy( perf->StorageManagerName, L"PhysDisk", sizeof(perf->StorageManagerName) );
++        irp->IoStatus.Information = sizeof(*perf);
++        status = STATUS_SUCCESS;
++        break;
++    }
+     case IOCTL_STORAGE_EJECT_MEDIA:
+     case IOCTL_DISK_EJECT_MEDIA:
+     case IOCTL_STORAGE_MEDIA_REMOVAL:

@@ -11,7 +11,7 @@ import sys
 
 from PIL import Image, ImageDraw
 
-SIZES = (16, 32, 48)
+SIZES = (16, 20, 24, 30, 32, 40, 48, 64, 96)
 BLUE = (0, 120, 215, 255)       # the Windows 10 accent
 BLUE_DARK = (0, 84, 166, 255)
 
@@ -71,16 +71,20 @@ os.makedirs(out, exist_ok=True)
 src = Image.open(folder_ico)
 folders = {}
 for s in SIZES:
-    # the true-colour picture of each size, not a palette one
-    best = max((e for e in src.ico.entry if e.width == s), key=lambda e: e.bpp)
-    folders[s] = src.ico.getimage((s, s), best.bpp).convert("RGBA")
+    # the true-colour picture of each size, not a palette one; a size the
+    # icon lacks from the nearest larger
+    larger = [e for e in src.ico.entry if e.width >= s] or list(src.ico.entry)
+    width = min(e.width for e in larger) if any(e.width >= s for e in src.ico.entry) else max(e.width for e in larger)
+    best = max((e for e in src.ico.entry if e.width == width), key=lambda e: e.bpp)
+    im = src.ico.getimage((width, width), best.bpp).convert("RGBA")
+    folders[s] = im if width == s else im.resize((s, s), Image.LANCZOS)
 write_ico(os.path.join(out, "16800.ico"), [star(s) for s in SIZES])
 write_ico(os.path.join(out, "16801.ico"), [downloads(folders[s], s) for s in SIZES])
-preview = Image.new("RGBA", (140, 112), (255, 255, 255, 255))
+preview = Image.new("RGBA", (sum(SIZES) + 12 * len(SIZES) + 4, 210), (255, 255, 255, 255))
 x = 4
 for s in SIZES:
     preview.alpha_composite(star(s), (x, 4))
-    preview.alpha_composite(downloads(folders[s], s), (x, 58))
+    preview.alpha_composite(downloads(folders[s], s), (x, 104))
     x += s + 12
 preview.save(os.path.join(out, "preview.png"))
 print("icons written to", out)

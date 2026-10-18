@@ -34,6 +34,7 @@
 #include "wlanapi.h"
 #include "dwmapi.h"
 #include "wine/arctic_dwm.h"
+#include "wine/arctic_shell.h"
 #include "wine/debug.h"
 
 #include "pnidui.h"
@@ -45,7 +46,15 @@ WINE_DEFAULT_DEBUG_CHANNEL(pnidui);
 #define TILE_HEIGHT    px(64)
 
 #define ACCENT         RGB( 0x00, 0x78, 0xd7 )
-#define LINK_COLOR     RGB( 0x99, 0xeb, 0xff )
+#define LINK_COLOR     (light ? RGB( 0x00, 0x5a, 0x9e ) : RGB( 0x99, 0xeb, 0xff ))
+#define LINK_HOT       (light ? RGB( 0x00, 0x42, 0x75 ) : RGB( 0xcc, 0xf5, 0xff ))
+#define WHITE          RGB( 255, 255, 255 )
+/* text and glyphs: white, or black over a light look; on the accent always white */
+#define INK            ARCTIC_INK( light )
+#define MEDIUM         (light ? RGB( 0x66, 0x66, 0x66 ) : RGB( 0x99, 0x99, 0x99 ))
+#define DISABLED       (light ? RGB( 0xa0, 0xa0, 0xa0 ) : RGB( 0x66, 0x66, 0x66 ))
+
+static BOOL light;   /* the flyout draws dark on white (wine/arctic_shell.h) */
 
 #define REG_KEY        L"Software\\Arctic\\Network"
 
@@ -606,16 +615,16 @@ static void paint_entry( HDC hdc, int i )
 {
     const struct entry *entry = &entries[i];
     BOOL chosen = i == selected && entry->kind == ENTRY_WIRELESS;
-    COLORREF medium = chosen ? mix( RGB( 255, 255, 255 ), ACCENT, 0x99 ) : RGB( 0x99, 0x99, 0x99 );
+    COLORREF medium = chosen ? mix( WHITE, ACCENT, 0x99 ) : MEDIUM, fore = chosen ? WHITE : INK;
     RECT rect, text;
 
     if (!entry_rect( i, &rect )) return;
     if (entry->kind == ENTRY_MESSAGE)
     {
         /* the Wi-Fi category with its radio off */
-        draw_glyph( hdc, GLYPH_WIFI, px( 12 ), rect.top + px( 2 ), GLYPH, 4, RGB( 0x66, 0x66, 0x66 ), 255 );
+        draw_glyph( hdc, GLYPH_WIFI, px( 12 ), rect.top + px( 2 ), GLYPH, 4, DISABLED, 255 );
         SetRect( &text, px( 50 ), rect.top + px( 5 ), rect.right - px( 12 ), rect.top + px( 5 ) + line15 );
-        draw_text( hdc, load_string( IDS_TILE_WIFI ), &text, font_name, RGB( 255, 255, 255 ), DT_SINGLELINE );
+        draw_text( hdc, load_string( IDS_TILE_WIFI ), &text, font_name, INK, DT_SINGLELINE );
         OffsetRect( &text, 0, line15 );
         draw_text( hdc, entry->name, &text, font_name, medium, DT_SINGLELINE );
         return;
@@ -623,20 +632,20 @@ static void paint_entry( HDC hdc, int i )
 
     /* EntityListViewItem: SystemAltHighColor at 10% under the pointer, 20% pressed, the accent picked */
     if (chosen) fill_alpha( hdc, &rect, ACCENT, 255 );
-    if (is_pressed( HIT_ENTRY, i )) fill_alpha( hdc, &rect, RGB( 0, 0, 0 ), 0x33 );
-    else if (is_hot( HIT_ENTRY, i )) fill_alpha( hdc, &rect, RGB( 0, 0, 0 ), 0x1a );
+    if (is_pressed( HIT_ENTRY, i )) fill_alpha( hdc, &rect, light && !chosen ? INK : RGB( 0, 0, 0 ), 0x33 );
+    else if (is_hot( HIT_ENTRY, i )) fill_alpha( hdc, &rect, light && !chosen ? INK : RGB( 0, 0, 0 ), 0x1a );
 
     if (entry->kind == ENTRY_WIRED)
-        draw_glyph( hdc, GLYPH_ETHERNET, px( 12 ), rect.top + px( 5 ), px( 26 ), 4, RGB( 255, 255, 255 ), 255 );
+        draw_glyph( hdc, GLYPH_ETHERNET, px( 12 ), rect.top + px( 5 ), px( 26 ), 4, fore, 255 );
     else
     {
         draw_glyph( hdc, GLYPH_WIFI, px( 12 ), rect.top + px( 5 ), GLYPH,
-                    !entry->quality ? 0 : 1 + min( 3, entry->quality / 25 ), RGB( 255, 255, 255 ), 255 );
+                    !entry->quality ? 0 : 1 + min( 3, entry->quality / 25 ), fore, 255 );
         if (entry->secured)
-            draw_glyph( hdc, GLYPH_LOCK, px( 12 ), rect.top + px( 5 ), GLYPH, 1, RGB( 255, 255, 255 ), 255 );
+            draw_glyph( hdc, GLYPH_LOCK, px( 12 ), rect.top + px( 5 ), GLYPH, 1, fore, 255 );
     }
     SetRect( &text, text_left( i ), rect.top + px( 5 ), rect.right - px( 10 ), rect.top + px( 5 ) + line15 );
-    draw_text( hdc, entry->name, &text, font_name, RGB( 255, 255, 255 ), DT_SINGLELINE );
+    draw_text( hdc, entry->name, &text, font_name, fore, DT_SINGLELINE );
     OffsetRect( &text, 0, line15 );
     draw_text( hdc, chosen ? entry->detail_selected : entry->detail, &text, font_name, medium, DT_SINGLELINE );
 
@@ -652,11 +661,11 @@ static void paint_entry( HDC hdc, int i )
             /* CheckBox: a 20 box, its 2 border white, the label 8 after it */
             SetRect( &box, check.left, (check.top + check.bottom) / 2 - px( 10 ), check.left + px( 20 ),
                      (check.top + check.bottom) / 2 + px( 10 ) );
-            if (is_hot( HIT_CHECK, i )) fill_alpha( hdc, &box, RGB( 255, 255, 255 ), 0x33 );
-            frame( hdc, &box, px( 2 ), RGB( 255, 255, 255 ), 0xcc );
+            if (is_hot( HIT_CHECK, i )) fill_alpha( hdc, &box, WHITE, 0x33 );
+            frame( hdc, &box, px( 2 ), WHITE, 0xcc );
             if (autoconnect)
             {
-                HPEN pen = CreatePen( PS_SOLID, px( 2 ), RGB( 255, 255, 255 ) );
+                HPEN pen = CreatePen( PS_SOLID, px( 2 ), WHITE );
                 HGDIOBJ old = SelectObject( hdc, pen );
                 MoveToEx( hdc, box.left + px( 4 ), box.top + px( 10 ), NULL );
                 LineTo( hdc, box.left + px( 8 ), box.top + px( 14 ) );
@@ -665,15 +674,15 @@ static void paint_entry( HDC hdc, int i )
                 DeleteObject( pen );
             }
             SetRect( &text, box.right + px( 8 ), check.top, check.right, check.bottom );
-            draw_text( hdc, load_string( IDS_AUTOCONNECT ), &text, font_name, RGB( 255, 255, 255 ),
+            draw_text( hdc, load_string( IDS_AUTOCONNECT ), &text, font_name, WHITE,
                        DT_SINGLELINE | DT_VCENTER );
         }
         /* Button: BaseLow, its border BaseMediumLow under the pointer, BaseMediumLow pressed */
-        fill_alpha( hdc, &button, RGB( 255, 255, 255 ), entry->connecting ? 0x33 : fill );
-        if (is_hot( HIT_BUTTON, i ) && !entry->connecting) frame( hdc, &button, px( 2 ), RGB( 255, 255, 255 ), 0x66 );
+        fill_alpha( hdc, &button, WHITE, entry->connecting ? 0x33 : fill );
+        if (is_hot( HIT_BUTTON, i ) && !entry->connecting) frame( hdc, &button, px( 2 ), WHITE, 0x66 );
         draw_text( hdc, load_string( entry->connecting ? IDS_CONNECTING : entry->connected ? IDS_DISCONNECT_PLAIN :
                                      IDS_CONNECT_PLAIN ),
-                   &button, font_name, entry->connecting ? mix( RGB( 255, 255, 255 ), ACCENT, 0x66 ) : RGB( 255, 255, 255 ),
+                   &button, font_name, entry->connecting ? mix( WHITE, ACCENT, 0x66 ) : WHITE,
                    DT_SINGLELINE | DT_VCENTER | DT_CENTER );
         make_opaque( &rect );
     }
@@ -686,7 +695,7 @@ static void paint_link( HDC hdc )
     /* AccentHyperlinkButtonStyle: SystemAccentColorLight3; HyperlinkButton's padding 0,5,0,6 */
     SetRect( &text, link.left, link.top + px( 5 ), link.right, link.top + px( 5 ) + line15 );
     draw_text( hdc, load_string( IDS_SETTINGS_LINK ), &text, font_name,
-               is_pressed( HIT_LINK, -1 ) ? RGB( 0x99, 0x99, 0x99 ) : is_hot( HIT_LINK, -1 ) ? RGB( 0xcc, 0xf5, 0xff ) : LINK_COLOR,
+               is_pressed( HIT_LINK, -1 ) ? MEDIUM : is_hot( HIT_LINK, -1 ) ? LINK_HOT : LINK_COLOR,
                DT_SINGLELINE );
     if (is_hot( HIT_LINK, -1 ))
     {
@@ -699,11 +708,11 @@ static void paint_link( HDC hdc )
         GetTextExtentPoint32W( dc, s, lstrlenW( s ), &size );
         SelectObject( dc, old );
         SetRect( &underline, text.left, text.top + line15 - px( 2 ), text.left + size.cx, text.top + line15 - px( 1 ) );
-        fill_alpha( dc, &underline, RGB( 0xcc, 0xf5, 0xff ), 255 );
+        fill_alpha( dc, &underline, LINK_HOT, 255 );
     }
     /* the help: Caption at 60%, margin 12,-5,12,12 */
     SetRect( &text, px( 12 ), link.bottom - px( 5 ), FLYOUT_WIDTH - px( 12 ), tiles_top() - px( 12 ) );
-    draw_text( hdc, load_string( IDS_SETTINGS_HELP ), &text, font_tile, RGB( 0x99, 0x99, 0x99 ), DT_WORDBREAK );
+    draw_text( hdc, load_string( IDS_SETTINGS_HELP ), &text, font_tile, MEDIUM, DT_WORDBREAK );
 }
 
 static void paint_tiles( HDC hdc )
@@ -715,15 +724,15 @@ static void paint_tiles( HDC hdc )
     {
         RECT rect = tile_rect( t ), text, measure;
         BOOL enabled = tile_enabled( t ), on = tile_on( t ) && enabled;
-        COLORREF fore = enabled ? RGB( 255, 255, 255 ) : RGB( 0x66, 0x66, 0x66 );
+        COLORREF fore = !enabled ? DISABLED : on && !is_pressed( HIT_TILE, t ) ? WHITE : INK;
         int height;
 
         /* ToggleButtonRevealStyle: BaseLow off, the accent on, BaseMediumLow pressed;
          * the reveal border lights under the pointer */
-        if (is_pressed( HIT_TILE, t )) fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), 0x66 );
+        if (is_pressed( HIT_TILE, t )) fill_alpha( hdc, &rect, INK, 0x66 );
         else if (on) fill_alpha( hdc, &rect, ACCENT, 255 );
-        else fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), 0x33 );
-        if (is_hot( HIT_TILE, t )) frame( hdc, &rect, px( 1 ), RGB( 255, 255, 255 ), 0x99 );
+        else fill_alpha( hdc, &rect, INK, 0x33 );
+        if (is_hot( HIT_TILE, t )) frame( hdc, &rect, px( 1 ), on ? WHITE : INK, 0x99 );
 
         /* padding 3,7,0,3 inside the 1 border: the 16 glyph top left, the title bottom left */
         draw_glyph( hdc, glyphs[t], rect.left + px( 4 ), rect.top + px( 8 ), px( 16 ), 4, fore, 255 );
@@ -757,8 +766,8 @@ static void on_paint( HWND hwnd )
         paint_bits = bits;
         paint_width = client.right;
         paint_height = client.bottom;
-        /* black is the shell's backdrop seen through */
-        FillRect( mem, &client, GetStockObject( BLACK_BRUSH ) );
+        /* black, or white over a light look, is the shell's backdrop seen through */
+        arctic_fill_back( mem, &client, light );
         SetBkMode( mem, TRANSPARENT );
         SetRect( &list, 0, 0, client.right, list_height() );
         clip = CreateRectRgnIndirect( &list );
@@ -768,7 +777,7 @@ static void on_paint( HWND hwnd )
         {
             /* SeparatorBorderStyle: a 1 line of BaseLow, margin 12 */
             RECT line = { px( 12 ), separator_y - scroll, client.right - px( 12 ), separator_y - scroll + 1 };
-            fill_alpha( mem, &line, RGB( 255, 255, 255 ), 0x33 );
+            fill_alpha( mem, &line, INK, 0x33 );
         }
         SelectClipRgn( mem, NULL );
         DeleteObject( clip );
@@ -778,7 +787,7 @@ static void on_paint( HWND hwnd )
             int bar = max( px( 24 ), list_height() * list_height() / content_height() );
             int top = (list_height() - bar) * scroll / max( 1, content_height() - list_height() );
             RECT thumb = { client.right - px( 4 ), top, client.right - px( 2 ), top + bar };
-            fill_alpha( mem, &thumb, RGB( 255, 255, 255 ), 0x99 );
+            fill_alpha( mem, &thumb, INK, 0x99 );
         }
         paint_link( mem );
         paint_tiles( mem );
@@ -1051,17 +1060,8 @@ static LRESULT WINAPI flyout_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 
 static void shell_look(void)
 {
-    static void (WINAPI *apply)( HWND );
-    static BOOL looked;
-
-    if (!looked)
-    {
-        HMODULE module = LoadLibraryW( L"startui.dll" );
-        if (module) apply = (void *)GetProcAddress( module, "ArcticApplyShellLook" );
-        looked = TRUE;
-    }
-    if (apply) apply( flyout );
-    else
+    light = arctic_shell_look( flyout );
+    if (!arctic_startui_proc( "ArcticApplyShellLook" ))
     {
         struct arctic_accent_policy policy = { ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND, 0, 0xcc1f1f1f, 0 };
         struct { DWORD attrib; void *data; SIZE_T size; } attr = { 19 /* WCA_ACCENT_POLICY */, &policy, sizeof(policy) };

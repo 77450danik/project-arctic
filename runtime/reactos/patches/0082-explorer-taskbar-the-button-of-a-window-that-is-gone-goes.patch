@@ -1,0 +1,39 @@
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -1545,4 +1545,26 @@
+         return FALSE;
+     }
+
++    /* Arctic: a button whose window no longer exists goes. The shell hook
++       tells the taskbar of a window that goes, but the taskbar also takes
++       windows from enumerating them, and a window the hook never named
++       (hidden, then destroyed) left its button behind: a dead "EffectCraft"
++       after every failed start. The foreground timer clears them. */
++    VOID DeleteGoneTasks()
++    {
++        BOOL bDeleted = FALSE;
++
++        for (PTASK_ITEM TaskItem = m_TaskItems + m_TaskItemCount; TaskItem != m_TaskItems; )
++        {
++            if (::IsWindow((--TaskItem)->hWnd))
++                continue;
++            ArcticLog("arctic-taskbar: button %d of window %p, which is gone, goes too\n",
++                      TaskItem->Index, TaskItem->hWnd);
++            DeleteTaskItem(TaskItem);
++            bDeleted = TRUE;
++        }
++        if (bDeleted)
++            CheckFull();
++    }
++
+     VOID DeleteAllTasks()
+@@ -2850,6 +2872,8 @@
+             case TIMER_ID_FOREGROUND:
+             {
+                 HWND hwndForeground = ::GetForegroundWindow();
++
++                DeleteGoneTasks();
+                 if (hwndForeground != m_hwndForeground)
+                     FollowForeground(hwndForeground);
+                 break;

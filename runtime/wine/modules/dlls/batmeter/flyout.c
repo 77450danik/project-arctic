@@ -202,17 +202,18 @@ static void draw_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, COLOR
 }
 
 #define WHITE   RGB( 0xff, 0xff, 0xff )
-#define MEDIUM  RGB( 0x99, 0x99, 0x99 )   /* BaseMedium: 60% */
+#define INK     ARCTIC_INK( shell_light )   /* text and glyphs; on the accent always white */
+#define MEDIUM  (shell_light ? RGB( 0x66, 0x66, 0x66 ) : RGB( 0x99, 0x99, 0x99 ))   /* BaseMedium: 60% */
 
 static void paint_battery( HDC hdc )
 {
     WCHAR label[256];
     RECT rect;
 
-    draw_glyph( hdc, battery_view_glyph( &view ), px( 8 ), (layout.row_height - ICON_SIZE) / 2, ICON_SIZE, WHITE, 255 );
+    draw_glyph( hdc, battery_view_glyph( &view ), px( 8 ), (layout.row_height - ICON_SIZE) / 2, ICON_SIZE, INK, 255 );
 
     SetRect( &rect, layout.percent_x, 0, layout.label_x, layout.row_height );
-    draw_text( hdc, percent_text(), &rect, font_header, WHITE, DT_SINGLELINE | DT_VCENTER | DT_LEFT );
+    draw_text( hdc, percent_text(), &rect, font_header, INK, DT_SINGLELINE | DT_VCENTER | DT_LEFT );
 
     battery_state_label( &view, label, ARRAY_SIZE(label) );
     if (label[0])
@@ -257,11 +258,11 @@ static void paint_slider( HDC hdc )
 
     if (!view.slider) return;
     SetRect( &rect, SLIDER_LEFT, layout.header_top, SLIDER_LEFT + SLIDER_WIDTH, layout.header_top + layout.header_height );
-    draw_text( hdc, slider_header(), &rect, font_body, WHITE, DT_WORDBREAK | DT_LEFT );
+    draw_text( hdc, slider_header(), &rect, font_body, INK, DT_WORDBREAK | DT_LEFT );
 
     /* the track, the part up to the thumb */
     SetRect( &rect, SLIDER_LEFT, track_y, SLIDER_LEFT + SLIDER_WIDTH, track_y + px( 2 ) );
-    fill_alpha( hdc, &rect, WHITE, 0x66 );
+    fill_alpha( hdc, &rect, INK, 0x66 );
     SetRect( &rect, SLIDER_LEFT, track_y, left + THUMB_WIDTH / 2, track_y + px( 2 ) );
     fill_alpha( hdc, &rect, ACCENT_COLOR, 255 );
 
@@ -270,7 +271,7 @@ static void paint_slider( HDC hdc )
     {
         int x = thumb_left( i ) + THUMB_WIDTH / 2;
         SetRect( &rect, x, track_y + px( 2 ) + px( 4 ), x + max( px( 1 ), 1 ), track_y + px( 2 ) + px( 8 ) );
-        fill_alpha( hdc, &rect, WHITE, 0x66 );
+        fill_alpha( hdc, &rect, INK, 0x66 );
     }
 
     /* the thumb */
@@ -289,7 +290,7 @@ static void paint_slider( HDC hdc )
 static void paint_link( HDC hdc )
 {
     const WCHAR *text = load_string( IDS_SETTINGS_LINK );
-    COLORREF color = pressed == HIT_LINK ? MEDIUM : hot == HIT_LINK ? RGB( 0xcc, 0xf5, 0xff ) : LINK_COLOR;
+    COLORREF color = pressed == HIT_LINK ? MEDIUM : hot == HIT_LINK ? LINK_HOT : LINK_COLOR;
     RECT rect = { px( 12 ), layout.link_top + px( 5 ), FLYOUT_WIDTH - px( 12 ), layout.link_top + px( 5 ) + line15 };
 
     draw_text( hdc, text, &rect, font_body, color, DT_SINGLELINE | DT_LEFT );
@@ -306,26 +307,28 @@ static void paint_tile( HDC hdc, UINT32 *bits, int width, int height )
     RECT rect = { px( 4 ), layout.tile_top, px( 4 ) + TILE_WIDTH, layout.tile_top + TILE_HEIGHT }, text;
     const WCHAR *name = load_string( IDS_BATTERY_SAVER );
     int lines;
+    BOOL on = view.saver && pressed != HIT_TILE;
+    COLORREF fore = on ? WHITE : INK;
 
     if (!show_tile()) return;
     /* ToggleButtonRevealStyle: BaseLow off, the accent on, BaseMediumLow pressed */
-    if (pressed == HIT_TILE) fill_alpha( hdc, &rect, WHITE, 0x66 );
+    if (pressed == HIT_TILE) fill_alpha( hdc, &rect, INK, 0x66 );
     else if (view.saver) fill_alpha( hdc, &rect, ACCENT_COLOR, 255 );
-    else fill_alpha( hdc, &rect, WHITE, 0x33 );
+    else fill_alpha( hdc, &rect, INK, 0x33 );
     if (hot == HIT_TILE)
     {
         RECT side;
-        SetRect( &side, rect.left, rect.top, rect.right, rect.top + px( 1 ) ); fill_alpha( hdc, &side, WHITE, 0x99 );
-        SetRect( &side, rect.left, rect.bottom - px( 1 ), rect.right, rect.bottom ); fill_alpha( hdc, &side, WHITE, 0x99 );
-        SetRect( &side, rect.left, rect.top, rect.left + px( 1 ), rect.bottom ); fill_alpha( hdc, &side, WHITE, 0x99 );
-        SetRect( &side, rect.right - px( 1 ), rect.top, rect.right, rect.bottom ); fill_alpha( hdc, &side, WHITE, 0x99 );
+        SetRect( &side, rect.left, rect.top, rect.right, rect.top + px( 1 ) ); fill_alpha( hdc, &side, fore, 0x99 );
+        SetRect( &side, rect.left, rect.bottom - px( 1 ), rect.right, rect.bottom ); fill_alpha( hdc, &side, fore, 0x99 );
+        SetRect( &side, rect.left, rect.top, rect.left + px( 1 ), rect.bottom ); fill_alpha( hdc, &side, fore, 0x99 );
+        SetRect( &side, rect.right - px( 1 ), rect.top, rect.right, rect.bottom ); fill_alpha( hdc, &side, fore, 0x99 );
     }
     /* padding 3,7,0,3 inside the 1 border: the 16 glyph top left, the title bottom left */
     draw_glyph( hdc, battery_glyph( GLYPH_SAVER, view.status.percent ), rect.left + px( 4 ), rect.top + px( 8 ), px( 16 ),
-                WHITE, 255 );
+                fore, 255 );
     lines = min( text_height( name, font_caption, TILE_WIDTH - px( 5 ) ), 2 * line12 );
     SetRect( &text, rect.left + px( 4 ), rect.bottom - px( 4 ) - lines, rect.right - px( 1 ), rect.bottom - px( 4 ) );
-    draw_text( hdc, name, &text, font_caption, WHITE, DT_WORDBREAK | DT_LEFT );
+    draw_text( hdc, name, &text, font_caption, fore, DT_WORDBREAK | DT_LEFT );
     /* the accent is opaque: white text on it must not be keyed by brightness */
     if (view.saver && pressed != HIT_TILE)
         for (int y = max( (int)rect.top, 0 ); y < min( (int)rect.bottom, height ); y++)
@@ -351,7 +354,7 @@ static void on_paint( HWND hwnd )
         HGDIOBJ old = SelectObject( mem, bitmap );
 
         /* black is the acrylic seen through */
-        FillRect( mem, &client, GetStockObject( BLACK_BRUSH ) );
+        arctic_fill_back( mem, &client, shell_light );
         SetBkMode( mem, TRANSPARENT );
         paint_battery( mem );
         paint_list( mem );

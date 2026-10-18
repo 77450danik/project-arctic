@@ -3,11 +3,13 @@
 browseui draws its toolbar from strips of 47 icons in the order of Windows
 XP's (back, forward, cut, copy, ... up, folders). The icons Explorer shows
 come from the Longhorn icon theme (runtime/art/longhorn, PNG at 16, 22, 32
-and 48 pixels); the others stay ReactOS's (runtime/art/browseui, the
-original 24 pixel strips). One strip a size, as Windows picks the toolbar
-size by the scale: 16, 24 (100 %), 30 (125 %), 36 (150 %), 48 (175 % and
-up), each with its hot twin. 32 bits, straight alpha, bottom-up, as
-browseui's own.
+and 48 pixels), except back, forward and up, which are Arctic's own glossy
+arrows (runtime/art/arrows, tools/extract-arrows.py); the others stay
+ReactOS's (runtime/art/browseui, the original 24 pixel strips). One strip a
+size, as Windows picks the toolbar size by the scale: 16, 24 (100 %), 30
+(125 %), 36 (150 %), 48 (175 % and up), each with its hot twin. The address
+bar's Go button (230, 231) is the forward arrow too. 32 bits, straight
+alpha, bottom-up, as browseui's own.
 
 usage: python tools/make-toolbar-icons.py   (needs Pillow; writes
 runtime/reactos/files/dll/win32/browseui/res/2xx.bmp)
@@ -15,7 +17,7 @@ runtime/reactos/files/dll/win32/browseui/res/2xx.bmp)
 import os
 import struct
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ART = os.path.join(ROOT, "runtime", "art")
@@ -24,8 +26,6 @@ COUNT = 47
 
 # strip index -> Longhorn icon (under <size>x<size>/)
 LONGHORN = {
-    0: "actions/back",
-    1: "actions/forward",
     3: "actions/stock_add-bookmark",
     5: "actions/edit-cut",
     6: "actions/edit-copy",
@@ -41,11 +41,14 @@ LONGHORN = {
     17: "actions/edit-find",
     18: "actions/edit-find",
     19: "actions/document-print",
-    28: "actions/go-up",
     31: "actions/folder-new",
     43: "places/folder",
 }
+# strip index -> Arctic's arrow (runtime/art/arrows, 256 pixels)
+ARROWS = {0: "back", 1: "forward", 28: "up"}
 SOURCE_SIZES = (16, 22, 32, 48)
+
+GO_SIZE = 20
 
 # (pixels, normal strip, hot strip)
 STRIPS = ((16, 216, 217), (24, 214, 215), (30, 218, 219), (36, 220, 221), (48, 222, 223))
@@ -67,6 +70,16 @@ def longhorn(name, size):
                 return resized(Image.open(path).convert("RGBA"), size)
     path = os.path.join(ART, "longhorn", "48x48", name + ".png")
     return resized(Image.open(path).convert("RGBA"), size)
+
+
+def arrow(name, size):
+    """scaled down from 256; at the small sizes sharpened so the rim stays a line"""
+    icon = resized(Image.open(os.path.join(ART, "arrows", name + ".png")).convert("RGBA"), size)
+    if size <= 30:
+        r, g, b, a = icon.split()
+        rgb = Image.merge("RGB", (r, g, b)).filter(ImageFilter.UnsharpMask(1, 60, 0))
+        icon = Image.merge("RGBA", rgb.split() + (a,))
+    return icon
 
 
 def read_strip(path):
@@ -103,8 +116,8 @@ def main():
         for is_hot, strip_id in ((False, normal_id), (True, hot_id)):
             strip = Image.new("RGBA", (size * COUNT, size), (0, 0, 0, 0))
             for i in range(COUNT):
-                if i in LONGHORN:
-                    icon = longhorn(LONGHORN[i], size)
+                if i in ARROWS or i in LONGHORN:
+                    icon = arrow(ARROWS[i], size) if i in ARROWS else longhorn(LONGHORN[i], size)
                     if is_hot:
                         icon = hot(icon)
                 else:
@@ -112,6 +125,11 @@ def main():
                 strip.paste(icon, (i * size, 0))
             write_strip(strip, os.path.join(OUT, "%d.bmp" % strip_id))
             print("%d.bmp: %d icons of %d pixels" % (strip_id, COUNT, size))
+    # the address bar's Go button (IDB_GOBUTTON_NORMAL/_HOT, 20 pixels)
+    for is_hot, go_id in ((False, 230), (True, 231)):
+        icon = arrow("forward", GO_SIZE)
+        write_strip(hot(icon) if is_hot else icon, os.path.join(OUT, "%d.bmp" % go_id))
+        print("%d.bmp: the Go button, %d pixels" % (go_id, GO_SIZE))
 
 
 if __name__ == "__main__":

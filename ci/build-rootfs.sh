@@ -209,6 +209,12 @@ bash "$ROOT/ci/install-windows-tools.sh" "$PFX"
 # the Snipping Tool in Start, as in Windows 11 (Win+Shift+S starts it too)
 python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Ножиці.lnk" \
     'C:\windows\system32\snippingtool.exe'
+# Paint, ReactOS's, as Windows has it in Start; pictures open in the viewer
+# of shimgvw.dll and "Edit" opens them here (filetypes.reg)
+if [ -e "$PFX/drive_c/windows/system32/mspaint.exe" ]; then
+    python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Paint.lnk" \
+        'C:\windows\system32\mspaint.exe'
+fi
 # Internet Explorer on our own engine (docs/browser.md): a plain Windows
 # program, built as it would be for any Windows and put where Windows keeps
 # it. Wine's iexplore is a frame around a Gecko this image has not got, so

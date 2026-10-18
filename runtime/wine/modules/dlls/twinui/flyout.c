@@ -268,10 +268,10 @@ static void draw_pixels( HDC hdc, int x, int y, const UINT32 *pixels, BYTE opaci
 
 static void paint( HDC hdc, const RECT *client )
 {
-    FillRect( hdc, client, GetStockObject( BLACK_BRUSH ) );
+    arctic_fill_back( hdc, client, shell_light );
     SelectObject( hdc, font );
     SetBkMode( hdc, TRANSPARENT );
-    SetTextColor( hdc, RGB(255, 255, 255) );
+    SetTextColor( hdc, INK );
 
     for (UINT i = 0; i < count; i++)
     {
@@ -281,7 +281,7 @@ static void paint( HDC hdc, const RECT *client )
         RECT text;
         HICON icon;
 
-        if (is_hot && hot_button < 0) fill_alpha( hdc, &item->rect, RGB(255, 255, 255), 0x1a );
+        if (is_hot && hot_button < 0) fill_alpha( hdc, &item->rect, INK, 0x1a );
 
         icon = window_icon( item->hwnd, FALSE );
         DrawIconEx( hdc, item->rect.left + PADDING, (TITLE_HEIGHT - ICON_SIZE) / 2 + PADDING / 2, icon,
@@ -300,7 +300,7 @@ static void paint( HDC hdc, const RECT *client )
         if (is_hot)
         {
             if (hot_close) fill_alpha( hdc, &item->close, RGB(0xe8, 0x11, 0x23), 255 );
-            draw_glyph_close( hdc, &item->close, RGB(255, 255, 255) );
+            draw_glyph_close( hdc, &item->close, hot_close ? RGB(255, 255, 255) : INK );
         }
 
         for (UINT k = 0; k < item->button_count; k++)
@@ -310,7 +310,7 @@ static void paint( HDC hdc, const RECT *client )
 
             if (!(b->flags & THBF_NOBACKGROUND) && is_hot && (int)k == hot_button && !disabled &&
                 !(b->flags & THBF_NONINTERACTIVE))
-                fill_alpha( hdc, &b->rect, RGB(255, 255, 255), pressed ? 0x0f : 0x26 );
+                fill_alpha( hdc, &b->rect, INK, pressed ? 0x0f : 0x26 );
             if (b->has_icon)
                 draw_pixels( hdc, (b->rect.left + b->rect.right - ARCTIC_TASKBAR_ICON) / 2,
                              (b->rect.top + b->rect.bottom - ARCTIC_TASKBAR_ICON) / 2, b->icon, disabled ? 0x66 : 0xff );

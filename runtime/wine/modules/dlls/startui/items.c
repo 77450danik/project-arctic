@@ -18,11 +18,14 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+#define COBJMACROS
+
 #include <stdlib.h>
 
 #include "startui.h"
 #include "shellapi.h"
 #include "shlobj.h"
+#include "shlguid.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(startui);
@@ -30,45 +33,48 @@ WINE_DEFAULT_DEBUG_CHANNEL(startui);
 #define REG_KEY        L"Software\\Arctic\\StartMenu"
 #define MAX_RESULTS    12
 #define MAX_SETTINGS   6
+#define MAX_FILES      6
 
 struct builtin
 {
     UINT name;
     const WCHAR *path;   /* environment strings expanded */
     const WCHAR *args;
+    const WCHAR *aliases;  /* as Windows' search also knows them, in English */
 };
 
 static const struct builtin builtins[] =
 {
-    { IDS_EXPLORER,      L"%SystemRoot%\\explorer.exe" },
-    { IDS_NOTEPAD,       L"%SystemRoot%\\system32\\notepad.exe" },
-    { IDS_CMD,           L"%SystemRoot%\\system32\\cmd.exe" },
-    { IDS_POWERSHELL,    L"%ProgramFiles%\\PowerShell\\7\\pwsh.exe" },
-    { IDS_TASKMGR,       L"%SystemRoot%\\system32\\taskmgr.exe" },
-    { IDS_SNIPPING,      L"%SystemRoot%\\system32\\snippingtool.exe" },
-    { IDS_REGEDIT,       L"%SystemRoot%\\regedit.exe" },
-    { IDS_CONTROL_PANEL, L"%SystemRoot%\\system32\\control.exe" },
+    { IDS_EXPLORER,      L"%SystemRoot%\\explorer.exe", NULL, L"file explorer files folders" },
+    { IDS_NOTEPAD,       L"%SystemRoot%\\system32\\notepad.exe", NULL, L"notepad text editor" },
+    { IDS_CMD,           L"%SystemRoot%\\system32\\cmd.exe", NULL, L"command prompt cmd console terminal" },
+    { IDS_POWERSHELL,    L"%ProgramFiles%\\PowerShell\\7\\pwsh.exe", NULL, L"powershell pwsh terminal" },
+    { IDS_TASKMGR,       L"%SystemRoot%\\system32\\taskmgr.exe", NULL, L"task manager taskmgr processes" },
+    { IDS_SNIPPING,      L"%SystemRoot%\\system32\\snippingtool.exe", NULL, L"snipping tool screenshot" },
+    { IDS_REGEDIT,       L"%SystemRoot%\\regedit.exe", NULL, L"registry editor regedit" },
+    { IDS_CONTROL_PANEL, L"%SystemRoot%\\system32\\control.exe", NULL, L"control panel settings" },
 };
 
 static const struct builtin applets[] =
 {
-    { IDS_CPL_DISPLAY,  L"desk.cpl" },
-    { IDS_CPL_SOUND,    L"mmsys.cpl" },
-    { IDS_CPL_NETWORK,  L"ncpa.cpl" },
-    { IDS_CPL_PROGRAMS, L"appwiz.cpl" },
-    { IDS_CPL_REGION,   L"intl.cpl" },
-    { IDS_CPL_MOUSE,    L"main.cpl" },
-    { IDS_CPL_KEYBOARD, L"main.cpl", L"@1" },
-    { IDS_CPL_DATETIME, L"timedate.cpl" },
-    { IDS_CPL_SYSTEM,   L"sysdm.cpl" },
-    { IDS_CPL_POWER,    L"powercfg.cpl" },
+    { IDS_CPL_DISPLAY,  L"desk.cpl", NULL, L"display screen resolution scale monitor" },
+    { IDS_CPL_SOUND,    L"mmsys.cpl", NULL, L"sound audio speakers microphone" },
+    { IDS_CPL_NETWORK,  L"ncpa.cpl", NULL, L"network connections ethernet wi-fi wifi adapter" },
+    { IDS_CPL_PROGRAMS, L"appwiz.cpl", NULL, L"programs and features uninstall apps" },
+    { IDS_CPL_REGION,   L"intl.cpl", NULL, L"region language format" },
+    { IDS_CPL_MOUSE,    L"main.cpl", NULL, L"mouse pointer cursor" },
+    { IDS_CPL_KEYBOARD, L"main.cpl", L"@1", L"keyboard" },
+    { IDS_CPL_DATETIME, L"timedate.cpl", NULL, L"date and time clock" },
+    { IDS_CPL_SYSTEM,   L"sysdm.cpl", NULL, L"system about computer name" },
+    { IDS_CPL_POWER,    L"powercfg.cpl", NULL, L"power options battery sleep" },
 };
 
 static struct item builtin_items[ARRAY_SIZE(builtins)], applet_items[ARRAY_SIZE(applets)];
 static UINT builtin_count, applet_count;
 static struct item *root;              /* All programs */
 static UINT root_count;
-static struct item results_programs, results_settings;
+static struct item results_programs, results_settings, results_files;
+static struct item file_items[MAX_FILES];   /* the files a search found */
 static struct item **view;             /* what the last call returned */
 static UINT view_size;
 
@@ -78,6 +84,7 @@ static void free_items( struct item *items, UINT count )
     {
         if (items[i].icon_large) DeleteObject( items[i].icon_large );
         if (items[i].icon_small) DeleteObject( items[i].icon_small );
+        if (items[i].icon_other) DeleteObject( items[i].icon_other );
         if (items[i].children != builtin_items) free_items( items[i].children, items[i].child_count );
     }
     if (items != builtin_items && items != applet_items) free( items );
@@ -147,6 +154,7 @@ static void read_folder( const WCHAR *dir, struct item **items, UINT *count, UIN
         lstrcpynW( item->name, data.cFileName, ARRAY_SIZE(item->name) );
         if (!folder && (dot = wcsrchr( item->name, '.' ))) *dot = 0;
         swprintf( item->path, MAX_PATH, L"%s\\%s", dir, data.cFileName );
+        item->added = data.ftCreationTime;
         if (folder)
         {
             /* the name desktop.ini gives it (StartUp is Автозавантаження) */
@@ -203,11 +211,13 @@ static void load_builtins(void)
     {
         if (builtin_items[i].icon_large) DeleteObject( builtin_items[i].icon_large );
         if (builtin_items[i].icon_small) DeleteObject( builtin_items[i].icon_small );
+        if (builtin_items[i].icon_other) DeleteObject( builtin_items[i].icon_other );
     }
     for (UINT i = 0; i < applet_count; i++)
     {
         if (applet_items[i].icon_large) DeleteObject( applet_items[i].icon_large );
         if (applet_items[i].icon_small) DeleteObject( applet_items[i].icon_small );
+        if (applet_items[i].icon_other) DeleteObject( applet_items[i].icon_other );
     }
     builtin_count = applet_count = 0;
     for (UINT i = 0; i < ARRAY_SIZE(builtins); i++)
@@ -223,6 +233,8 @@ static void load_builtins(void)
         lstrcpynW( item->path, path, ARRAY_SIZE(item->path) );
         swprintf( item->key, ARRAY_SIZE(item->key), L"builtin:%s", wcsrchr( path, '\\' ) + 1 );
         CharLowerW( item->key );
+        lstrcpynW( item->aliases, builtins[i].aliases, ARRAY_SIZE(item->aliases) );
+        item->aliased = TRUE;
         item->depth = 1;
         builtin_count++;
     }
@@ -244,6 +256,8 @@ static void load_builtins(void)
         lstrcpynW( item->icon_path, path, ARRAY_SIZE(item->icon_path) );
         swprintf( item->key, ARRAY_SIZE(item->key), L"cpl:%s", item->args );
         CharLowerW( item->key );
+        lstrcpynW( item->aliases, applets[i].aliases, ARRAY_SIZE(item->aliases) );
+        item->aliased = TRUE;
         applet_count++;
     }
 }
@@ -293,6 +307,9 @@ done:
     memset( &results_settings, 0, sizeof(results_settings) );
     results_settings.kind = ITEM_HEADER;
     lstrcpynW( results_settings.name, load_string( IDS_RESULTS_SETTINGS ), ARRAY_SIZE(results_settings.name) );
+    memset( &results_files, 0, sizeof(results_files) );
+    results_files.kind = ITEM_HEADER;
+    lstrcpynW( results_files.name, load_string( IDS_RESULTS_FILES ), ARRAY_SIZE(results_files.name) );
 }
 
 /**********************************************************************
@@ -571,6 +588,57 @@ static BOOL matches( const WCHAR *name, const WCHAR *text )
     return wcsstr( a, b ) != NULL;
 }
 
+/* the file name of a program, without its extension: notepad of notepad.exe */
+static void add_file_name( WCHAR *aliases, int size, const WCHAR *path )
+{
+    const WCHAR *name = wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path;
+    WCHAR base[MAX_PATH], *dot;
+    int len = lstrlenW( aliases );
+
+    lstrcpynW( base, name, ARRAY_SIZE(base) );
+    if ((dot = wcsrchr( base, '.' ))) *dot = 0;
+    if (!base[0] || len + lstrlenW( base ) + 2 >= size) return;
+    if (len) aliases[len++] = ' ';
+    lstrcpynW( aliases + len, base, size - len );
+}
+
+/* a shortcut is found by the program it starts too, as in Windows: what
+ * Chrome's shortcut points at is chrome.exe */
+static void look_up_aliases( struct item *item )
+{
+    IShellLinkW *link;
+    IPersistFile *file;
+    WCHAR target[MAX_PATH];
+    const WCHAR *dot;
+
+    if (item->aliased) return;
+    item->aliased = TRUE;
+    dot = wcsrchr( item->path, '.' );
+    if (!dot || wcsicmp( dot, L".lnk" ))
+    {
+        add_file_name( item->aliases, ARRAY_SIZE(item->aliases), item->path );
+        return;
+    }
+    if (FAILED(CoCreateInstance( &CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW, (void **)&link )))
+        return;
+    if (SUCCEEDED(IShellLinkW_QueryInterface( link, &IID_IPersistFile, (void **)&file )))
+    {
+        if (SUCCEEDED(IPersistFile_Load( file, item->path, STGM_READ )) &&
+            IShellLinkW_GetPath( link, target, ARRAY_SIZE(target), NULL, SLGP_RAWPATH ) == S_OK)
+            add_file_name( item->aliases, ARRAY_SIZE(item->aliases), target );
+        IPersistFile_Release( file );
+    }
+    IShellLinkW_Release( link );
+}
+
+/* by its name, an English name Windows knows it by, or its program's file */
+static BOOL item_matches( struct item *item, const WCHAR *text )
+{
+    if (matches( item->name, text )) return TRUE;
+    look_up_aliases( item );
+    return item->aliases[0] && matches( item->aliases, text );
+}
+
 static void search_tree( UINT *count, UINT *found, struct item *items, UINT n, const WCHAR *text )
 {
     for (UINT i = 0; i < n && *found < MAX_RESULTS; i++)
@@ -580,7 +648,7 @@ static void search_tree( UINT *count, UINT *found, struct item *items, UINT n, c
             load_children( &items[i] );
             search_tree( count, found, items[i].children, items[i].child_count, text );
         }
-        else if (matches( items[i].name, text ))
+        else if (item_matches( &items[i], text ))
         {
             /* once, though a program is also among Windows' own */
             BOOL seen = FALSE;
@@ -604,8 +672,35 @@ UINT items_search( const WCHAR *text, struct item ***list )
     header = count;
     view_add( &count, &results_settings );
     for (UINT i = 0; i < applet_count && found < MAX_SETTINGS; i++)
-        if (matches( applet_items[i].name, text ) && view_add( &count, &applet_items[i] )) found++;
+        if (item_matches( &applet_items[i], text ) && view_add( &count, &applet_items[i] )) found++;
     if (!found) count = header;
+
+    /* the files opened lately whose names match */
+    {
+        struct recent_file files[32];
+        UINT n = items_recent_files( files, ARRAY_SIZE(files) );
+
+        found = 0;
+        header = count;
+        view_add( &count, &results_files );
+        for (UINT i = 0; i < n && found < MAX_FILES; i++)
+        {
+            struct item *item = &file_items[found];
+
+            if (!matches( files[i].name, text )) continue;
+            if (item->icon_large) DeleteObject( item->icon_large );
+            if (item->icon_small) DeleteObject( item->icon_small );
+            if (item->icon_other) DeleteObject( item->icon_other );
+            memset( item, 0, sizeof(*item) );
+            item->kind = ITEM_PROGRAM;
+            lstrcpynW( item->name, files[i].name, ARRAY_SIZE(item->name) );
+            lstrcpynW( item->path, files[i].path, ARRAY_SIZE(item->path) );
+            swprintf( item->key, ARRAY_SIZE(item->key), L"file:%s", files[i].name );
+            item->aliased = TRUE;
+            if (view_add( &count, item )) found++;
+        }
+        if (!found) count = header;
+    }
 
     *list = view;
     return count;
@@ -685,6 +780,164 @@ HBITMAP items_icon( struct item *item, BOOL large )
     *cache = icon_bitmap( icon, size );
     DestroyIcon( icon );
     return *cache;
+}
+
+/* the icon at any size, for the tiles and the lists of Windows 10 and 11 */
+HBITMAP items_icon_sized( struct item *item, int size )
+{
+    HICON icon = NULL;
+    SHFILEINFOW info;
+    const WCHAR *path;
+
+    if (size == px( 32 )) return items_icon( item, TRUE );
+    if (size == px( 16 )) return items_icon( item, FALSE );
+    if (item->icon_other && item->other_size == size) return item->icon_other;
+    if (item->kind == ITEM_HEADER) return NULL;
+    if (item->icon_other) DeleteObject( item->icon_other );
+    item->icon_other = NULL;
+    if (item->icon_path[0] && item->kind == ITEM_PROGRAM)
+        PrivateExtractIconsW( item->icon_path, 0, size, size, &icon, NULL, 1, 0 );
+    if (!icon)
+    {
+        path = item->icon_path[0] ? item->icon_path : item->path;
+        /* the largest the shell has, which DrawIconEx scales */
+        if (SHGetFileInfoW( path, 0, &info, sizeof(info), SHGFI_ICON | SHGFI_LARGEICON )) icon = info.hIcon;
+    }
+    if (!icon) return NULL;
+    item->icon_other = icon_bitmap( icon, size );
+    item->other_size = size;
+    DestroyIcon( icon );
+    return item->icon_other;
+}
+
+static int __cdecl compare_names( const void *a, const void *b )
+{
+    const struct item *x = *(const struct item **)a, *y = *(const struct item **)b;
+    return CompareStringW( LOCALE_USER_DEFAULT, NORM_IGNORECASE, x->name, -1, y->name, -1 ) - CSTR_EQUAL;
+}
+
+/* All apps of Windows 10 and 11: programs and folders together, by name;
+ * an expanded folder's programs under it */
+UINT items_apps( struct item ***list )
+{
+    struct item **sorted = malloc( max( 1, root_count ) * sizeof(*sorted) );
+    UINT count = 0;
+
+    if (!sorted) return items_all_programs( list );
+    for (UINT i = 0; i < root_count; i++) sorted[i] = &root[i];
+    qsort( sorted, root_count, sizeof(*sorted), compare_names );
+    for (UINT i = 0; i < root_count; i++)
+    {
+        view_add( &count, sorted[i] );
+        if (sorted[i]->kind == ITEM_FOLDER && sorted[i]->expanded)
+        {
+            load_children( sorted[i] );
+            add_tree( &count, sorted[i]->children, sorted[i]->child_count );
+        }
+    }
+    free( sorted );
+    *list = view;
+    return count;
+}
+
+static void collect_added( struct item *items, UINT n, struct item **found, UINT *count, UINT max, ULONGLONG since )
+{
+    for (UINT i = 0; i < n; i++)
+    {
+        ULONGLONG time = ((ULONGLONG)items[i].added.dwHighDateTime << 32) | items[i].added.dwLowDateTime;
+
+        if (items[i].kind == ITEM_FOLDER && !items[i].builtin)
+        {
+            load_children( &items[i] );
+            collect_added( items[i].children, items[i].child_count, found, count, max, since );
+            continue;
+        }
+        if (items[i].kind != ITEM_PROGRAM || time < since) continue;
+        if (*count < max) found[(*count)++] = &items[i];
+        else
+        {
+            /* the oldest of them makes room */
+            UINT oldest = 0;
+            for (UINT j = 1; j < max; j++)
+                if (CompareFileTime( &found[j]->added, &found[oldest]->added ) < 0) oldest = j;
+            if (CompareFileTime( &items[i].added, &found[oldest]->added ) > 0) found[oldest] = &items[i];
+        }
+    }
+}
+
+static int __cdecl compare_added( const void *a, const void *b )
+{
+    const struct item *x = *(const struct item **)a, *y = *(const struct item **)b;
+    return -CompareFileTime( &x->added, &y->added );
+}
+
+/* "Нещодавно додані": shortcuts made in the last two weeks, newest first */
+UINT items_recently_added( struct item ***list, UINT max )
+{
+    struct item *found[16];
+    FILETIME now_ft;
+    ULONGLONG now;
+    UINT count = 0, n = 0;
+
+    GetSystemTimeAsFileTime( &now_ft );
+    now = ((ULONGLONG)now_ft.dwHighDateTime << 32) | now_ft.dwLowDateTime;
+    max = min( max, ARRAY_SIZE(found) );
+    if (max) collect_added( root, root_count, found, &n, max, now - 14ull * 24 * 3600 * 10000000 );
+    qsort( found, n, sizeof(*found), compare_added );
+    for (UINT i = 0; i < n; i++) view_add( &count, found[i] );
+    *list = view;
+    return count;
+}
+
+static int __cdecl compare_files( const void *a, const void *b )
+{
+    const struct recent_file *x = a, *y = b;
+    return -CompareFileTime( &x->time, &y->time );
+}
+
+/* the newest files of Recent, for Windows 11's Recommended */
+UINT items_recent_files( struct recent_file *files, UINT max )
+{
+    WCHAR dir[MAX_PATH], pattern[MAX_PATH];
+    WIN32_FIND_DATAW data;
+    HANDLE find;
+    UINT count = 0;
+
+    if (!max || FAILED(SHGetFolderPathW( NULL, CSIDL_RECENT, NULL, SHGFP_TYPE_CURRENT, dir ))) return 0;
+    swprintf( pattern, ARRAY_SIZE(pattern), L"%s\\*.lnk", dir );
+    if ((find = FindFirstFileW( pattern, &data )) == INVALID_HANDLE_VALUE) return 0;
+    do
+    {
+        struct recent_file *file;
+        WCHAR *dot;
+
+        if (data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN)) continue;
+        if (count == max)
+        {
+            qsort( files, count, sizeof(*files), compare_files );
+            if (CompareFileTime( &data.ftLastWriteTime, &files[count - 1].time ) <= 0) continue;
+            count--;
+        }
+        file = &files[count++];
+        swprintf( file->path, MAX_PATH, L"%s\\%s", dir, data.cFileName );
+        lstrcpynW( file->name, data.cFileName, MAX_PATH );
+        if ((dot = wcsrchr( file->name, '.' ))) *dot = 0;
+        file->time = data.ftLastWriteTime;
+    } while (FindNextFileW( find, &data ));
+    FindClose( find );
+    qsort( files, count, sizeof(*files), compare_files );
+    return count;
+}
+
+HBITMAP recent_file_icon( const struct recent_file *file, int size )
+{
+    SHFILEINFOW info;
+    HBITMAP bitmap;
+
+    if (!SHGetFileInfoW( file->path, 0, &info, sizeof(info), SHGFI_ICON | SHGFI_LARGEICON )) return NULL;
+    bitmap = icon_bitmap( info.hIcon, size );
+    DestroyIcon( info.hIcon );
+    return bitmap;
 }
 
 /* the settings of the Control Panel, for its menu in the right column */

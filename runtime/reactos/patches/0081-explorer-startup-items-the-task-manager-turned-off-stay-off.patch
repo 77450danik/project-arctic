@@ -1,0 +1,58 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] explorer: Startup items the Task Manager turned off stay off.
+
+The Task Manager's Startup tab turns a program off as Windows does: a
+value of the same name under Explorer\StartupApproved\Run, or
+StartupFolder for a shortcut in a Startup folder, whose first byte is odd.
+Explorer started every item of the Run keys and the Startup folders all
+the same; it leaves those out now.
+---
+--- a/base/shell/explorer/startup.cpp
++++ b/base/shell/explorer/startup.cpp
+@@ -58,6 +58,22 @@
+  * If wait is FALSE - returns 0 if successful.
+  * If wait is TRUE - returns the program's return value.
+  */
++/* Arctic: an item the Task Manager's Startup tab turned off, as Windows keeps
++ * it: under Explorer\StartupApproved\Run (or StartupFolder) of the same root,
++ * a value of that name whose first byte is odd */
++static BOOL IsStartupItemDisabled(HKEY hkRoot, LPCWSTR pszList, LPCWSTR pszName)
++{
++    WCHAR szKey[128];
++    BYTE data[12];
++    DWORD cbData = sizeof(data);
++
++    StringCchPrintfW(szKey, _countof(szKey),
++                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\%s", pszList);
++    if (RegGetValueW(hkRoot, szKey, pszName, RRF_RT_REG_BINARY, NULL, data, &cbData) != ERROR_SUCCESS || !cbData)
++        return FALSE;
++    return (data[0] & 1) != 0;
++}
++
+ static int runCmd(LPWSTR cmdline, LPCWSTR dir, BOOL wait, BOOL minimized)
+ {
+     STARTUPINFOW si;
+@@ -254,6 +270,10 @@
+         /* safe mode - force to run if prefixed with asterisk */
+         if (GetSystemMetrics(SM_CLEANBOOT) && (szValue[0] != L'*')) continue;
+ 
++        /* Arctic: turned off in the Task Manager */
++        if (!bDelete && !wcsicmp(szKeyName, L"Run") && IsStartupItemDisabled(hkRoot, L"Run", szValue))
++            continue;
++
+         if (bDelete && (res = RegDeleteValueW(hkRun, szValue)) != ERROR_SUCCESS)
+         {
+             TRACE("Couldn't delete value - %lu, %ld. Running command anyways.\n", i, res);
+@@ -425,6 +445,11 @@
+         if (FoundData.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)
+             continue;
+ 
++        /* Arctic: turned off in the Task Manager */
++        if (IsStartupItemDisabled(nCSIDL_Folder == CSIDL_COMMON_STARTUP ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER,
++                                  L"StartupFolder", FoundData.cFileName))
++            continue;
++
+         // Build the path
+         szPath[cchPathLen + 1] = UNICODE_NULL;
+         StringCbCatW(szPath, sizeof(szPath), FoundData.cFileName);

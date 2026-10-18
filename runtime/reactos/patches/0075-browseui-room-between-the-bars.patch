@@ -1,0 +1,133 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] browseui: Room between the title bar, the toolbar and the address bar.
+
+The bands of Explorer's rebar were exactly as tall as their windows: the
+toolbar's buttons touched the title bar and the address bar touched the
+toolbar. Each band now has 3 pixels (at the system's scale) above and
+below its window, which stays its own height in the middle of the band
+(RBN_CHILDSIZE). The address band asked for 22 pixels at every scale; it
+takes the height of its combo box in the system's font.
+---
+--- a/dll/win32/browseui/internettoolbar.cpp
++++ b/dll/win32/browseui/internettoolbar.cpp
+@@ -27,6 +27,25 @@
+ 
+ /* Arctic: a private command of CGID_PrivCITCommands (shellbrowser.cpp has it too) */
+ #define ITID_ARCTIC_MENUWINDOW 0x7F01
++
++/* Arctic: the room above and below each band's window, so that the title
++   bar, the toolbar and the address bar do not stand edge to edge: 3 pixels
++   at 100 %, at the system's scale */
++static int ArcticBandPadding()
++{
++    static int padding = -1;
++
++    if (padding < 0)
++    {
++        HDC hdc = GetDC(NULL);
++        int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
++
++        if (hdc)
++            ReleaseDC(NULL, hdc);
++        padding = MulDiv(3, dpi, 96);
++    }
++    return padding;
++}
+ 
+ #if 1
+ 
+@@ -285,10 +304,11 @@
+     wcsncpy(bandInfo.lpText, fDeskBandInfo.wszTitle, bandInfo.cch);
+     bandInfo.hwndChild = fChildWindow;
+     bandInfo.cxMinChild = fDeskBandInfo.ptMinSize.x;
+-    bandInfo.cyMinChild = fDeskBandInfo.ptMinSize.y;
++    /* Arctic: room above and below the band's window (CInternetToolbar::OnChildSize) */
++    bandInfo.cyMinChild = fDeskBandInfo.ptMinSize.y + 2 * ArcticBandPadding();
+     bandInfo.wID = fBandID;
+-    bandInfo.cyChild = fDeskBandInfo.ptActual.y;
+-    bandInfo.cyMaxChild = fDeskBandInfo.ptMaxSize.y;
++    bandInfo.cyChild = fDeskBandInfo.ptActual.y + 2 * ArcticBandPadding();
++    bandInfo.cyMaxChild = fDeskBandInfo.ptMaxSize.y ? fDeskBandInfo.ptMaxSize.y + 2 * ArcticBandPadding() : 0;
+     bandInfo.cyIntegral = fDeskBandInfo.ptIntegral.y;
+     bandInfo.cxIdeal = fDeskBandInfo.ptActual.x;
+     bandInfo.lParam = reinterpret_cast<LPARAM>(static_cast<CDockSite*>(this));
+@@ -1934,6 +1954,22 @@
+ 
+     return FAILED_UNEXPECTEDLY(hResult) ? 0 : theResult;
+ }
++/* Arctic: each band is taller than its window by ArcticBandPadding() above and
++   below (CDockSite::GetRBBandInfo); the window keeps its own height, in the
++   middle of the band */
++LRESULT CInternetToolbar::OnChildSize(UINT idControl, NMHDR *pNMHDR, BOOL &bHandled)
++{
++    NMREBARCHILDSIZE *childSize = reinterpret_cast<NMREBARCHILDSIZE *>(pNMHDR);
++    int padding = ArcticBandPadding();
++
++    if (childSize->rcChild.bottom - childSize->rcChild.top > 2 * padding)
++    {
++        childSize->rcChild.top += padding;
++        childSize->rcChild.bottom -= padding;
++    }
++    return 0;
++}
++
+ LRESULT CInternetToolbar::OnNotify(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
+     NMHDR   *notifyHeader;
+--- a/dll/win32/browseui/internettoolbar.h
++++ b/dll/win32/browseui/internettoolbar.h
+@@ -207,6 +207,7 @@
+     LRESULT OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT OnSetCursor(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT OnTipText(UINT idControl, NMHDR *pNMHDR, BOOL &bHandled);
++    LRESULT OnChildSize(UINT idControl, NMHDR *pNMHDR, BOOL &bHandled);
+     LRESULT OnCommand(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT OnNotify(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT OnLDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+@@ -230,6 +231,7 @@
+         MESSAGE_HANDLER(WM_SIZE, OnSize)
+         MESSAGE_HANDLER(WM_SETCURSOR, OnSetCursor)
+         NOTIFY_CODE_HANDLER(TTN_NEEDTEXTW, OnTipText)
++        NOTIFY_CODE_HANDLER(RBN_CHILDSIZE, OnChildSize)
+         MESSAGE_HANDLER(WM_NOTIFY, OnNotify)
+         MESSAGE_HANDLER(WM_LBUTTONDOWN, OnLDown)
+         MESSAGE_HANDLER(WM_LBUTTONUP, OnLUp)
+--- a/dll/win32/browseui/addressband.cpp
++++ b/dll/win32/browseui/addressband.cpp
+@@ -79,6 +79,17 @@
+     }
+ }
+ 
++/* Arctic: as tall as the combo box's selection field and its frame in the
++   system's font, at any scale (the window itself also holds its list) */
++static LONG ArcticAddressHeight(HWND hwnd)
++{
++    LRESULT field = SendMessageW(hwnd, CB_GETITEMHEIGHT, (WPARAM)-1, 0);
++
++    if (field == CB_ERR || field + 6 < 22)
++        return 22;
++    return (LONG)field + 6;
++}
++
+ HRESULT STDMETHODCALLTYPE CAddressBand::GetBandInfo(DWORD dwBandID, DWORD dwViewMode, DESKBANDINFO *pdbi)
+ {
+     if (!m_hWnd || !pdbi)  return E_FAIL;  /* Verify window exists */
+@@ -88,7 +99,7 @@
+             pdbi->ptMinSize.x = 100;
+         else
+             pdbi->ptMinSize.x = 150;
+-        pdbi->ptMinSize.y = 22;
++        pdbi->ptMinSize.y = ArcticAddressHeight(m_hWnd);
+     }
+     if (pdbi->dwMask & DBIM_MAXSIZE)
+     {
+@@ -106,7 +117,7 @@
+             pdbi->ptActual.x = 100;
+         else
+             pdbi->ptActual.x = 150;
+-        pdbi->ptActual.y = 22;
++        pdbi->ptActual.y = ArcticAddressHeight(m_hWnd);
+     }
+     if (pdbi->dwMask & DBIM_TITLE)
+     {

@@ -1,0 +1,8 @@
+MODULE    = nvcuda.dll
+UNIXLIB   = nvcuda.so
+
+VER_FILEDESCRIPTION_STR = "NVIDIA CUDA Driver (Arctic: the host driver)"
+
+SOURCES = \
+	main.c \
+	unix.c

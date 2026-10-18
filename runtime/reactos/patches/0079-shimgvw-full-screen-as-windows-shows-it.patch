@@ -1,0 +1,87 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] shimgvw: Full screen as Windows' viewer shows it.
+
+F11 and the slide show made a popup with no size and maximized it: it
+covers the monitor only if the window manager reads it that way, and it
+was not brought to the front, so Esc and the arrows went to the window
+underneath. It takes the whole monitor the viewer is on, topmost, and the
+foreground. The picture lies on black without the white frame drawn round
+it in the window. A full screen window that could not be made leaves the
+viewer as it is instead of reading through a null pointer. The first
+window opens at 800 x 600 at the system's scale (the viewer now knows the
+DPI, runtime/registry/dpi.reg), not 520 x 400 pixels.
+---
+--- a/dll/win32/shimgvw/shimgvw.c
++++ b/dll/win32/shimgvw/shimgvw.c
+@@ -785,15 +785,17 @@
+     }
+     else
+     {
++        /* Arctic: full screen is the picture on black, without a frame
++           round it, as the slide show of Windows' viewer */
+         color0 = RGB(0, 0, 0);
+-        color1 = RGB(255, 255, 255);
++        color1 = RGB(0, 0, 0);
+     }
+ 
+     hBrush = CreateSolidBrush(color0);
+     SetBkColor(hdcMem, color0);
+ 
+     hPen = CreatePen(PS_SOLID, 1, color1);
+-    SetTextColor(hdcMem, color1);
++    SetTextColor(hdcMem, Preview_IsMainWnd(pData->m_hwnd) ? color1 : RGB(255, 255, 255));
+ 
+     /* Fill background */
+     SetRect(&rect, 0, 0, paintSize.cx, paintSize.cy);
+@@ -903,11 +905,18 @@
+ static VOID
+ ImageView_ResetSettings(VOID)
+ {
++    /* Arctic: the first window at the system's scale, as large as Windows'
++       viewer opens */
++    HDC hdc = GetDC(NULL);
++    INT dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
++
++    if (hdc)
++        ReleaseDC(NULL, hdc);
+     g_Settings.Maximized = FALSE;
+     g_Settings.X         = CW_USEDEFAULT;
+     g_Settings.Y         = CW_USEDEFAULT;
+-    g_Settings.Width     = 520;
+-    g_Settings.Height    = 400;
++    g_Settings.Width     = MulDiv(800, dpi, 96);
++    g_Settings.Height    = MulDiv(600, dpi, 96);
+ }
+ 
+ static BOOL
+@@ -1418,6 +1427,9 @@
+         LoadStringW(g_hInstance, IDS_APPTITLE, szTitle, _countof(szTitle));
+         g_hwndFullscreen = CreateWindowExW(exstyle, WC_PREVIEW, szTitle, style,
+                                            0, 0, 0, 0, NULL, NULL, g_hInstance, NULL);
++        /* Arctic: no window, no full screen; the viewer stays as it is */
++        if (!g_hwndFullscreen)
++            return;
+     }
+ 
+     if (IsWindowVisible(g_hwndFullscreen))
+@@ -1427,8 +1439,19 @@
+     else
+     {
+         PPREVIEW_DATA pSlideData = Preview_GetData(g_hwndFullscreen);
++        MONITORINFO mi = { sizeof(mi) };
++
+         pSlideData->m_nTimerInterval = StartTimer ? SLIDESHOW_TIMER_INTERVAL : 0;
++        /* Arctic: the whole of the monitor the viewer is on, over the taskbar,
++           and in front, so that Esc and the arrows reach it */
++        if (GetMonitorInfoW(MonitorFromWindow(g_hMainWnd, MONITOR_DEFAULTTONEAREST), &mi))
++        {
++            SetWindowPos(g_hwndFullscreen, HWND_TOPMOST, mi.rcMonitor.left, mi.rcMonitor.top,
++                         mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
++                         SWP_NOACTIVATE);
++        }
+         ShowWindow(g_hwndFullscreen, SW_SHOWMAXIMIZED);
++        SetForegroundWindow(g_hwndFullscreen);
+         ShowWindow(g_hMainWnd, SW_HIDE);
+         Preview_ResetZoom(pSlideData);
+         Preview_RestartTimer(g_hwndFullscreen);

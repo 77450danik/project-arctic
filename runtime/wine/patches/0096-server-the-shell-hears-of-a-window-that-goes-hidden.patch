@@ -1,0 +1,30 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Thu, 15 Oct 2026 22:30:00 +0200
+Subject: [PATCH] server: The shell hears of a window that goes, hidden or not.
+
+HSHELL_WINDOWDESTROYED went out only for a window still visible when it was
+destroyed. The taskbar learns of windows by the shell hook and also by
+enumerating them (RefreshWindowList, when an unknown window takes the
+foreground; the foreground timer), so it could hold the button of a window
+that was hidden first and destroyed later, or that became visible by its
+style without SWP_SHOWWINDOW: the button outlived the window, one more after
+every failed start of a program (EffectCraft: its window, a message box, gone,
+and an "EffectCraft" button left). win32k tells the shell of every toplevel
+window without an owner that is destroyed; so does the server now. A button
+the taskbar does not have is ignored there.
+---
+diff --git a/server/window.c b/server/window.c
+--- a/server/window.c
++++ b/server/window.c
+@@ -2306,7 +2306,10 @@
+
+     assert( win->handle );
+     composition_changed( win );
+-    if (is_visible( win ) && is_shell_hook_window( win ))
++    /* Arctic: as win32k, the shell hears of every toplevel window that goes,
++       shown or hidden: the taskbar finds windows by enumerating them too, and
++       one destroyed hidden stayed there as the button of nothing */
++    if (is_shell_hook_window( win ))
+         shell_hook_notify( win->desktop, HSHELL_WINDOWDESTROYED, win->handle );
+
+     /* hide the window */

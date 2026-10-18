@@ -1,0 +1,19 @@
+# The picture viewer maximized and full screen (F11): the picture shows,
+# maximized over the work area, full screen over the taskbar; Esc back
+sleep 8
+key win-r
+sleep 2
+type rundll32 shimgvw.dll,ImageView_Fullscreen C:\Windows\Web\Wallpaper\Arctic\img0.jpg
+key ret
+sleep 8
+shot f1-window
+move 150 14
+dblclick                      # the caption: maximized
+sleep 4
+shot f2-maximized
+key f11
+sleep 4
+shot f3-fullscreen
+key esc
+sleep 3
+shot f4-back

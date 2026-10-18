@@ -16,6 +16,7 @@
 #include "winbase.h"
 #include "wingdi.h"
 #include "winuser.h"
+#include "wine/arctic_shell.h"
 
 #define IDS_TIP_LEVEL           100
 #define IDS_TIP_MUTED           101
@@ -46,7 +47,10 @@ extern HINSTANCE sndvolsso_instance;
 
 WCHAR *load_string( UINT id );
 
-/* the shell's look (startui.dll, the taskbar's page Оформлення) on a flyout */
+/* the shell's look (startui.dll, the taskbar's page Оформлення) on a flyout; over a
+ * light look it draws dark on white (shell_light), its colour INK */
+extern BOOL shell_light;
+#define INK ARCTIC_INK( shell_light )
 void shell_look( HWND hwnd );
 
 /* audio.c: the default output and its volume, through the Core Audio API */

@@ -1,0 +1,221 @@
+diff --git a/dll/win32/shell32/shellmenu/CMenuDeskBar.cpp b/dll/win32/shell32/shellmenu/CMenuDeskBar.cpp
+--- a/dll/win32/shell32/shellmenu/CMenuDeskBar.cpp
++++ b/dll/win32/shell32/shellmenu/CMenuDeskBar.cpp
+@@ -326,6 +326,45 @@ static void AdjustForExcludeArea(BOOL alignLeft, BOOL alignTop, BOOL preferVerti
+     }
+ }
+ 
++/* Arctic: the look of the open Start menu, which its submenus take too:
++ * 0 none, 1 white on black, 2 dark on white */
++static int g_ArcticMenuLook;
++
++static VOID ArcticSetMenuLook(HWND hWnd, BOOL bStartMenu)
++{
++    typedef BOOL (WINAPI *PFN_LOOK)(HWND, BOOL *);
++    typedef BOOL (WINAPI *PFN_SETWCA)(HWND, PVOID);
++    typedef HRESULT (WINAPI *PFN_SETATTR)(HWND, DWORD, LPCVOID, DWORD);
++    HMODULE hStartUi = GetModuleHandleW(L"startui.dll");
++    PFN_LOOK pLook = hStartUi ? (PFN_LOOK)GetProcAddress(hStartUi, "ArcticApplyClassicMenuLook") : NULL;
++    BOOL bLight = FALSE;
++
++    /* only the Start menu, which explorer has opened with startui.dll loaded */
++    if (bStartMenu)
++        g_ArcticMenuLook = pLook && pLook(hWnd, &bLight) ? (bLight ? 2 : 1) : 0;
++    else if (g_ArcticMenuLook && !(pLook && pLook(hWnd, &bLight)))
++        g_ArcticMenuLook = 0;
++
++    if (g_ArcticMenuLook)
++    {
++        SetPropW(hWnd, ARCTIC_MENU_LOOK, (HANDLE)(INT_PTR)g_ArcticMenuLook);
++    }
++    else if (RemovePropW(hWnd, ARCTIC_MENU_LOOK))
++    {
++        /* back to the classic look: no backdrop, keyed as ever */
++        struct { DWORD AccentState, AccentFlags, GradientColor, AnimationId; } policy = { 0, 0, 0, 0 };
++        struct { DWORD Attrib; PVOID pvData; SIZE_T cbData; } data = { 19 /* WCA_ACCENT_POLICY */, &policy, sizeof(policy) };
++        PFN_SETWCA pSetWca = (PFN_SETWCA)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowCompositionAttribute");
++        PFN_SETATTR pSetAttr = (PFN_SETATTR)GetProcAddress(LoadLibraryW(L"dwmapi.dll"), "DwmSetWindowAttribute");
++        DWORD dwLight = FALSE;
++
++        if (pSetWca)
++            pSetWca(hWnd, &data);
++        if (pSetAttr)
++            pSetAttr(hWnd, 0x1004 /* DWMWA_ARCTIC_LIGHT */, &dwLight, sizeof(dwLight));
++    }
++}
++
+ HRESULT STDMETHODCALLTYPE CMenuDeskBar::Popup(POINTL *ppt, RECTL *prcExclude, MP_POPUPFLAGS dwFlags)
+ {
+     HRESULT hr;
+@@ -506,6 +545,10 @@ HRESULT STDMETHODCALLTYPE CMenuDeskBar::Popup(POINTL *ppt, RECTL *prcExclude, MP
+ 
+     int flags = SWP_SHOWWINDOW | SWP_NOACTIVATE;
+ 
++    /* Arctic: the Start menu is the one with the banner */
++    ArcticSetMenuLook(m_hWnd, m_Banner != NULL);
++    RedrawWindow(NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
++
+     this->SetWindowPos(HWND_TOPMOST, x, y, cx, cy, flags);
+ 
+     if (flipV)
+@@ -850,6 +893,22 @@ LRESULT CMenuDeskBar::_OnNcPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &
+     return 0;
+ }
+ 
++/* Arctic: with the taskbar's look, what shows the backdrop through */
++LRESULT CMenuDeskBar::_OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
++{
++    int look = ArcticMenuLookOf(m_hWnd);
++    RECT rc;
++
++    if (!look)
++    {
++        bHandled = FALSE;
++        return 0;
++    }
++    GetClientRect(&rc);
++    FillRect((HDC)wParam, &rc, (HBRUSH)GetStockObject(look == 2 ? WHITE_BRUSH : BLACK_BRUSH));
++    return 1;
++}
++
+ LRESULT CMenuDeskBar::_OnClose(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
+     /* Prevent the CMenuDeskBar from destroying on being sent a WM_CLOSE */
+diff --git a/dll/win32/shell32/shellmenu/CMenuDeskBar.h b/dll/win32/shell32/shellmenu/CMenuDeskBar.h
+--- a/dll/win32/shell32/shellmenu/CMenuDeskBar.h
++++ b/dll/win32/shell32/shellmenu/CMenuDeskBar.h
+@@ -75,6 +75,7 @@ public:
+         MESSAGE_HANDLER(WM_WININICHANGE , _OnWinIniChange)
+         MESSAGE_HANDLER(WM_NCPAINT, _OnNcPaint)
+         MESSAGE_HANDLER(WM_CLOSE, _OnClose)
++        MESSAGE_HANDLER(WM_ERASEBKGND, _OnEraseBkgnd)
+     END_MSG_MAP()
+ 
+     BEGIN_COM_MAP(CMenuDeskBar)
+@@ -144,6 +145,7 @@ private:
+     LRESULT _OnWinIniChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT _OnNcPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+     LRESULT _OnClose(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
++    LRESULT _OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled);
+ 
+     HRESULT _AdjustForTheme(BOOL bFlatStyle);
+     BOOL _IsSubMenuParent(HWND hwnd);
+diff --git a/dll/win32/shell32/shellmenu/CMenuSite.cpp b/dll/win32/shell32/shellmenu/CMenuSite.cpp
+--- a/dll/win32/shell32/shellmenu/CMenuSite.cpp
++++ b/dll/win32/shell32/shellmenu/CMenuSite.cpp
+@@ -300,6 +300,19 @@ BOOL CMenuSite::ProcessWindowMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
+     case WM_COMMAND:
+         hWndTarget = (HWND) lParam;
+         break;
++    case WM_ERASEBKGND:
++    {
++        /* Arctic: with the taskbar's look, what shows the backdrop through */
++        int look = ArcticMenuLookOf(hWnd);
++        RECT rc;
++
++        if (!look)
++            return FALSE;
++        ::GetClientRect(hWnd, &rc);
++        FillRect((HDC)wParam, &rc, (HBRUSH)GetStockObject(look == 2 ? WHITE_BRUSH : BLACK_BRUSH));
++        lResult = 1;
++        return TRUE;
++    }
+     default:
+         return FALSE;
+     }
+diff --git a/dll/win32/shell32/shellmenu/CMenuToolbars.cpp b/dll/win32/shell32/shellmenu/CMenuToolbars.cpp
+--- a/dll/win32/shell32/shellmenu/CMenuToolbars.cpp
++++ b/dll/win32/shell32/shellmenu/CMenuToolbars.cpp
+@@ -155,12 +155,27 @@ HRESULT CMenuToolbarBase::OnCustomDraw(LPNMTBCUSTOMDRAW cdraw, LRESULT * theResu
+     bool     isHot, isPopup, isActive;
+     TBBUTTONINFO btni;
+ 
++    /* Arctic: the Start menu with the taskbar's look */
++    int look = ArcticMenuLookOf(m_hWnd);
++
+     switch (cdraw->nmcd.dwDrawStage)
+     {
+     case CDDS_PREPAINT:
+         *theResult = CDRF_NOTIFYITEMDRAW;
+         return S_OK;
+ 
++    case CDDS_PREERASE:
++        if (look)
++        {
++            RECT rc;
++            GetClientRect(&rc);
++            FillRect(cdraw->nmcd.hdc, &rc, (HBRUSH)GetStockObject(look == 2 ? WHITE_BRUSH : BLACK_BRUSH));
++            *theResult = CDRF_SKIPDEFAULT;
++            return S_OK;
++        }
++        *theResult = CDRF_DODEFAULT;
++        return S_OK;
++
+     case CDDS_ITEMPREPAINT:
+ 
+         HWND tlw;
+@@ -198,8 +213,22 @@ HRESULT CMenuToolbarBase::OnCustomDraw(LPNMTBCUSTOMDRAW cdraw, LRESULT * theResu
+                 bgBrush = GetSysColorBrush(COLOR_MENU);
+             }
+ 
+-            // Paint the background color with the selected color
+-            FillRect(hdc, &rc, bgBrush);
++            if (look)
++            {
++                /* Arctic: over the taskbar's look, the ink white or black,
++                 * the item under the pointer a little lit, as the shell's flyouts */
++                COLORREF ink = look == 2 ? RGB(0, 0, 0) : RGB(255, 255, 255);
++
++                FillRect(hdc, &rc, (HBRUSH)GetStockObject(look == 2 ? WHITE_BRUSH : BLACK_BRUSH));
++                if (isHot)
++                    ArcticMenuFill(hdc, &rc, ink, 0x26);
++                clrText = isActive ? ink : RGB(0x80, 0x80, 0x80);
++            }
++            else
++            {
++                // Paint the background color with the selected color
++                FillRect(hdc, &rc, bgBrush);
++            }
+ 
+             // Set the text color in advance, this color will be assigned when the ITEMPOSTPAINT triggers
+             SetTextColor(hdc, clrText);
+diff --git a/dll/win32/shell32/shellmenu/shellmenu.h b/dll/win32/shell32/shellmenu/shellmenu.h
+--- a/dll/win32/shell32/shellmenu/shellmenu.h
++++ b/dll/win32/shell32/shellmenu/shellmenu.h
+@@ -56,6 +56,36 @@
+ 
+ #include <wine/debug.h>
+ 
++/* Arctic: the classic Start menu with the taskbar's look (startui.dll, the
++ * page "Меню «Пуск»"): its windows carry ARCTIC_MENU_LOOK, 1 when they draw
++ * white on black over the acrylic, 2 dark on white; none, the classic look */
++#define ARCTIC_MENU_LOOK L"ArcticMenuLook"
++static inline int ArcticMenuLookOf(HWND hWnd)
++{
++    HWND hRoot = GetAncestor(hWnd, GA_ROOT);
++    return hRoot ? (int)(INT_PTR)GetPropW(hRoot, ARCTIC_MENU_LOOK) : 0;
++}
++static inline void ArcticMenuFill(HDC hdc, const RECT *prc, COLORREF color, BYTE alpha)
++{
++    BITMAPINFO bi = { { sizeof(bi.bmiHeader), 1, 1, 1, 32, BI_RGB } };
++    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
++    DWORD *pBits;
++    HBITMAP hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)&pBits, NULL, 0);
++    HDC hdcMem;
++    HGDIOBJ hOld;
++
++    if (!hbm)
++        return;
++    *pBits = ((DWORD)alpha << 24) | ((GetRValue(color) * alpha / 255) << 16) |
++             ((GetGValue(color) * alpha / 255) << 8) | (GetBValue(color) * alpha / 255);
++    hdcMem = CreateCompatibleDC(hdc);
++    hOld = SelectObject(hdcMem, hbm);
++    GdiAlphaBlend(hdc, prc->left, prc->top, prc->right - prc->left, prc->bottom - prc->top, hdcMem, 0, 0, 1, 1, bf);
++    SelectObject(hdcMem, hOld);
++    DeleteDC(hdcMem);
++    DeleteObject(hbm);
++}
++
+ #if _MSC_VER
+ // Restore warnings
+ #pragma warning(pop)

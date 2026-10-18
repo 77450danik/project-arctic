@@ -1,10 +1,12 @@
 /*
  * The Start menu of Arctic (startui.dll)
  *
- * explorer (ReactOS, patch 0037) shows this menu instead of its classic one
- * unless "Classic Start menu" is chosen in the taskbar's properties. It calls
- * in on the taskbar's thread: ArcticStartMenuToggle for the Start button,
- * the Windows key and Ctrl+Esc, ArcticStartMenuHide when it has to go.
+ * explorer (ReactOS, patch 0037) shows these menus instead of its classic one
+ * unless "Classic Start menu" is chosen in the taskbar's properties: the
+ * standard one of two columns, or those of Windows 10 and 11, as the page
+ * "Меню «Пуск»" chooses (startpage.c). It calls in on the taskbar's thread:
+ * ArcticStartMenuToggle for the Start button, the Windows key and Ctrl+Esc,
+ * ArcticStartMenuHide when it has to go.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -40,17 +42,36 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
  * Ctrl+Esc pressed (click FALSE): open the menu, or close it if it is open */
 void WINAPI ArcticStartMenuToggle( HWND tray, const RECT *button, BOOL click )
 {
-    menu_toggle( tray, button, click );
+    int style = start_style_load();
+
+    /* the one open closes, whichever it is */
+    if (menu_visible() || menu10_visible() || menu11_visible())
+    {
+        BOOL same = (style == STYLE_WIN10 && menu10_visible()) || (style == STYLE_WIN11 && menu11_visible()) ||
+                    (style != STYLE_WIN10 && style != STYLE_WIN11 && menu_visible());
+        menu_hide();
+        menu10_hide();
+        menu11_hide();
+        if (same) return;
+    }
+    switch (style)
+    {
+    case STYLE_WIN10: menu10_toggle( tray, button, click ); break;
+    case STYLE_WIN11: menu11_toggle( tray, button, click ); break;
+    default:          menu_toggle( tray, button, click ); break;
+    }
 }
 
 void WINAPI ArcticStartMenuHide(void)
 {
     menu_hide();
+    menu10_hide();
+    menu11_hide();
 }
 
 BOOL WINAPI ArcticStartMenuVisible(void)
 {
-    return menu_visible();
+    return menu_visible() || menu10_visible() || menu11_visible();
 }
 
 /* "Customize..." of the Start menu page in the taskbar's properties */

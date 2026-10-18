@@ -1,0 +1,68 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] shell32, shdocvw: The shell's small icons a step larger; the navigation pane's rows with air.
+
+The navigation pane and the details view drew the system's small icons,
+16 pixels at 100 % and 20 at 125 %, in rows that left them a couple of
+pixels: they looked small and crowded. The shell's small icons are now 20
+pixels at 100 % (24 at 125 %, 30 at 150 %), and the navigation pane's rows
+are the icon and 6 pixels at the system's scale.
+
+"Shell Icon Size", which the Display panel writes as 32 when its
+Appearance page is applied, was taken as pixels: at 125 % the large icons
+stayed 32 instead of 40. It is a size at 100 % now, at the system's scale;
+so is "Shell Small Icon Size".
+---
+--- a/dll/win32/shell32/iconcache.cpp
++++ b/dll/win32/shell32/iconcache.cpp
+@@ -69,17 +69,23 @@
+ {
+     // NOTE: Shell icon size is always square
+     INT nDefaultSize = GetSystemMetrics(SM_CXICON);
+-    INT nIconSize = SIC_GetMetricsValue(L"Shell Icon Size", nDefaultSize);
+-    return (nIconSize > 0) ? nIconSize : nDefaultSize;
++    INT nIconSize = SIC_GetMetricsValue(L"Shell Icon Size", 0);
++    /* Arctic: the value is a size at 100 %, as the Display panel writes it
++       (32 unless the user changed it): at 125 % the large icons were 32
++       pixels where they should be 40 */
++    return (nIconSize > 0) ? MulDiv(nIconSize, nDefaultSize, 32) : nDefaultSize;
+ }
+ 
+ static INT
+ SIC_GetSmallIconSize(VOID)
+ {
+     // NOTE: Shell icon size is always square
+-    INT nDefaultSize = GetSystemMetrics(SM_CXSMICON);
+-    INT nIconSize = SIC_GetMetricsValue(L"Shell Small Icon Size", nDefaultSize);
+-    return (nIconSize > 0) ? nIconSize : nDefaultSize;
++    /* Arctic: the shell's small icons are 20 pixels at 100 % (24 at 125 %,
++       30 at 150 %), a step larger than the system's 16: the navigation pane,
++       the details and list views, the address bar */
++    INT nDefaultSize = (GetSystemMetrics(SM_CXSMICON) * 5 / 4) & ~1;
++    INT nIconSize = SIC_GetMetricsValue(L"Shell Small Icon Size", 0);
++    return (nIconSize > 0) ? MulDiv(nIconSize, GetSystemMetrics(SM_CXSMICON), 16) : nDefaultSize;
+ }
+ 
+ /* Arctic: the size of the desktop's icons, 32, 48 (the default, Windows 10's
+--- a/dll/win32/shdocvw/CNSCBand.cpp
++++ b/dll/win32/shdocvw/CNSCBand.cpp
+@@ -283,6 +283,19 @@
+         return hr;
+ 
+     TreeView_SetImageList(m_hwndTreeView, (HIMAGELIST)piml, TVSIL_NORMAL);
++
++    /* Arctic: a little air between the rows, as Windows 10's navigation pane
++       has: the icon and 6 pixels at the system's scale */
++    {
++        INT cx = 0, cy = 0;
++        HDC hdc = ::GetDC(NULL);
++        INT dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
++
++        if (hdc)
++            ::ReleaseDC(NULL, hdc);
++        if (ImageList_GetIconSize((HIMAGELIST)piml, &cx, &cy) && cy > 0)
++            TreeView_SetItemHeight(m_hwndTreeView, cy + MulDiv(6, dpi, 96));
++    }
+     return S_OK;
+ }
+ 

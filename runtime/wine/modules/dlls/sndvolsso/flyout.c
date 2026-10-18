@@ -154,7 +154,7 @@ static void draw_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, BYTE 
 {
     HGDIOBJ old = SelectObject( hdc, font );
 
-    SetTextColor( hdc, RGB( alpha, alpha, alpha ) );
+    SetTextColor( hdc, arctic_keyed_grey( shell_light, alpha ) );
     DrawTextW( hdc, text, -1, rect, flags | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS );
     SelectObject( hdc, old );
 }
@@ -165,7 +165,7 @@ static void paint_header( HDC hdc )
     const WCHAR *name = have_device ? current.name : load_string( IDS_NO_DEVICE );
 
     if (can_choose() && (hot == HIT_HEADER || pressed == HIT_HEADER))
-        fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), 0x33 );
+        fill_alpha( hdc, &rect, INK, 0x33 );
     rect.left = px( 12 );
     rect.right = can_choose() ? FLYOUT_WIDTH - px( 36 ) : FLYOUT_WIDTH - px( 12 );
     draw_text( hdc, name, &rect, expanded ? font_body_bold : font_body, 255, DT_LEFT | DT_VCENTER );
@@ -187,7 +187,7 @@ static void paint_list( HDC hdc )
 
         if (rect.bottom <= top || rect.top >= top + shown) continue;
         if (chosen) fill_alpha( hdc, &rect, ACCENT_COLOR, over ? 0xcc : 0x99 );
-        else if (over) fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), pressed == HIT_ITEM ? 0x33 : 0x19 );
+        else if (over) fill_alpha( hdc, &rect, INK, pressed == HIT_ITEM ? 0x33 : 0x19 );
         rect.left += px( 12 );
         rect.right -= px( 12 );
         draw_text( hdc, endpoints[i].name, &rect, font_body, 255, DT_LEFT | DT_VCENTER );
@@ -197,7 +197,7 @@ static void paint_list( HDC hdc )
     {
         int length = max( px( 16 ), LIST_MAX * LIST_MAX / total ), pos = scroll * (LIST_MAX - length) / (total - LIST_MAX);
         RECT bar = { FLYOUT_WIDTH - px( 6 ), top + pos + px( 2 ), FLYOUT_WIDTH - px( 4 ), top + pos + length - px( 2 ) };
-        fill_alpha( hdc, &bar, RGB( 255, 255, 255 ), 0x66 );
+        fill_alpha( hdc, &bar, INK, 0x66 );
     }
     SelectClipRgn( hdc, NULL );
     DeleteObject( clip );
@@ -219,7 +219,7 @@ static void paint_volume( HDC hdc )
 
     /* the slider: the track, the part up to the thumb, the thumb */
     SetRect( &rect, SIDE_COLUMN, track_y, SIDE_COLUMN + SLIDER_WIDTH, track_y + px( 2 ) );
-    fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), (BYTE)(0x66 * opacity) );
+    fill_alpha( hdc, &rect, INK, (BYTE)(0x66 * opacity) );
     if (have_device)
     {
         SetRect( &rect, SIDE_COLUMN, track_y, center, track_y + px( 2 ) );
@@ -227,7 +227,7 @@ static void paint_volume( HDC hdc )
     }
     SetRect( &rect, center - THUMB_WIDTH / 2, track_y + px( 1 ) - THUMB_HEIGHT / 2, center + THUMB_WIDTH / 2,
              track_y + px( 1 ) + THUMB_HEIGHT / 2 );
-    fill_round_rect( hdc, &rect, px( 4 ), over_slider ? RGB( 255, 255, 255 ) : have_device ? ACCENT_COLOR : RGB( 128, 128, 128 ),
+    fill_round_rect( hdc, &rect, px( 4 ), over_slider ? INK : have_device ? ACCENT_COLOR : RGB( 128, 128, 128 ),
                      (BYTE)(255 * opacity) );
 
     /* the level */
@@ -254,7 +254,7 @@ static void on_paint( HWND hwnd )
         HGDIOBJ old = SelectObject( mem, bitmap );
 
         /* black is the acrylic seen through */
-        FillRect( mem, &client, GetStockObject( BLACK_BRUSH ) );
+        arctic_fill_back( mem, &client, shell_light );
         SetBkMode( mem, TRANSPARENT );
         if (media.present)
         {

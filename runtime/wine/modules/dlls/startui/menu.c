@@ -15,7 +15,8 @@
  *   Settings, Update; Run. The user's picture stands over the top edge
  *   (avatar.c). At the bottom Shut down, its chevron a menu with Restart.
  *
- * Under the pointer #FFFFFF at 10%, pressed 20%; the menu rises from the
+ * Under the pointer #FFFFFF at 10%, pressed 20% (black over a light look,
+ * where the menu draws dark on white); the menu rises from the
  * taskbar as dwm.exe slides the Start menu. It lives on the taskbar's thread
  * of explorer, which asks for it through ArcticStartMenuToggle and hears
  * that it closed through the message "ArcticStartMenuClosed".
@@ -26,6 +27,7 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "startui.h"
@@ -33,12 +35,7 @@
 #include "shlobj.h"
 #include "knownfolders.h"
 #include "dwmapi.h"
-#include "winternl.h"
-#include "powrprof.h"
 #include "wine/arctic_dwm.h"
-#include "wine/debug.h"
-
-WINE_DEFAULT_DEBUG_CHANNEL(startui);
 
 #define MENU_WIDTH      px(460)   /* 420 on the picture; Ukrainian names need the room */
 #define MENU_HEIGHT     px(530)
@@ -73,10 +70,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(startui);
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
 #endif
 
-#define IDHK_RUN        0x1f4   /* explorer's hot key for Win+R, which starts Run on a thread of its own */
-
-BOOL WINAPI SetWindowCompositionAttribute( HWND hwnd, void *data );
-
 enum mode { MODE_HOME, MODE_ALL, MODE_SEARCH };
 
 enum target_kind { T_NONE, T_LEFT, T_ALL, T_SEARCH, T_RIGHT, T_POWER, T_POWER_MENU };
@@ -105,6 +98,7 @@ static WCHAR user_name[128];
 static struct start_settings settings;
 static int right_visible[R_COUNT];   /* the places shown, in order */
 static int right_count;
+static struct palette pal;
 
 /**********************************************************************
  *          Layout
@@ -314,14 +308,7 @@ static void update_search(void)
  *          Painting
  */
 
-static void draw_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, COLORREF color, UINT format )
-{
-    HGDIOBJ old = SelectObject( hdc, font );
-
-    SetTextColor( hdc, color );
-    DrawTextW( hdc, text, -1, rect, format | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS );
-    SelectObject( hdc, old );
-}
+#define draw_text paint_text
 
 static void highlight( HDC hdc, struct target t, const RECT *rect )
 {
@@ -330,11 +317,11 @@ static void highlight( HDC hdc, struct target t, const RECT *rect )
     /* the result Enter starts is lit, as in Windows 7 */
     if (!is_hot && mode == MODE_SEARCH && !focus_shown && same( t, focus )) is_hot = TRUE;
 
-    if (is_hot || is_pressed) fill_round_rect( hdc, rect, (float)px( 4 ), RGB( 255, 255, 255 ),
+    if (is_hot || is_pressed) fill_round_rect( hdc, rect, (float)px( 4 ), pal.ink,
                                                is_pressed ? PRESSED_ALPHA : HOVER_ALPHA );
     if (focus_shown && same( t, focus ))
     {
-        HBRUSH brush = CreateSolidBrush( RGB( 255, 255, 255 ) );
+        HBRUSH brush = CreateSolidBrush( pal.ink );
         FrameRect( hdc, rect, brush );
         DeleteObject( brush );
     }
@@ -356,7 +343,7 @@ static void paint_left( HDC hdc )
         {
             text = rect;
             text.left += PAD;
-            draw_text( hdc, item->name, &text, font_header, RGB( 0xa0, 0xa0, 0xa0 ), DT_LEFT );
+            draw_text( hdc, item->name, &text, font_header, pal.dim, DT_LEFT );
             continue;
         }
         highlight( hdc, t, &rect );
@@ -374,21 +361,21 @@ static void paint_left( HDC hdc )
             draw_icon_bitmap( hdc, items_icon( item, FALSE ), indent, (rect.top + rect.bottom - ICON_SMALL_SIZE) / 2, ICON_SMALL_SIZE );
             SetRect( &text, indent + ICON_SMALL_SIZE + PAD, rect.top, rect.right - PAD, rect.bottom );
         }
-        draw_text( hdc, item->name, &text, font_item, RGB( 255, 255, 255 ), DT_LEFT );
+        draw_text( hdc, item->name, &text, font_item, pal.text, DT_LEFT );
     }
 
     if (mode == MODE_HOME && pinned_count && home_count > pinned_count)
     {
         int y = home_y( pinned_count ) - px( 5 );
         SetRect( &rect, PAD, y, LEFT_WIDTH - PAD, y + 1 );
-        fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), LINE_ALPHA );
+        fill_alpha( hdc, &rect, pal.ink, LINE_ALPHA );
     }
     if (mode == MODE_SEARCH && !left_count())
     {
         rect = area;
         rect.left += PAD;
         rect.bottom = rect.top + ROW_SMALL;
-        draw_text( hdc, load_string( IDS_NO_RESULTS ), &rect, font_item, RGB( 0xa0, 0xa0, 0xa0 ), DT_LEFT );
+        draw_text( hdc, load_string( IDS_NO_RESULTS ), &rect, font_item, pal.dim, DT_LEFT );
     }
     /* a thin scroll bar when the list goes on */
     if (mode != MODE_HOME && left_count() > visible_rows())
@@ -397,7 +384,7 @@ static void paint_left( HDC hdc )
         int top = area.top + (height - thumb) * scroll / max( 1, left_count() - visible_rows() );
 
         SetRect( &rect, LEFT_WIDTH - px( 4 ), top, LEFT_WIDTH - px( 2 ), top + thumb );
-        fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), 0x66 );
+        fill_alpha( hdc, &rect, pal.ink, 0x66 );
     }
 }
 
@@ -408,21 +395,21 @@ static void paint_all_row( HDC hdc )
     BOOL back = mode != MODE_HOME;
 
     SetRect( &line, PAD, rect.top - px( 6 ), LEFT_WIDTH - PAD, rect.top - px( 5 ) );
-    fill_alpha( hdc, &line, RGB( 255, 255, 255 ), LINE_ALPHA );
+    fill_alpha( hdc, &line, pal.ink, LINE_ALPHA );
     highlight( hdc, t, &rect );
     if (back)
     {
         draw_glyph( hdc, GLYPH_CHEVRON_LEFT, rect.left + PAD, (rect.top + rect.bottom - CHEVRON) / 2, CHEVRON,
-                    RGB( 255, 255, 255 ), 255 );
+                    pal.ink, 255 );
         SetRect( &text, rect.left + PAD + CHEVRON + PAD, rect.top, rect.right - PAD, rect.bottom );
-        draw_text( hdc, load_string( IDS_BACK ), &text, font_item, RGB( 255, 255, 255 ), DT_LEFT );
+        draw_text( hdc, load_string( IDS_BACK ), &text, font_item, pal.text, DT_LEFT );
     }
     else
     {
         SetRect( &text, rect.left + PAD, rect.top, rect.right - PAD - CHEVRON - PAD, rect.bottom );
-        draw_text( hdc, load_string( IDS_ALL_PROGRAMS ), &text, font_item, RGB( 255, 255, 255 ), DT_LEFT );
+        draw_text( hdc, load_string( IDS_ALL_PROGRAMS ), &text, font_item, pal.text, DT_LEFT );
         draw_glyph( hdc, GLYPH_CHEVRON_RIGHT, rect.right - PAD - CHEVRON, (rect.top + rect.bottom - CHEVRON) / 2,
-                    CHEVRON, RGB( 255, 255, 255 ), 255 );
+                    CHEVRON, pal.ink, 255 );
     }
 }
 
@@ -431,7 +418,15 @@ static void paint_search( HDC hdc )
     RECT box = search_rect(), text, inner;
     int glyph = px( 14 );
 
-    fill_round_rect( hdc, &box, (float)px( 3 ), RGB( 255, 255, 255 ), 255 );
+    if (pal.light)
+    {
+        /* white on white: a frame shows where it is */
+        fill_round_rect( hdc, &box, (float)px( 3 ), RGB( 0x80, 0x80, 0x80 ), 255 );
+        InflateRect( &box, -1, -1 );
+        fill_round_rect( hdc, &box, (float)px( 3 ) - 1, RGB( 255, 255, 255 ), 255 );
+        InflateRect( &box, 1, 1 );
+    }
+    else fill_round_rect( hdc, &box, (float)px( 3 ), RGB( 255, 255, 255 ), 255 );
     draw_glyph( hdc, GLYPH_SEARCH, box.left + px( 7 ), (box.top + box.bottom - glyph) / 2, glyph,
                 RGB( 0x60, 0x60, 0x60 ), 255 );
     SetRect( &text, box.left + px( 7 ) + glyph + px( 6 ), box.top, box.right - px( 6 ), box.bottom );
@@ -467,16 +462,16 @@ static void paint_right( HDC hdc )
 
         highlight( hdc, t, &rect );
         draw_glyph( hdc, right_glyph( action ), rect.left + PAD, (rect.top + rect.bottom - GLYPH) / 2, GLYPH,
-                    RGB( 255, 255, 255 ), 255 );
+                    pal.ink, 255 );
         SetRect( &text, rect.left + PAD + GLYPH + PAD, rect.top, rect.right - PAD, rect.bottom );
         /* a place shown as a menu has its chevron */
         if (settings.show[action] == SHOW_MENU)
         {
             text.right -= CHEVRON + px( 4 );
             draw_glyph( hdc, GLYPH_CHEVRON_RIGHT, rect.right - PAD - CHEVRON, (rect.top + rect.bottom - CHEVRON) / 2,
-                        CHEVRON, RGB( 255, 255, 255 ), 255 );
+                        CHEVRON, pal.ink, 255 );
         }
-        draw_text( hdc, name, &text, action == R_USER ? font_bold : font_item, RGB( 255, 255, 255 ), DT_LEFT );
+        draw_text( hdc, name, &text, action == R_USER ? font_bold : font_item, pal.text, DT_LEFT );
     }
 }
 
@@ -487,139 +482,37 @@ static void paint_power( HDC hdc )
     int glyph = px( 16 );
 
     UnionRect( &all, &main, &chevron );
-    fill_round_rect( hdc, &all, (float)px( 4 ), RGB( 255, 255, 255 ), 0x14 );
+    fill_round_rect( hdc, &all, (float)px( 4 ), pal.ink, 0x14 );
     highlight( hdc, t_main, &main );
     highlight( hdc, t_chevron, &chevron );
-    draw_glyph( hdc, GLYPH_POWER, main.left + PAD, (main.top + main.bottom - glyph) / 2, glyph, RGB( 255, 255, 255 ), 255 );
+    draw_glyph( hdc, GLYPH_POWER, main.left + PAD, (main.top + main.bottom - glyph) / 2, glyph, pal.ink, 255 );
     SetRect( &text, main.left + PAD + glyph + PAD, main.top, main.right - px( 4 ), main.bottom );
-    draw_text( hdc, load_string( IDS_SHUT_DOWN ), &text, font_item, RGB( 255, 255, 255 ), DT_LEFT );
+    draw_text( hdc, load_string( IDS_SHUT_DOWN ), &text, font_item, pal.text, DT_LEFT );
     SetRect( &line, chevron.left, chevron.top + px( 6 ), chevron.left + 1, chevron.bottom - px( 6 ) );
-    fill_alpha( hdc, &line, RGB( 255, 255, 255 ), LINE_ALPHA );
+    fill_alpha( hdc, &line, pal.ink, LINE_ALPHA );
     draw_glyph( hdc, GLYPH_CHEVRON_RIGHT, (chevron.left + chevron.right - CHEVRON) / 2,
-                (chevron.top + chevron.bottom - CHEVRON) / 2, CHEVRON, RGB( 255, 255, 255 ), 255 );
+                (chevron.top + chevron.bottom - CHEVRON) / 2, CHEVRON, pal.ink, 255 );
 }
 
 static void on_paint( HWND hwnd )
 {
     PAINTSTRUCT ps;
-    RECT client;
-    HDC hdc = BeginPaint( hwnd, &ps ), mem;
-    BITMAPINFO info = { { sizeof(info.bmiHeader), 0, 0, 1, 32, BI_RGB } };
     HBITMAP bitmap;
-    void *bits;
+    HGDIOBJ old;
+    HDC mem = paint_begin( hwnd, &ps, &pal, &bitmap, &old );
 
-    GetClientRect( hwnd, &client );
-    info.bmiHeader.biWidth = client.right;
-    info.bmiHeader.biHeight = -client.bottom;
-    mem = CreateCompatibleDC( hdc );
-    if ((bitmap = CreateDIBSection( hdc, &info, DIB_RGB_COLORS, &bits, NULL, 0 )))
-    {
-        HGDIOBJ old = SelectObject( mem, bitmap );
-
-        /* black is the acrylic seen through */
-        FillRect( mem, &client, GetStockObject( BLACK_BRUSH ) );
-        SetBkMode( mem, TRANSPARENT );
-        paint_left( mem );
-        paint_all_row( mem );
-        paint_search( mem );
-        paint_right( mem );
-        paint_power( mem );
-        BitBlt( hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY );
-        SelectObject( mem, old );
-        DeleteObject( bitmap );
-    }
-    DeleteDC( mem );
-    EndPaint( hwnd, &ps );
+    if (!mem) return;
+    paint_left( mem );
+    paint_all_row( mem );
+    paint_search( mem );
+    paint_right( mem );
+    paint_power( mem );
+    paint_end( hwnd, &ps, mem, bitmap, old );
 }
 
 /**********************************************************************
  *          Acting
  */
-
-static void open_folder_id( int csidl )
-{
-    SHELLEXECUTEINFOW info = { sizeof(info) };
-    LPITEMIDLIST pidl;
-
-    if (FAILED(SHGetSpecialFolderLocation( NULL, csidl, &pidl ))) return;
-    info.fMask = SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI;
-    info.lpIDList = pidl;
-    info.nShow = SW_SHOWNORMAL;
-    ShellExecuteExW( &info );
-    CoTaskMemFree( pidl );
-}
-
-static void open_path( const WCHAR *path )
-{
-    ShellExecuteW( NULL, L"open", path, NULL, NULL, SW_SHOWNORMAL );
-}
-
-static void open_downloads(void)
-{
-    WCHAR *path, fallback[MAX_PATH];
-
-    if (SUCCEEDED(SHGetKnownFolderPath( &FOLDERID_Downloads, 0, NULL, &path )))
-    {
-        open_path( path );
-        CoTaskMemFree( path );
-        return;
-    }
-    if (SUCCEEDED(SHGetFolderPathW( NULL, CSIDL_PROFILE, NULL, SHGFP_TYPE_CURRENT, fallback )))
-    {
-        lstrcatW( fallback, L"\\Downloads" );
-        open_path( fallback );
-    }
-}
-
-static BOOL update_ready(void)
-{
-    WCHAR path[MAX_PATH];
-
-    GetSystemDirectoryW( path, ARRAY_SIZE(path) );
-    lstrcatW( path, L"\\Host\\Update\\ready" );
-    return GetFileAttributesW( path ) != INVALID_FILE_ATTRIBUTES;
-}
-
-/* Power Options' "Show in Power menu" (FlyoutMenuSettings, as Windows keeps them) */
-static BOOL flyout_shows( const WCHAR *name, DWORD fallback )
-{
-    DWORD value = fallback, size = sizeof(value);
-
-    RegGetValueW( HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FlyoutMenuSettings", name,
-                  RRF_RT_REG_DWORD, NULL, &value, &size );
-    return value != 0;
-}
-
-/* "Режим глибокого сну", once msconfig turned hibernation on (HibernateEnabled,
- * as Windows keeps it; docs/hibernation.md) and Power Options show it */
-static BOOL hibernate_enabled(void)
-{
-    DWORD value = 0, size = sizeof(value);
-
-    return !RegGetValueW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power", L"HibernateEnabled",
-                          RRF_RT_REG_DWORD, NULL, &value, &size ) && value && flyout_shows( L"ShowHibernateOption", 1 );
-}
-
-/* "Сон" where the machine can sleep (docs/power.md) */
-static BOOL sleep_enabled(void)
-{
-    return IsPwrSuspendAllowed() && flyout_shows( L"ShowSleepOption", 1 );
-}
-
-static DWORD WINAPI sleep_thread( void *arg )
-{
-    SetSuspendState( FALSE, FALSE, FALSE );
-    return 0;
-}
-
-/* The machine sleeps inside SetSuspendState and the call returns when it
- * wakes: on a thread of its own, the menu keeps answering meanwhile */
-static DWORD WINAPI hibernate_thread( void *arg )
-{
-    if (!SetSuspendState( TRUE, FALSE, FALSE ) && GetLastError() == ERROR_BUSY)
-        MessageBoxW( NULL, load_string( IDS_HIBERNATE_REFUSED ), load_string( IDS_HIBERNATE ), MB_ICONWARNING );
-    return 0;
-}
 
 static void place_menu( int index );
 
@@ -644,7 +537,7 @@ static void do_right( int index )
     case R_CONTROL_PANEL:
     case R_SETTINGS:      open_folder_id( CSIDL_CONTROLS ); break;
     case R_UPDATE:        open_path( L"https://github.com/77450danik/project-arctic/releases" ); break;
-    case R_RUN:           PostMessageW( tray, WM_HOTKEY, IDHK_RUN, 0 ); break;
+    case R_RUN:           open_run( tray ); break;
     }
 }
 
@@ -826,32 +719,10 @@ static void place_menu( int index )
 static void power_menu(void)
 {
     RECT rect = power_rect( TRUE );
-    HMENU popup = CreatePopupMenu();
     POINT pt = { rect.right, rect.top };
-    UINT cmd;
 
-    /* Windows 10's order: Sleep, Hibernate, Shut down, Restart */
-    if (sleep_enabled()) AppendMenuW( popup, MF_STRING, 4, load_string( IDS_SLEEP ) );
-    if (hibernate_enabled()) AppendMenuW( popup, MF_STRING, 3, load_string( IDS_HIBERNATE ) );
-    AppendMenuW( popup, MF_STRING, 2, load_string( IDS_SHUT_DOWN ) );
-    AppendMenuW( popup, MF_STRING, 1, load_string( update_ready() ? IDS_UPDATE_AND_RESTART : IDS_RESTART ) );
     ClientToScreen( menu, &pt );
-    in_popup = TRUE;
-    cmd = TrackPopupMenuEx( popup, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y,
-                            menu, NULL );
-    in_popup = FALSE;
-    DestroyMenu( popup );
-    if (!cmd) return;
-    menu_hide();
-    /* winlogon ends the session, arctic-init restarts and the next start
-     * installs a waiting update */
-    if (cmd == 3 || cmd == 4)
-    {
-        HANDLE thread = CreateThread( NULL, 0, cmd == 3 ? hibernate_thread : sleep_thread, NULL, 0, NULL );
-        if (thread) CloseHandle( thread );
-    }
-    else if (cmd == 1) ExitWindowsEx( EWX_REBOOT, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED );
-    else ExitWindowsEx( EWX_SHUTDOWN | EWX_POWEROFF, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED );
+    power_popup( menu, pt, TPM_LEFTALIGN | TPM_BOTTOMALIGN, &in_popup, menu_hide, POPUP_SYSTEM, NULL );
 }
 
 static void activate( struct target t )
@@ -884,7 +755,7 @@ static void activate( struct target t )
         break;
     case T_POWER:
         menu_hide();
-        ExitWindowsEx( EWX_SHUTDOWN | EWX_POWEROFF, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED );
+        power_shut_down();
         break;
     case T_POWER_MENU:
         power_menu();
@@ -897,44 +768,12 @@ static void activate( struct target t )
 static void context_menu( int index, POINT pt )
 {
     struct item *item = left_item( index );
-    BOOL pinned, frequent;
-    HMENU popup;
-    UINT cmd;
 
-    if (!item || item->kind != ITEM_PROGRAM) return;
-    pinned = items_is_pinned( item );
-    frequent = mode == MODE_HOME && (UINT)index >= pinned_count;
-    popup = CreatePopupMenu();
-    AppendMenuW( popup, MF_STRING, 1, load_string( IDS_OPEN ) );
-    SetMenuDefaultItem( popup, 1, FALSE );
-    if (!item->args[0]) AppendMenuW( popup, MF_STRING, 4, load_string( IDS_OPEN_LOCATION ) );
-    AppendMenuW( popup, MF_SEPARATOR, 0, NULL );
-    AppendMenuW( popup, MF_STRING, 2, load_string( pinned ? IDS_UNPIN : IDS_PIN ) );
-    if (frequent) AppendMenuW( popup, MF_STRING, 3, load_string( IDS_REMOVE_FROM_LIST ) );
     ClientToScreen( menu, &pt );
-    in_popup = TRUE;
-    cmd = TrackPopupMenuEx( popup, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, menu, NULL );
-    in_popup = FALSE;
-    DestroyMenu( popup );
-    switch (cmd)
-    {
-    case 1:
-        menu_hide();
-        items_launch( item );
+    if (item_popup( menu, item, pt, mode == MODE_HOME && (UINT)index >= pinned_count, &in_popup, menu_hide,
+                     POPUP_SYSTEM, NULL ) !=
+        ACTION_CHANGED)
         return;
-    case 2:
-        items_pin( item, !pinned );
-        break;
-    case 3:
-        items_forget( item );
-        break;
-    case 4:
-        menu_hide();
-        items_open_location( item );
-        return;
-    default:
-        return;
-    }
     if (mode == MODE_HOME) load_home();
     InvalidateRect( menu, NULL, FALSE );
 }
@@ -1179,8 +1018,6 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 
 static BOOL create_menu(void)
 {
-    struct arctic_accent_policy policy = { ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND, 0, ACRYLIC_TINT, 0 };
-    struct { DWORD attrib; void *data; SIZE_T size; } attr = { 19 /* WCA_ACCENT_POLICY */, &policy, sizeof(policy) };
     DWORD transition = ARCTIC_TRANSITION_SLIDE_UP, corner = 2 /* DWMWCP_ROUND */;
     DWORD size = ARRAY_SIZE(user_name);
     WNDCLASSW cls = { 0 };
@@ -1194,7 +1031,6 @@ static BOOL create_menu(void)
     menu = CreateWindowExW( WS_EX_TOOLWINDOW | WS_EX_TOPMOST, cls.lpszClassName, L"", WS_POPUP,
                             0, 0, MENU_WIDTH, MENU_HEIGHT, NULL, NULL, startui_instance, NULL );
     if (!menu) return FALSE;
-    SetWindowCompositionAttribute( menu, &attr );
     DwmSetWindowAttribute( menu, DWMWA_ARCTIC_TRANSITION, &transition, sizeof(transition) );
     DwmSetWindowAttribute( menu, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner) );
     font_item = shell_font( px( 14 ), FW_NORMAL );
@@ -1269,8 +1105,13 @@ void menu_toggle( HWND tray_window, const RECT *button_rect, BOOL click )
     focus_shown = FALSE;
     set_mode( MODE_HOME );
     place();
-    /* the shell's look, as chosen on the taskbar's page Оформлення */
-    ArcticApplyShellLook( menu );
+    /* the taskbar's look, as chosen on its page Оформлення, or the menu's own */
+    {
+        struct look look;
+
+        start_look_load( STYLE_STANDARD, &look );
+        palette_init( &pal, look_apply( menu, &look ) );
+    }
     InvalidateRect( menu, NULL, FALSE );
     ShowWindow( menu, SW_SHOW );
     SetForegroundWindow( menu );

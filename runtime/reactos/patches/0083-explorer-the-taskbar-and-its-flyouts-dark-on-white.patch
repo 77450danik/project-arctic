@@ -1,0 +1,470 @@
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -120,6 +120,11 @@ BOOL SetAdvancedDword(IN LPCWSTR pszValueName, IN DWORD dwValue);
+ VOID ArcticFillAlpha(IN HDC hdc, IN const RECT *prc, IN COLORREF color, IN BYTE alpha);
+ VOID ArcticSetTrayBand(IN HWND hWnd, IN BOOL bBand);
+ VOID ArcticSetAcrylic(IN HWND hWnd, IN DWORD dwTint);
++/* Arctic: over a light look (startui.dll, the page Оформлення) the taskbar
++ * and the shell's flyouts draw dark on white, which dwm.exe keys */
++BOOL ArcticTaskbarLight(VOID);
++BOOL ArcticShellLight(VOID);
++#define ARCTIC_INK(bLight) ((bLight) ? RGB(0, 0, 0) : RGB(255, 255, 255))
+ HRESULT ArcticSetWindowAttribute(IN HWND hWnd, IN DWORD dwAttribute, IN LPCVOID pvValue, IN DWORD cbValue);
+ VOID ArcticStartTaskSwitcher(VOID);
+ VOID ArcticTaskbarHover(IN HWND hwndTask, IN const RECT *prcButton, IN DWORD dwFlags);
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -268,6 +268,9 @@ class CToastWnd :
+             HGDIOBJ hOldBm = SelectObject(hdc, hbm), hOldFont = SelectObject(hdc, hFont);
+ 
+             ZeroMemory(pMask, m_cx * m_cy * sizeof(DWORD));
++            /* Arctic: black text over a light look */
++            int ink = ArcticShellLight() ? 0 : 255;
++
+             SetTextColor(hdc, RGB(255, 255, 255));
+             SetBkMode(hdc, TRANSPARENT);
+             SetRect(&rc, x, y, x + cx, y + cy);
+@@ -280,9 +283,9 @@ class CToastWnd :
+                 if (!cov)
+                     continue;
+                 m_pContent[i] = 0xff000000 |
+-                    ((((p >> 16) & 0xff) * (255 - cov) / 255 + cov) << 16) |
+-                    ((((p >> 8) & 0xff) * (255 - cov) / 255 + cov) << 8) |
+-                    ((p & 0xff) * (255 - cov) / 255 + cov);
++                    ((((p >> 16) & 0xff) * (255 - cov) + ink * cov) / 255 << 16) |
++                    ((((p >> 8) & 0xff) * (255 - cov) + ink * cov) / 255 << 8) |
++                    (((p & 0xff) * (255 - cov) + ink * cov) / 255);
+             }
+             SelectObject(hdc, hOldFont);
+             SelectObject(hdc, hOldBm);
+@@ -298,8 +301,10 @@ class CToastWnd :
+     {
+         HPEN hPen;
+         HGDIOBJ hOld;
+-        COLORREF close = m_hover == 2 ? RGB(255, 255, 255) : RGB(153, 153, 153);
+-        COLORREF settings = m_hover == 3 ? RGB(255, 255, 255) : RGB(153, 153, 153);
++        /* Arctic: black and dark grey over a light look */
++        BOOL bLight = ArcticShellLight();
++        COLORREF close = m_hover == 2 ? ARCTIC_INK(bLight) : bLight ? RGB(0x66, 0x66, 0x66) : RGB(153, 153, 153);
++        COLORREF settings = m_hover == 3 ? ARCTIC_INK(bLight) : bLight ? RGB(0x66, 0x66, 0x66) : RGB(153, 153, 153);
+         int cx = (m_rcClose.left + m_rcClose.right) / 2, cy = (m_rcClose.top + m_rcClose.bottom) / 2;
+ 
+         hPen = CreatePen(PS_SOLID, TOAST_PX(1), close);
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -2403,6 +2403,27 @@ public:
+                active one stays where it is, as in Windows 10 */
+             Ret |= CDRF_NOTIFYPOSTPAINT | TBCDRF_NOOFFSET;
+ 
++            /* Arctic: over a light look the theme's white states would not
++               show: the button as Windows 10's light taskbar has it, darker
++               under the pointer and active, its line along the bottom */
++            if (ArcticTaskbarLight())
++            {
++                RECT rcLine = nmtbcd->nmcd.rc;
++                UINT state = nmtbcd->nmcd.uItemState;
++                BOOL bActive = (state & CDIS_CHECKED) != 0;
++
++                if (state & CDIS_SELECTED)
++                    ArcticFillAlpha(nmtbcd->nmcd.hdc, &nmtbcd->nmcd.rc, RGB(0, 0, 0), 0x33);
++                else if (bActive || (state & CDIS_HOT))
++                    ArcticFillAlpha(nmtbcd->nmcd.hdc, &nmtbcd->nmcd.rc, RGB(0, 0, 0), bActive ? 0x1f : 0x14);
++                rcLine.top = rcLine.bottom - ArcticDpiScale(2);
++                if (!bActive)
++                    InflateRect(&rcLine, -ArcticDpiScale(4), 0);
++                ArcticFillAlpha(nmtbcd->nmcd.hdc, &rcLine, GetSysColor(COLOR_HIGHLIGHT), 255);
++                nmtbcd->clrText = RGB(0, 0, 0);
++                Ret |= TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES;
++            }
++
+             if (TaskItem != NULL && ::IsWindow(TaskItem->hWnd))
+             {
+                 /* Make the entire button flashing if necessary */
+diff --git a/base/shell/explorer/trayclock.cpp b/base/shell/explorer/trayclock.cpp
+--- a/base/shell/explorer/trayclock.cpp
++++ b/base/shell/explorer/trayclock.cpp
+@@ -534,7 +534,8 @@ LRESULT CTrayClockWnd::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bH
+         if (!IsAppThemed())
+             textColor = ::GetSysColor(COLOR_BTNTEXT);
+ 
+-        ::SetTextColor(hDC, textColor);
++        /* Arctic: black over a light look of the taskbar */
++        ::SetTextColor(hDC, ArcticTaskbarLight() ? RGB(0, 0, 0) : textColor);
+ 
+         hPrevFont = (HFONT) SelectObject(hDC, hFont);
+ 
+diff --git a/base/shell/explorer/traydeskbtn.cpp b/base/shell/explorer/traydeskbtn.cpp
+--- a/base/shell/explorer/traydeskbtn.cpp
++++ b/base/shell/explorer/traydeskbtn.cpp
+@@ -324,17 +324,18 @@ VOID CTrayShowDesktopButton::OnDraw(HDC hdc, LPRECT prc)
+         /* Arctic: as in Windows 10 over the acrylic: a thin strip after a
+          * faint line, lighter under the pointer */
+         RECT rcLine = rc;
++        COLORREF ink = ARCTIC_INK(ArcticTaskbarLight());
+ 
+         ::DrawThemeParentBackground(m_hWnd, hdc, NULL);
+         if (m_bPressed)
+-            ArcticFillAlpha(hdc, &rc, RGB(255, 255, 255), 0x0f);
++            ArcticFillAlpha(hdc, &rc, ink, 0x0f);
+         else if (m_bHovering)
+-            ArcticFillAlpha(hdc, &rc, RGB(255, 255, 255), 0x1a);
++            ArcticFillAlpha(hdc, &rc, ink, 0x1a);
+         if (m_bHorizontal)
+             rcLine.right = rcLine.left + 1;
+         else
+             rcLine.bottom = rcLine.top + 1;
+-        ArcticFillAlpha(hdc, &rcLine, RGB(255, 255, 255), 0x40);
++        ArcticFillAlpha(hdc, &rcLine, ink, 0x40);
+         return;
+     }
+ 
+diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
+--- a/base/shell/explorer/trayntfy.cpp
++++ b/base/shell/explorer/trayntfy.cpp
+@@ -191,15 +191,21 @@ static void DrawGear(HDC hdc, int x, int y, int size, COLORREF color)
+     DeleteObject(hbm);
+ }
+ 
+-/* Arctic: the shell's look (startui.dll, the taskbar's page Оформлення) */
+-static void ArcticShellLook(HWND hWnd)
++/* Arctic: the shell's look (startui.dll, the taskbar's page Оформлення);
++ * TRUE when the flyout draws dark on white over a light one */
++static BOOL ArcticShellLook(HWND hWnd)
+ {
++    typedef BOOL (WINAPI *PFN_LOOKEX)(HWND);
+     typedef VOID (WINAPI *PFN_LOOK)(HWND);
+     HMODULE hModule = LoadLibraryW(L"startui.dll");
++    PFN_LOOKEX pLookEx = hModule ? (PFN_LOOKEX)GetProcAddress(hModule, "ArcticApplyShellLookEx") : NULL;
+     PFN_LOOK pLook = hModule ? (PFN_LOOK)GetProcAddress(hModule, "ArcticApplyShellLook") : NULL;
+ 
++    if (pLookEx)
++        return pLookEx(hWnd);
+     if (pLook)
+         pLook(hWnd);
++    return FALSE;
+ }
+ 
+ #define INPUT_PAD ArcticDpiScale(5)
+@@ -214,12 +220,13 @@ class CInputFlyout :
+     int m_hover;   /* the tile under the pointer, m_count for Language preferences, -1 none */
+     BOOL m_pressed;
+     HFONT m_hfAbbr, m_hfName;
++    BOOL m_bLight;
+ 
+ public:
+     DECLARE_WND_CLASS_EX(L"ArcticInputFlyout", 0, COLOR_WINDOW)
+ 
+     CInputFlyout() : m_hwndIndicator(NULL), m_count(0), m_current(NULL), m_hover(-1), m_pressed(FALSE),
+-                     m_hfAbbr(NULL), m_hfName(NULL)
++                     m_hfAbbr(NULL), m_hfName(NULL), m_bLight(FALSE)
+     {
+     }
+ 
+@@ -246,7 +253,7 @@ public:
+         if (!m_hWnd && !Create(NULL))
+             return;
+         /* the acrylic of the shell behind it, as behind the taskbar */
+-        ArcticShellLook(m_hWnd);
++        m_bLight = ArcticShellLook(m_hWnd);
+ 
+         /* above the indicator, inside the screen */
+         ::GetWindowRect(hwndIndicator, &rcIndicator);
+@@ -306,22 +313,26 @@ public:
+         }
+         hdc = CreateCompatibleDC(hdcWnd);
+         hOldBm = SelectObject(hdc, hbm);
+-        FillRect(hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
++        /* black, or white over a light look, is the acrylic seen through */
++        FillRect(hdc, &rc, (HBRUSH)GetStockObject(m_bLight ? WHITE_BRUSH : BLACK_BRUSH));
+         SetBkMode(hdc, TRANSPARENT);
++        COLORREF ink = ARCTIC_INK(m_bLight);
+ 
+         for (int i = 0; i < m_count; i++)
+         {
+             WCHAR szAbbr[8], szLanguage[80], szKeyboard[128];
++            BOOL bCurrent = m_layouts[i] == m_current;
+ 
+             SetRect(&rcTile, 0, INPUT_PAD + i * INPUT_TILE_HEIGHT, rc.right, INPUT_PAD + (i + 1) * INPUT_TILE_HEIGHT);
+-            if (m_layouts[i] == m_current)
++            if (bCurrent)
+                 FillAlpha(hdc, &rcTile, INPUT_ACCENT, 255);
+             if (i == m_hover)
+-                FillAlpha(hdc, &rcTile, RGB(255, 255, 255), m_pressed ? 0x33 : 0x19);
++                FillAlpha(hdc, &rcTile, bCurrent ? RGB(255, 255, 255) : ink, m_pressed ? 0x33 : 0x19);
+ 
+             InputLanguageAbbreviation(m_layouts[i], szAbbr, _countof(szAbbr));
+             InputLanguageNames(m_layouts[i], szLanguage, _countof(szLanguage), szKeyboard, _countof(szKeyboard));
+-            SetTextColor(hdc, RGB(255, 255, 255));
++            /* white on the accent, else the ink */
++            SetTextColor(hdc, bCurrent ? RGB(255, 255, 255) : ink);
+ 
+             /* the abbreviation, bottom-centred in the upper 30 of the 74 wide column less its 14 of padding */
+             HGDIOBJ hOld = SelectObject(hdc, m_hfAbbr);
+@@ -332,30 +343,39 @@ public:
+             SelectObject(hdc, m_hfName);
+             SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top, rc.right - ArcticDpiScale(22), rcTile.top + ArcticDpiScale(30));
+             DrawTextW(hdc, szLanguage, -1, &rcText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+-            SetTextColor(hdc, RGB(0xcc, 0xcc, 0xcc));
++            SetTextColor(hdc, bCurrent ? RGB(0xcc, 0xcc, 0xcc) : m_bLight ? RGB(0x33, 0x33, 0x33) : RGB(0xcc, 0xcc, 0xcc));
+             SetRect(&rcText, INPUT_TILE_COLUMN, rcTile.top + ArcticDpiScale(30), rc.right - ArcticDpiScale(22), rcTile.bottom);
+             DrawTextW(hdc, szKeyboard, -1, &rcText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+             SelectObject(hdc, hOld);
++            if (bCurrent && m_bLight)
++            {
++                /* white text on the opaque accent: not keyed into the backdrop */
++                DWORD *pBits = (DWORD *)pvBits;
++                GdiFlush();
++                for (int py = max(rcTile.top, 0L); py < min(rcTile.bottom, rc.bottom); py++)
++                    for (int px = 0; px < rc.right; px++)
++                        pBits[py * rc.right + px] |= 0xff000000;
++            }
+         }
+ 
+         /* the separator and Language preferences */
+         int y = INPUT_PAD + m_count * INPUT_TILE_HEIGHT + INPUT_PAD;
+         SetRect(&rcText, ArcticDpiScale(12), y, rc.right - ArcticDpiScale(12), y + 1);
+-        FillAlpha(hdc, &rcText, RGB(255, 255, 255), 0x33);
++        FillAlpha(hdc, &rcText, ink, 0x33);
+         y += 1 + INPUT_PAD;
+         SetRect(&rcTile, 0, y, rc.right, y + INPUT_SETTINGS_HEIGHT);
+         if (m_hover == m_count)
+-            FillAlpha(hdc, &rcTile, RGB(255, 255, 255), m_pressed ? 0x33 : 0x19);
++            FillAlpha(hdc, &rcTile, ink, m_pressed ? 0x33 : 0x19);
+         {
+             WCHAR szSettings[64];
+             int gear = ArcticDpiScale(16);
+ 
+             /* the gear in the abbreviations' column, beside its text */
+             DrawGear(hdc, (INPUT_TILE_COLUMN - ArcticDpiScale(14) - gear) / 2, y + (INPUT_SETTINGS_HEIGHT - gear) / 2,
+-                     gear, RGB(255, 255, 255));
++                     gear, ink);
+             LoadStringW(GetModuleHandleW(NULL), IDS_INPUT_SETTINGS, szSettings, _countof(szSettings));
+             HGDIOBJ hOld = SelectObject(hdc, m_hfName);
+-            SetTextColor(hdc, RGB(255, 255, 255));
++            SetTextColor(hdc, ink);
+             SetRect(&rcText, INPUT_TILE_COLUMN, y, rc.right - ArcticDpiScale(14), y + INPUT_SETTINGS_HEIGHT);
+             DrawTextW(hdc, szSettings, -1, &rcText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+             SelectObject(hdc, hOld);
+@@ -635,11 +655,12 @@ public:
+ 
+         GetClientRect(&rc);
+         DrawThemeParentBackground(m_hWnd, hdc, &rc);
++        COLORREF ink = ARCTIC_INK(ArcticTaskbarLight());
+         if (m_bHover)
+-            FillAlpha(hdc, &rc, RGB(255, 255, 255), 0x21);
++            FillAlpha(hdc, &rc, ink, 0x21);
+         InputLanguageAbbreviation(m_current, szAbbr, _countof(szAbbr));
+         SetBkMode(hdc, TRANSPARENT);
+-        SetTextColor(hdc, RGB(255, 255, 255));
++        SetTextColor(hdc, ink);
+         HGDIOBJ hOld = SelectObject(hdc, m_hfAbbr);
+         DrawTextW(hdc, szAbbr, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+         SelectObject(hdc, hOld);
+diff --git a/base/shell/explorer/trayprop.cpp b/base/shell/explorer/trayprop.cpp
+--- a/base/shell/explorer/trayprop.cpp
++++ b/base/shell/explorer/trayprop.cpp
+@@ -153,6 +153,12 @@ public:
+     }
+ };
+ 
++/* Arctic: "Customize..." of the classic menu, for startui.dll's page */
++static VOID WINAPI ArcticCustomizeClassic(HWND hwndOwner)
++{
++    ShowCustomizeClassic(hExplorerInstance, hwndOwner);
++}
++
+ class CStartMenuSettingsPage : public CPropertyPageImpl<CStartMenuSettingsPage>
+ {
+ private:
+@@ -422,7 +428,19 @@ DisplayTrayProperties(IN HWND hwndOwner, IN HWND hwndTaskbar)
+         if (hLookPage)
+             hpsp.Add(hLookPage);
+     }
+-    hpsp.Add(smSettingsPage.Create());
++    /* Arctic: the Start menu's page of startui.dll: the standard menu, those
++     * of Windows 10 and 11, or the classic one, and their looks */
++    {
++        typedef HPROPSHEETPAGE (WINAPI *PFN_STARTPAGE)(HWND, VOID (WINAPI *)(HWND));
++        HMODULE hStartUi = LoadLibraryW(L"startui.dll");
++        PFN_STARTPAGE pStartPage = hStartUi ? (PFN_STARTPAGE)GetProcAddress(hStartUi, "ArcticStartMenuPage") : NULL;
++        HPROPSHEETPAGE hStartPage = pStartPage ? pStartPage(hwndTaskbar, ArcticCustomizeClassic) : NULL;
++
++        if (hStartPage)
++            hpsp.Add(hStartPage);
++        else
++            hpsp.Add(smSettingsPage.Create());
++    }
+     hpsp.Add(naSettingsPage.Create());
+ 
+     ZeroMemory(&psh, sizeof(psh));
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -36,6 +36,8 @@ HRESULT TrayWindowCtxMenuCreator(ITrayWindow * TrayWnd, IN HWND hWndOwner, ICont
+  * unless "Classic Start menu" is chosen in the taskbar's properties
+  * (HKCU\Software\Arctic\StartMenu, Classic). It says when it closed. */
+ static const UINT g_uArcticStartMenuClosed = RegisterWindowMessageW(L"ArcticStartMenuClosed");
++/* ... and the look changed on the page Оформлення */
++static const UINT g_uArcticShellLookChanged = RegisterWindowMessageW(L"ArcticShellLookChanged");
+ 
+ static FARPROC ArcticStartUiProc(LPCSTR pszName)
+ {
+@@ -345,8 +347,55 @@ public:
+         return 0;
+     }
+ 
++    /* Arctic: over a light look, as Windows 10's light taskbar: on white
++     * (the backdrop seen through), darker under the pointer and pressed,
++     * the four panes of the logo in black */
++    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        PAINTSTRUCT ps;
++        RECT rc, rcPane;
++        LRESULT state;
++        int logo = ArcticDpiScale(16), pane = (logo - ArcticDpiScale(1)) / 2, x, y;
++
++        if (!ArcticTaskbarLight())
++        {
++            bHandled = FALSE;
++            return 0;
++        }
++        HDC hdc = BeginPaint(&ps);
++        GetClientRect(&rc);
++        FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
++        state = SendMessageW(BM_GETSTATE, 0, 0);
++        if (state & BST_PUSHED)
++            ArcticFillAlpha(hdc, &rc, RGB(0, 0, 0), 0x26);
++        else if (state & BST_HOT)
++            ArcticFillAlpha(hdc, &rc, RGB(0, 0, 0), 0x1a);
++        x = (rc.right - logo) / 2;
++        y = (rc.bottom - logo) / 2;
++        for (int i = 0; i < 4; i++)
++        {
++            SetRect(&rcPane, x + (i % 2) * (logo - pane), y + (i / 2) * (logo - pane),
++                    x + (i % 2) * (logo - pane) + pane, y + (i / 2) * (logo - pane) + pane);
++            ArcticFillAlpha(hdc, &rcPane, RGB(0, 0, 0), 255);
++        }
++        EndPaint(&ps);
++        return 0;
++    }
++
++    LRESULT OnMouseHover(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        /* the button tracks the pointer; the light look is drawn here */
++        if (ArcticTaskbarLight())
++            Invalidate();
++        bHandled = FALSE;
++        return 0;
++    }
++
+     BEGIN_MSG_MAP(CStartButton)
+         MESSAGE_HANDLER(WM_LBUTTONDOWN, OnLButtonDown)
++        MESSAGE_HANDLER(WM_PAINT, OnPaint)
++        MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseHover)
++        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseHover)
+     END_MSG_MAP()
+ };
+ 
+@@ -2005,6 +2054,30 @@ ChangePos:
+         return TRUE;
+     }
+ 
++    /* Arctic: the look of the page Оформлення, dark on white over a light one */
++    VOID ArcticApplyLook()
++    {
++        typedef BOOL (WINAPI *PFN_LOOKEX)(HWND);
++        typedef VOID (WINAPI *PFN_LOOK)(HWND);
++        PFN_LOOKEX pLookEx = (PFN_LOOKEX)ArcticStartUiProc("ArcticApplyTaskbarLookEx");
++        PFN_LOOK pLook = (PFN_LOOK)ArcticStartUiProc("ArcticApplyTaskbarLook");
++
++        if (pLookEx)
++            pLookEx(m_hWnd);
++        else if (pLook)
++            pLook(m_hWnd);
++        else
++            ArcticSetAcrylic(m_hWnd, 0xBF101010);
++    }
++
++    LRESULT OnArcticShellLookChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        ArcticApplyLook();
++        /* every part draws its text, its glyphs and its backdrop anew */
++        RedrawWindow(NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
++        return 0;
++    }
++
+     LRESULT OnArcticStartMenuClosed(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
+         RaiseStartButton();
+@@ -2232,6 +2305,15 @@ ChangePos:
+ 
+         ASSERT(m_Position <= ABE_BOTTOM);
+ 
++        /* Arctic: over a light look the taskbar draws dark on white, and
++         * white is what dwm.exe shows the look through */
++        if (ArcticTaskbarLight())
++        {
++            GetClientRect(&rect);
++            FillRect(hdc, &rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
++            return 0;
++        }
++
+         if (m_Theme)
+         {
+             GetClientRect(&rect);
+@@ -2559,15 +2641,7 @@ ChangePos:
+          * its band over program windows, and Alt+Tab */
+         /* Arctic: the look chosen on the page Оформлення (startui.dll),
+          * the acrylic of Windows 10 by default */
+-        {
+-            typedef VOID (WINAPI *PFN_LOOK)(HWND);
+-            PFN_LOOK pLook = (PFN_LOOK)ArcticStartUiProc("ArcticApplyTaskbarLook");
+-
+-            if (pLook)
+-                pLook(m_hWnd);
+-            else
+-                ArcticSetAcrylic(m_hWnd, 0xBF101010);
+-        }
++        ArcticApplyLook();
+         ArcticSetTrayBand(m_hWnd, TRUE);
+         ArcticStartTaskSwitcher();
+ 
+@@ -3645,6 +3719,7 @@ HandleTrayContextMenu:
+         MESSAGE_HANDLER(TWM_SETTINGSCHANGED, OnTaskbarSettingsChanged)
+         MESSAGE_HANDLER(TWM_OPENSTARTMENU, OnOpenStartMenu)
+         MESSAGE_HANDLER(g_uArcticStartMenuClosed, OnArcticStartMenuClosed)
++        MESSAGE_HANDLER(g_uArcticShellLookChanged, OnArcticShellLookChanged)
+         MESSAGE_HANDLER(TWM_DOEXITWINDOWS, OnDoExitWindows)
+         MESSAGE_HANDLER(TWM_GETTASKSWITCH, OnGetTaskSwitch)
+         MESSAGE_HANDLER(TWM_SETZORDER, OnSetZOrder)
+diff --git a/base/shell/explorer/util.cpp b/base/shell/explorer/util.cpp
+--- a/base/shell/explorer/util.cpp
++++ b/base/shell/explorer/util.cpp
+@@ -75,6 +75,24 @@ VOID ArcticSetAcrylic(IN HWND hWnd, IN DWORD dwTint)
+         pSetWindowCompositionAttribute(hWnd, &data);
+ }
+ 
++/* the taskbar draws dark on white now: its own parts ask when they paint */
++BOOL ArcticTaskbarLight(VOID)
++{
++    typedef BOOL (WINAPI *PFN_ISLIGHT)(VOID);
++    PFN_ISLIGHT pIsLight = (PFN_ISLIGHT)ArcticProc(L"startui.dll", "ArcticTaskbarIsLight");
++
++    return pIsLight && pIsLight();
++}
++
++/* the shell's flyouts and toasts draw dark on white */
++BOOL ArcticShellLight(VOID)
++{
++    typedef BOOL (WINAPI *PFN_ISLIGHT)(VOID);
++    PFN_ISLIGHT pIsLight = (PFN_ISLIGHT)ArcticProc(L"startui.dll", "ArcticShellIsLight");
++
++    return pIsLight && pIsLight();
++}
++
+ HRESULT ArcticSetWindowAttribute(IN HWND hWnd, IN DWORD dwAttribute, IN LPCVOID pvValue, IN DWORD cbValue)
+ {
+     typedef HRESULT (WINAPI *PFN_DWMSETWINDOWATTRIBUTE)(HWND, DWORD, LPCVOID, DWORD);

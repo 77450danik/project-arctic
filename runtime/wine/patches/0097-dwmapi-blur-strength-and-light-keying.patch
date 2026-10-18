@@ -1,0 +1,35 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 18 Oct 2026 12:00:00 +0200
+Subject: [PATCH] dwmapi: How strongly a backdrop blurs, and windows drawn dark on white.
+
+The Start menus of Windows 10 and 11 in Arctic choose their own blur (the
+taskbar's properties, Start menu): DWMWA_ARCTIC_BLUR, 1-100, 0 the default
+of dwm.exe. A shell surface over a light backdrop draws dark on white, as
+in the light theme: DWMWA_ARCTIC_LIGHT makes dwm.exe key white instead of
+black (wine/arctic_dwm.h). Both go into the table dwm.exe shares, as the
+accent policy does.
+---
+ dlls/dwmapi/dwmapi_main.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/dlls/dwmapi/dwmapi_main.c b/dlls/dwmapi/dwmapi_main.c
+--- a/dlls/dwmapi/dwmapi_main.c
++++ b/dlls/dwmapi/dwmapi_main.c
+@@ -189,6 +189,8 @@ HRESULT WINAPI DwmSetWindowAttribute(HWND hwnd, DWORD attributenum, LPCVOID attr
+     case 33: /* DWMWA_WINDOW_CORNER_PREFERENCE */
+     case 38: /* DWMWA_SYSTEMBACKDROP_TYPE */
+     case DWMWA_ARCTIC_TRANSITION:
++    case DWMWA_ARCTIC_BLUR:
++    case DWMWA_ARCTIC_LIGHT:
+         if (size < sizeof(DWORD)) return E_INVALIDARG;
+         break;
+     case DWMWA_ARCTIC_MINIMIZE_RECT:
+@@ -215,6 +217,8 @@ HRESULT WINAPI DwmSetWindowAttribute(HWND hwnd, DWORD attributenum, LPCVOID attr
+         case 33: window->corner = *(const DWORD *)attribute; break;
+         case 38: window->backdrop = *(const DWORD *)attribute; break;
+         case DWMWA_ARCTIC_TRANSITION: window->transition = *(const DWORD *)attribute; break;
++        case DWMWA_ARCTIC_BLUR: window->blur = min( *(const DWORD *)attribute, 100 ); break;
++        case DWMWA_ARCTIC_LIGHT: window->light = !!*(const DWORD *)attribute; break;
+         case DWMWA_ARCTIC_MINIMIZE_RECT:
+         {
+             const RECT *rect = attribute;

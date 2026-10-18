@@ -284,3 +284,216 @@ void customize_dialog( HWND owner )
 
     DialogBoxIndirectParamW( startui_instance, &template.header, owner, customize_proc, 0 );
 }
+
+/**********************************************************************
+ *          The menus of Windows 10 and 11
+ *
+ * What Windows' Settings > Personalization > Start sets for them, in
+ * HKCU\Software\Arctic\StartMenu\Windows10 and \Windows11: AppList,
+ * RecentlyAdded, MostUsed, RecentItems, Layout and Folders (1 << the
+ * place, as "Choose which folders appear on Start").
+ */
+
+#define ID_APP_LIST      1200
+#define ID_ADDED         1201
+#define ID_MOST_USED     1202
+#define ID_RECENT_ITEMS  1203
+#define ID_LAYOUT        1204
+#define ID_FOLDER_FIRST  1210
+
+static const WCHAR *modern_key( int style )
+{
+    return style == STYLE_WIN11 ? REG_KEY L"\\Windows11" : REG_KEY L"\\Windows10";
+}
+
+void modern_settings_defaults( int style, struct modern_settings *settings )
+{
+    settings->app_list = TRUE;
+    settings->recently_added = TRUE;
+    settings->most_used = TRUE;
+    settings->recent_items = TRUE;
+    settings->layout = LAYOUT_DEFAULT;
+    /* Windows 10 has Documents, Pictures and Settings over the power button;
+     * Windows 11 nothing beside it */
+    settings->folders = style == STYLE_WIN11 ? 0 :
+                        (1 << FOLDER_DOCUMENTS) | (1 << FOLDER_PICTURES) | (1 << FOLDER_SETTINGS);
+}
+
+void modern_settings_load( int style, struct modern_settings *settings )
+{
+    HKEY key;
+
+    modern_settings_defaults( style, settings );
+    if (RegOpenKeyExW( HKEY_CURRENT_USER, modern_key( style ), 0, KEY_READ, &key )) return;
+    settings->app_list = !!read_dword( key, L"AppList", settings->app_list );
+    settings->recently_added = !!read_dword( key, L"RecentlyAdded", settings->recently_added );
+    settings->most_used = !!read_dword( key, L"MostUsed", settings->most_used );
+    settings->recent_items = !!read_dword( key, L"RecentItems", settings->recent_items );
+    settings->layout = min( read_dword( key, L"Layout", settings->layout ), LAYOUT_COUNT - 1 );
+    settings->folders = read_dword( key, L"Folders", settings->folders ) & ((1 << FOLDER_COUNT) - 1);
+    RegCloseKey( key );
+}
+
+static void save_value( HKEY key, const WCHAR *name, DWORD value )
+{
+    RegSetValueExW( key, name, 0, REG_DWORD, (const BYTE *)&value, sizeof(value) );
+}
+
+void modern_settings_save( int style, const struct modern_settings *settings )
+{
+    HKEY key;
+
+    if (RegCreateKeyExW( HKEY_CURRENT_USER, modern_key( style ), 0, NULL, 0, KEY_WRITE, NULL, &key, NULL )) return;
+    save_value( key, L"AppList", settings->app_list );
+    save_value( key, L"RecentlyAdded", settings->recently_added );
+    save_value( key, L"MostUsed", settings->most_used );
+    save_value( key, L"RecentItems", settings->recent_items );
+    save_value( key, L"Layout", settings->layout );
+    save_value( key, L"Folders", settings->folders );
+    RegCloseKey( key );
+}
+
+static void show_modern( HWND dialog, int style, const struct modern_settings *settings )
+{
+    if (style == STYLE_WIN10) CheckDlgButton( dialog, ID_APP_LIST, settings->app_list ? BST_CHECKED : BST_UNCHECKED );
+    else
+    {
+        SendDlgItemMessageW( dialog, ID_LAYOUT, CB_SETCURSEL, settings->layout, 0 );
+        CheckDlgButton( dialog, ID_RECENT_ITEMS, settings->recent_items ? BST_CHECKED : BST_UNCHECKED );
+    }
+    CheckDlgButton( dialog, ID_ADDED, settings->recently_added ? BST_CHECKED : BST_UNCHECKED );
+    CheckDlgButton( dialog, ID_MOST_USED, settings->most_used ? BST_CHECKED : BST_UNCHECKED );
+    for (int i = 0; i < FOLDER_COUNT; i++)
+        CheckDlgButton( dialog, ID_FOLDER_FIRST + i, (settings->folders & (1 << i)) ? BST_CHECKED : BST_UNCHECKED );
+}
+
+/* the client area the controls want, centred on the owner */
+static void fit_dialog( HWND dialog, int bottom )
+{
+    RECT rect, owner;
+    HWND parent = GetWindow( dialog, GW_OWNER );
+    int width, height;
+
+    SetRect( &rect, 0, 0, px( 420 ), px( bottom ) );
+    AdjustWindowRectEx( &rect, GetWindowLongW( dialog, GWL_STYLE ), FALSE, GetWindowLongW( dialog, GWL_EXSTYLE ) );
+    width = rect.right - rect.left;
+    height = rect.bottom - rect.top;
+    if (!parent || !GetWindowRect( parent, &owner ))
+        SetRect( &owner, 0, 0, GetSystemMetrics( SM_CXSCREEN ), GetSystemMetrics( SM_CYSCREEN ) );
+    SetWindowPos( dialog, NULL, (owner.left + owner.right - width) / 2, max( 0, (int)(owner.top + owner.bottom - height) / 2 ),
+                  width, height, SWP_NOZORDER | SWP_NOACTIVATE );
+}
+
+static void init_modern( HWND dialog, int style )
+{
+    struct modern_settings settings;
+    NONCLIENTMETRICSW metrics = { sizeof(metrics) };
+    int y = 12;
+
+    SystemParametersInfoW( SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0 );
+    if (!dialog_font) dialog_font = CreateFontIndirectW( &metrics.lfMessageFont );
+    SetWindowTextW( dialog, load_string( IDS_CUSTOMIZE_TITLE ) );
+    modern_settings_load( style, &settings );
+
+    if (style == STYLE_WIN11)
+    {
+        HWND combo;
+
+        add_control( dialog, L"STATIC", load_string( IDS_LAYOUT ), SS_CENTERIMAGE, 12, y, 140, 24, -1 );
+        combo = add_control( dialog, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, 156, y, 252, 120,
+                             ID_LAYOUT );
+        SendMessageW( combo, CB_ADDSTRING, 0, (LPARAM)load_string( IDS_LAYOUT_PINS ) );
+        SendMessageW( combo, CB_ADDSTRING, 0, (LPARAM)load_string( IDS_LAYOUT_DEFAULT ) );
+        SendMessageW( combo, CB_ADDSTRING, 0, (LPARAM)load_string( IDS_LAYOUT_RECOMMENDED ) );
+        y += 34;
+    }
+    else
+    {
+        add_control( dialog, L"BUTTON", load_string( IDS_SHOW_APP_LIST ), BS_AUTOCHECKBOX | WS_TABSTOP, 12, y, 396, 22,
+                     ID_APP_LIST );
+        y += 26;
+    }
+    add_control( dialog, L"BUTTON", load_string( IDS_SHOW_RECENT_ADDED ), BS_AUTOCHECKBOX | WS_TABSTOP, 12, y, 396, 22,
+                 ID_ADDED );
+    y += 26;
+    add_control( dialog, L"BUTTON", load_string( IDS_SHOW_MOST_USED ), BS_AUTOCHECKBOX | WS_TABSTOP, 12, y, 396, 22,
+                 ID_MOST_USED );
+    y += 26;
+    if (style == STYLE_WIN11)
+    {
+        add_control( dialog, L"BUTTON", load_string( IDS_SHOW_RECENT_ITEMS ), BS_AUTOCHECKBOX | WS_TABSTOP, 12, y, 396,
+                     22, ID_RECENT_ITEMS );
+        y += 26;
+    }
+    y += 10;
+    add_control( dialog, L"STATIC", load_string( IDS_FOLDERS_ON_START ), 0, 12, y, 396, 20, -1 );
+    y += 24;
+    for (int i = 0; i < FOLDER_COUNT; i++)
+        add_control( dialog, L"BUTTON", folder_name( i ), BS_AUTOCHECKBOX | WS_TABSTOP, 24 + (i % 2) * 196,
+                     y + (i / 2) * 26, 190, 22, ID_FOLDER_FIRST + i );
+    y += (FOLDER_COUNT + 1) / 2 * 26 + 14;
+    add_control( dialog, L"BUTTON", load_string( IDS_DEFAULTS ), BS_PUSHBUTTON | WS_TABSTOP, 12, y, 150, 26,
+                 ID_DEFAULTS );
+    add_control( dialog, L"BUTTON", load_string( IDS_OK ), BS_DEFPUSHBUTTON | WS_TABSTOP, 228, y, 86, 26, IDOK );
+    add_control( dialog, L"BUTTON", load_string( IDS_CANCEL ), BS_PUSHBUTTON | WS_TABSTOP, 322, y, 86, 26, IDCANCEL );
+    show_modern( dialog, style, &settings );
+    fit_dialog( dialog, y + 26 + 12 );
+}
+
+static INT_PTR WINAPI modern_proc( HWND dialog, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    int style = (int)GetWindowLongPtrW( dialog, DWLP_USER );
+    struct modern_settings settings;
+
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+        SetWindowLongPtrW( dialog, DWLP_USER, lparam );
+        init_modern( dialog, lparam );
+        return TRUE;
+
+    case WM_COMMAND:
+        switch (LOWORD( wparam ))
+        {
+        case ID_DEFAULTS:
+            modern_settings_defaults( style, &settings );
+            show_modern( dialog, style, &settings );
+            return TRUE;
+        case IDOK:
+            modern_settings_load( style, &settings );
+            if (style == STYLE_WIN10) settings.app_list = IsDlgButtonChecked( dialog, ID_APP_LIST ) == BST_CHECKED;
+            else
+            {
+                settings.layout = max( 0, (int)SendDlgItemMessageW( dialog, ID_LAYOUT, CB_GETCURSEL, 0, 0 ) );
+                settings.recent_items = IsDlgButtonChecked( dialog, ID_RECENT_ITEMS ) == BST_CHECKED;
+            }
+            settings.recently_added = IsDlgButtonChecked( dialog, ID_ADDED ) == BST_CHECKED;
+            settings.most_used = IsDlgButtonChecked( dialog, ID_MOST_USED ) == BST_CHECKED;
+            settings.folders = 0;
+            for (int i = 0; i < FOLDER_COUNT; i++)
+                if (IsDlgButtonChecked( dialog, ID_FOLDER_FIRST + i ) == BST_CHECKED) settings.folders |= 1 << i;
+            modern_settings_save( style, &settings );
+            EndDialog( dialog, IDOK );
+            return TRUE;
+        case IDCANCEL:
+            EndDialog( dialog, IDCANCEL );
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+void modern_customize_dialog( HWND owner, int style )
+{
+    static const struct
+    {
+        DLGTEMPLATE header;
+        WORD menu, cls, title;
+    } DECLSPEC_ALIGN(4) template =
+    {
+        { DS_MODALFRAME | DS_SETFOREGROUND | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU, 0, 0, 0, 0, 200, 200 },
+    };
+
+    DialogBoxIndirectParamW( startui_instance, &template.header, owner, modern_proc, style );
+}

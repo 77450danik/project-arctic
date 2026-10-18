@@ -1,0 +1,56 @@
+# Search in each Start menu: typing at once, and clicking the search box first
+sleep 10
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 3 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+type note
+sleep 2
+shot q1-win11-typed
+key esc
+sleep 1
+key esc
+sleep 2
+move 24 780
+click
+sleep 3
+move 330 103
+click
+sleep 1
+type paint
+sleep 2
+shot q2-win11-box
+key esc
+sleep 1
+key esc
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 2 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+type note
+sleep 2
+shot q3-win10-typed
+key esc
+sleep 1
+key esc
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+type note
+sleep 2
+shot q4-standard-typed

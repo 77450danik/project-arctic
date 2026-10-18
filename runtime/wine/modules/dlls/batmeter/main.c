@@ -84,19 +84,12 @@ HFONT shell_font( int height, int weight )
     return CreateFontIndirectW( &metrics.lfMessageFont );
 }
 
+BOOL shell_light;
+
 void shell_look( HWND hwnd )
 {
-    static void (WINAPI *apply)( HWND );
-    static BOOL looked;
-
-    if (!looked)
-    {
-        HMODULE module = LoadLibraryW( L"startui.dll" );
-        if (module) apply = (void *)GetProcAddress( module, "ArcticApplyShellLook" );
-        looked = TRUE;
-    }
-    /* without it the flyout keeps the acrylic it was made with */
-    if (apply) apply( hwnd );
+    /* without startui the flyout keeps the acrylic it was made with */
+    shell_light = arctic_shell_look( hwnd );
 }
 
 static struct battery_tray *impl_from_IOleCommandTarget( IOleCommandTarget *iface )

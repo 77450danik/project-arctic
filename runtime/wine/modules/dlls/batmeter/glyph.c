@@ -130,7 +130,7 @@ void draw_glyph( HDC hdc, WCHAR code, int x, int y, int size, COLORREF color, BY
     free( cov );
 }
 
-/* the notification area's icon: white, as on the dark taskbar */
+/* the notification area's icon: white on the dark taskbar, black on a light one */
 HICON make_glyph_icon( WCHAR code, int size )
 {
     ICONINFO info = { .fIcon = TRUE };
@@ -141,9 +141,11 @@ HICON make_glyph_icon( WCHAR code, int size )
     if (!cov) return NULL;
     if ((info.hbmColor = create_dib( NULL, size, size, &bits )))
     {
+        UINT32 color = arctic_taskbar_is_light() ? 0 : 0xffffff;
+
         /* icons carry straight alpha */
         for (int i = 0; i < size * size; i++)
-            bits[i] = ((UINT32)(min( cov[i], 1.f ) * 255 + 0.5f) << 24) | 0xffffff;
+            bits[i] = ((UINT32)(min( cov[i], 1.f ) * 255 + 0.5f) << 24) | color;
         info.hbmMask = CreateBitmap( size, size, 1, 1, NULL );
         icon = CreateIconIndirect( &info );
         DeleteObject( info.hbmColor );

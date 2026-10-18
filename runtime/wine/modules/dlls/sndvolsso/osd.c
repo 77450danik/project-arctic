@@ -93,19 +93,19 @@ static void paint( HDC hdc, const RECT *client )
     RECT card = { 0, 0, MEDIA_CARD_WIDTH, MEDIA_CARD_HEIGHT }, rect;
     int top = row_top(), left, right, fill;
 
-    FillRect( hdc, client, GetStockObject( BLACK_BRUSH ) );
+    arctic_fill_back( hdc, client, shell_light );
     SetBkMode( hdc, TRANSPARENT );
     if (media.present)
     {
         media_paint( hdc, &card, &media, hot, pressed, 255 );
         SetRect( &rect, px( 12 ), MEDIA_CARD_HEIGHT, client->right - px( 12 ), MEDIA_CARD_HEIGHT + 1 );
-        fill_alpha( hdc, &rect, RGB( 255, 255, 255 ), 0x33 );
+        fill_alpha( hdc, &rect, INK, 0x33 );
     }
 
     draw_speaker( hdc, px( 16 ), top + (ROW_HEIGHT - GLYPH) / 2, GLYPH, level, muted || !have_device, 0xff, 0 );
     bar_extent( &left, &right );
     SetRect( &rect, left, top + ROW_HEIGHT / 2 - px( 2 ), right, top + ROW_HEIGHT / 2 + px( 2 ) );
-    fill_round_rect( hdc, &rect, px( 2 ), RGB( 255, 255, 255 ), 0x66 );
+    fill_round_rect( hdc, &rect, px( 2 ), INK, 0x66 );
     fill = left + (int)((right - left) * (have_device && !muted ? level : 0) + 0.5f);
     if (fill > left)
     {

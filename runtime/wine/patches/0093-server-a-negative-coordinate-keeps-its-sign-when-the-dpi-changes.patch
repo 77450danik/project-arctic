@@ -1,0 +1,33 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] server: A negative coordinate keeps its sign when the DPI changes.
+
+scale_dpi() multiplied the value by an unsigned ratio: a negative
+coordinate became a large unsigned number, and the result about 2^32/96
+instead of a few pixels to the left. Every rectangle the server maps from
+a DPI-unaware window to the pixels of its monitor went through it: at 125 %
+a maximized window, whose frame lies 4 pixels beyond the left and top edges
+of the work area, was placed some 44 million pixels away. dwm.exe composes
+windows from those rectangles, so the picture viewer, the "Open with"
+dialog and any program that does not know the DPI vanished when maximized,
+or when moved partly beyond the left or top edge of the screen; GetWindowRect
+asked by a DPI-aware program got the same numbers. The ratio is signed, the
+product 64-bit.
+---
+diff --git a/server/user.h b/server/user.h
+--- a/server/user.h
++++ b/server/user.h
+@@ -237,9 +237,10 @@
+
+ static inline int scale_dpi( int val, struct ratio dpi_from, struct ratio dpi_to )
+ {
+-    unsigned int num = dpi_to.num * dpi_from.den, den = dpi_from.num * dpi_to.den;
+-    if (val >= 0) return (val * num + (den / 2)) / den;
+-    return (val * num - (den / 2)) / den;
++    /* Arctic: signed, or a negative coordinate turns into a huge positive one */
++    long long num = dpi_to.num * dpi_from.den, den = dpi_from.num * dpi_to.den;
++    if (val >= 0) return (int)((val * num + (den / 2)) / den);
++    return (int)((val * num - (den / 2)) / den);
+ }
+
+ static inline void scale_dpi_rect( struct rectangle *rect, struct ratio dpi_from, struct ratio dpi_to )

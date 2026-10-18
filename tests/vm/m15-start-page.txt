@@ -1,0 +1,20 @@
+# The taskbar's properties: "Оформлення" with the blur and the text, and
+# "Меню «Пуск»" with the four styles, Inherit and the look of Windows 11
+sleep 10
+move 640 780
+click right
+sleep 2
+move 690 746
+click                         # Властивості
+sleep 5
+key ctrl-tab
+sleep 2
+shot p1-look-page
+key ctrl-tab
+sleep 2
+shot p2-start-page
+key alt-u                     # Успадковувати off: the own look
+sleep 2
+shot p3-own-look
+key esc
+sleep 2

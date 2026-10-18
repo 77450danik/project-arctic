@@ -1,0 +1,238 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] desk: Scaling of modes smaller than the monitor's, as GPU panels offer.
+
+A game in 4:3 on a wide monitor showed between black bars, and nothing
+could change it: Windows leaves this to the control panel of the GPU
+driver, which Arctic does not have. The Settings page offers it per
+monitor: maintain aspect ratio (the default), full screen (stretched) or
+no scaling, kept as a DISPLAYCONFIG_SCALING in the monitor's key of the
+monitor data store, where dwm.exe reads it and follows it at once.
+---
+--- a/dll/cpl/desk/desk.h
++++ b/dll/cpl/desk/desk.h
+@@ -162,6 +162,8 @@
+     BOOL VrrCapable;       /* The monitor and the card take a variable refresh */
+     BOOL VrrEnabled;
+     BOOL InitialVrrEnabled;
++    DWORD Scaling;         /* How smaller modes show on it (DISPLAYCONFIG_SCALING) */
++    DWORD InitialScaling;
+ } DISPLAY_DEVICE_ENTRY, *PDISPLAY_DEVICE_ENTRY;
+ 
+ typedef struct _GLOBAL_DATA
+--- a/dll/cpl/desk/resource.h
++++ b/dll/cpl/desk/resource.h
+@@ -74,6 +74,8 @@
+ #define IDC_SETTINGS_VRR             214
+ #define IDC_SETTINGS_SCALE           215
+ #define IDC_SETTINGS_SCALE_TEXT      216
++#define IDC_SETTINGS_SCALING         217
++#define IDC_SETTINGS_SCALING_TEXT    218
+ 
+ #define IDB_SPECTRUM_4  209
+ #define IDB_SPECTRUM_8  210
+@@ -193,6 +195,10 @@
+ /* Arctic: the scale of a monitor */
+ #define IDS_SCALE_PERCENT        3950
+ #define IDS_SCALE_RECOMMENDED    3951
++/* Arctic: how a mode smaller than the monitor's shows */
++#define IDS_SCALING_ASPECT       3952
++#define IDS_SCALING_STRETCH      3953
++#define IDS_SCALING_CENTER       3954
+ #define IDC_ICONS_MYDOCS     3901
+ #define IDC_ICONS_MYNET      3902
+ #define IDC_ICONS_MYCOMP     3903
+--- a/dll/cpl/desk/settings.c
++++ b/dll/cpl/desk/settings.c
+@@ -296,6 +296,11 @@
+  * take it, and follows the user's choice kept next to it. */
+ #define MONITOR_STORE_KEY L"System\\CurrentControlSet\\Control\\GraphicsDrivers\\MonitorDataStore"
+ 
++/* DISPLAYCONFIG_SCALING: pixel for pixel in the middle, stretched, shape kept */
++#define SCALING_CENTER  2
++#define SCALING_STRETCH 3
++#define SCALING_ASPECT  4
++
+ static VOID
+ ReadVariableRefresh(IN PDISPLAY_DEVICE_ENTRY Entry, IN LPCWSTR DeviceName)
+ {
+@@ -305,6 +310,7 @@
+ 
+     Entry->VrrCapable = FALSE;
+     Entry->VrrEnabled = Entry->InitialVrrEnabled = TRUE;
++    Entry->Scaling = Entry->InitialScaling = SCALING_ASPECT;
+     if (!GetMonitorPnpId(DeviceName, Entry->PnpId, _countof(Entry->PnpId)))
+         return;
+     _snwprintf(szKey, _countof(szKey), L"%s\\%s", MONITOR_STORE_KEY, Entry->PnpId);
+@@ -323,6 +329,13 @@
+     {
+         Entry->VrrEnabled = Entry->InitialVrrEnabled = Value != 0;
+     }
++    /* Arctic: how a smaller mode shows, read by dwm.exe from the same key */
++    Size = sizeof(Value);
++    if (RegQueryValueExW(hKey, L"Scaling", NULL, &Type, (LPBYTE)&Value, &Size) == ERROR_SUCCESS &&
++        Type == REG_DWORD && (Value == SCALING_CENTER || Value == SCALING_STRETCH))
++    {
++        Entry->Scaling = Entry->InitialScaling = Value;
++    }
+     RegCloseKey(hKey);
+ }
+ 
+@@ -340,6 +353,54 @@
+     if (RegSetValueExW(hKey, L"VariableRefresh", 0, REG_DWORD, (const BYTE *)&Value, sizeof(Value)) == ERROR_SUCCESS)
+         Entry->InitialVrrEnabled = Entry->VrrEnabled;
+     RegCloseKey(hKey);
++}
++
++/* Arctic: how a mode smaller than the monitor's own shows, a game in 4:3 on a
++ * wide monitor: its shape kept, stretched over the whole screen, or pixel for
++ * pixel in the middle, the choice the control panels of GPU drivers offer on
++ * Windows. dwm.exe follows it at once, a game running included. */
++static VOID
++WriteScaling(IN PDISPLAY_DEVICE_ENTRY Entry)
++{
++    WCHAR szKey[128];
++    DWORD Value = Entry->Scaling;
++    HKEY hKey;
++
++    _snwprintf(szKey, _countof(szKey), L"%s\\%s", MONITOR_STORE_KEY, Entry->PnpId);
++    szKey[_countof(szKey) - 1] = 0;
++    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, szKey, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS)
++        return;
++    if (RegSetValueExW(hKey, L"Scaling", 0, REG_DWORD, (const BYTE *)&Value, sizeof(Value)) == ERROR_SUCCESS)
++        Entry->InitialScaling = Entry->Scaling;
++    RegCloseKey(hKey);
++}
++
++static VOID
++FillScaling(IN HWND hwndDlg, IN PDISPLAY_DEVICE_ENTRY pDeviceEntry)
++{
++    static const struct { UINT Text; DWORD Scaling; } Choices[] =
++    {
++        { IDS_SCALING_ASPECT,  SCALING_ASPECT },
++        { IDS_SCALING_STRETCH, SCALING_STRETCH },
++        { IDS_SCALING_CENTER,  SCALING_CENTER },
++    };
++    HWND hCombo = GetDlgItem(hwndDlg, IDC_SETTINGS_SCALING);
++    WCHAR szText[96];
++    LRESULT index;
++    UINT i;
++
++    if (!hCombo) return;
++    SendMessageW(hCombo, CB_RESETCONTENT, 0, 0);
++    for (i = 0; i < _countof(Choices); i++)
++    {
++        LoadStringW(hApplet, Choices[i].Text, szText, _countof(szText));
++        index = SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)szText);
++        SendMessageW(hCombo, CB_SETITEMDATA, index, Choices[i].Scaling);
++        if (Choices[i].Scaling == pDeviceEntry->Scaling) SendMessageW(hCombo, CB_SETCURSEL, index, 0);
++    }
++    /* kept per monitor model: a monitor without an EDID has nowhere to keep it */
++    EnableWindow(hCombo, pDeviceEntry->PnpId[0] != 0);
++    EnableWindow(GetDlgItem(hwndDlg, IDC_SETTINGS_SCALING_TEXT), pDeviceEntry->PnpId[0] != 0);
+ }
+ 
+ static BOOL
+@@ -668,6 +729,7 @@
+     CheckDlgButton(hwndDlg, IDC_SETTINGS_VRR, pDeviceEntry->VrrEnabled ? BST_CHECKED : BST_UNCHECKED);
+ 
+     FillScale(hwndDlg, pDeviceEntry);
++    FillScaling(hwndDlg, pDeviceEntry);
+ 
+     UpdateDisplay(hwndDlg, pData, TRUE);
+ }
+@@ -1504,6 +1566,17 @@
+                 pData->CurrentDisplayDevice->VrrEnabled = IsDlgButtonChecked(hwndDlg, IDC_SETTINGS_VRR) == BST_CHECKED;
+                 PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
+             }
++            else if (controlId == IDC_SETTINGS_SCALING && command == CBN_SELCHANGE)
++            {
++                LRESULT index = SendDlgItemMessageW(hwndDlg, IDC_SETTINGS_SCALING, CB_GETCURSEL, 0, 0);
++
++                if (index != CB_ERR)
++                {
++                    pData->CurrentDisplayDevice->Scaling =
++                        (DWORD)SendDlgItemMessageW(hwndDlg, IDC_SETTINGS_SCALING, CB_GETITEMDATA, index, 0);
++                    PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
++                }
++            }
+             break;
+         }
+         case WM_HSCROLL:
+@@ -1553,6 +1626,8 @@
+                     {
+                         if (Entry->VrrCapable && Entry->VrrEnabled != Entry->InitialVrrEnabled)
+                             WriteVariableRefresh(Entry);
++                        if (Entry->PnpId[0] && Entry->Scaling != Entry->InitialScaling)
++                            WriteScaling(Entry);
+                     }
+                 }
+             }
+--- a/dll/cpl/desk/lang/uk-UA.rc
++++ b/dll/cpl/desk/lang/uk-UA.rc
+@@ -133,7 +133,7 @@
+     DEFPUSHBUTTON "OK", IDOK, 172, 165, 50, 14
+ END
+ 
+-IDD_SETTINGS DIALOGEX 0, 0, 246, 220
++IDD_SETTINGS DIALOGEX 0, 0, 246, 238
+ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Параметри"
+ FONT 8, "MS Shell Dlg"
+@@ -156,8 +156,10 @@
+     CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 148, 103, 9
+     LTEXT "Розмір &тексту, програм та інших елементів:", IDC_SETTINGS_SCALE_TEXT, 3, 187, 140, 9
+     COMBOBOX IDC_SETTINGS_SCALE, 145, 185, 95, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+-    AUTOCHECKBOX "&Змінна частота оновлення", IDC_SETTINGS_VRR, 8, 205, 150, 10
+-    PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 203, 70, 15
++    LTEXT "Ма&сштабування (ігри в 4:3 тощо):", IDC_SETTINGS_SCALING_TEXT, 3, 205, 140, 9
++    COMBOBOX IDC_SETTINGS_SCALING, 145, 203, 95, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    AUTOCHECKBOX "&Змінна частота оновлення", IDC_SETTINGS_VRR, 8, 223, 150, 10
++    PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 221, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -227,6 +229,9 @@
+ BEGIN
+     IDS_SCALE_PERCENT "%d%%"
+     IDS_SCALE_RECOMMENDED "%d%% (рекомендовано)"
++    IDS_SCALING_ASPECT "Зберігати пропорції"
++    IDS_SCALING_STRETCH "На весь екран"
++    IDS_SCALING_CENTER "Без масштабування"
+ END
+ 
+ STRINGTABLE
+--- a/dll/cpl/desk/lang/en-US.rc
++++ b/dll/cpl/desk/lang/en-US.rc
+@@ -123,7 +123,7 @@
+     DEFPUSHBUTTON "OK", IDOK, 172, 165, 50, 14
+ END
+ 
+-IDD_SETTINGS DIALOGEX 0, 0, 246, 220
++IDD_SETTINGS DIALOGEX 0, 0, 246, 238
+ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Settings"
+ FONT 8, "MS Shell Dlg"
+@@ -146,8 +146,10 @@
+     CONTROL "", IDC_SETTINGS_SPECTRUM, "Static", SS_OWNERDRAW | SS_SUNKEN, 131, 148, 103, 9
+     LTEXT "Size of &text, apps and other items:", IDC_SETTINGS_SCALE_TEXT, 3, 187, 140, 9
+     COMBOBOX IDC_SETTINGS_SCALE, 145, 185, 95, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+-    AUTOCHECKBOX "Varia&ble refresh rate", IDC_SETTINGS_VRR, 8, 205, 150, 10
+-    PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 203, 70, 15
++    LTEXT "Sc&aling (4:3 games and the like):", IDC_SETTINGS_SCALING_TEXT, 3, 205, 140, 9
++    COMBOBOX IDC_SETTINGS_SCALING, 145, 203, 95, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    AUTOCHECKBOX "Varia&ble refresh rate", IDC_SETTINGS_VRR, 8, 223, 150, 10
++    PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 221, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -217,6 +219,9 @@
+ BEGIN
+     IDS_SCALE_PERCENT "%d%%"
+     IDS_SCALE_RECOMMENDED "%d%% (Recommended)"
++    IDS_SCALING_ASPECT "Maintain aspect ratio"
++    IDS_SCALING_STRETCH "Full screen"
++    IDS_SCALING_CENTER "No scaling"
+ END
+ 
+ STRINGTABLE

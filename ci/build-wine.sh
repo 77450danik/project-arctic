@@ -38,12 +38,20 @@ export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
 rm -rf "$WORK/stage"
 cp -a "$WORK/upstream" "$WORK/stage"
 cd "$WORK/stage"
+# a module with a .replace file stands instead of Wine's directory of that
+# name (make_makefiles would list every source left in it): Task Manager
+for marker in $(cd "$ROOT/runtime/wine/modules" && find . -name .replace); do
+    rm -rf "./$(dirname "$marker")"
+done
 cp -a "$ROOT/runtime/wine/modules/." . && rm -f .keep
+find . -name .replace -delete
 for patch in "$ROOT"/runtime/wine/patches/*.patch; do
     [ -e "$patch" ] || continue
     echo "applying $(basename "$patch")"
     git apply --whitespace=nowarn "$patch"
 done
+# Wine's name off the registry, the versions of files and the Device Manager
+perl "$ROOT/ci/wine-names.pl" .
 perl tools/make_requests
 if [ -n "$(find "$ROOT/runtime/wine/modules" -mindepth 1 ! -name .keep -print -quit)" ]; then
     git add -A . # make_makefiles only sees files git knows about

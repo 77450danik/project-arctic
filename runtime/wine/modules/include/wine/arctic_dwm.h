@@ -18,7 +18,7 @@
 #define __WINE_ARCTIC_DWM_H
 
 #define ARCTIC_DWM_SECTION     L"Global\\__arctic_dwm"
-#define ARCTIC_DWM_VERSION     1
+#define ARCTIC_DWM_VERSION     2
 #define ARCTIC_DWM_MAX_ENTRIES 512
 
 /* how a window comes and goes, beyond what dwm.exe picks from its style */
@@ -26,6 +26,11 @@
 #define ARCTIC_TRANSITION_NONE     1
 #define ARCTIC_TRANSITION_FADE     2  /* opacity only */
 #define ARCTIC_TRANSITION_SLIDE_UP 3  /* from below, as the Start menu */
+#define ARCTIC_TRANSITION_START10  4  /* further from below and quicker to slow, as Windows 10's Start menu */
+
+/* DWMWA_WINDOW_CORNER_PREFERENCE beyond DWMWCP_*: rounded by this many
+ * pixels at 100% (Windows 11's Start menu: 8) */
+#define ARCTIC_CORNER_RADIUS(px)   (0x100 | (px))
 
 /* the private DWMWINDOWATTRIBUTE that sets it */
 #define DWMWA_ARCTIC_TRANSITION    0x1000
@@ -35,6 +40,13 @@
 /* the private DWMWINDOWATTRIBUTE through which user32 hands over
  * SetWindowCompositionAttribute(WCA_ACCENT_POLICY): an ACCENT_POLICY */
 #define DWMWA_ARCTIC_ACCENT        0x1002
+/* the private DWMWINDOWATTRIBUTE of how strongly the backdrop blurs: a
+ * DWORD 1-100, 0 for what dwm.exe does by default */
+#define DWMWA_ARCTIC_BLUR          0x1003
+/* the private DWMWINDOWATTRIBUTE of a window with a backdrop drawn dark on
+ * white, as in the light theme: a DWORD, TRUE when white shows the backdrop
+ * (LAYER_KEYED_LIGHT of dwm.exe), FALSE when black does (the default) */
+#define DWMWA_ARCTIC_LIGHT         0x1004
 
 struct arctic_accent_policy
 {
@@ -70,6 +82,8 @@ struct arctic_dwm_window
     UINT32 transition;       /* ARCTIC_TRANSITION_* */
     UINT32 cloaked;          /* DWMWA_CLOAK */
     INT32  minimize_left, minimize_top, minimize_right, minimize_bottom;  /* empty: none */
+    UINT32 blur;             /* DWMWA_ARCTIC_BLUR */
+    UINT32 light;            /* DWMWA_ARCTIC_LIGHT */
 };
 
 struct arctic_dwm_thumbnail

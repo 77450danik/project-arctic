@@ -142,6 +142,19 @@ static void update_options(void)
         if (!RegGetValueW( monitor_store, id, L"VariableRefresh", RRF_RT_REG_DWORD, NULL, &on, &size ) && !on)
             params.vrr_off[params.vrr_off_count++] = outputs[i].id;
     }
+    /* how a mode smaller than the monitor's own shows (a game in 4:3): the
+     * Display panel keeps it as a DISPLAYCONFIG_SCALING, shape kept unless
+     * the user picked "stretch" or "no scaling" */
+    for (UINT i = 0; i < output_count && params.scaling_count < ARRAY_SIZE(params.scaling); i++)
+    {
+        DWORD scaling = 4;
+
+        size = sizeof(scaling);
+        if (monitor_store && monitor_pnp_id( &outputs[i], id, ARRAY_SIZE(id) ))
+            RegGetValueW( monitor_store, id, L"Scaling", RRF_RT_REG_DWORD, NULL, &scaling, &size );
+        params.scaling_id[params.scaling_count] = outputs[i].id;
+        params.scaling[params.scaling_count++] = scaling;
+    }
     /* the power policy's "turn off the display" (winlogon, docs/power.md) */
     size = sizeof(params.monitors_off);
     if (display_power) RegQueryValueExW( display_power, L"MonitorsOff", NULL, NULL, (BYTE *)&params.monitors_off, &size );

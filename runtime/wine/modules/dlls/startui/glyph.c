@@ -146,10 +146,87 @@ static const struct stroke folder[] =
     { END },
 };
 
+static const struct stroke video[] =
+{
+    { LINE, 1.5f, 3.5f, 10.5f, 3.5f }, { LINE, 10.5f, 3.5f, 10.5f, 12.5f }, { LINE, 10.5f, 12.5f, 1.5f, 12.5f },
+    { LINE, 1.5f, 12.5f, 1.5f, 3.5f },
+    { LINE, 10.5f, 7, 14.5f, 4.5f }, { LINE, 14.5f, 4.5f, 14.5f, 11.5f }, { LINE, 14.5f, 11.5f, 10.5f, 9 },
+    { END },
+};
+
+static const struct stroke network[] =
+{
+    { ARC, 8, 8, 6.5f, -180, 180 },
+    { LINE, 1.5f, 8, 14.5f, 8 },
+    { ARC, 12.29f, 8, 7.79f, 123.4f, 236.6f }, { ARC, 3.71f, 8, 7.79f, -56.6f, 56.6f },
+    { END },
+};
+
+static const struct stroke hamburger[] =
+{
+    { LINE, 1.5f, 3.5f, 14.5f, 3.5f }, { LINE, 1.5f, 8, 14.5f, 8 }, { LINE, 1.5f, 12.5f, 14.5f, 12.5f },
+    { END },
+};
+
+static const struct stroke chevron_up[] = { { LINE, 3, 10, 8, 5 }, { LINE, 8, 5, 13, 10 }, { END } };
+
+static const struct stroke list_glyph[] =
+{
+    { DISC, 2.5f, 3.5f, 1 }, { LINE, 5.5f, 3.5f, 14.5f, 3.5f },
+    { DISC, 2.5f, 8, 1 }, { LINE, 5.5f, 8, 14.5f, 8 },
+    { DISC, 2.5f, 12.5f, 1 }, { LINE, 5.5f, 12.5f, 14.5f, 12.5f },
+    { END },
+};
+
+static const struct stroke check[] = { { LINE, 2.5f, 8.5f, 6, 12 }, { LINE, 6, 12, 13.5f, 4.5f }, { END } };
+
+/* Pin: the pushpin leaning right, its needle down to the left */
+static const struct stroke pin[] =
+{
+    { LINE, 10, 1.5f, 14.5f, 6 }, { LINE, 10, 1.5f, 6.5f, 5 }, { LINE, 14.5f, 6, 11, 9.5f },
+    { LINE, 4.5f, 5, 11, 11.5f }, { LINE, 7.5f, 8.5f, 1.5f, 14.5f },
+    { END },
+};
+
+static const struct stroke unpin[] =
+{
+    { LINE, 10, 1.5f, 14.5f, 6 }, { LINE, 10, 1.5f, 6.5f, 5 }, { LINE, 14.5f, 6, 11, 9.5f },
+    { LINE, 4.5f, 5, 11, 11.5f }, { LINE, 7.5f, 8.5f, 1.5f, 14.5f }, { LINE, 1.5f, 1.5f, 14.5f, 14.5f },
+    { END },
+};
+
+/* the arrows of Resize, corner to corner */
+static const struct stroke resize[] =
+{
+    { LINE, 3, 13, 13, 3 }, { LINE, 8.5f, 3, 13, 3 }, { LINE, 13, 3, 13, 7.5f },
+    { LINE, 3, 8.5f, 3, 13 }, { LINE, 3, 13, 7.5f, 13 },
+    { END },
+};
+
+static const struct stroke more[] = { { DISC, 3, 8, 1.2f }, { DISC, 8, 8, 1.2f }, { DISC, 13, 8, 1.2f }, { END } };
+
+/* the crescent of Sleep */
+static const struct stroke sleep_glyph[] = { { ARC, 8, 8, 6.5f, 75, 345 }, { ARC, 11.2f, 5.2f, 4.6f, 100, 250 }, { END } };
+
+static const struct stroke sign_out[] =
+{
+    { LINE, 7, 1.5f, 1.5f, 1.5f }, { LINE, 1.5f, 1.5f, 1.5f, 14.5f }, { LINE, 1.5f, 14.5f, 7, 14.5f },
+    { LINE, 5.5f, 8, 14.5f, 8 }, { LINE, 11, 4.5f, 14.5f, 8 }, { LINE, 14.5f, 8, 11, 11.5f },
+    { END },
+};
+
+static const struct stroke lock[] =
+{
+    { LINE, 3, 7, 13, 7 }, { LINE, 13, 7, 13, 14.5f }, { LINE, 13, 14.5f, 3, 14.5f }, { LINE, 3, 14.5f, 3, 7 },
+    { ARC, 8, 5, 3.5f, -180, 0 }, { LINE, 4.5f, 5, 4.5f, 7 }, { LINE, 11.5f, 5, 11.5f, 7 },
+    { END },
+};
+
 static const struct stroke *glyphs[] =
 {
     person, document, picture, music, download, recent, pc, control_panel, settings, update, run, power,
-    chevron_right, chevron_left, chevron_down, search, folder,
+    chevron_right, chevron_left, chevron_down, search, folder, video, network, hamburger, chevron_up, list_glyph,
+    check, pin, unpin, resize, more, sleep_glyph, sign_out, lock,
 };
 
 static BOOL near_segment( float x, float y, float ax, float ay, float bx, float by )
@@ -232,10 +309,12 @@ static void blend_bits( HDC hdc, int x, int y, int width, int height, const UINT
 
 void draw_glyph( HDC hdc, enum glyph glyph, int x, int y, int size, COLORREF color, BYTE alpha )
 {
-    const struct stroke *s = glyphs[glyph];
+    const struct stroke *s;
     float scale = 16.0f / size;
     UINT32 *pixels;
 
+    if (glyph < 0 || glyph >= (int)ARRAY_SIZE(glyphs)) return;
+    s = glyphs[glyph];
     if (size <= 0 || !(pixels = malloc( size * size * sizeof(*pixels) ))) return;
     for (int py = 0; py < size; py++)
     {

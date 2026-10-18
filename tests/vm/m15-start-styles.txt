@@ -1,0 +1,74 @@
+# The Start menus of Windows 11 and 10 beside the standard one, dark, then
+# over a light look of the taskbar (white tint, auto text): the menus, the
+# taskbar and the flyouts draw black on it. Last the taskbar's menu.
+sleep 10
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 3 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+shot s1-win11-dark
+key esc
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 2 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+shot s2-win10-dark
+key esc
+sleep 2
+key win-r
+sleep 2
+type cmd /c reg add HKCU\Software\Arctic\Taskbar /v Preset /t REG_DWORD /d 6 /f & reg add HKCU\Software\Arctic\Taskbar /v Color /t REG_DWORD /d 15987699 /f & reg add HKCU\Software\Arctic\Taskbar /v Opacity /t REG_DWORD /d 80 /f
+key ret
+sleep 4
+key win-r
+sleep 2
+type cmd /c taskkill /f /im explorer.exe & start explorer.exe
+key ret
+sleep 15
+shot s3-taskbar-light
+move 24 780
+click
+sleep 3
+shot s4-win10-light
+key esc
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 3 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+shot s5-win11-light
+key esc
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+shot s6-standard-light
+key esc
+sleep 2
+key alt-tab
+sleep 2
+shot s7-alt-tab-light
+key esc
+sleep 1
+move 640 780
+click right
+sleep 2
+shot s8-taskbar-menu

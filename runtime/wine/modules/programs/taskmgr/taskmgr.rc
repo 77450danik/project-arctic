@@ -1,0 +1,335 @@
+/*
+ * Task Manager: resources
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "commctrl.h"
+#include "resource.h"
+
+/* @makedep: taskmgr.ico */
+IDI_TASKMGR ICON taskmgr.ico
+
+/* @makedep: taskmgr.manifest */
+1 24 taskmgr.manifest
+
+IDR_ACCEL ACCELERATORS
+BEGIN
+    VK_F5, IDM_REFRESH, VIRTKEY
+    VK_DELETE, IDM_END_TASK, VIRTKEY
+END
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+IDR_MENU MENU
+BEGIN
+    POPUP "&Файл"
+    BEGIN
+        MENUITEM "&Запустити нове завдання", IDM_RUN
+        MENUITEM SEPARATOR
+        MENUITEM "&Вихід", IDM_EXIT
+    END
+    POPUP "&Параметри"
+    BEGIN
+        MENUITEM "&Завжди зверху", IDM_ALWAYS_ON_TOP
+        MENUITEM "З&гортати під час використання", IDM_MINIMIZE_ON_USE
+        MENUITEM "&Приховувати згорнутим", IDM_HIDE_WHEN_MIN
+    END
+    POPUP "&Вигляд"
+    BEGIN
+        MENUITEM "&Оновити зараз\tF5", IDM_REFRESH
+        POPUP "&Швидкість оновлення"
+        BEGIN
+            MENUITEM "&Висока", IDM_SPEED_HIGH
+            MENUITEM "&Звичайна", IDM_SPEED_NORMAL
+            MENUITEM "&Низька", IDM_SPEED_LOW
+            MENUITEM "&Призупинено", IDM_SPEED_PAUSED
+        END
+        MENUITEM SEPARATOR
+        MENUITEM "&Групувати за типом", IDM_GROUP_BY_TYPE
+        MENUITEM "&Розгорнути все", IDM_EXPAND_ALL
+        MENUITEM "З&горнути все", IDM_COLLAPSE_ALL
+    END
+END
+
+IDR_POPUP MENU
+BEGIN
+    POPUP "processes"
+    BEGIN
+        MENUITEM "Розгорнути", IDM_EXPAND_ALL
+        MENUITEM "&Перейти", IDM_SWITCH_TO
+        MENUITEM "Зн&яти завдання", IDM_END_TASK
+        MENUITEM SEPARATOR
+        MENUITEM "Відкрити &розташування файлу", IDM_OPEN_LOCATION
+        MENUITEM "&Пошук в Інтернеті", IDM_SEARCH_ONLINE
+        MENUITEM "&Властивості", IDM_PROPERTIES
+        MENUITEM "Перейти до &подробиць", IDM_GO_TO_DETAILS
+    END
+    POPUP "details"
+    BEGIN
+        MENUITEM "Зн&яти завдання", IDM_END_TASK
+        MENUITEM "Завершити &дерево процесів", IDM_END_TREE
+        MENUITEM SEPARATOR
+        POPUP "&Задати пріоритет"
+        BEGIN
+            MENUITEM "&Реального часу", IDM_PRIO_REALTIME
+            MENUITEM "&Високий", IDM_PRIO_HIGH
+            MENUITEM "В&ище звичайного", IDM_PRIO_ABOVE
+            MENUITEM "&Звичайний", IDM_PRIO_NORMAL
+            MENUITEM "&Нижче звичайного", IDM_PRIO_BELOW
+            MENUITEM "Н&изький", IDM_PRIO_IDLE
+        END
+        MENUITEM SEPARATOR
+        MENUITEM "Відкрити &розташування файлу", IDM_OPEN_LOCATION
+        MENUITEM "&Пошук в Інтернеті", IDM_SEARCH_ONLINE
+        MENUITEM "&Властивості", IDM_PROPERTIES
+    END
+    POPUP "services"
+    BEGIN
+        MENUITEM "&Запустити", IDM_SERVICE_START
+        MENUITEM "З&упинити", IDM_SERVICE_STOP
+        MENUITEM "П&ерезапустити", IDM_SERVICE_RESTART
+        MENUITEM SEPARATOR
+        MENUITEM "Відкрити &служби", IDM_OPEN_SERVICES
+        MENUITEM "&Пошук в Інтернеті", IDM_SEARCH_ONLINE
+        MENUITEM "Перейти до &подробиць", IDM_GO_TO_DETAILS
+    END
+    POPUP "startup"
+    BEGIN
+        MENUITEM "Вимкнути", IDM_STARTUP_TOGGLE
+        MENUITEM "Відкрити &розташування файлу", IDM_OPEN_LOCATION
+        MENUITEM "&Пошук в Інтернеті", IDM_SEARCH_ONLINE
+        MENUITEM "&Властивості", IDM_PROPERTIES
+    END
+    POPUP "performance"
+    BEGIN
+        POPUP "&Змінити графік на"
+        BEGIN
+            MENUITEM "&Загальне використання", IDM_CPU_OVERALL
+            MENUITEM "&Логічні процесори", IDM_CPU_LOGICAL
+        END
+        MENUITEM SEPARATOR
+        MENUITEM "&Копіювати\tCtrl+C", IDM_COPY
+    END
+END
+
+IDD_RUN DIALOGEX 0, 0, 280, 104
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Створити нове завдання"
+FONT 9, "Segoe UI", 0, 0, 0x0
+BEGIN
+    LTEXT "Введіть ім'я програми, папки, документа або ресурсу Інтернету, і Windows відкриє його.", -1, 40, 10, 230, 20
+    LTEXT "&Відкрити:", -1, 8, 39, 30, 10
+    EDITTEXT IDC_RUN_EDIT, 40, 37, 232, 13, ES_AUTOHSCROLL
+    AUTOCHECKBOX "Створити це завдання з правами &адміністратора.", IDC_RUN_ADMIN, 40, 56, 230, 10
+    DEFPUSHBUTTON "OK", IDOK, 112, 82, 50, 14
+    PUSHBUTTON "Скасувати", IDCANCEL, 166, 82, 50, 14
+    PUSHBUTTON "&Огляд...", IDC_RUN_BROWSE, 220, 82, 52, 14
+    ICON IDI_TASKMGR, -1, 8, 8, 20, 20
+END
+
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE           "Диспетчер завдань"
+    IDS_TAB_PROCESSES       "Процеси"
+    IDS_TAB_PERFORMANCE     "Продуктивність"
+    IDS_TAB_HISTORY         "Журнал програм"
+    IDS_TAB_STARTUP         "Автозавантаження"
+    IDS_TAB_USERS           "Користувачі"
+    IDS_TAB_DETAILS         "Подробиці"
+    IDS_TAB_SERVICES        "Служби"
+    IDS_END_TASK            "Зняти завдання"
+    IDS_RESTART             "Перезапустити"
+    IDS_LESS_DETAILS        "Менше відомостей"
+    IDS_MORE_DETAILS        "Докладніше"
+    IDS_ENABLE              "Увімкнути"
+    IDS_DISABLE             "Вимкнути"
+    IDS_DISCONNECT          "Відключити"
+    IDS_OPEN_SERVICES       "Відкрити служби"
+
+    IDS_COL_NAME            "Ім'я"
+    IDS_COL_STATUS          "Стан"
+    IDS_COL_CPU             "ЦП"
+    IDS_COL_MEMORY          "Пам'ять"
+    IDS_COL_DISK            "Диск"
+    IDS_COL_NETWORK         "Мережа"
+    IDS_COL_PID             "ІД процесу"
+    IDS_COL_USER            "Користувач"
+    IDS_COL_DESCRIPTION     "Опис"
+    IDS_COL_THREADS         "Потоки"
+    IDS_COL_HANDLES         "Дескриптори"
+    IDS_COL_PRIORITY        "Базовий пріоритет"
+    IDS_COL_GROUP           "Група"
+    IDS_COL_PUBLISHER       "Видавець"
+    IDS_COL_STARTUP_STATE   "Стан"
+    IDS_COL_STARTUP_IMPACT  "Вплив на запуск"
+    IDS_COL_CPU_TIME        "Час ЦП"
+    IDS_COL_ID              "ІД"
+    IDS_COL_SESSION         "Сеанс"
+    IDS_COL_COMMAND         "Командний рядок"
+    IDS_COL_MEM_COMMIT      "Розмір виділеної пам'яті"
+    IDS_COL_DISK_IO         "Введення-виведення"
+    IDS_COL_STARTUP_TYPE    "Тип запуску"
+
+    IDS_GROUP_APPS          "Програми"
+    IDS_GROUP_BACKGROUND    "Фонові процеси"
+    IDS_GROUP_WINDOWS       "Процеси Windows"
+    IDS_SUSPENDED           "Призупинено"
+    IDS_RUNNING             "Працює"
+    IDS_STOPPED             "Зупинено"
+    IDS_STARTING            "Запуск"
+    IDS_STOPPING            "Зупинка"
+    IDS_ENABLED             "Увімкнуто"
+    IDS_DISABLED            "Вимкнуто"
+    IDS_IMPACT_NOT_MEASURED "Не виміряно"
+    IDS_IMPACT_LOW          "Низький"
+    IDS_IMPACT_MEDIUM       "Середній"
+    IDS_IMPACT_HIGH         "Високий"
+    IDS_ACTIVE              "Активно"
+    IDS_AUTO                "Автоматично"
+    IDS_MANUAL              "Вручну"
+    IDS_PRIO_REALTIME       "Реального часу"
+    IDS_PRIO_HIGH           "Високий"
+    IDS_PRIO_ABOVE          "Вище звичайного"
+    IDS_PRIO_NORMAL         "Звичайний"
+    IDS_PRIO_BELOW          "Нижче звичайного"
+    IDS_PRIO_IDLE           "Низький"
+
+    IDS_PERF_CPU            "ЦП"
+    IDS_PERF_MEMORY         "Пам'ять"
+    IDS_PERF_DISK           "Диск"
+    IDS_PERF_ETHERNET       "Ethernet"
+    IDS_PERF_WIFI           "Wi-Fi"
+    IDS_PERF_UTIL           "% використання"
+    IDS_PERF_60S            "60 секунд"
+    IDS_PERF_UTILIZATION    "Використання"
+    IDS_PERF_SPEED          "Швидкість"
+    IDS_PERF_PROCESSES      "Процеси"
+    IDS_PERF_THREADS        "Потоки"
+    IDS_PERF_HANDLES        "Дескриптори"
+    IDS_PERF_UPTIME         "Час роботи"
+    IDS_PERF_BASE_SPEED     "Базова швидкість"
+    IDS_PERF_SOCKETS        "Сокети"
+    IDS_PERF_CORES          "Ядра"
+    IDS_PERF_LOGICAL        "Логічні процесори"
+    IDS_PERF_VIRTUALIZATION "Віртуалізація"
+    IDS_PERF_L1             "Кеш L1"
+    IDS_PERF_L2             "Кеш L2"
+    IDS_PERF_L3             "Кеш L3"
+    IDS_PERF_ENABLED        "Увімкнуто"
+    IDS_PERF_NOT_SUPPORTED  "Не підтримується"
+    IDS_PERF_MEM_USAGE      "Використання пам'яті"
+    IDS_PERF_MEM_COMPOSITION "Склад пам'яті"
+    IDS_PERF_IN_USE         "Використовується (стиснуто)"
+    IDS_PERF_AVAILABLE      "Доступно"
+    IDS_PERF_COMMITTED      "Зафіксовано"
+    IDS_PERF_CACHED         "Кешовано"
+    IDS_PERF_PAGED          "Вивантажуваний пул"
+    IDS_PERF_NONPAGED       "Невивантажуваний пул"
+    IDS_PERF_MEM_SPEED      "Швидкість"
+    IDS_PERF_SLOTS          "Використано гнізд"
+    IDS_PERF_FORM           "Форм-фактор"
+    IDS_PERF_HW_RESERVED    "Зарезервовано обладнанням"
+    IDS_PERF_ACTIVE_TIME    "Активний час"
+    IDS_PERF_TRANSFER       "Швидкість передачі даних диска"
+    IDS_PERF_READ_SPEED     "Швидкість читання"
+    IDS_PERF_WRITE_SPEED    "Швидкість запису"
+    IDS_PERF_CAPACITY       "Ємність"
+    IDS_PERF_FORMATTED      "Відформатовано"
+    IDS_PERF_SYSTEM_DISK    "Системний диск"
+    IDS_PERF_PAGE_FILE      "Файл підкачування"
+    IDS_PERF_YES            "Так"
+    IDS_PERF_NO             "Ні"
+    IDS_PERF_THROUGHPUT     "Пропускна здатність"
+    IDS_PERF_SEND           "Надсилання"
+    IDS_PERF_RECEIVE        "Отримання"
+    IDS_PERF_ADAPTER        "Ім'я адаптера"
+    IDS_PERF_CONN_TYPE      "Тип підключення"
+    IDS_PERF_IPV4           "IPv4-адреса"
+    IDS_PERF_IPV6           "IPv6-адреса"
+    IDS_PERF_OF_SLOTS       "%u з %u"
+    IDS_PERF_MEM_MAX        "Максимум"
+    IDS_PERF_NOT_CONNECTED  "Не підключено"
+    IDS_PERF_RESPONSE       "Середній час відповіді"
+    IDS_PERF_TYPE           "Тип"
+    IDS_PERF_SSD            "SSD"
+    IDS_PERF_HDD            "HDD"
+    IDS_PERF_REMOVABLE      "Знімний"
+    IDS_PERF_GPU            "Графічний процесор"
+    IDS_PERF_GPU_MEM        "Виділена пам'ять ГП"
+    IDS_PERF_GPU_MEM_USAGE  "Використання виділеної пам'яті ГП"
+    IDS_PERF_GPU_TEMP       "Температура ГП"
+    IDS_PERF_DRIVER         "Драйвер"
+    IDS_PERF_LOCATION       "Фізичне розташування"
+    IDS_PERF_PCI            "PCI-шина %u, пристрій %u, функція %u"
+    IDS_PERF_GPU_SHORT      "ГП"
+
+    IDS_UNIT_B              "Б"
+    IDS_UNIT_KB             "КБ"
+    IDS_UNIT_MB             "МБ"
+    IDS_UNIT_GB             "ГБ"
+    IDS_UNIT_TB             "ТБ"
+    IDS_UNIT_PER_S          "%s/с"
+    IDS_UNIT_KBPS           "Кбіт/с"
+    IDS_UNIT_MBPS           "Мбіт/с"
+    IDS_UNIT_GBPS           "Гбіт/с"
+    IDS_UNIT_GHZ            "ГГц"
+    IDS_UNIT_MHZ            "МГц"
+    IDS_UNIT_MS             "мс"
+
+    IDS_CONFIRM_END_TITLE   "Диспетчер завдань"
+    IDS_CONFIRM_END_TEXT    "Завершити процес «%s»?\n\nЯкщо відкрита програма пов'язана з цим процесом, її буде закрито, а всі незбережені дані буде втрачено. Якщо завершити системний процес, це може призвести до нестабільної роботи системи."
+    IDS_CONFIRM_END_SYSTEM  "Завершити системний процес?\n\nЯкщо завершити цей процес Windows, система може стати нестабільною або завершити роботу. Незбережені дані буде втрачено."
+    IDS_END_FAILED          "Не вдалося завершити процес. Доступ заборонено."
+    IDS_RUN_TITLE           "Створити нове завдання"
+    IDS_USER_NAME_SESSION   "%s (%u)"
+    IDS_EXPLORER            "Провідник Windows"
+    IDS_FORM_OTHER          "Інше"
+    IDS_COMPACT_EMPTY       "Немає запущених програм"
+    IDS_RUN_TEXT            "Введіть ім'я програми, папки, документа або ресурсу Інтернету, і Windows відкриє його."
+    IDS_EXPAND              "Розгорнути"
+    IDS_COLLAPSE            "Згорнути"
+END
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE           "Task Manager"
+    IDS_TAB_PROCESSES       "Processes"
+    IDS_TAB_PERFORMANCE     "Performance"
+    IDS_TAB_HISTORY         "App history"
+    IDS_TAB_STARTUP         "Startup"
+    IDS_TAB_USERS           "Users"
+    IDS_TAB_DETAILS         "Details"
+    IDS_TAB_SERVICES        "Services"
+    IDS_END_TASK            "End task"
+    IDS_LESS_DETAILS        "Fewer details"
+    IDS_MORE_DETAILS        "More details"
+    IDS_ENABLE              "Enable"
+    IDS_DISABLE             "Disable"
+    IDS_DISCONNECT          "Disconnect"
+    IDS_OPEN_SERVICES       "Open Services"
+    IDS_COL_NAME            "Name"
+    IDS_COL_STATUS          "Status"
+    IDS_COL_CPU             "CPU"
+    IDS_COL_MEMORY          "Memory"
+    IDS_COL_DISK            "Disk"
+    IDS_COL_NETWORK         "Network"
+    IDS_COL_PID             "PID"
+    IDS_COL_USER            "User"
+    IDS_COL_DESCRIPTION     "Description"
+    IDS_GROUP_APPS          "Apps"
+    IDS_GROUP_BACKGROUND    "Background processes"
+    IDS_GROUP_WINDOWS       "Windows processes"
+    IDS_EXPLORER            "Windows Explorer"
+END

@@ -1,0 +1,36 @@
+# The desktop's View menu: large and small icons, taken at once; This PC
+# and Network Connections with their new icons
+sleep 8
+move 700 420
+click right                   # the desktop's menu
+sleep 2
+move 760 434                  # Вигляд
+sleep 2
+shot w1-view-menu
+move 900 434                  # Великі значки
+click
+sleep 5
+shot w2-large
+move 700 420
+click right
+sleep 2
+move 760 434
+sleep 2
+move 900 476                  # Дрібні значки
+click
+sleep 5
+shot w3-small
+key win-r
+sleep 2
+type ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}
+key ret
+sleep 6
+shot w4-this-pc
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type ncpa.cpl
+key ret
+sleep 8
+shot w5-network-connections

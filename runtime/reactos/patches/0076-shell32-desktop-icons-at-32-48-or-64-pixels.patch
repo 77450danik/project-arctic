@@ -1,0 +1,549 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] shell32: The desktop's icons at 32, 48 or 64 pixels, at the system's scale.
+
+The desktop showed the system's large icons, 32 pixels at 100 %, and
+nothing changed it. As in Windows 10, its View menu has Large, Medium and
+Small icons (64, 48 and 32 pixels at 100 %, Medium the default), kept in
+HKCU\Software\Microsoft\Windows\Shell\Bags\1\Desktop\IconSize and
+multiplied by the system's scale. The icon cache keeps a third list for the
+desktop, index for index the same icons as the small and large ones, taken
+from the files at the desktop's size (the large icon scaled when a file has
+none of it). Another size, from the menu or from the Display panel
+(WM_SETTINGCHANGE "DesktopIconSize"), takes every cached icon again at the
+new size and lays the desktop out in the new grid. Other folders keep the
+system's large icons.
+---
+--- a/dll/win32/shell32/iconcache.cpp
++++ b/dll/win32/shell32/iconcache.cpp
+@@ -27,9 +27,14 @@
+ 
+ static HIMAGELIST ShellSmallIconList;
+ static HIMAGELIST ShellBigIconList;
++static HIMAGELIST ShellDesktopIconList; /* Arctic: the desktop's icons, at the size picked for them */
+ INT ShellSmallIconSize = 0;
+ INT ShellLargeIconSize = 0;
++INT ShellDesktopIconSize = 0;
+ INT ShellIconBPP = 0; // Bits Per Pixel
++
++/* Arctic: which of the lists an icon is made for */
++enum { SIC_LIST_SMALL, SIC_LIST_BIG, SIC_LIST_DESKTOP };
+ 
+ namespace
+ {
+@@ -77,6 +82,35 @@
+     return (nIconSize > 0) ? nIconSize : nDefaultSize;
+ }
+ 
++/* Arctic: the size of the desktop's icons, 32, 48 (the default, Windows 10's
++ * "Medium icons") or 64 pixels at 100 %, as the desktop's View menu and the
++ * Display panel set it, where Windows keeps it; at the system's scale. The
++ * shell's other views keep the large icons of the system's metrics. */
++INT
++SIC_GetDesktopIconLogicalSize(VOID)
++{
++    DWORD dwSize = 48, cbSize = sizeof(dwSize);
++
++    if (SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\Shell\\Bags\\1\\Desktop",
++                    L"IconSize", NULL, &dwSize, &cbSize) != ERROR_SUCCESS ||
++        (dwSize != 32 && dwSize != 48 && dwSize != 64))
++    {
++        dwSize = 48;
++    }
++    return dwSize;
++}
++
++static INT
++SIC_DesktopIconPixels(INT nLogical)
++{
++    HDC hdc = GetDC(NULL);
++    INT dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
++
++    if (hdc)
++        ReleaseDC(NULL, hdc);
++    return MulDiv(nLogical, dpi, 96);
++}
++
+ static INT
+ SIC_GetIconBPP(VOID) // Bits Per Pixel
+ {
+@@ -121,7 +155,7 @@
+  *  shortcut image.
+  * FIXME: This should go to the ImageList implementation!
+  */
+-static HICON SIC_OverlayShortcutImage(HICON SourceIcon, BOOL large)
++static HICON SIC_OverlayShortcutImage(HICON SourceIcon, INT list)
+ {
+     ICONINFO ShortcutIconInfo, TargetIconInfo;
+     HICON ShortcutIcon = NULL, TargetIcon;
+@@ -159,7 +193,9 @@
+ 
+     if (s_imgListIdx != -1)
+     {
+-        if (large)
++        if (list == SIC_LIST_DESKTOP)
++            ShortcutIcon = ImageList_GetIcon(ShellDesktopIconList, s_imgListIdx, ILD_TRANSPARENT);
++        else if (list == SIC_LIST_BIG)
+             ShortcutIcon = ImageList_GetIcon(ShellBigIconList, s_imgListIdx, ILD_TRANSPARENT);
+         else
+             ShortcutIcon = ImageList_GetIcon(ShellSmallIconList, s_imgListIdx, ILD_TRANSPARENT);
+@@ -353,10 +389,11 @@
+  * NOTES
+  *  appends an icon pair to the end of the cache
+  */
+-static INT SIC_IconAppend (LPCWSTR sSourceFile, INT dwSourceIndex, HICON hSmallIcon, HICON hBigIcon, DWORD dwFlags)
++static INT SIC_IconAppend (LPCWSTR sSourceFile, INT dwSourceIndex, HICON hSmallIcon, HICON hBigIcon,
++                           HICON hDesktopIcon, DWORD dwFlags)
+ {
+     LPSIC_ENTRY lpsice;
+-    INT ret, index, index1, indexDPA;
++    INT ret, index, index1, index2, indexDPA;
+     WCHAR path[MAX_PATH];
+     TRACE("%s %i %p %p\n", debugstr_w(sSourceFile), dwSourceIndex, hSmallIcon ,hBigIcon);
+ 
+@@ -381,21 +418,25 @@
+ 
+     index = ImageList_AddIcon (ShellSmallIconList, hSmallIcon);
+     index1= ImageList_AddIcon (ShellBigIconList, hBigIcon);
++    /* Arctic: the desktop's list keeps the same indexes; the large icon scaled
++       when the file has none of the desktop's size */
++    index2= ImageList_AddIcon (ShellDesktopIconList, hDesktopIcon ? hDesktopIcon : hBigIcon);
+ 
+     /* Something went wrong when allocating a new image in the list. Abort. */
+-    if((index == -1) || (index1 == -1))
+-    {
+-        WARN("Something went wrong when adding the icon to the list: small - 0x%x, big - 0x%x.\n",
+-            index, index1);
++    if((index == -1) || (index1 == -1) || (index2 == -1))
++    {
++        WARN("Something went wrong when adding the icon to the list: small - 0x%x, big - 0x%x, desktop - 0x%x.\n",
++            index, index1, index2);
+         if(index != -1) ImageList_Remove(ShellSmallIconList, index);
+         if(index1 != -1) ImageList_Remove(ShellBigIconList, index1);
++        if(index2 != -1) ImageList_Remove(ShellDesktopIconList, index2);
+         ret = INVALID_INDEX;
+         goto leave;
+     }
+ 
+-    if (index!=index1)
+-    {
+-        FIXME("iconlists out of sync 0x%x 0x%x\n", index, index1);
++    if (index!=index1 || index!=index2)
++    {
++        FIXME("iconlists out of sync 0x%x 0x%x 0x%x\n", index, index1, index2);
+         /* What to do ???? */
+     }
+     lpsice->dwListIndex = index;
+@@ -417,9 +458,25 @@
+  * NOTES
+  *  gets small/big icon by number from a file
+  */
++/* Arctic: the icon at the desktop's size, its shortcut arrow too; NULL if
++   the file has none */
++static HICON SIC_LoadDesktopIcon(LPCWSTR sSourceFile, INT dwSourceIndex, DWORD dwFlags)
++{
++    HICON hicon = NULL, hiconShortcut;
++
++    PrivateExtractIconsW(sSourceFile, dwSourceIndex, ShellDesktopIconSize, ShellDesktopIconSize,
++                         &hicon, NULL, 1, LR_COPYFROMRESOURCE);
++    if (hicon && (dwFlags & GIL_FORSHORTCUT) && (hiconShortcut = SIC_OverlayShortcutImage(hicon, SIC_LIST_DESKTOP)))
++    {
++        DestroyIcon(hicon);
++        hicon = hiconShortcut;
++    }
++    return hicon;
++}
++
+ static INT SIC_LoadIcon (LPCWSTR sSourceFile, INT dwSourceIndex, DWORD dwFlags)
+ {
+-    HICON hiconLarge = NULL, hiconSmall = NULL;
++    HICON hiconLarge = NULL, hiconSmall = NULL, hiconDesktop;
+     UINT ret;
+ 
+     PrivateExtractIconsW(sSourceFile, dwSourceIndex, ShellLargeIconSize, ShellLargeIconSize,
+@@ -437,8 +494,8 @@
+ 
+     if (0 != (dwFlags & GIL_FORSHORTCUT))
+     {
+-        HICON hiconLargeShortcut = SIC_OverlayShortcutImage(hiconLarge, TRUE);
+-        HICON hiconSmallShortcut = SIC_OverlayShortcutImage(hiconSmall, FALSE);
++        HICON hiconLargeShortcut = SIC_OverlayShortcutImage(hiconLarge, SIC_LIST_BIG);
++        HICON hiconSmallShortcut = SIC_OverlayShortcutImage(hiconSmall, SIC_LIST_SMALL);
+         if (NULL != hiconLargeShortcut && NULL != hiconSmallShortcut)
+         {
+             DestroyIcon(hiconLarge);
+@@ -454,10 +511,12 @@
+             dwFlags &= ~ GIL_FORSHORTCUT;
+         }
+     }
+-
+-    ret = SIC_IconAppend (sSourceFile, dwSourceIndex, hiconSmall, hiconLarge, dwFlags);
++    hiconDesktop = SIC_LoadDesktopIcon(sSourceFile, dwSourceIndex, dwFlags);
++
++    ret = SIC_IconAppend (sSourceFile, dwSourceIndex, hiconSmall, hiconLarge, hiconDesktop, dwFlags);
+     DestroyIcon(hiconLarge);
+     DestroyIcon(hiconSmall);
++    if (hiconDesktop) DestroyIcon(hiconDesktop);
+     return ret;
+ }
+ /*****************************************************************************
+@@ -514,7 +573,7 @@
+  */
+ BOOL SIC_Initialize(void)
+ {
+-    HICON hSm = NULL, hLg = NULL;
++    HICON hSm = NULL, hLg = NULL, hDk = NULL;
+     INT bpp;
+     DWORD ilMask;
+     BOOL result = FALSE;
+@@ -535,6 +594,7 @@
+ 
+     ShellSmallIconSize = SIC_GetSmallIconSize();
+     ShellLargeIconSize = SIC_GetLargeIconSize();
++    ShellDesktopIconSize = SIC_DesktopIconPixels(SIC_GetDesktopIconLogicalSize());
+ 
+     bpp = ShellIconBPP = SIC_GetIconBPP(); // Bits Per Pixel
+     if (bpp <= 4)
+@@ -566,6 +626,13 @@
+         goto end;
+     }
+ 
++    ShellDesktopIconList = ImageList_Create(ShellDesktopIconSize, ShellDesktopIconSize, ilMask, 100, 100);
++    if (!ShellDesktopIconList)
++    {
++        ERR("Failed to create the desktop icon list.\n");
++        goto end;
++    }
++
+     /* Load the document icon, which is used as the default if an icon isn't found. */
+     hSm = (HICON)LoadImageW(shell32_hInstance, MAKEINTRESOURCEW(IDI_SHELL_DOCUMENT),
+                             IMAGE_ICON, ShellSmallIconSize, ShellSmallIconSize,
+@@ -585,12 +652,16 @@
+         goto end;
+     }
+ 
+-    if(SIC_IconAppend(swShell32Name, IDI_SHELL_DOCUMENT-1, hSm, hLg, 0) == INVALID_INDEX)
++    hDk = (HICON)LoadImageW(shell32_hInstance, MAKEINTRESOURCEW(IDI_SHELL_DOCUMENT),
++                            IMAGE_ICON, ShellDesktopIconSize, ShellDesktopIconSize,
++                            LR_SHARED | LR_DEFAULTCOLOR);
++
++    if(SIC_IconAppend(swShell32Name, IDI_SHELL_DOCUMENT-1, hSm, hLg, hDk, 0) == INVALID_INDEX)
+     {
+         ERR("Failed to add IDI_SHELL_DOCUMENT icon to cache.\n");
+         goto end;
+     }
+-    if(SIC_IconAppend(swShell32Name, -IDI_SHELL_DOCUMENT, hSm, hLg, 0) == INVALID_INDEX)
++    if(SIC_IconAppend(swShell32Name, -IDI_SHELL_DOCUMENT, hSm, hLg, hDk, 0) == INVALID_INDEX)
+     {
+         ERR("Failed to add IDI_SHELL_DOCUMENT icon to cache.\n");
+         goto end;
+@@ -603,6 +674,7 @@
+     /* The image list keeps a copy of the icons, we must destroy them */
+     if(hSm) DestroyIcon(hSm);
+     if(hLg) DestroyIcon(hLg);
++    if(hDk) DestroyIcon(hDk);
+ 
+     /* Clean everything if something went wrong */
+     if(!result)
+@@ -610,9 +682,11 @@
+         if(sic_hdpa) DPA_Destroy(sic_hdpa);
+         if(ShellSmallIconList) ImageList_Destroy(ShellSmallIconList);
+         if(ShellBigIconList) ImageList_Destroy(ShellSmallIconList);
++        if(ShellDesktopIconList) ImageList_Destroy(ShellDesktopIconList);
+         sic_hdpa = NULL;
+         ShellSmallIconList = NULL;
+         ShellBigIconList = NULL;
++        ShellDesktopIconList = NULL;
+     }
+ 
+     TRACE("hIconSmall=%p hIconBig=%p\n",ShellSmallIconList, ShellBigIconList);
+@@ -645,9 +719,78 @@
+     ShellSmallIconList = 0;
+     ImageList_Destroy(ShellBigIconList);
+     ShellBigIconList = 0;
++    ImageList_Destroy(ShellDesktopIconList);
++    ShellDesktopIconList = 0;
+ 
+     LeaveCriticalSection(&SHELL32_SicCS);
+     //DeleteCriticalSection(&SHELL32_SicCS); //static
++}
++
++/*************************************************************************
++ * Arctic: the desktop's icons
++ *
++ * The list the desktop's view shows, index for index the same icons as the
++ * system's lists, at the size of SIC_GetDesktopIconLogicalSize.
++ */
++HIMAGELIST SIC_GetDesktopImageList(void)
++{
++    if (!sic_hdpa)
++        SIC_Initialize();
++    return ShellDesktopIconList;
++}
++
++/* The desktop's icons at another size: every icon in the cache is taken
++ * again from its file at that size, under the same index. Returns the list
++ * that was in use, for the caller to destroy once its view shows the new one
++ * (SIC_GetDesktopImageList), or NULL if the size stays. */
++HIMAGELIST SIC_SetDesktopIconSize(INT nLogical)
++{
++    INT size = SIC_DesktopIconPixels(nLogical), count, i, pass;
++    HIMAGELIST list, old;
++
++    if (!sic_hdpa)
++        SIC_Initialize();
++    if (!ShellDesktopIconList || size == ShellDesktopIconSize)
++        return NULL;
++
++    EnterCriticalSection(&SHELL32_SicCS);
++    count = ImageList_GetImageCount(ShellBigIconList);
++    list = ImageList_Create(size, size, ImageList_GetFlags(ShellDesktopIconList), count, 100);
++    if (!list || !ImageList_SetImageCount(list, count))
++    {
++        if (list) ImageList_Destroy(list);
++        LeaveCriticalSection(&SHELL32_SicCS);
++        return NULL;
++    }
++    old = ShellDesktopIconList;
++    ShellDesktopIconList = list;
++    ShellDesktopIconSize = size;
++
++    /* plain icons first: a shortcut's arrow is one of them, drawn over the
++       others from the new list */
++    for (pass = 0; pass < 2; pass++)
++    {
++        for (i = 0; i < DPA_GetPtrCount(sic_hdpa); i++)
++        {
++            LPSIC_ENTRY entry = (LPSIC_ENTRY)DPA_GetPtr(sic_hdpa, i);
++            HICON hicon;
++
++            if (!entry || (entry->dwFlags & GIL_FORSHORTCUT) != (pass ? GIL_FORSHORTCUT : 0) ||
++                (INT)entry->dwListIndex >= count)
++                continue;
++            hicon = SIC_LoadDesktopIcon(entry->sSourceFile, entry->dwSourceIndex, entry->dwFlags);
++            if (!hicon)
++                hicon = ImageList_GetIcon(ShellBigIconList, entry->dwListIndex, ILD_TRANSPARENT);
++            if (hicon)
++            {
++                ImageList_ReplaceIcon(list, entry->dwListIndex, hicon);
++                DestroyIcon(hicon);
++            }
++        }
++    }
++    LeaveCriticalSection(&SHELL32_SicCS);
++    TRACE("desktop icons of %d pixels\n", size);
++    return old;
+ }
+ 
+ /*****************************************************************************
+--- a/dll/win32/shell32/wine/shell32_main.h
++++ b/dll/win32/shell32/wine/shell32_main.h
+@@ -58,6 +58,10 @@
+ void SIC_Destroy(void) DECLSPEC_HIDDEN;
+ BOOL PidlToSicIndex (IShellFolder * sh, LPCITEMIDLIST pidl, BOOL bBigIcon, UINT uFlags, int * pIndex) DECLSPEC_HIDDEN;
+ INT SIC_GetIconIndex (LPCWSTR sSourceFile, INT dwSourceIndex, DWORD dwFlags ) DECLSPEC_HIDDEN;
++/* Arctic: the desktop's icons, at 32, 48 or 64 pixels (at 100 %) as the user picks */
++INT SIC_GetDesktopIconLogicalSize(void) DECLSPEC_HIDDEN;
++HIMAGELIST SIC_GetDesktopImageList(void) DECLSPEC_HIDDEN;
++HIMAGELIST SIC_SetDesktopIconSize(INT nLogical) DECLSPEC_HIDDEN;
+ extern INT ShellLargeIconSize;
+ extern INT ShellSmallIconSize;
+ extern INT ShellIconBPP;
+--- a/dll/win32/shell32/CDefView.cpp
++++ b/dll/win32/shell32/CDefView.cpp
+@@ -355,6 +355,7 @@
+     HRESULT FillViewMenu();
+     HRESULT FillArrangeAsMenu(HMENU hmenuArrange);
+     HRESULT CheckViewMode(HMENU hmenuView);
++    void SetDesktopIconSize(INT nLogical, BOOL bSave);
+     LRESULT DoColumnContextMenu(LRESULT lParam);
+     HRESULT SelectAndPositionItem(int Idx, UINT fSVSI, POINT *ppt);
+     UINT GetSelections();
+@@ -1061,7 +1062,8 @@
+     m_ListView.DeleteAllItems();
+ 
+     Shell_GetImageLists(&big_icons, &small_icons);
+-    m_ListView.SetImageList(big_icons, LVSIL_NORMAL);
++    /* Arctic: the desktop's icons at the size picked for them */
++    m_ListView.SetImageList(IsDesktop() ? SIC_GetDesktopImageList() : big_icons, LVSIL_NORMAL);
+     m_ListView.SetImageList(small_icons, LVSIL_SMALL);
+     UpdateTileView();
+ 
+@@ -2063,6 +2065,10 @@
+ 
+ HRESULT CDefView::CheckViewMode(HMENU hmenuView)
+ {
++    /* Arctic: the desktop's View menu is the size of its icons, checked as it is filled */
++    if (IsDesktop())
++        return S_OK;
++
+     if (m_FolderSettings.ViewMode >= FVM_FIRST && m_FolderSettings.ViewMode <= FVM_LAST)
+     {
+         UINT iItemFirst = FCIDM_SHVIEW_BIGICON;
+@@ -2641,6 +2647,12 @@
+             break;
+         case FCIDM_SHVIEW_SNAPTOGRID:
+             m_ListView.Arrange(LVA_SNAPTOGRID);
++            break;
++        case FCIDM_SHVIEW_DESKICON_LARGE:
++        case FCIDM_SHVIEW_DESKICON_MEDIUM:
++        case FCIDM_SHVIEW_DESKICON_SMALL:
++            SetDesktopIconSize(dwCmdID == FCIDM_SHVIEW_DESKICON_LARGE ? 64 :
++                               dwCmdID == FCIDM_SHVIEW_DESKICON_MEDIUM ? 48 : 32, TRUE);
+             break;
+         case FCIDM_SHVIEW_ALIGNTOGRID:
+             if (_GetSnapToGrid() == S_OK)
+@@ -3145,8 +3157,35 @@
+     return SUCCEEDED(hres);
+ }
+ 
++/* Arctic: the desktop's icons at 32, 48 or 64 pixels (at 100 %), picked in
++ * its View menu (kept where Windows keeps it) or in the Display panel, which
++ * says so with WM_SETTINGCHANGE "DesktopIconSize". The icons are laid out
++ * again in the grid of the new size. */
++void CDefView::SetDesktopIconSize(INT nLogical, BOOL bSave)
++{
++    HIMAGELIST old;
++
++    if (!IsDesktop())
++        return;
++    if (bSave)
++    {
++        DWORD dwSize = nLogical;
++        SHSetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\Shell\\Bags\\1\\Desktop",
++                    L"IconSize", REG_DWORD, &dwSize, sizeof(dwSize));
++    }
++    if (!(old = SIC_SetDesktopIconSize(nLogical)))
++        return;
++    m_ListView.SetImageList(SIC_GetDesktopImageList(), LVSIL_NORMAL);
++    ImageList_Destroy(old);
++    m_ListView.Arrange(LVA_DEFAULT);
++    m_ListView.Invalidate();
++}
++
+ LRESULT CDefView::OnSettingChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
++    if (lParam && !lstrcmpiW((PCWSTR)lParam, L"DesktopIconSize"))
++        SetDesktopIconSize(SIC_GetDesktopIconLogicalSize(), FALSE);
++
+     /* Wallpaper setting affects drop shadows effect */
+     if (wParam == SPI_SETDESKWALLPAPER || wParam == 0)
+         UpdateListColors();
+--- a/dll/win32/shell32/CDefViewBckgrndMenu.cpp
++++ b/dll/win32/shell32/CDefViewBckgrndMenu.cpp
+@@ -25,6 +25,7 @@
+ 
+         BOOL _bIsDesktopBrowserMenu();
+         BOOL _bCanPaste();
++        void _FillDesktopViewMenu(HMENU hMenuPart);
+     public:
+         CDefViewBckgrndMenu();
+         ~CDefViewBckgrndMenu();
+@@ -141,6 +142,38 @@
+         return E_FAIL;
+ 
+     return m_site->QueryInterface(riid, ppvSite);
++}
++
++/* Arctic: large, medium and small icons, 64, 48 and 32 pixels at 100 % (the
++   Display panel offers the same), the one in use checked */
++void CDefViewBckgrndMenu::_FillDesktopViewMenu(HMENU hMenuPart)
++{
++    static const struct { UINT id, text, size; LPCWSTR fallback; } items[] =
++    {
++        { FCIDM_SHVIEW_DESKICON_LARGE,  IDS_DESKICON_LARGE,  64, L"&Large icons" },
++        { FCIDM_SHVIEW_DESKICON_MEDIUM, IDS_DESKICON_MEDIUM, 48, L"&Medium icons" },
++        { FCIDM_SHVIEW_DESKICON_SMALL,  IDS_DESKICON_SMALL,  32, L"&Small icons" },
++    };
++    MENUITEMINFOW mii = { sizeof(mii), MIIM_SUBMENU };
++    INT size = SIC_GetDesktopIconLogicalSize();
++    WCHAR text[64];
++    HMENU hView;
++
++    if (!GetMenuItemInfoW(hMenuPart, FCIDM_SHVIEW_VIEW, FALSE, &mii) || !(hView = mii.hSubMenu))
++    {
++        DeleteMenu(hMenuPart, FCIDM_SHVIEW_VIEW, MF_BYCOMMAND);
++        return;
++    }
++    while (GetMenuItemCount(hView) > 0)
++        DeleteMenu(hView, 0, MF_BYPOSITION);
++    for (UINT i = 0; i < _countof(items); i++)
++    {
++        if (!LoadStringW(shell32_hInstance, items[i].text, text, _countof(text)))
++            StringCchCopyW(text, _countof(text), items[i].fallback);
++        AppendMenuW(hView, MF_STRING, items[i].id, text);
++        if (items[i].size == (UINT)size)
++            CheckMenuRadioItem(hView, FCIDM_SHVIEW_DESKICON_LARGE, FCIDM_SHVIEW_DESKICON_SMALL, items[i].id, MF_BYCOMMAND);
++    }
+ }
+ 
+ HRESULT
+@@ -186,10 +219,10 @@
+     hMenuPart = LoadMenuW(shell32_hInstance, L"MENU_002");
+     if (hMenuPart)
+     {
+-        /* Don't show the view submenu for the desktop */
++        /* Arctic: the desktop's view submenu is Windows 10's, the size of its icons */
+         if (_bIsDesktopBrowserMenu())
+         {
+-            DeleteMenu(hMenuPart, FCIDM_SHVIEW_VIEW, MF_BYCOMMAND);
++            _FillDesktopViewMenu(hMenuPart);
+         }
+ 
+         /* Disable the paste options if it is not possible */
+@@ -261,6 +294,9 @@
+     case FCIDM_SHVIEW_SNAPTOGRID:
+     case FCIDM_SHVIEW_REFRESH:
+     case FCIDM_SHVIEW_ALIGNTOGRID:
++    case FCIDM_SHVIEW_DESKICON_LARGE:
++    case FCIDM_SHVIEW_DESKICON_MEDIUM:
++    case FCIDM_SHVIEW_DESKICON_SMALL:
+         if (!m_site)
+             return E_FAIL;
+ 
+--- a/dll/win32/shell32/shresdef.h
++++ b/dll/win32/shell32/shresdef.h
+@@ -890,6 +890,10 @@
+ #define IDS_SYSPROT_SKIP         21931
+ #define IDS_SYSPROT_CANCEL       21932
+ #define IDS_SYSPROT_FORALL       21933
++/* Arctic: the desktop's View menu */
++#define IDS_DESKICON_LARGE       21940
++#define IDS_DESKICON_MEDIUM      21941
++#define IDS_DESKICON_SMALL       21942
+ 
+ #define IDI_SHELL_DELETE5 16721
+ 
+@@ -949,6 +953,10 @@
+ #define FCIDM_SHVIEW_HELP       0x7041
+ #define FCIDM_SHVIEW_NEWLINK    0x7052
+ #define FCIDM_SHVIEW_NEWFOLDER  0x7053
++/* Arctic: the desktop's View menu, the size of its icons (Windows 10's) */
++#define FCIDM_SHVIEW_DESKICON_LARGE  0x7060
++#define FCIDM_SHVIEW_DESKICON_MEDIUM 0x7061
++#define FCIDM_SHVIEW_DESKICON_SMALL  0x7062
+ 
+ #define FCIDM_SHVIEW_EXPLORE 0x7101 /* FIXME */
+ #define FCIDM_SHVIEW_OPEN    0x7102 /* FIXME */
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -1144,4 +1144,7 @@
+     IDS_SYSPROT_SKIP "Пропустити"
+     IDS_SYSPROT_CANCEL "Скасувати"
+     IDS_SYSPROT_FORALL "Виконати для всіх поточних елементів"
+-END
++    IDS_DESKICON_LARGE "&Великі значки"
++    IDS_DESKICON_MEDIUM "&Звичайні значки"
++    IDS_DESKICON_SMALL "&Дрібні значки"
++END
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -1144,4 +1144,7 @@
+     IDS_SYSPROT_SKIP "Skip"
+     IDS_SYSPROT_CANCEL "Cancel"
+     IDS_SYSPROT_FORALL "Do this for all current items"
+-END
++    IDS_DESKICON_LARGE "&Large icons"
++    IDS_DESKICON_MEDIUM "&Medium icons"
++    IDS_DESKICON_SMALL "&Small icons"
++END

@@ -20,7 +20,8 @@ FILES = os.path.join(ROOT, "runtime", "reactos", "files")
 OUT = os.path.join(FILES, "dll", "win32", "shell32", "res", "icons")
 USER32 = os.path.join(ROOT, "runtime", "wine", "modules", "dlls", "user32", "resources")
 BOLD = os.path.join(ROOT, "runtime", "fonts", "SourceSansPro-Bold.ttf")
-SIZES = (16, 24, 32, 48, 256)
+# every size the shell asks for at 100 to 200 %: small 16-40, large 32-64, the desktop up to 96
+SIZES = (16, 20, 24, 30, 32, 40, 48, 64, 96, 256)
 SS = 4  # supersampling
 
 # shell32 icon id <- file in ICONS/
@@ -54,7 +55,7 @@ def write_ico(path, images):
     offset = 6 + 16 * len(images)
     for im in images:
         w, h = im.size
-        if w >= 256:
+        if w > 48:
             buf = io.BytesIO()
             im.save(buf, "PNG")
             blob = buf.getvalue()
@@ -221,7 +222,9 @@ def render(draw, size):
 
 os.makedirs(OUT, exist_ok=True)
 for icon_id, name in PLACED.items():
-    shutil.copyfile(os.path.join(SRC, name), os.path.join(OUT, "%d.ico" % icon_id))
+    # each size drawn from the set's nearest larger picture, not scaled by
+    # the system when a 20 or 40 pixel icon is asked for
+    write_ico(os.path.join(OUT, "%d.ico" % icon_id), [best_frame(os.path.join(SRC, name), s) for s in SIZES])
 # the message box icons are user32's
 os.makedirs(USER32, exist_ok=True)
 shutil.copyfile(os.path.join(SRC, "no_or_error.ico"), os.path.join(USER32, "oic_hand.ico"))

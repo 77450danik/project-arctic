@@ -19,6 +19,7 @@
 #include "wingdi.h"
 #include "winuser.h"
 #include "wine/arctic_power.h"
+#include "wine/arctic_shell.h"
 
 /* the tip of the icon (batmeter.dll.mui of Windows 10) */
 #define IDS_TIP_AC                 121
@@ -75,7 +76,8 @@
 
 /* the shell's colours in Windows 10, dark */
 #define ACCENT_COLOR  RGB( 0x00, 0x78, 0xd7 )
-#define LINK_COLOR    RGB( 0x99, 0xeb, 0xff )   /* SystemAccentColorLight3 */
+#define LINK_COLOR    (shell_light ? RGB( 0x00, 0x5a, 0x9e ) : RGB( 0x99, 0xeb, 0xff ))   /* SystemAccentColorLight3, Dark1 */
+#define LINK_HOT      (shell_light ? RGB( 0x00, 0x42, 0x75 ) : RGB( 0xcc, 0xf5, 0xff ))
 #define ACRYLIC_TINT  0xcc1f1f1f                /* 0xAABBGGRR */
 
 extern HINSTANCE batmeter_instance;
@@ -83,6 +85,7 @@ extern HINSTANCE batmeter_instance;
 WCHAR *load_string( UINT id );
 WCHAR *format_string( UINT id, ... );
 void shell_look( HWND hwnd );
+extern BOOL shell_light;   /* the flyout draws dark on white over a light look */
 int px( int n );
 HFONT shell_font( int height, int weight );
 

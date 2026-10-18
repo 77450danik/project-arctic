@@ -116,6 +116,9 @@ struct dwm_set_options_params
     UINT32 vrr_off[DWM_MAX_OUTPUTS];  /* connectors whose monitor the user turned it off for */
     UINT32 monitors_off;  /* the power policy turned the display off (docs/power.md) */
     UINT32 relight;       /* changed by Ctrl+Alt+Del: the monitors are set up again */
+    UINT32 scaling_count;
+    UINT32 scaling_id[DWM_MAX_OUTPUTS];  /* connectors, and how their monitors show modes */
+    UINT32 scaling[DWM_MAX_OUTPUTS];     /* smaller than their own (DISPLAYCONFIG_SCALING) */
 };
 
 /* what programs asked of their windows through dwmapi (wine/arctic_dwm.h) */

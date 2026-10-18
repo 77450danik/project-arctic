@@ -161,6 +161,21 @@ static uint32_t keyed( uint32_t p )
     return (a << 24) | (min( r, a ) << 16) | (min( g, a ) << 8) | min( b, a );
 }
 
+/* the same for a window drawn dark on white (DWMWA_ARCTIC_LIGHT): white
+ * shows the backdrop and black text stays black. What has alpha was blended
+ * over the white, which comes off again. */
+static uint32_t keyed_light( uint32_t p )
+{
+    uint32_t a = p >> 24, r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff, white;
+
+    if (!a) a = 255 - min( r, min( g, b ) );
+    white = 255 - a;
+    r = r > white ? r - white : 0;
+    g = g > white ? g - white : 0;
+    b = b > white ? b - white : 0;
+    return (a << 24) | (min( r, a ) << 16) | (min( g, a ) << 8) | min( b, a );
+}
+
 /* the part of the buffer shown (viewport source) scaled to the viewport destination */
 static void blit( const struct surface *s, int x0, int y0, enum layer_mode mode )
 {
@@ -194,6 +209,7 @@ static void blit( const struct surface *s, int x0, int y0, enum layer_mode mode 
             if (px < screen.left || px >= screen.right) continue;
             p = src[dw == sw ? x : sw * x / dw];
             if (mode == LAYER_KEYED && !s->alpha) p = keyed( p );
+            if (mode == LAYER_KEYED_LIGHT && !s->alpha) p = keyed_light( p );
             if (mode == LAYER_OPAQUE || (p >> 24) == 0xff) dst[px] = p | 0xff000000;
             else if (p >> 24) dst[px] = over( p, dst[px] );
         }
@@ -213,18 +229,18 @@ static void read_dmabuf( struct surface *s )
 #define MAX_TREE_DEPTH 16
 static int depth;  /* of the tree being walked; a walk cut short by a fault leaves it for guarded() to clear */
 
-static void draw_tree( struct surface *s, int x, int y, bool backdrop )
+static void draw_tree( struct surface *s, int x, int y, enum layer_mode keyed_mode )
 {
     struct surface *child;
 
     if (s->dmabuf && s->stale) read_dmabuf( s );
-    if (s->pixels) blit( s, x, y, backdrop ? LAYER_KEYED : s->alpha ? LAYER_PREMULTIPLIED : LAYER_OPAQUE );
+    if (s->pixels) blit( s, x, y, keyed_mode != LAYER_OPAQUE ? keyed_mode : s->alpha ? LAYER_PREMULTIPLIED : LAYER_OPAQUE );
     if (depth >= MAX_TREE_DEPTH) return;
     depth++;
     wl_list_for_each( child, &s->children, child_link )
     {
         if (child->hwnd) continue; /* a window of its own: placed by wineserver, not by its parent */
-        draw_tree( child, x + child->sub_x, y + child->sub_y, backdrop );
+        draw_tree( child, x + child->sub_x, y + child->sub_y, keyed_mode );
     }
     depth--;
 }
@@ -713,6 +729,7 @@ static float corner_radius( const struct dwm_window *w, const struct window_stat
 
     if (w->style & (WS_CHILD | WS_MAXIMIZE | WS_MINIMIZE)) return 0;
     if (corner == 1 /* DWMWCP_DONOTROUND */ || covers_monitor( w )) return 0;
+    if (corner & 0x100) return (corner & 0xff) * monitor_scale( w );  /* ARCTIC_CORNER_RADIUS */
     if (corner == 3 /* DWMWCP_ROUNDSMALL */) return radius / 2;
     if (corner == 2 /* DWMWCP_ROUND */) return radius;
     return has_caption( w ) || (w->style & WS_THICKFRAME) ? radius : 0;
@@ -760,7 +777,8 @@ static bool window_backdrop( const struct window_state *ws, bool *blur, uint32_t
 static enum layer_mode layer_mode( const struct surface *s, const struct window_draw *draw )
 {
     if (s->alpha) return LAYER_PREMULTIPLIED;
-    return draw && draw->backdrop ? LAYER_KEYED : LAYER_OPAQUE;
+    if (!draw || !draw->backdrop) return LAYER_OPAQUE;
+    return draw->ws && draw->ws->has_attr && draw->ws->attr.light ? LAYER_KEYED_LIGHT : LAYER_KEYED;
 }
 
 enum transition
@@ -770,6 +788,7 @@ enum transition
     TRANSITION_POPUP,                        /* fade, a little slide down */
     TRANSITION_SLIDE,                        /* up from below */
     TRANSITION_FADE,
+    TRANSITION_START10,                      /* far up from below, quick to slow */
 };
 
 static enum transition window_transition( const struct dwm_window *w, const struct window_state *ws )
@@ -783,6 +802,7 @@ static enum transition window_transition( const struct dwm_window *w, const stru
         case ARCTIC_TRANSITION_NONE: return TRANSITION_NONE;
         case ARCTIC_TRANSITION_FADE: return TRANSITION_FADE;
         case ARCTIC_TRANSITION_SLIDE_UP: return TRANSITION_SLIDE;
+        case ARCTIC_TRANSITION_START10: return TRANSITION_START10;
         }
     }
     /* layered windows (the toasts) animate themselves */
@@ -876,6 +896,9 @@ static void animate_in( struct window_state *ws, const struct dwm_window *w )
     case TRANSITION_POPUP: animate( ws, ANIM_POPUP_IN, moved( r, 0, -8 * monitor_scale( w ) ), r, 0, 1, 167, false ); break;
     case TRANSITION_SLIDE: animate( ws, ANIM_SLIDE_IN, moved( r, 0, 48 * monitor_scale( w ) ), r, 0, 1, 250, false ); break;
     case TRANSITION_FADE: animate( ws, ANIM_FADE_IN, r, r, 0, 1, 150, false ); break;
+    case TRANSITION_START10:
+        animate( ws, ANIM_START10_IN, moved( r, 0, 120 * monitor_scale( w ) ), r, 0, 1, 360, false );
+        break;
     }
 }
 
@@ -901,6 +924,7 @@ static void animate_out( struct window_state *ws, const struct dwm_window *w )
     case TRANSITION_POPUP: animate( ws, ANIM_POPUP_OUT, r, r, 1, 0, 100, true ); break;
     case TRANSITION_SLIDE: animate( ws, ANIM_SLIDE_OUT, r, moved( r, 0, 48 ), 1, 0, 167, true ); break;
     case TRANSITION_FADE: animate( ws, ANIM_FADE_OUT, r, r, 1, 0, 100, true ); break;
+    case TRANSITION_START10: animate( ws, ANIM_START10_OUT, r, moved( r, 0, 40 ), 1, 0, 120, true ); break;
     }
 }
 
@@ -1164,6 +1188,13 @@ static bool animation_frame( struct window_state *ws, uint64_t now, struct frect
     case ANIM_FADE_OUT:
         e = accelerate( t );
         break;
+    case ANIM_START10_IN:
+        /* Windows 10's Start menu: most of the way at once, then a long settle */
+        e = 1 - (1 - t) * (1 - t) * (1 - t) * (1 - t) * (1 - t);
+        break;
+    case ANIM_START10_OUT:
+        e = t * t;
+        break;
     default:
         e = decelerate( t );
         break;
@@ -1175,6 +1206,7 @@ static bool animation_frame( struct window_state *ws, uint64_t now, struct frect
     /* a minimized window fades out as it reaches its button */
     if (ws->anim == ANIM_MINIMIZE) *alpha = 1 - t * t;
     else if (ws->anim == ANIM_RESTORE) *alpha = min( 1.0f, t * 3 );
+    else if (ws->anim == ANIM_START10_IN) *alpha = min( 1.0f, t * 2.5f );
     else *alpha = lerp( ws->alpha_from, ws->alpha_to, e );
     TRACE( "%08x at %.2f: %.0f,%.0f-%.0f,%.0f opacity %.2f\n", ws->hwnd, t, rect->left, rect->top, rect->right,
            rect->bottom, *alpha );
@@ -1419,13 +1451,13 @@ static void cpu_thumbnail( const struct thumbnail_draw *t )
 
 struct cpu_draw_ctx
 {
-    bool backdrop;
+    enum layer_mode keyed_mode;   /* LAYER_OPAQUE without a backdrop */
 };
 
 static void cpu_draw_surface( struct surface *s, int x, int y, void *ctx )
 {
     const struct cpu_draw_ctx *c = ctx;
-    draw_tree( s, x, y, c->backdrop );
+    draw_tree( s, x, y, c->keyed_mode );
 }
 
 /* the virtual screen, in RAM */
@@ -1451,8 +1483,9 @@ static void compose(void)
         if (shown_directly( w->hwnd )) continue;
         fill_draw( &draw, w, NULL, 0 );
         draw.ws = ws;
-        ctx.backdrop = window_backdrop( ws, &draw.blur, &draw.tint );
-        if (ctx.backdrop) tint_rect( &(RECT){ w->left, w->top, w->right, w->bottom }, draw.tint );
+        draw.backdrop = window_backdrop( ws, &draw.blur, &draw.tint );
+        ctx.keyed_mode = draw.backdrop ? layer_mode( &(struct surface){ 0 }, &draw ) : LAYER_OPAQUE;
+        if (draw.backdrop) tint_rect( &(RECT){ w->left, w->top, w->right, w->bottom }, draw.tint );
         for_each_window_surface( w, cpu_draw_surface, &ctx );
         n = scene_thumbnails( &draw, thumbs, ARRAY_SIZE(thumbs) );
         for (uint32_t k = 0; k < n; k++) cpu_thumbnail( &thumbs[k] );
@@ -3451,6 +3484,9 @@ static NTSTATUS dwm_set_options( void *args )
     }
     relight = params->relight;
     relight_known = true;
+    /* a game in a smaller mode shows the way the Display panel says now */
+    for (uint32_t i = 0; i < min( params->scaling_count, ARRAY_SIZE(params->scaling) ); i++)
+        if (kms_set_scaling( params->scaling_id[i], params->scaling[i] )) compose_afresh();
     damage();
     return STATUS_SUCCESS;
 }

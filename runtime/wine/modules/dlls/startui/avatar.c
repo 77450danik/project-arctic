@@ -55,6 +55,18 @@ static void draw( HDC hdc, int size )
     draw_glyph( hdc, GLYPH_PERSON, (size - glyph) / 2, (size - glyph) / 2 + size / 32, glyph, RGB( 255, 255, 255 ), 255 );
 }
 
+/* the same picture inside a menu, as Windows 10 and 11 show it small */
+void avatar_draw( HDC hdc, int x, int y, int size, const struct palette *pal )
+{
+    RECT rect;
+    int glyph = size * 5 / 8;
+
+    SetRect( &rect, x, y, x + size, y + size );
+    fill_round_rect( hdc, &rect, size / 2.0f, pal->light ? RGB( 0xc8, 0xc8, 0xc8 ) : RGB( 0x5a, 0x5a, 0x5a ), 255 );
+    draw_glyph( hdc, GLYPH_PERSON, x + (size - glyph) / 2, y + (size - glyph) / 2 + size / 32, glyph,
+                pal->light ? RGB( 0x40, 0x40, 0x40 ) : RGB( 255, 255, 255 ), 255 );
+}
+
 void avatar_show( HWND owner, int center_x, int center_y )
 {
     BITMAPINFO info = { { sizeof(info.bmiHeader), 0, 0, 1, 32, BI_RGB } };

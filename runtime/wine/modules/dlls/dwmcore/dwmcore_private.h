@@ -53,6 +53,9 @@ struct kms_output
     uint32_t         preferred;            /* index into modes */
     uint32_t         possible_crtcs;       /* bit per CRTC of the card */
     bool             vrr_capable;          /* the monitor and the link take a variable refresh */
+    uint32_t         scaling;              /* how a mode smaller than the monitor's shows, as the user
+                                            * picked it (DISPLAYCONFIG_SCALING: 2 centred, 3 stretched,
+                                            * 4 shape kept); 0 for the default, shape kept */
 
     /* what it shows */
     bool             enabled;
@@ -61,6 +64,7 @@ struct kms_output
     int32_t          x, y;                 /* in the virtual screen */
     struct { int32_t x, y; uint32_t width, height; } view;  /* where the frames show on the
                                                           * timings: all of them unless scaled */
+    uint32_t         scaling_on;           /* the scaling the view was made with */
     struct kms_fb    fbs[2];               /* composed frames: one on screen while the other is drawn */
 
     /* scanout, when the monitor is on */
@@ -109,6 +113,7 @@ bool kms_probe(void);                 /* rereads the connectors; true if monitor
 bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool test );
 void kms_flush( struct kms_output *output );  /* after drawing: shadow-buffered drivers copy only on this */
 bool kms_set_power( bool on );        /* the monitors lit or dark (DPMS) */
+bool kms_set_scaling( uint32_t connector_id, uint32_t scaling );  /* true if the picture moved */
 int  kms_hotplug_socket(void);        /* kernel uevents, -1 if none */
 enum kms_event
 {

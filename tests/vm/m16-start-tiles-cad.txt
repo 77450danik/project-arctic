@@ -1,0 +1,59 @@
+# Windows 10's Start menu: the rail opened by its menu button, a tile's
+# context menu with Resize, the tile made large; Windows 11's context menu
+# of a pin; the security options (Ctrl+Alt+Del) in black. 1280x800 at 100%:
+# the Windows 10 menu is 640 high over the taskbar, its first tile at 382,218.
+sleep 10
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 2 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+shot t1-win10
+move 24 144
+click
+sleep 2
+shot t2-rail-open
+key esc
+sleep 2
+move 382 218
+click right
+sleep 2
+shot t3-tile-menu
+move 450 278
+sleep 2
+shot t4-resize-submenu
+key right
+sleep 1
+key down
+key down
+key down
+key ret
+sleep 2
+shot t5-tile-large
+key esc
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Arctic\StartMenu /v Style /t REG_DWORD /d 3 /f
+key ret
+sleep 3
+move 24 780
+click
+sleep 3
+move 92 220
+click right
+sleep 2
+shot t6-win11-pin-menu
+key esc
+sleep 1
+key esc
+sleep 2
+key ctrl-alt-delete
+sleep 4
+shot t7-security
+move 640 674
+sleep 1
+shot t8-cancel-hover

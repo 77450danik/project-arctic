@@ -1,6 +1,6 @@
 REGEDIT4
 
-[HKEY_CURRENT_USER\Software\Wine\Drivers]
+[HKEY_CURRENT_USER\Software\Arctic\Runtime\Drivers]
 "Graphics"="wayland"
 
 [HKEY_CURRENT_USER\Keyboard Layout\Preload]
@@ -40,13 +40,15 @@ REGEDIT4
 [HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Applets\SysTray]
 "Services"=dword:00000007
 
-[HKEY_CURRENT_USER\Software\Wine\DllOverrides]
+[HKEY_CURRENT_USER\Software\Arctic\Runtime\DllOverrides]
 "shell32"="native,builtin"
 "browseui"="native,builtin"
 "shdocvw"="native,builtin"
 "uxtheme"="native,builtin"
 "shlwapi"="native,builtin"
 "comctl32"="native,builtin"
+; the picture viewer of ReactOS: Wine's shimgvw is a stub without a window
+"shimgvw"="native,builtin"
 "winemenubuilder.exe"=""
 ; Wine's mshtml is a shell over wine-gecko, which this image does not carry:
 ; a program that asked for it got the "download Gecko" box, which has hung
@@ -54,7 +56,7 @@ REGEDIT4
 ; stands on our engine (docs/browser.md, stage 10).
 "mshtml"=""
 
-[HKEY_CURRENT_USER\Software\Wine\WineDbg]
+[HKEY_CURRENT_USER\Software\Arctic\Runtime\Debugger]
 "ShowCrashDialog"=dword:00000000
 
 [HKEY_CLASSES_ROOT\Folder]

@@ -20,6 +20,7 @@
 #include "shobjidl.h"
 #include "wine/arctic_dwm.h"
 #include "wine/arctic_taskbar.h"
+#include "wine/arctic_shell.h"
 
 /* the dark acrylic of the shell in Windows 10: its tint, 0xAABBGGRR */
 #define SHELL_ACRYLIC_TINT 0xcc1f1f1f
@@ -28,6 +29,8 @@ extern HINSTANCE twinui_instance;
 
 /* main.c */
 void set_acrylic( HWND hwnd );
+extern BOOL shell_light;   /* drawn dark on white over a light look */
+#define INK ARCTIC_INK( shell_light )
 void set_transition( HWND hwnd, DWORD transition );
 void set_cloaked( HWND hwnd, BOOL cloaked );
 int px( int n );

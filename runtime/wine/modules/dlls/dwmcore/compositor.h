@@ -109,6 +109,7 @@ enum layer_mode
     LAYER_OPAQUE,                            /* XRGB: alpha is ignored */
     LAYER_PREMULTIPLIED,                     /* ARGB */
     LAYER_KEYED,                             /* over a backdrop: GDI pixels with no alpha count by brightness */
+    LAYER_KEYED_LIGHT,                       /* ... by darkness: drawn on white, white shows the backdrop */
 };
 
 /* a picture of a window: what it showed before it went, or what it shows
@@ -135,6 +136,8 @@ enum animation
     ANIM_SLIDE_OUT,
     ANIM_FADE_IN,
     ANIM_FADE_OUT,
+    ANIM_START10_IN,                         /* Windows 10's Start menu */
+    ANIM_START10_OUT,
 };
 
 /* what the compositor keeps of a Win32 window between lists */

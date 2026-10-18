@@ -1,0 +1,102 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 14 Oct 2026 12:30:00 +0200
+Subject: [PATCH] ntdll: What processes and disks read and write.
+
+SystemProcessInformation left every process's I/O counters at zero, and
+SystemPerformanceInformation the system's: the Task Manager had nothing
+to show in its Disk column and graph. A process's counters come from
+/proc/<pid>/io (read_bytes and write_bytes, what reached the disk, as the
+Disk column of Windows' Task Manager counts; syscr and syscw for the
+operations). The system's come from /proc/diskstats, summed over whole
+disks: bytes and operations read and written, and in OtherOperationCount
+the milliseconds the busiest disk was busy (Arctic's own use of an unused
+field: the "Active time" of the Task Manager's disk graph).
+---
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -2717,6 +2717,42 @@
+     info->AvailablePages      = freeram / page_size;
+     info->TotalCommittedPages = (totalram + totalswap - freeram - freeswap) / page_size;
+     info->TotalCommitLimit    = (totalram + totalswap) / page_size;
++
++#ifdef linux
++    /* Arctic: the disks' reads and writes, summed over whole disks (not their
++     * partitions, loop devices, RAM disks or zram); OtherOperationCount
++     * holds the milliseconds the busiest of them has been busy */
++    {
++        FILE *fp;
++
++        if ((fp = fopen( "/proc/diskstats", "r" )))
++        {
++            unsigned long long rd, rd_sect, wr, wr_sect, ticks, busiest = 0;
++            unsigned int major, minor;
++            char line[256], name[64];
++
++            while (fgets( line, sizeof(line), fp ))
++            {
++                if (sscanf( line, "%u %u %63s %llu %*u %llu %*u %llu %*u %llu %*u %*u %llu",
++                            &major, &minor, name, &rd, &rd_sect, &wr, &wr_sect, &ticks ) != 8) continue;
++                if (!strncmp( name, "loop", 4 ) || !strncmp( name, "ram", 3 ) || !strncmp( name, "zram", 4 ) ||
++                    !strncmp( name, "dm-", 3 ) || !strncmp( name, "nbd", 3 ) || !strncmp( name, "sr", 2 )) continue;
++                /* a partition: sda1, nvme0n1p2, mmcblk0p1 */
++                if (name[0] == 's' && name[1] == 'd' && (name[strlen( name ) - 1] >= '0' && name[strlen( name ) - 1] <= '9')) continue;
++                if (name[0] == 'v' && name[1] == 'd' && (name[strlen( name ) - 1] >= '0' && name[strlen( name ) - 1] <= '9')) continue;
++                if (strchr( name, 'p' ) && (!strncmp( name, "nvme", 4 ) || !strncmp( name, "mmcblk", 6 )) &&
++                    (name[strlen( name ) - 1] >= '0' && name[strlen( name ) - 1] <= '9') && strrchr( name, 'p' ) > name + 4) continue;
++                info->ReadTransferCount.QuadPart  += rd_sect * 512;
++                info->WriteTransferCount.QuadPart += wr_sect * 512;
++                info->ReadOperationCount  += rd;
++                info->WriteOperationCount += wr;
++                if (ticks > busiest) busiest = ticks;
++            }
++            fclose( fp );
++            info->OtherOperationCount = busiest;
++        }
++    }
++#endif
+ }
+ 
+ #ifdef linux
+@@ -3222,6 +3258,33 @@
+     mutex_unlock( &timezone_mutex );
+ }
+ 
++/* Arctic: what a process read from and wrote to the disks, and how many
++ * reads and writes it asked for, as Windows counts them for the Task
++ * Manager's Disk column */
++static void fill_io_counters( IO_COUNTERS *io, int unix_pid )
++{
++    memset( io, 0, sizeof(*io) );
++#ifdef linux
++    {
++        unsigned long long value;
++        char path[32], line[64];
++        FILE *fp;
++
++        if (unix_pid == -1) strcpy( path, "/proc/self/io" );
++        else snprintf( path, sizeof(path), "/proc/%u/io", unix_pid );
++        if (!(fp = fopen( path, "r" ))) return;
++        while (fgets( line, sizeof(line), fp ))
++        {
++            if (sscanf( line, "syscr: %llu", &value ) == 1) io->ReadOperationCount = value;
++            else if (sscanf( line, "syscw: %llu", &value ) == 1) io->WriteOperationCount = value;
++            else if (sscanf( line, "read_bytes: %llu", &value ) == 1) io->ReadTransferCount = value;
++            else if (sscanf( line, "write_bytes: %llu", &value ) == 1) io->WriteTransferCount = value;
++        }
++        fclose( fp );
++    }
++#endif
++}
++
+ 
+ static unsigned int get_system_process_info( SYSTEM_INFORMATION_CLASS class, void *info, ULONG size, ULONG *len )
+ {
+@@ -3303,6 +3366,7 @@
+             nt_process->HandleCount = server_process->handle_count;
+             get_thread_times( server_process->unix_pid, -1, &nt_process->KernelTime, &nt_process->UserTime );
+             fill_vm_counters( &nt_process->vmCounters, server_process->unix_pid );
++            fill_io_counters( &nt_process->ioCounters, server_process->unix_pid );
+         }
+ 
+         pos = (pos + 7) & ~7;

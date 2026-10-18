@@ -60,9 +60,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(dwm);
 
-#define BLUR_LEVELS   3     /* halvings of the dual Kawase blur */
+#define BLUR_LEVELS   4     /* halvings of the dual Kawase blur, at most */
+#define BLUR_DEFAULT  3     /* ... and by default */
 #define BLUR_OFFSET   2.0f
-#define BLUR_MARGIN   48    /* what lies this far outside a window still blurs into its backdrop */
+#define BLUR_MARGIN   64    /* what lies this far outside a window still blurs into its backdrop */
 #define BLUR_CHAINS   4     /* backdrops of that many sizes keep their images */
 #define MAX_FRAMES    32
 #define OUTPUT_FRAMES 3     /* on screen, about to be, being drawn */
@@ -1829,7 +1830,7 @@ static struct blur_chain *blur_chain( int width, int height )
 }
 
 /* one pass of the blur: the part uv of one image, over the whole of another */
-static void blur_pass( int pipeline, struct texture *from, const float *uv, struct texture *to )
+static void blur_pass( int pipeline, struct texture *from, const float *uv, struct texture *to, float offset )
 {
     struct push pc;
 
@@ -1839,10 +1840,23 @@ static void blur_pass( int pipeline, struct texture *from, const float *uv, stru
     if (uv) push_uv( &pc, uv[0], uv[1], uv[2], uv[3] );
     pc.half_px[0] = 0.5f / from->width;
     pc.half_px[1] = 0.5f / from->height;
-    pc.mode = BLUR_OFFSET;
+    pc.mode = offset;
     draw( pipeline, from, SAMPLER_LINEAR, &pc );
     end_pass();
     set_image_layout( draw_cmd, to, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+}
+
+/* DWMWA_ARCTIC_BLUR, 1-100, as halvings and how far each one samples: 50
+ * is the default, 3 halvings 2 apart; 0 is the default too */
+static void blur_strength( UINT32 strength, int *levels, float *offset )
+{
+    *levels = BLUR_DEFAULT;
+    *offset = BLUR_OFFSET;
+    if (!strength) return;
+    if (strength <= 10) { *levels = 1; *offset = 1.0f + 2.0f * (strength - 1) / 9; }
+    else if (strength <= 33) { *levels = 2; *offset = 1.0f + 2.0f * (strength - 11) / 22; }
+    else if (strength <= 66) { *levels = 3; *offset = 1.0f + 2.0f * (strength - 34) / 32; }
+    else { *levels = 4; *offset = 1.0f + 2.0f * (min( strength, 100 ) - 67) / 33; }
 }
 
 /* what lies behind the window on this monitor, blurred and tinted: acrylic */
@@ -1854,12 +1868,13 @@ static void draw_backdrop( const struct window_draw *draw_, int ox, int oy )
         ((draw_->tint >> 16) & 0xff) / 255.0f, ((draw_->tint >> 8) & 0xff) / 255.0f, (draw_->tint & 0xff) / 255.0f,
         (draw_->tint >> 24) / 255.0f
     };
-    int x0, y0, x1, y1, width, height;
+    int x0, y0, x1, y1, width, height, levels;
     struct texture *target = pass.target;
     struct blur_chain *chain;
     struct push pc;
-    float uv[4];
+    float uv[4], offset;
 
+    blur_strength( draw_->ws && draw_->ws->has_attr ? draw_->ws->attr.blur : 0, &levels, &offset );
     if (!draw_->blur)
     {
         push_init( &pc, &draw_->clip, draw_->opacity );
@@ -1889,11 +1904,11 @@ static void draw_backdrop( const struct window_draw *draw_, int ox, int oy )
         uv[1] = (float)y0 / target->height;
         uv[2] = (float)x1 / target->width;
         uv[3] = (float)y1 / target->height;
-        blur_pass( PIPE_DOWN, target, uv, chain->level[1] );
-        for (int level = 2; level <= BLUR_LEVELS; level++)
-            blur_pass( PIPE_DOWN, chain->level[level - 1], NULL, chain->level[level] );
-        for (int level = BLUR_LEVELS - 1; level >= 1; level--)
-            blur_pass( PIPE_UP, chain->level[level + 1], NULL, chain->level[level] );
+        blur_pass( PIPE_DOWN, target, uv, chain->level[1], offset );
+        for (int level = 2; level <= levels; level++)
+            blur_pass( PIPE_DOWN, chain->level[level - 1], NULL, chain->level[level], offset );
+        for (int level = levels - 1; level >= 1; level--)
+            blur_pass( PIPE_UP, chain->level[level + 1], NULL, chain->level[level], offset );
         pass = saved;
     }
 

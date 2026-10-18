@@ -316,20 +316,39 @@ static bool is_scaled( const struct kms_mode *mode )
     return mode->width != mode->info.hdisplay || mode->height != mode->info.vdisplay;
 }
 
+/* The scaling of Windows' display paths (DISPLAYCONFIG_SCALING): the choices
+ * GPU control panels offer, "maintain aspect ratio", "full screen" and "no
+ * scaling" */
+#define SCALING_CENTERED  2
+#define SCALING_STRETCHED 3
+#define SCALING_ASPECT    4
+
+static uint32_t wanted_scaling( const struct kms_output *out )
+{
+    return out->scaling == SCALING_CENTERED || out->scaling == SCALING_STRETCHED ? out->scaling : SCALING_ASPECT;
+}
+
 /* Where a scaled mode shows on the timings: as large as it fits, its shape
- * kept, centred (Windows' "maintain aspect ratio"); the whole of them for a
- * mode of their own size, or if the shape cannot be kept. */
-static void mode_view( const struct kms_mode *mode, bool keep_shape, struct kms_output *out )
+ * kept, centred (a game in 4:3 on a wide monitor, unless the user picked
+ * otherwise); all of the timings, stretched; or pixel for pixel in the
+ * middle. A mode of the timings' own size takes all of them. */
+static void mode_view( const struct kms_mode *mode, uint32_t scaling, struct kms_output *out )
 {
     uint32_t w = mode->info.hdisplay, h = mode->info.vdisplay;
 
-    if (keep_shape && is_scaled( mode ))
+    if (scaling == SCALING_ASPECT && is_scaled( mode ))
     {
         if ((uint64_t)mode->width * h > (uint64_t)mode->height * w)
             h = (uint32_t)((uint64_t)w * mode->height / mode->width) & ~1u;
         else
             w = (uint32_t)((uint64_t)h * mode->width / mode->height) & ~1u;
     }
+    else if (scaling == SCALING_CENTERED && is_scaled( mode ))
+    {
+        if (mode->width < w) w = mode->width;
+        if (mode->height < h) h = mode->height;
+    }
+    out->scaling_on = scaling;
     out->view.x = (mode->info.hdisplay - w) / 2;
     out->view.y = (mode->info.vdisplay - h) / 2;
     out->view.width = w;
@@ -973,30 +992,66 @@ static bool same_timings( const struct drm_mode_modeinfo *a, const struct drm_mo
 }
 
 /* Whether the card scales a frame of the mode's size up to the timings the
- * monitor shows now, its shape kept or else stretched. A card that cannot
- * (no atomic modesetting, a plane without a scaler) does not get the mode,
- * as a Windows driver without GPU scaling does not list it. */
-static bool test_scaling( struct kms_output *out, const struct kms_mode *mode, bool *keep_shape )
+ * monitor shows now: the way the user picked, else its shape kept, else
+ * stretched. A card that cannot (no atomic modesetting, a plane without a
+ * scaler) does not get the mode, as a Windows driver without GPU scaling does
+ * not list it. */
+static bool test_scaling( struct kms_output *out, const struct kms_mode *mode, uint32_t *scaling )
 {
-    struct kms_fb fb;
+    const uint32_t tries[] = { wanted_scaling( out ), SCALING_ASPECT, SCALING_STRETCHED };
     typeof(out->view) saved = out->view;
+    uint32_t saved_scaling = out->scaling_on;
+    struct kms_fb fb;
     bool ok = false;
 
-    *keep_shape = true;
+    *scaling = tries[0];
     if (!kms.atomic) return false;
     /* lit with other timings, or another CRTC: it is found out on the first frame */
     if (!out->enabled || !out->plane || !same_timings( &out->modes[out->mode].info, &mode->info )) return true;
     if (!create_fb( mode->width, mode->height, &fb )) return false;
-    for (int shape = 1; shape >= 0 && !ok; shape--)
+    for (uint32_t i = 0; i < ARRAY_SIZE(tries) && !ok; i++)
     {
-        mode_view( mode, shape, out );
+        mode_view( mode, tries[i], out );
         ok = flip_atomic( out, fb.fb_id, mode->width, mode->height, out->vrr_on, DRM_MODE_ATOMIC_TEST_ONLY );
-        *keep_shape = shape;
+        *scaling = tries[i];
     }
     if (!ok) WARN( "%s cannot scale %ux%u up: %s\n", out->name, mode->width, mode->height, strerror( errno ) );
     out->view = saved;
+    out->scaling_on = saved_scaling;
     destroy_fb( &fb );
     return ok;
+}
+
+static const char *scaling_name( uint32_t scaling )
+{
+    if (scaling == SCALING_STRETCHED) return "stretched by the card";
+    if (scaling == SCALING_CENTERED) return "in the middle, not scaled";
+    return "scaled by the card";
+}
+
+/* The user picked another scaling for the monitor (the Display panel): a
+ * scaled mode on it shows the new way from the next frame, without a
+ * modeset, as with a GPU control panel on Windows. */
+bool kms_set_scaling( uint32_t connector_id, uint32_t scaling )
+{
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        struct kms_output *out = &kms.outputs[i];
+        const struct kms_mode *mode;
+        uint32_t chosen;
+
+        if (out->connector_id != connector_id) continue;
+        out->scaling = scaling;
+        if (!out->enabled || !out->mode_count) return false;
+        mode = &out->modes[out->mode];
+        if (!is_scaled( mode ) || out->scaling_on == wanted_scaling( out )) return false;
+        wait_flips();
+        if (!test_scaling( out, mode, &chosen ) || chosen == out->scaling_on) return false;
+        mode_view( mode, chosen, out );
+        MESSAGE( "dwm: %s %ux%u %s\n", out->name, mode->width, mode->height, scaling_name( chosen ) );
+        return true;
+    }
+    return false;
 }
 
 /* Modes, positions and CRTCs for every monitor at once. If one modeset fails,
@@ -1010,7 +1065,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         int32_t       x, y;
         struct kms_fb fb;
         bool          new_fb;
-        bool          keep_shape;
+        uint32_t      scaling;
     } next[KMS_MAX_OUTPUTS];
     uint32_t used = 0;
     bool any = false;
@@ -1026,8 +1081,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         next[i].crtc = out->crtc_id;
         next[i].x = out->x;
         next[i].y = out->y;
-        next[i].keep_shape = out->view.width != (out->mode_count ? out->modes[out->mode].info.hdisplay : 0) ||
-                             out->view.height != (out->mode_count ? out->modes[out->mode].info.vdisplay : 0);
+        next[i].scaling = out->scaling_on ? out->scaling_on : wanted_scaling( out );
     }
 
     for (uint32_t c = 0; c < count; c++)
@@ -1051,7 +1105,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         next[i].x = configs[c].x;
         next[i].y = configs[c].y;
         if (is_scaled( mode ) && (!kms.outputs[i].enabled || next[i].mode != kms.outputs[i].mode) &&
-            !test_scaling( &kms.outputs[i], mode, &next[i].keep_shape ))
+            !test_scaling( &kms.outputs[i], mode, &next[i].scaling ))
             return false;
     }
 
@@ -1159,8 +1213,8 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
                                 next[i].x != out->x || next[i].y != out->y))
             MESSAGE( "dwm: %s %ux%u@%u at %d,%d%s\n", out->name, out->modes[next[i].mode].width,
                      out->modes[next[i].mode].height, whole_hz( out->modes[next[i].mode].refresh ),
-                     next[i].x, next[i].y, is_scaled( &out->modes[next[i].mode] ) ?
-                     (next[i].keep_shape ? ", scaled by the card" : ", stretched by the card") : "" );
+                     next[i].x, next[i].y, is_scaled( &out->modes[next[i].mode] ) ? ", " : "",
+                     is_scaled( &out->modes[next[i].mode] ) ? scaling_name( next[i].scaling ) : "" );
         else if (out->enabled && !next[i].enabled)
             MESSAGE( "dwm: %s off\n", out->name );
         out->enabled = next[i].enabled;
@@ -1168,7 +1222,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         out->crtc_id = next[i].crtc;
         out->x = next[i].x;
         out->y = next[i].y;
-        mode_view( &out->modes[out->mode], next[i].keep_shape, out );
+        mode_view( &out->modes[out->mode], next[i].scaling, out );
         if (next[i].modeset) read_crtc_state( out );
     }
     return true;

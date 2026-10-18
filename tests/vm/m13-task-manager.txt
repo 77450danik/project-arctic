@@ -1,0 +1,88 @@
+# Task Manager as Windows 10 has it: Fewer details, then each tab (the tab and the
+# view are set in its settings before each start)
+sleep 8
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Compact /t REG_DWORD /d 1 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 6
+shot t0-compact
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Compact /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 8
+shot t1-page0
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Compact /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 1 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 8
+shot t2-page1
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Compact /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 3 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 8
+shot t4-page3
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Compact /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 5 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 8
+shot t6-page5
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Compact /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 6 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 8
+shot t7-page6
+key alt-f4
+sleep 2

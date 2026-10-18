@@ -1,0 +1,39 @@
+# The UI pass of 2026-10-14: the desktop's icons and its View menu, Explorer's
+# arrows and the room between its bars, the Display panel's scaling and icon
+# size, Paint and the picture viewer
+sleep 8
+shot v1-desktop
+move 700 420
+click right                   # the desktop's menu
+sleep 2
+shot v2-desktop-menu
+key esc
+sleep 1
+move 36 40
+dblclick                      # This PC
+sleep 6
+shot v3-explorer
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type control desk.cpl,,3
+key ret
+sleep 10
+shot v4-display
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type mspaint
+key ret
+sleep 10
+shot v5-paint
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type rundll32 shimgvw.dll,ImageView_Fullscreen C:\Windows\Web\Wallpaper\Arctic\img0.jpg
+key ret
+sleep 10
+shot v6-viewer

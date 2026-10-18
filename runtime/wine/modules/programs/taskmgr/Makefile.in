@@ -1,0 +1,19 @@
+MODULE    = taskmgr.exe
+IMPORTS   = ntdll uuid ole32 shell32 shlwapi comctl32 comdlg32 version psapi iphlpapi ws2_32 powrprof advapi32 user32 gdi32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Task Manager"
+
+SOURCES = \
+	compact.c \
+	data.c \
+	details.c \
+	gpu.c \
+	grid.c \
+	main.c \
+	misc.c \
+	perf.c \
+	processes.c \
+	services.c \
+	startup.c \
+	taskmgr.rc

@@ -1,0 +1,204 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] desk: The size of the desktop's icons on the Settings page.
+
+Small, Medium or Large: 32, 48 or 64 pixels at 100 %, the desktop's View
+menu's sizes, at the system's scale. Applied, it is kept where Windows
+keeps it and the desktop takes it at once (WM_SETTINGCHANGE
+"DesktopIconSize").
+---
+--- a/dll/cpl/desk/resource.h
++++ b/dll/cpl/desk/resource.h
+@@ -76,6 +76,8 @@
+ #define IDC_SETTINGS_SCALE_TEXT      216
+ #define IDC_SETTINGS_SCALING         217
+ #define IDC_SETTINGS_SCALING_TEXT    218
++#define IDC_SETTINGS_ICONSIZE        219
++#define IDC_SETTINGS_ICONSIZE_TEXT   220
+ 
+ #define IDB_SPECTRUM_4  209
+ #define IDB_SPECTRUM_8  210
+@@ -199,6 +201,10 @@
+ #define IDS_SCALING_ASPECT       3952
+ #define IDS_SCALING_STRETCH      3953
+ #define IDS_SCALING_CENTER       3954
++/* Arctic: the size of the desktop's icons */
++#define IDS_ICONSIZE_SMALL       3955
++#define IDS_ICONSIZE_MEDIUM      3956
++#define IDS_ICONSIZE_LARGE       3957
+ #define IDC_ICONS_MYDOCS     3901
+ #define IDC_ICONS_MYNET      3902
+ #define IDC_ICONS_MYCOMP     3903
+--- a/dll/cpl/desk/settings.c
++++ b/dll/cpl/desk/settings.c
+@@ -375,6 +375,76 @@
+     RegCloseKey(hKey);
+ }
+ 
++/* Arctic: the size of the desktop's icons, 32, 48 or 64 pixels at 100 %, at
++ * the system's scale: kept where Windows keeps it, the desktop's View menu
++ * offers the same. The desktop takes it at once on WM_SETTINGCHANGE
++ * "DesktopIconSize". */
++#define DESKTOP_BAG_KEY L"Software\\Microsoft\\Windows\\Shell\\Bags\\1\\Desktop"
++
++static DWORD InitialDesktopIconSize;
++
++static DWORD
++ReadDesktopIconSize(VOID)
++{
++    DWORD Value = 48, Size = sizeof(Value), Type;
++    HKEY hKey;
++
++    if (RegOpenKeyExW(HKEY_CURRENT_USER, DESKTOP_BAG_KEY, 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS)
++    {
++        if (RegQueryValueExW(hKey, L"IconSize", NULL, &Type, (LPBYTE)&Value, &Size) != ERROR_SUCCESS ||
++            Type != REG_DWORD)
++        {
++            Value = 48;
++        }
++        RegCloseKey(hKey);
++    }
++    return (Value == 32 || Value == 64) ? Value : 48;
++}
++
++static VOID
++FillDesktopIconSize(IN HWND hwndDlg)
++{
++    static const struct { UINT Text; DWORD Size; } Choices[] =
++    {
++        { IDS_ICONSIZE_SMALL,  32 },
++        { IDS_ICONSIZE_MEDIUM, 48 },
++        { IDS_ICONSIZE_LARGE,  64 },
++    };
++    HWND hCombo = GetDlgItem(hwndDlg, IDC_SETTINGS_ICONSIZE);
++    WCHAR szText[64];
++    LRESULT index;
++    UINT i;
++
++    if (!hCombo) return;
++    InitialDesktopIconSize = ReadDesktopIconSize();
++    for (i = 0; i < _countof(Choices); i++)
++    {
++        LoadStringW(hApplet, Choices[i].Text, szText, _countof(szText));
++        index = SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)szText);
++        SendMessageW(hCombo, CB_SETITEMDATA, index, Choices[i].Size);
++        if (Choices[i].Size == InitialDesktopIconSize) SendMessageW(hCombo, CB_SETCURSEL, index, 0);
++    }
++}
++
++static VOID
++ApplyDesktopIconSize(IN HWND hwndDlg)
++{
++    LRESULT index = SendDlgItemMessageW(hwndDlg, IDC_SETTINGS_ICONSIZE, CB_GETCURSEL, 0, 0);
++    DWORD Value;
++    HKEY hKey;
++
++    if (index == CB_ERR) return;
++    Value = (DWORD)SendDlgItemMessageW(hwndDlg, IDC_SETTINGS_ICONSIZE, CB_GETITEMDATA, index, 0);
++    if (Value == InitialDesktopIconSize) return;
++    if (RegCreateKeyExW(HKEY_CURRENT_USER, DESKTOP_BAG_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS)
++        return;
++    if (RegSetValueExW(hKey, L"IconSize", 0, REG_DWORD, (const BYTE *)&Value, sizeof(Value)) == ERROR_SUCCESS)
++        InitialDesktopIconSize = Value;
++    RegCloseKey(hKey);
++    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"DesktopIconSize",
++                        SMTO_ABORTIFHUNG, 5000, NULL);
++}
++
+ static VOID
+ FillScaling(IN HWND hwndDlg, IN PDISPLAY_DEVICE_ENTRY pDeviceEntry)
+ {
+@@ -1507,6 +1577,7 @@
+         case WM_INITDIALOG:
+         {
+             SettingsOnInitDialog(hwndDlg);
++            FillDesktopIconSize(hwndDlg);
+             break;
+         }
+         case WM_DRAWITEM:
+@@ -1566,6 +1637,8 @@
+                 pData->CurrentDisplayDevice->VrrEnabled = IsDlgButtonChecked(hwndDlg, IDC_SETTINGS_VRR) == BST_CHECKED;
+                 PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
+             }
++            else if (controlId == IDC_SETTINGS_ICONSIZE && command == CBN_SELCHANGE)
++                PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
+             else if (controlId == IDC_SETTINGS_SCALING && command == CBN_SELCHANGE)
+             {
+                 LRESULT index = SendDlgItemMessageW(hwndDlg, IDC_SETTINGS_SCALING, CB_GETCURSEL, 0, 0);
+@@ -1630,6 +1703,8 @@
+                             WriteScaling(Entry);
+                     }
+                 }
++
++                ApplyDesktopIconSize(hwndDlg);
+             }
+             else if (lpnm->code == MSLN_MONITORCHANGED)
+             {
+--- a/dll/cpl/desk/lang/uk-UA.rc
++++ b/dll/cpl/desk/lang/uk-UA.rc
+@@ -133,7 +133,7 @@
+     DEFPUSHBUTTON "OK", IDOK, 172, 165, 50, 14
+ END
+ 
+-IDD_SETTINGS DIALOGEX 0, 0, 246, 238
++IDD_SETTINGS DIALOGEX 0, 0, 246, 256
+ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Параметри"
+ FONT 8, "MS Shell Dlg"
+@@ -158,8 +158,10 @@
+     COMBOBOX IDC_SETTINGS_SCALE, 145, 185, 95, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+     LTEXT "Ма&сштабування (ігри в 4:3 тощо):", IDC_SETTINGS_SCALING_TEXT, 3, 205, 140, 9
+     COMBOBOX IDC_SETTINGS_SCALING, 145, 203, 95, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+-    AUTOCHECKBOX "&Змінна частота оновлення", IDC_SETTINGS_VRR, 8, 223, 150, 10
+-    PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 221, 70, 15
++    LTEXT "Розмір з&начків на робочому столі:", IDC_SETTINGS_ICONSIZE_TEXT, 3, 223, 140, 9
++    COMBOBOX IDC_SETTINGS_ICONSIZE, 145, 221, 95, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    AUTOCHECKBOX "&Змінна частота оновлення", IDC_SETTINGS_VRR, 8, 241, 150, 10
++    PUSHBUTTON "Дод&атково...", IDC_SETTINGS_ADVANCED, 170, 239, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -232,6 +234,9 @@
+     IDS_SCALING_ASPECT "Зберігати пропорції"
+     IDS_SCALING_STRETCH "На весь екран"
+     IDS_SCALING_CENTER "Без масштабування"
++    IDS_ICONSIZE_SMALL "Дрібні (32 пікселі)"
++    IDS_ICONSIZE_MEDIUM "Звичайні (48 пікселів)"
++    IDS_ICONSIZE_LARGE "Великі (64 пікселі)"
+ END
+ 
+ STRINGTABLE
+--- a/dll/cpl/desk/lang/en-US.rc
++++ b/dll/cpl/desk/lang/en-US.rc
+@@ -123,7 +123,7 @@
+     DEFPUSHBUTTON "OK", IDOK, 172, 165, 50, 14
+ END
+ 
+-IDD_SETTINGS DIALOGEX 0, 0, 246, 238
++IDD_SETTINGS DIALOGEX 0, 0, 246, 256
+ STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+ CAPTION "Settings"
+ FONT 8, "MS Shell Dlg"
+@@ -148,8 +148,10 @@
+     COMBOBOX IDC_SETTINGS_SCALE, 145, 185, 95, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+     LTEXT "Sc&aling (4:3 games and the like):", IDC_SETTINGS_SCALING_TEXT, 3, 205, 140, 9
+     COMBOBOX IDC_SETTINGS_SCALING, 145, 203, 95, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+-    AUTOCHECKBOX "Varia&ble refresh rate", IDC_SETTINGS_VRR, 8, 223, 150, 10
+-    PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 221, 70, 15
++    LTEXT "Desktop &icon size:", IDC_SETTINGS_ICONSIZE_TEXT, 3, 223, 140, 9
++    COMBOBOX IDC_SETTINGS_ICONSIZE, 145, 221, 95, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
++    AUTOCHECKBOX "Varia&ble refresh rate", IDC_SETTINGS_VRR, 8, 241, 150, 10
++    PUSHBUTTON "Ad&vanced...", IDC_SETTINGS_ADVANCED, 170, 239, 70, 15
+ END
+ 
+ IDD_DESKTOP_GENERAL DIALOGEX 0, 0, 224, 202
+@@ -222,6 +224,9 @@
+     IDS_SCALING_ASPECT "Maintain aspect ratio"
+     IDS_SCALING_STRETCH "Full screen"
+     IDS_SCALING_CENTER "No scaling"
++    IDS_ICONSIZE_SMALL "Small (32 pixels)"
++    IDS_ICONSIZE_MEDIUM "Medium (48 pixels)"
++    IDS_ICONSIZE_LARGE "Large (64 pixels)"
+ END
+ 
+ STRINGTABLE

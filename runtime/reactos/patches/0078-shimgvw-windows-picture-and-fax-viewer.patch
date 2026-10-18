@@ -1,0 +1,53 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Subject: [PATCH] shimgvw: The Windows Picture and Fax Viewer, in Ukrainian.
+
+The viewer's title named ReactOS: the system is Windows here, as the
+shell and the About dialog call it. The picture types Explorer shows in
+its Type column and the empty preview were left in English; they have the
+names Windows gives them.
+---
+--- a/dll/win32/shimgvw/lang/uk-UA.rc
++++ b/dll/win32/shimgvw/lang/uk-UA.rc
+@@ -10,9 +10,9 @@
+ 
+ STRINGTABLE
+ BEGIN
+-    IDS_APPTITLE "Програма перегляду зображень і факсів ReactOS"
++    IDS_APPTITLE "Перегляд зображень і факсів Windows"
+     IDS_SETASDESKBG "Встановити як фон робочого столу"
+-    IDS_NOPREVIEW "No preview available."
++    IDS_NOPREVIEW "Попередній перегляд недоступний."
+     IDS_PREVIEW "Перегляд"
+     /* Tooltips */
+     IDS_TOOLTIP_NEXT_PIC "Наступне зображення"
+@@ -35,11 +35,11 @@
+ 
+ STRINGTABLE
+ BEGIN
+-    IDS_EMF_FILE    "EMF Image"
+-    IDS_GIF_FILE    "GIF Image"
+-    IDS_JPG_FILE    "JPEG Image"
+-    IDS_BMP_FILE    "Bitmap Image"
+-    IDS_PNG_FILE    "PNG Image"
+-    IDS_TIF_FILE    "TIF Image"
+-    IDS_WMF_FILE    "WMF Image"
++    IDS_EMF_FILE    "Розширений метафайл (EMF)"
++    IDS_GIF_FILE    "Файл GIF"
++    IDS_JPG_FILE    "Файл JPG"
++    IDS_BMP_FILE    "Точковий рисунок"
++    IDS_PNG_FILE    "Файл PNG"
++    IDS_TIF_FILE    "Файл TIF"
++    IDS_WMF_FILE    "Метафайл Windows (WMF)"
+ END
+--- a/dll/win32/shimgvw/lang/en-US.rc
++++ b/dll/win32/shimgvw/lang/en-US.rc
+@@ -2,7 +2,7 @@
+ 
+ STRINGTABLE
+ BEGIN
+-    IDS_APPTITLE "ReactOS Picture and Fax Viewer"
++    IDS_APPTITLE "Windows Picture and Fax Viewer"
+     IDS_SETASDESKBG "Set as Desktop Background"
+     IDS_NOPREVIEW "No preview available."
+     IDS_PREVIEW "Preview"

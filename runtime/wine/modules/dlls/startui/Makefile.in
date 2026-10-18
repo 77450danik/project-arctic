@@ -1,14 +1,19 @@
 MODULE    = startui.dll
 IMPORTS   = uuid dwmapi powrprof comctl32 comdlg32 shell32 user32 gdi32 advapi32 ole32
 
-VER_FILEDESCRIPTION_STR = "Start menu and taskbar look"
+VER_FILEDESCRIPTION_STR = "Start menus and the look of the shell"
 
 SOURCES = \
 	avatar.c \
+	common.c \
 	glyph.c \
 	items.c \
 	main.c \
 	menu.c \
+	menu10.c \
+	menu11.c \
+	popup.c \
 	settings.c \
+	startpage.c \
 	taskbar.c \
 	startui.rc
