@@ -290,7 +290,7 @@ void device_set_default( const struct device *dev, BOOL communications_only )
     if (!get_string( device, &key_driver, driver, ARRAY_SIZE(driver) )) lstrcpyW( driver, L"winealsa.drv" );
     IMMDevice_Release( device );
 
-    swprintf( key_name, ARRAY_SIZE(key_name), L"Software\\Wine\\Drivers\\%s", driver );
+    swprintf( key_name, ARRAY_SIZE(key_name), L"Software\\Arctic\\Runtime\\Drivers\\%s", driver );
     if (RegCreateKeyExW( HKEY_CURRENT_USER, key_name, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL )) return;
     if (!communications_only)
         RegSetValueExW( key, dev->capture ? L"DefaultInput" : L"DefaultOutput", 0, REG_SZ, (const BYTE *)dev->id,

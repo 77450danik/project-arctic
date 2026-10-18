@@ -1,0 +1,39 @@
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 2c66313e..18c6ac4c 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1780,6 +1780,7 @@
+ @ cdecl -norelay __wine_dbg_strdup(str)
+ 
+ # Version
+-@ cdecl wine_get_version()
+-@ cdecl wine_get_build_id()
+-@ cdecl wine_get_host_version(ptr ptr)
++# wine_get_version and its kin are not exported: a program that asks ntdll
++# for them (the usual "is this Wine?" check, OBS among them) finds nothing,
++# as it would on Windows. The functions stay in version.c for Wine's own
++# parts, which look them up with GetProcAddress and do without when absent.
+diff --git a/dlls/shell32/recyclebin.c b/dlls/shell32/recyclebin.c
+index 346339b4..6a55d3b9 100644
+--- a/dlls/shell32/recyclebin.c
++++ b/dlls/shell32/recyclebin.c
+@@ -78,13 +78,16 @@ static WCHAR *trash_dir;
+ static WCHAR *trash_info_dir;
+ static ULONG random_seed;
+ 
+-extern void CDECL wine_get_host_version( const char **sysname, const char **release );
+-
+ static BOOL is_macos(void)
+ {
++    void (CDECL *p_wine_get_host_version)( const char **sysname, const char **release );
+     const char *sysname;
+ 
+-    wine_get_host_version( &sysname, NULL );
++    /* ntdll does not export wine_get_host_version (it would say "this is
++     * Wine"); without it the host is taken to be the Linux it always is. */
++    p_wine_get_host_version = (void *)GetProcAddress( GetModuleHandleW( L"ntdll.dll" ), "wine_get_host_version" );
++    if (!p_wine_get_host_version) return FALSE;
++    p_wine_get_host_version( &sysname, NULL );
+     return !strcmp( sysname, "Darwin" );
+ }
+ 

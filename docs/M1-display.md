@@ -5,7 +5,7 @@
 
 ## Звідки береться драйвер дисплея
 
-- `explorer.exe /desktop` читає `HKCU\Software\Wine\Drivers\Graphics` (за замовчуванням
+- `explorer.exe /desktop` читає `HKCU\Software\Arctic\Runtime\Drivers\Graphics` (за замовчуванням
   `mac,x11,wayland`) і вантажить перший, що запрацює, як `wine<name>.drv`
   (`programs/explorer/desktop.c`, `load_graphics_driver`).
 - Ім'я вибраного драйвера публікується в `HKLM\...\Control\Video\{GUID}\0000\GraphicsDriver`,

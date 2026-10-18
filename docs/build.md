@@ -41,3 +41,31 @@
 - ReactOS: RosBE збирається один раз (близько години), далі ninja у
   `/root/reactos/build` перезбирає лише те, що зачепили патчі.
 - Образ без локального ядра бере ядро з останнього ISO CI.
+
+## Ім'я Wine
+
+Людина не бачить імені Wine. `ci/wine-names.pl` проходить дерево Wine після
+патчів:
+
+| Було | Стало |
+|---|---|
+| `HKLM\Software\Wine`, `HKCU\Software\Wine` (і `Wow6432Node\Wine`) | `Software\Arctic\Runtime` |
+| `…\Wine\WineDbg` | `…\Arctic\Runtime\Debugger` |
+| ProductName файлів «Wine 11.18» | «Arctic» |
+| FileDescription «Wine <модуль>» | «Arctic <модуль>» |
+| «Wine HID device», «Wine HID compatible device» у диспетчері пристроїв | «HID-compliant device», «HID Input Device» |
+
+- Реєстр, зроблений раніше: arctic-init (`rename_wine_keys`) переносить ключі
+  в тексті кущів до старту wineserver, один раз, коли реєстр відстає від
+  wine.inf. Кущ, яким він був, лишається в `config\RegBack\<кущ>.wine`.
+- Копірайт («the Wine project authors») лишається: код їхній.
+- Не перейменовано те, чого програма не показує і за чим частини
+  знаходять одна одну: файли `winebus.sys` тощо, шина `WINEBUS`, група
+  `WinePlugPlay`, інтерфейси `IWine*`, `/usr/share/wine` на боці Linux.
+- ReactOS: патч `0085` (опис comctl32, browseui, shdocvw, CompanyName без
+  «Wine Team»).
+- Патч `0098`: ntdll більше не експортує `wine_get_version` (і
+  `wine_get_build_id`, `wine_get_host_version`). Програма, що питає їх у
+  ntdll — звичайна перевірка «це Wine?», якою користується й OBS, — не
+  знаходить нічого, як на Windows. Самі функції лишаються в version.c для
+  частин Wine (вони беруть їх через `GetProcAddress` і обходяться без них).

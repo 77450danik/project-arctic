@@ -46,7 +46,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
     return !__wine_init_unix_call();
 }
 
-/* the display driver is named in HKCU\Software\Wine\Drivers\Graphics and
+/* the display driver is named in HKCU\Software\Arctic\Runtime\Drivers\Graphics and
  * published for every other process under the display GUID */
 static void load_graphics_driver( const GUID *guid )
 {
@@ -56,7 +56,7 @@ static void load_graphics_driver( const GUID *guid )
     DWORD size = sizeof(buffer);
     HKEY hkey;
 
-    RegGetValueW( HKEY_CURRENT_USER, L"Software\\Wine\\Drivers", L"Graphics", RRF_RT_REG_SZ, NULL, buffer, &size );
+    RegGetValueW( HKEY_CURRENT_USER, L"Software\\Arctic\\Runtime\\Drivers", L"Graphics", RRF_RT_REG_SZ, NULL, buffer, &size );
 
     for (name = buffer; name; name = next)
     {

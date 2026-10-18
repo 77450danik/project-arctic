@@ -1727,6 +1727,112 @@ static void back_up_hives(void)
     say("registry: backed up to RegBack");
 }
 
+/* Wine's settings are in Software\Arctic\Runtime of HKLM and HKCU, WineDbg
+ * in it is Debugger, and the buses it installs have Arctic's names in the
+ * Device Manager (ci/wine-names.pl). A registry made before has them moved
+ * here, in the text of the hives, before wineserver loads them: the drives,
+ * the DLL overrides ReactOS' shell lives by and the rest stay as they were.
+ * Only a registry behind this Wine (its stamp is not wine.inf's) is read;
+ * a hive is kept as it was in RegBack before it is written. */
+static const char *const wine_keys[][2] = {
+    {"[Software\\\\Wine\\\\WineDbg", "[Software\\\\Arctic\\\\Runtime\\\\Debugger"},
+    {"[Software\\\\Wine", "[Software\\\\Arctic\\\\Runtime"},
+    {"[Software\\\\Wow6432Node\\\\Wine\\\\WineDbg", "[Software\\\\Wow6432Node\\\\Arctic\\\\Runtime\\\\Debugger"},
+    {"[Software\\\\Wow6432Node\\\\Wine", "[Software\\\\Wow6432Node\\\\Arctic\\\\Runtime"},
+    {"[Software\\\\Microsoft\\\\Speech\\\\Voices\\\\Tokens\\\\Wine Default Voice",
+     "[Software\\\\Microsoft\\\\Speech\\\\Voices\\\\Tokens\\\\Arctic Default Voice"},
+    {"[Software\\\\Wow6432Node\\\\Microsoft\\\\Speech\\\\Voices\\\\Tokens\\\\Wine Default Voice",
+     "[Software\\\\Wow6432Node\\\\Microsoft\\\\Speech\\\\Voices\\\\Tokens\\\\Arctic Default Voice"},
+};
+/* what the devices and services of the buses say, under System; the first
+ * four are the whole value, the rest its start */
+static const char *const wine_device_names[][2] = {
+    {"=\"Wine HID compatible device\"", "=\"HID Input Device\""},
+    {"=\"Wine HID device\"", "=\"HID-compliant device\""},
+    {"=\"Wine XInput compatible device\"", "=\"XINPUT compatible HID device\""},
+    {"=\"Wine\"", "=\"Arctic\""},
+    {"=\"Wine HID", "=\"Arctic HID"},
+    {"=\"Wine USB", "=\"Arctic USB"},
+    {"=\"Wine Bluetooth", "=\"Arctic Bluetooth"},
+    {"=\"Wine XInput", "=\"Arctic XInput"},
+};
+static const char *const wine_device_values[] = {"\"DeviceDesc\"", "\"Mfg\"", "\"DisplayName\"", "\"Description\""};
+
+/* the line, with a key of Wine's as Arctic's; 1 when it changed */
+static int rename_wine_line(const char *line, int in_system, FILE *out)
+{
+    if (line[0] == '[') {
+        for (size_t i = 0; i < sizeof(wine_keys) / sizeof(*wine_keys); i++) {
+            size_t n = strlen(wine_keys[i][0]);
+            if (!strncasecmp(line, wine_keys[i][0], n) && (line[n] == ']' || line[n] == '\\')) {
+                fprintf(out, "%s%s", wine_keys[i][1], line + n);
+                return 1;
+            }
+        }
+    } else if (in_system) {
+        for (size_t v = 0; v < sizeof(wine_device_values) / sizeof(*wine_device_values); v++) {
+            size_t name = strlen(wine_device_values[v]);
+            if (strncmp(line, wine_device_values[v], name))
+                continue;
+            const char *data = line + name;
+            for (size_t i = 0; i < sizeof(wine_device_names) / sizeof(*wine_device_names); i++) {
+                size_t n = strlen(wine_device_names[i][0]);
+                if (strncmp(data, wine_device_names[i][0], n) || (i < 4 && data[n] != '\n' && data[n]))
+                    continue;
+                fprintf(out, "%.*s%s%s", (int)name, line, wine_device_names[i][1], data + n);
+                return 1;
+            }
+        }
+    }
+    fputs(line, out);
+    return 0;
+}
+
+static void rename_wine_keys(void)
+{
+    char stamp[32] = "", path[256], tmp[264];
+    struct stat inf;
+
+    read_line(REG_DIR "/.update-timestamp", stamp, sizeof(stamp));
+    if (stat("/usr/share/wine/wine.inf", &inf) || strtoull(stamp, NULL, 10) == (unsigned long long)inf.st_mtime)
+        return;
+    for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
+        char *line = NULL;
+        size_t cap = 0;
+        int in_system = 0, moved = 0, ok;
+        FILE *in, *out;
+
+        snprintf(path, sizeof(path), "%s/%s", REG_DIR, hives[i]);
+        snprintf(tmp, sizeof(tmp), "%s.rename", path);
+        if (!(in = fopen(path, "re")))
+            continue;
+        if (!(out = fopen(tmp, "we"))) {
+            fclose(in);
+            continue;
+        }
+        while (getline(&line, &cap, in) > 0) {
+            if (line[0] == '[')
+                in_system = !strncasecmp(line, "[System\\\\", 9);
+            moved += rename_wine_line(line, in_system, out);
+        }
+        free(line);
+        ok = !ferror(in) && !fflush(out) && !fsync(fileno(out));
+        fclose(in);
+        ok = !fclose(out) && ok;
+        /* the hive as it was stays in RegBack as <hive>.wine, once */
+        char before[280];
+        make_dir(REG_BACK, 0755, 1);
+        snprintf(before, sizeof(before), "%s/%s.wine", REG_BACK, hives[i]);
+        if (moved && ok && access(before, F_OK) && copy_whole(path, before))
+            ok = 0;
+        if (moved && ok && !rename(tmp, path)) {
+            chown(path, nt_uid, nt_gid);
+            say("registry: %d keys and names of Wine's in %s are Arctic's", moved, hives[i]);
+        } else
+            unlink(tmp);
+    }
+}
+
 /* The prefix directory holds only what Wine needs outside C:. Registry
  * hives live on C: like in Windows, and wineserver writes them there: the
  * prefix only links to them (a hive is replaced whole, next to its target).
@@ -1789,6 +1895,7 @@ static void prepare_nt(void)
         say("dosdevices/c: %s", strerror(errno));
     lchown(PREFIX "/dosdevices/c:", nt_uid, nt_gid);
     restore_hives();
+    rename_wine_keys();
     for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
         snprintf(from, sizeof(from), "%s/%s", REG_DIR, hives[i]);
         snprintf(to, sizeof(to), "%s/%s", PREFIX, hives[i]);

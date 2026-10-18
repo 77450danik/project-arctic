@@ -59,7 +59,7 @@
   51 крок (2%), як кроки клавіш гучності. `RegisterControlChangeNotify` чує
   зміни з будь-якого процесу не пізніше ніж за 0,2 с.
 - Типовий вихід перемикається так, як Wine його зберігає: `DefaultOutput` і
-  `DefaultVoiceOutput` у `HKCU\Software\Wine\Drivers\winealsa.drv`; програми,
+  `DefaultVoiceOutput` у `HKCU\Software\Arctic\Runtime\Drivers\winealsa.drv`; програми,
   що слідкують за типовим (`IMMNotificationClient`), переходять самі.
 
 ### Значок і флайаут (sndvolsso)

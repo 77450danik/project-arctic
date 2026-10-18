@@ -199,7 +199,7 @@ void audio_set_default( const WCHAR *id )
     if (!get_property( device, &key_driver, driver, ARRAY_SIZE(driver) )) lstrcpyW( driver, L"winealsa.drv" );
     IMMDevice_Release( device );
 
-    swprintf( key_name, ARRAY_SIZE(key_name), L"Software\\Wine\\Drivers\\%s", driver );
+    swprintf( key_name, ARRAY_SIZE(key_name), L"Software\\Arctic\\Runtime\\Drivers\\%s", driver );
     if (RegCreateKeyExW( HKEY_CURRENT_USER, key_name, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL )) return;
     RegSetValueExW( key, L"DefaultOutput", 0, REG_SZ, (const BYTE *)id, (lstrlenW( id ) + 1) * sizeof(WCHAR) );
     RegSetValueExW( key, L"DefaultVoiceOutput", 0, REG_SZ, (const BYTE *)id, (lstrlenW( id ) + 1) * sizeof(WCHAR) );
