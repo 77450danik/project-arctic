@@ -1,0 +1,26 @@
+Subject: cmd.exe: shell32 is loaded the first time a command needs it.
+
+Windows' cmd.exe imports neither user32 nor shell32: the shell comes through
+a delay load (ext-ms-win-shell-shell32) when start or a document needs it.
+Wine's imported it, and Arctic's shell32 is ReactOS', whose comctl32 loads the
+display driver in its DllMain: every cmd.exe connected to dwm.exe and read
+the display configuration under the loader lock, thousands of times in a
+build, and the session froze twice in the middle of that (2026-10-22).
+---
+diff --git a/programs/cmd/Makefile.in b/programs/cmd/Makefile.in
+index cc91373..0a0948d 100644
+--- a/programs/cmd/Makefile.in
++++ b/programs/cmd/Makefile.in
+@@ -1,5 +1,11 @@
+ MODULE    = cmd.exe
+-IMPORTS   = shell32 user32 advapi32 kernelbase
++# Windows' cmd.exe imports no shell32: it loads it the first time a command
++# needs the shell (start, a document to open), through a delay load.
++# Imported, ReactOS' shell32 brought comctl32 into every cmd.exe, and its
++# DllMain the display driver and a connection to dwm.exe, under the
++# loader lock: thousands of them in a build, each able to stall the rest.
++IMPORTS   = user32 advapi32 kernelbase
++DELAYIMPORTS = shell32
+ 
+ EXTRADLLFLAGS = -mconsole -municode
+ 

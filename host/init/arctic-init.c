@@ -16,6 +16,7 @@
 #include <grp.h>
 #include <limits.h>
 #include <net/if.h>
+#include <sched.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -56,13 +57,17 @@
 
 #include "bootanim.h"
 #include "gate.h"
+#include "hang.h"
 #include "hiberfil.h"
 #include "stop.h"
+#include "tuning.h"
 
 #define NT_USER "nt"
 #define PREFIX "/run/nt"
 #define C_DRIVE "/mnt/c"
 #define REG_DIR C_DRIVE "/Windows/System32/config"
+#define NVIDIA_CACHE C_DRIVE "/Users/User/AppData/Local/NVIDIA" /* the drivers' shaders, see nt_env */
+#define MESA_CACHE C_DRIVE "/Users/User/AppData/Local/Mesa"
 #define HARDWARE_SETTLED "/run/arctic/hardware-settled" /* udevadm settle and the sound are done */
 #define HOST_STATE REG_DIR "/Host" /* what the host itself keeps, on a C: that keeps what is written */
 #define LOG_DIR C_DRIVE "/Windows/Logs/Arctic"
@@ -164,6 +169,18 @@ static char *const nt_env[] = {
     /* games see an NVIDIA card as one (NVAPI, DLSS), not as the AMD card
      * DXVK would otherwise make of it */
     "DXVK_ENABLE_NVAPI=1",
+    /* The drivers' compiled shaders stay on C: from one start to the next, as
+     * Windows keeps them in LocalAppData (NVIDIA\DXCache, GLCache). In HOME,
+     * on the tmpfs, they went at every restart: each game began as at its
+     * first start, its pipelines unoptimized and compiled anew while it ran
+     * (CS2: the GTX 1050 busy all the time at 40 frames/s, 100 on Windows). */
+    "__GL_SHADER_DISK_CACHE_PATH=" NVIDIA_CACHE,
+    "__GL_SHADER_DISK_CACHE_SIZE=4294967296",
+    "MESA_SHADER_CACHE_DIR=" MESA_CACHE,
+    "MESA_SHADER_CACHE_MAX_SIZE=4G",
+    /* the settings the Games panel gives every game: the frame limit
+     * (docs/games.md); DXVK reads the file when a game starts, if it is there */
+    "DXVK_CONFIG_FILE=C:\\ProgramData\\Arctic\\dxvk.conf",
     winedebug,
     lazy_flush,
     save_period,
@@ -1235,18 +1252,47 @@ static void start_memory_compression(void)
  * pages that are the same in different processes and keeps one copy. Here
  * it is what keeps a browser from running out of memory: every Chromium
  * process holds its own copy of chrome.dll (see spawn). The advisor sets
- * how fast it scans, a pass in about 30 s, at most a quarter of a CPU. */
+ * how fast it scans: a pass in about 30 s, at most 5 % of a CPU, and only
+ * of a CPU nothing else wants (SCHED_IDLE), as Windows combines pages at a
+ * low priority. With a quarter of a CPU ksmd took 20-30 % of a core all
+ * through a game, heat a laptop at 95 degrees took from the game's clocks. */
 static void start_memory_combining(void)
 {
+    struct sched_param idle = {0};
+    DIR *proc;
+
     if (write_sysfs("/sys/kernel/mm/ksm/advisor_mode", "scan-time")) {
         write_sysfs("/sys/kernel/mm/ksm/pages_to_scan", "2000"); /* no advisor: a fixed pace */
     } else {
         write_sysfs("/sys/kernel/mm/ksm/advisor_target_scan_time", "30");
-        write_sysfs("/sys/kernel/mm/ksm/advisor_max_cpu", "25");
+        write_sysfs("/sys/kernel/mm/ksm/advisor_max_cpu", "5");
         write_sysfs("/sys/kernel/mm/ksm/advisor_max_pages_to_scan", "30000");
     }
-    if (write_sysfs("/sys/kernel/mm/ksm/run", "1"))
+    if (write_sysfs("/sys/kernel/mm/ksm/run", "1")) {
         say("memory combining: %s", strerror(errno));
+        return;
+    }
+    if (!(proc = opendir("/proc")))
+        return;
+    for (struct dirent *de; (de = readdir(proc));) {
+        char path[64], comm[32] = "";
+        FILE *f;
+
+        if (de->d_name[0] < '1' || de->d_name[0] > '9')
+            continue;
+        snprintf(path, sizeof(path), "/proc/%s/comm", de->d_name);
+        if (!(f = fopen(path, "re")))
+            continue;
+        if (!fgets(comm, sizeof(comm), f))
+            comm[0] = 0;
+        fclose(f);
+        if (strcmp(comm, "ksmd\n"))
+            continue;
+        if (sched_setscheduler(atoi(de->d_name), SCHED_IDLE, &idle))
+            say("memory combining: ksmd at the idle priority: %s", strerror(errno));
+        break;
+    }
+    closedir(proc);
 }
 
 static void save_logs(void)
@@ -1502,17 +1548,15 @@ static pid_t update_progress(int from)
 
 /* After wineboot brought C:'s registry up to a newer Wine from wine.inf,
  * Arctic's own settings go over it again, as the image was made with them
- * (ci/build-rootfs.sh): Windows 11 as the version, and the .reg files in
- * /usr/share/arctic/registry, the build number among them. There is no Z:,
- * so they go through C:\Windows\Temp. */
+ * (ci/build-rootfs.sh): the .reg files in /usr/share/arctic/registry,
+ * Windows 11 as the version (version.reg) and the build number among them.
+ * There is no Z:, so they go through C:\Windows\Temp. */
 static void reapply_registry(void)
 {
-    char *winecfg[] = {"/usr/bin/wine", "winecfg.exe", "-v", "win11", NULL};
     char from[PATH_MAX], to[PATH_MAX], winpath[PATH_MAX], buf[65536];
     struct dirent *de;
     DIR *dir;
 
-    run(winecfg, 1, ntlog, 120);
     mkdir(C_DRIVE "/Windows/Temp/Arctic", 0755);
     if (!(dir = opendir("/usr/share/arctic/registry")))
         return;
@@ -1743,7 +1787,34 @@ static const char *const wine_keys[][2] = {
      "[Software\\\\Microsoft\\\\Speech\\\\Voices\\\\Tokens\\\\Arctic Default Voice"},
     {"[Software\\\\Wow6432Node\\\\Microsoft\\\\Speech\\\\Voices\\\\Tokens\\\\Wine Default Voice",
      "[Software\\\\Wow6432Node\\\\Microsoft\\\\Speech\\\\Voices\\\\Tokens\\\\Arctic Default Voice"},
+    {"[Software\\\\Classes\\\\WINEDBROWPRX.", "[Software\\\\Classes\\\\DBROWPRX."},
+    {"[Software\\\\Classes\\\\WINEDBRSTPRX.", "[Software\\\\Classes\\\\DBRSTPRX."},
 };
+/* keys that go with all under them: kernelbase's zone names nothing reads,
+ * winecfg's DPI setting (winecfg is not in Arctic) */
+static const char *const wine_dropped[] = {
+    "[Software\\\\Wine\\\\Time Zones",
+    "[Software\\\\Wow6432Node\\\\Wine\\\\Time Zones",
+    "[Software\\\\Arctic\\\\Runtime\\\\Time Zones",
+    "[Software\\\\Wow6432Node\\\\Arctic\\\\Runtime\\\\Time Zones",
+    "[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Image File Execution Options\\\\winecfg.exe",
+    "[Software\\\\Wow6432Node\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Image File Execution Options\\\\winecfg.exe",
+};
+/* the ProgIDs the CLSIDs of msdaps name, and the start of the name changed */
+static const char *const wine_progids[][2] = {
+    {"@=\"WINEDBROWPRX.", "@=\"DBROWPRX."},
+    {"@=\"WINEDBRSTPRX.", "@=\"DBRSTPRX."},
+};
+
+static int wine_key_dropped(const char *line)
+{
+    for (size_t i = 0; i < sizeof(wine_dropped) / sizeof(*wine_dropped); i++) {
+        size_t n = strlen(wine_dropped[i]);
+        if (!strncasecmp(line, wine_dropped[i], n) && (line[n] == ']' || line[n] == '\\'))
+            return 1;
+    }
+    return 0;
+}
 /* what the devices and services of the buses say, under System; the first
  * four are the whole value, the rest its start */
 static const char *const wine_device_names[][2] = {
@@ -1764,8 +1835,18 @@ static int rename_wine_line(const char *line, int in_system, FILE *out)
     if (line[0] == '[') {
         for (size_t i = 0; i < sizeof(wine_keys) / sizeof(*wine_keys); i++) {
             size_t n = strlen(wine_keys[i][0]);
-            if (!strncasecmp(line, wine_keys[i][0], n) && (line[n] == ']' || line[n] == '\\')) {
+            /* a whole name, or the start of one ("WINEDBROWPRX.") */
+            if (!strncasecmp(line, wine_keys[i][0], n) &&
+                (line[n] == ']' || line[n] == '\\' || wine_keys[i][0][n - 1] == '.')) {
                 fprintf(out, "%s%s", wine_keys[i][1], line + n);
+                return 1;
+            }
+        }
+    } else if (line[0] == '@') {
+        for (size_t i = 0; i < sizeof(wine_progids) / sizeof(*wine_progids); i++) {
+            size_t n = strlen(wine_progids[i][0]);
+            if (!strncmp(line, wine_progids[i][0], n)) {
+                fprintf(out, "%s%s", wine_progids[i][1], line + n);
                 return 1;
             }
         }
@@ -1799,7 +1880,7 @@ static void rename_wine_keys(void)
     for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
         char *line = NULL;
         size_t cap = 0;
-        int in_system = 0, moved = 0, ok;
+        int in_system = 0, dropping = 0, moved = 0, ok;
         FILE *in, *out;
 
         snprintf(path, sizeof(path), "%s/%s", REG_DIR, hives[i]);
@@ -1811,9 +1892,13 @@ static void rename_wine_keys(void)
             continue;
         }
         while (getline(&line, &cap, in) > 0) {
-            if (line[0] == '[')
+            if (line[0] == '[') {
                 in_system = !strncasecmp(line, "[System\\\\", 9);
-            moved += rename_wine_line(line, in_system, out);
+                if ((dropping = wine_key_dropped(line)))
+                    moved++;
+            }
+            if (!dropping)
+                moved += rename_wine_line(line, in_system, out);
         }
         free(line);
         ok = !ferror(in) && !fflush(out) && !fsync(fileno(out));
@@ -1894,6 +1979,10 @@ static void prepare_nt(void)
     if (symlink(C_DRIVE, PREFIX "/dosdevices/c:") && errno != EEXIST)
         say("dosdevices/c: %s", strerror(errno));
     lchown(PREFIX "/dosdevices/c:", nt_uid, nt_gid);
+    /* NVIDIA's driver writes no cache at all into a directory that is not
+     * there (Mesa makes its own); the profile itself comes with wineboot */
+    make_dir(NVIDIA_CACHE, 0755, 1);
+    make_dir(MESA_CACHE, 0755, 1);
     restore_hives();
     rename_wine_keys();
     for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
@@ -2983,6 +3072,18 @@ static void serve_power(void)
             power_answer(sleep_to_memory() ? "awake\n" : "refused no sleep\n");
         return;
     }
+    if (!strcmp(request, "games")) {
+        /* the Games panel saved its settings: the tuning now */
+        tuning_apply();
+        power_answer("done\n");
+        return;
+    }
+    if (!strcmp(request, "games-settings")) {
+        /* game mode turned on or off: the settings, nothing applied */
+        games_load();
+        power_answer("done\n");
+        return;
+    }
     if (!strncmp(request, "wifi-powersave ", 15)) {
         power_answer(wifi_power_save(!strcmp(request + 15, "on")) ? "refused\n" : "done\n");
         return;
@@ -3026,6 +3127,155 @@ static void serve_power(void)
     if (!access(lxss[0], X_OK))
         lxss_pid = spawn(lxss, 0, hostlog);
     power_answer(woke ? "awake\n" : "refused no image\n");
+}
+
+/* Game mode, as Windows has it (docs/games.md): while dwm.exe says a game
+ * fills a monitor (POWER_DIR/game, its process id), memory combining stops
+ * scanning and the game's group of processes gets more of the CPU than the
+ * programs beside it. The pages already combined stay so. */
+static void serve_game_mode(void)
+{
+    static pid_t game, seen; /* seen: what dwm says, game mode on or off */
+    char line[32] = "", path[64];
+    pid_t now = 0;
+
+    if (!access(POWER_DIR "/game", F_OK)) {
+        read_line(POWER_DIR "/game", line, sizeof(line));
+        now = (pid_t)atoi(line);
+    }
+    if (now && now != seen)
+        tuning_game_started();
+    seen = now;
+    if (!games.game_mode)
+        now = 0; /* turned off in the Games panel: the overlay still counts frames */
+    if (now == game)
+        return;
+    if (game) {
+        snprintf(path, sizeof(path), "/proc/%d/autogroup", game);
+        write_sysfs(path, "0"); /* gone already if the game ended */
+    }
+    if (now) {
+        snprintf(path, sizeof(path), "/proc/%d/autogroup", now);
+        if (write_sysfs(path, "-10"))
+            say("game mode: no priority for %d: %s", now, strerror(errno));
+    }
+    write_sysfs("/sys/kernel/mm/ksm/run", now ? "0" : "1");
+    say("game mode %s%s", now ? "on for process " : "off", now ? line : "");
+    game = now;
+}
+
+/* Keys the kernel has no code for: the buttons laptops add (on an MSI the
+ * one beside Cooler Boost sends 0x8a, Cooler Boost 0xbd) reach no program,
+ * the keyboard driver only says "Unknown key pressed". The first press of
+ * one gives it a free key, F13 to F23, which Windows programs see and the
+ * Games panel can bind; the keys learned are applied again at every start
+ * (HOST_STATE/keys, on a C: that keeps them). Any machine, any such key. */
+#define KEYS_STATE HOST_STATE "/keys"
+#define KEY_FIRST_FREE 183 /* KEY_F13 */
+#define KEY_LAST_FREE 193  /* KEY_F23: F24 is a key keyboards have */
+#ifndef EVIOCSKEYCODE
+#define EVIOCSKEYCODE _IOW('E', 0x04, unsigned int[2])
+#endif
+
+static unsigned int learned[KEY_LAST_FREE - KEY_FIRST_FREE + 1][2]; /* scan code, key */
+static int learned_count;
+
+/* the event device of the built-in keyboard (atkbd: isa0060/serio0) */
+static int keyboard_device(void)
+{
+    char path[96], phys[64];
+
+    for (int i = 0; i < 64; i++) {
+        snprintf(path, sizeof(path), "/sys/class/input/event%d/device/phys", i);
+        phys[0] = 0;
+        read_line(path, phys, sizeof(phys));
+        if (strncmp(phys, "isa0060/serio0", 14))
+            continue;
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        return open(path, O_RDONLY | O_CLOEXEC);
+    }
+    return -1;
+}
+
+static int set_keycode(unsigned int scan, unsigned int key)
+{
+    unsigned int codes[2] = {scan, key};
+    int fd = keyboard_device(), ok;
+
+    if (fd < 0)
+        return 0;
+    ok = !ioctl(fd, EVIOCSKEYCODE, codes);
+    close(fd);
+    return ok;
+}
+
+static void apply_learned_keys(void)
+{
+    FILE *f = fopen(KEYS_STATE, "re");
+    unsigned int scan, key;
+
+    if (!f)
+        return;
+    while (learned_count < (int)(sizeof(learned) / sizeof(*learned)) && fscanf(f, "%x %u", &scan, &key) == 2) {
+        if (key < KEY_FIRST_FREE || key > KEY_LAST_FREE || !set_keycode(scan, key))
+            continue;
+        learned[learned_count][0] = scan;
+        learned[learned_count][1] = key;
+        learned_count++;
+        say("keys: 0x%02x is key %u", scan, key);
+    }
+    fclose(f);
+}
+
+static void learn_key(unsigned int scan)
+{
+    unsigned int key = KEY_FIRST_FREE;
+    FILE *f;
+
+    for (int i = 0; i < learned_count; i++)
+        if (learned[i][0] == scan)
+            return; /* a key of its own already, set before the driver knew */
+    for (int i = 0; i < learned_count; i++)
+        if (learned[i][1] >= key)
+            key = learned[i][1] + 1;
+    if (key > KEY_LAST_FREE || !set_keycode(scan, key))
+        return;
+    learned[learned_count][0] = scan;
+    learned[learned_count][1] = key;
+    learned_count++;
+    say("keys: the unknown key 0x%02x is key %u (F%u) from now on", scan, key, key - KEY_FIRST_FREE + 13);
+    if (c_on_disk && (f = fopen(KEYS_STATE, "ae"))) {
+        fprintf(f, "%02x %u\n", scan, key);
+        fclose(f);
+    }
+}
+
+/* the kernel's messages since the last look: "atkbd serio0: Unknown key
+ * pressed (translated set 2, code 0x8a on isa0060/serio0)." */
+static void serve_keys(void)
+{
+    static int kmsg = -2;
+    char record[1024];
+    ssize_t n;
+
+    if (kmsg == -2) {
+        kmsg = open("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (kmsg >= 0)
+            lseek(kmsg, 0, SEEK_END);
+    }
+    if (kmsg < 0)
+        return;
+    while ((n = read(kmsg, record, sizeof(record) - 1)) > 0 || (n < 0 && errno == EPIPE)) {
+        char *at, *code;
+
+        if (n <= 0)
+            continue; /* records were overwritten: the next ones come */
+        record[n] = 0;
+        if (!(at = strstr(record, "Unknown key pressed")) || !strstr(at, "serio0") ||
+            !(code = strstr(at, "code 0x")))
+            continue;
+        learn_key((unsigned int)strtoul(code + 5, NULL, 16));
+    }
 }
 
 int main(void)
@@ -3245,6 +3495,8 @@ int main(void)
     if (!stopped)
         start_session(drm_debug);
 
+    int keys_applied = 0;
+    hang_log = say;
     for (unsigned int tick = 0;; tick++) {
         int status;
         pid_t r;
@@ -3254,8 +3506,20 @@ int main(void)
         if (!shell_pid)
             start_shell();
         mirror_ntlog();
+        /* NT says a thread waited too long: where all of them wait, now */
+        if (tick % 5 == 0)
+            hang_watch(ntlog, LOG_DIR, nt_uid);
         serve_ejects();
         serve_power();
+        serve_game_mode();
+        serve_keys();
+        if (!keys_applied && !access(HARDWARE_SETTLED, F_OK)) {
+            apply_learned_keys();
+            keys_applied = 1;
+            tuning_log = say;
+            tuning_boot(c_on_disk, nt_uid, nt_gid);
+        }
+        tuning_tick();
         /* dwm.exe has had its first frames on the screen: the boot screen goes */
         if (anim >= 0 && !stopped && desktop_at && uptime() > desktop_at) {
             close(anim);

@@ -62,9 +62,6 @@ REGEDIT4
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\winver.exe]
 "dpiAwareness"=dword:00000001
 
-[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\winecfg.exe]
-"dpiAwareness"=dword:00000001
-
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mmc.exe]
 "dpiAwareness"=dword:00000001
 

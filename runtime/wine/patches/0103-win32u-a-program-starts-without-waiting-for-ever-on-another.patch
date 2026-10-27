@@ -1,0 +1,89 @@
+Subject: win32u: A program that starts waits for the desktop and the display configuration, not for ever.
+
+Every program that starts asks the desktop window whether the display
+driver is ready and reads the display configuration under the session's
+display_device_init mutex, all inside its loader lock when a DllMain does
+it (ReactOS' comctl32). Windows asks no other process anything then. Twice
+one stuck process stopped every program after it, the session with them and
+Ctrl+Alt+Del too. The desktop gets 20 seconds, the mutex 10, and
+WM_DISPLAYCHANGE to the desktop 5; each wait that runs out says so in the
+log, where arctic-init (hang.c) sees it and writes down every thread.
+---
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index 0cb874c..fa10263 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -978,8 +978,17 @@ static BOOL load_desktop_driver( HWND hwnd )
+     user_check_not_lock();
+ 
+     asciiz_to_unicode( driver_load_error, "The explorer process failed to start." );  /* default error */
+-    /* wait for graphics driver to be ready */
+-    send_message( hwnd, WM_NULL, 0, 0 );
++    /* wait for graphics driver to be ready, though not for ever: every program
++     * that starts comes here, and a desktop thread that did not answer kept
++     * them all from starting, the session stopped with them (Windows starts a
++     * program without asking the desktop anything) */
++    {
++        DWORD start = NtGetTickCount();
++
++        send_message_timeout( hwnd, WM_NULL, 0, 0, SMTO_NORMAL, 20000, FALSE );
++        if (NtGetTickCount() - start >= 20000)
++            ERR( "the desktop window %p has not answered for 20 s, the driver is loaded without it\n", hwnd );
++    }
+ 
+     guid_atom = HandleToULong( NtUserGetProp( hwnd, prop_nameW ));
+     memcpy( key, guid_key_prefixW, sizeof(guid_key_prefixW) );
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 7f6c5df..7bfeafa 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -354,12 +354,19 @@ void user_check_not_lock(void)
+     }
+ }
+ 
++/* Every program that starts reads the display configuration under this
++ * mutex, the whole session's. In Windows nothing a program does keeps another
++ * from that; here one process that kept the mutex stopped every program after
++ * it from starting, Ctrl+Alt+Del's too. After ten seconds the configuration
++ * is read without it, and the log says who waited. */
+ static HANDLE get_display_device_init_mutex( void )
+ {
+     WCHAR bufferW[256];
+     UNICODE_STRING name = {.Buffer = bufferW};
+     OBJECT_ATTRIBUTES attr;
++    LARGE_INTEGER timeout = {.QuadPart = -10000000}; /* a second */
+     char buffer[256];
++    unsigned int seconds;
+     HANDLE mutex;
+ 
+     snprintf( buffer, ARRAY_SIZE(buffer), "\\Sessions\\%u\\BaseNamedObjects\\display_device_init",
+@@ -369,8 +376,13 @@ static HANDLE get_display_device_init_mutex( void )
+ 
+     InitializeObjectAttributes( &attr, &name, OBJ_OPENIF, NULL, NULL );
+     if (NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attr, FALSE ) < 0) return 0;
+-    NtWaitForSingleObject( mutex, FALSE, NULL );
+-    return mutex;
++    for (seconds = 1; seconds <= 10; seconds++)
++    {
++        if (NtWaitForSingleObject( mutex, FALSE, &timeout ) != STATUS_TIMEOUT) return mutex;
++        if (seconds == 2) ERR( "display_device_init: another process has held it for 2 s\n" );
++    }
++    ERR( "display_device_init: held elsewhere for 10 s, the display configuration is read without it\n" );
++    return mutex; /* not ours: releasing it fails and changes nothing */
+ }
+ 
+ static void release_display_device_init_mutex( HANDLE mutex )
+@@ -4811,9 +4823,11 @@ static void display_mode_changed( BOOL broadcast )
+         return;
+     }
+ 
++    /* the desktop may be the one waiting for this process: no waiting for ever */
+     if (!broadcast)
+-        send_message( get_desktop_window(), WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
+-                      MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ) );
++        send_message_timeout( get_desktop_window(), WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
++                              MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ),
++                              SMTO_ABORTIFHUNG, 5000, FALSE );
+     else
+     {
+         /* broadcast to all the windows as well if an application changed the display settings */

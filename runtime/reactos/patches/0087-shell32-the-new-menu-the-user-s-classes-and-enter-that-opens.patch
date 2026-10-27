@@ -1,0 +1,134 @@
+diff --git a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
+index d525af1..217b340 100644
+--- a/dll/win32/shell32/CDefView.cpp
++++ b/dll/win32/shell32/CDefView.cpp
+@@ -2795,7 +2795,10 @@ LRESULT CDefView::OnNotify(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandl
+             break;
+         case LVN_ITEMACTIVATE:
+             TRACE("-- LVN_ITEMACTIVATE %p\n", this);
+-            OpenSelectedItems(((NMITEMACTIVATE *)lpnmh)->uKeyFlags & LVKF_ALT ? "properties" : NULL);
++            /* Arctic: Alt as the key is now, not as the thread last saw it: an
++               Alt whose release went to another window (Alt+Tab) made Enter
++               open Properties instead of the folder */
++            OpenSelectedItems((((NMITEMACTIVATE *)lpnmh)->uKeyFlags & LVKF_ALT) && GetAsyncKeyState(VK_MENU) < 0 ? "properties" : NULL);
+             break;
+         case LVN_COLUMNCLICK:
+         {
+diff --git a/dll/win32/shell32/CDefaultContextMenu.cpp b/dll/win32/shell32/CDefaultContextMenu.cpp
+index 0b7ddba..352dbb7 100644
+--- a/dll/win32/shell32/CDefaultContextMenu.cpp
++++ b/dll/win32/shell32/CDefaultContextMenu.cpp
+@@ -634,9 +634,11 @@ CDefaultContextMenu::EnumerateDynamicContextHandlerForKey(HKEY hRootKey)
+         if (RegEnumKeyExW(hKey, dwIndex++, wszName, &cchName, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
+             break;
+ 
+-        /* Key name or key value is CLSID */
++        /* Key name or key value is CLSID. Arctic: the name only as a GUID, as
++           Windows reads it: CLSIDFromString takes a ProgID too, and "New" is
++           comsvcs' moniker, so the New menu was never loaded */
+         CLSID clsid;
+-        hr = CLSIDFromString(wszName, &clsid);
++        hr = IIDFromString(wszName, &clsid);
+         if (hr == S_OK)
+             pwszClsid = wszName;
+         else
+diff --git a/dll/win32/shell32/lang/uk-UA.rc b/dll/win32/shell32/lang/uk-UA.rc
+index 23a568e..637355c 100644
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -825,7 +825,7 @@ BEGIN
+     IDS_DISCONNECT "Відключити"
+     IDS_MAPNETDRIVE "Підключити &мережевий диск..."
+     IDS_OPENFILELOCATION "Open f&ile location"
+-    IDS_SENDTO_MENU "Se&nd To"
++    IDS_SENDTO_MENU "&Надіслати"
+     IDS_COPYASPATHMENU "Copy as path"
+ 
+     IDS_MOVEERRORTITLE "Error Moving File or Folder"
+@@ -936,7 +936,7 @@ BEGIN
+ 
+     IDS_SHELL_ABOUT_AUTHORS "&Автори"
+     IDS_SHELL_ABOUT_BACK "< &Назад"
+-    FCIDM_SHVIEW_NEW "Ne&w" /* A menu item with an ampersand */
++    FCIDM_SHVIEW_NEW "Ст&ворити" /* A menu item with an ampersand */
+     FCIDM_SHVIEW_NEWFOLDER "&Папку"
+     FCIDM_SHVIEW_NEWLINK "&Ярлик"
+     IDS_FOLDER_OPTIONS "Параметри Файлового провідника"
+@@ -1099,17 +1099,17 @@ BEGIN
+     IDS_EDITING_ACTION "Редагування дії для типу: "
+     IDS_NO_ICONS "Файл '%s' не містить значків.\n\nВиберіть значок зі списку або відкрийте інший файл."
+     IDS_FILE_NOT_FOUND "Файд '%s' не знайдено."
+-    IDS_LINK_INVALID "The item '%s' that this shortcut refers to has been changed or moved, so this shortcut will no longer work properly."
+-    IDS_COPYTOMENU "Copy to &folder..."
+-    IDS_COPYTOTITLE "Select the place where you want to copy '%s'. Then click the Copy button."
+-    IDS_COPYITEMS "Copy Items"
+-    IDS_COPYBUTTON "Copy"
+-    IDS_MOVETOMENU "Mo&ve to folder..."
+-    IDS_MOVETOTITLE "Select the place where you want to move '%s' to. Then click the Move button."
+-    IDS_MOVEITEMS "Move Items"
+-    IDS_MOVEBUTTON "Move"
+-
+-    IDS_SYSTEMFOLDER "System Folder"
++    IDS_LINK_INVALID "Елемент '%s', на який посилається цей ярлик, змінено або переміщено, тому ярлик більше не працюватиме належним чином."
++    IDS_COPYTOMENU "Копіювати до &папки..."
++    IDS_COPYTOTITLE "Виберіть місце, куди потрібно скопіювати '%s', а потім натисніть кнопку «Копіювати»."
++    IDS_COPYITEMS "Копіювання елементів"
++    IDS_COPYBUTTON "Копіювати"
++    IDS_MOVETOMENU "Перемістити до п&апки..."
++    IDS_MOVETOTITLE "Виберіть місце, куди потрібно перемістити '%s', а потім натисніть кнопку «Перемістити»."
++    IDS_MOVEITEMS "Переміщення елементів"
++    IDS_MOVEBUTTON "Перемістити"
++
++    IDS_SYSTEMFOLDER "Системна папка"
+ 
+     /* For IDD_LOG_OFF_FANCY */
+     IDS_LOG_OFF_DESC "Closes your programs and ends your Windows session."
+diff --git a/dll/win32/shell32/propsheet.cpp b/dll/win32/shell32/propsheet.cpp
+index e0d530c..37c6f82 100644
+--- a/dll/win32/shell32/propsheet.cpp
++++ b/dll/win32/shell32/propsheet.cpp
+@@ -12,8 +12,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(shell);
+ EXTERN_C HRESULT
+ SHELL_GetShellExtensionRegCLSID(HKEY hKey, LPCWSTR KeyName, CLSID *pClsId)
+ {
+-    // First try the key name
+-    if (SUCCEEDED(SHCLSIDFromStringW(KeyName, pClsId)))
++    // First try the key name; Arctic: as a GUID only, not a ProgID
++    if (SUCCEEDED(IIDFromString(KeyName, pClsId)))
+         return S_OK;
+     WCHAR buf[42];
+     DWORD cb = sizeof(buf);
+diff --git a/dll/win32/shell32/shlfolder.cpp b/dll/win32/shell32/shlfolder.cpp
+index dbe8d9a..2fa4918 100644
+--- a/dll/win32/shell32/shlfolder.cpp
++++ b/dll/win32/shell32/shlfolder.cpp
+@@ -443,13 +443,28 @@ LSTATUS AddClassKeyToArray(const WCHAR* szClass, HKEY* array, UINT* cKeys)
+         return ERROR_MORE_DATA;
+ 
+     HKEY hkey;
++    WCHAR szUser[MAX_PATH + 18];
++    LSTATUS user = ERROR_FILE_NOT_FOUND;
++
++    /* Arctic: HKCR is Windows' merge of the user's classes over the machine's,
++       Wine's only the machine's: what a program installed for one user put in
++       HKCU\Software\Classes (its verbs, context menu handlers) comes first */
++    if (SUCCEEDED(StringCchPrintfW(szUser, _countof(szUser), L"Software\\Classes\\%s", szClass)) &&
++        (user = RegOpenKeyExW(HKEY_CURRENT_USER, szUser, 0, KEY_READ | KEY_QUERY_VALUE, &hkey)) == ERROR_SUCCESS)
++    {
++        array[*cKeys] = hkey;
++        *cKeys += 1;
++        if (*cKeys >= 16)
++            return ERROR_SUCCESS;
++    }
++
+     LSTATUS result = RegOpenKeyExW(HKEY_CLASSES_ROOT, szClass, 0, KEY_READ | KEY_QUERY_VALUE, &hkey);
+     if (result == ERROR_SUCCESS)
+     {
+         array[*cKeys] = hkey;
+         *cKeys += 1;
+     }
+-    return result;
++    return user == ERROR_SUCCESS ? ERROR_SUCCESS : result;
+ }
+ 
+ LSTATUS AddClsidKeyToArray(REFCLSID clsid, HKEY* array, UINT* cKeys)

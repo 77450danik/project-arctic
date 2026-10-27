@@ -1,0 +1,52 @@
+Subject: server: RegFlushKey puts the hive on the disk at once.
+
+Windows writes a key's hive before RegFlushKey returns; wineserver did
+nothing ("we don't need to do anything here") and the change waited for the
+periodic save, half a minute later, four minutes on a stick. mountmgr
+flushes a drive letter it gives (patch 0102): a power cut before that save
+gave the letter to another volume at the next start. A flush now brings the
+periodic save forward, the flushes of one second together, still in a
+child so that wineserver waits for no disk.
+---
+diff --git a/server/registry.c b/server/registry.c
+index 9e25312..c45ad43 100644
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -2159,6 +2159,28 @@ static void set_periodic_save_timer(void)
+     save_timeout_user = add_timeout_user( save_period, periodic_save, NULL );
+ }
+ 
++/* Arctic: RegFlushKey wants the hive on the disk now; Windows writes it
++ * before returning. Here it brings the periodic save forward: a child writes
++ * the changed branches within a second, the flushes of that second together,
++ * and wineserver waits for no disk (see periodic_save). A drive letter that
++ * mountmgr gave and flushed was lost when the power went before the next
++ * periodic save, up to half a minute (four on a stick) later. */
++static struct timeout_user *flush_timeout_user;
++
++static void flush_soon( void *arg )
++{
++    flush_timeout_user = NULL;
++    /* a save running now copied the registry before the change: after it */
++    if (save_child_running())
++    {
++        flush_timeout_user = add_timeout_user( -TICKS_PER_SEC / 4, flush_soon, NULL );
++        return;
++    }
++    if (save_timeout_user) remove_timeout_user( save_timeout_user );
++    save_timeout_user = NULL;
++    periodic_save( NULL );
++}
++
+ /* save the modified registry branches to disk */
+ void flush_registry(void)
+ {
+@@ -2271,7 +2293,7 @@ DECL_HANDLER(flush_key)
+     struct key *key = get_hkey_obj( req->hkey, 0 );
+     if (key)
+     {
+-        /* we don't need to do anything here with the current implementation */
++        if (!flush_timeout_user) flush_timeout_user = add_timeout_user( -TICKS_PER_SEC, flush_soon, NULL );
+         release_object( key );
+     }
+ }

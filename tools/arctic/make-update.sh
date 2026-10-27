@@ -159,10 +159,11 @@ if [ "$HOST" = 1 ]; then
         echo "host.sqfs: $(du -h "$U/host.sqfs" | cut -f1)"
     fi
     # Files of C: the new host has no program for: Linux's git and sh under
-    # Windows names (docs/linux-gate.md). Wine would find no builtin behind
-    # them; Git for Windows is the git now.
+    # Windows names (docs/linux-gate.md), Wine would find no builtin behind
+    # them, Git for Windows is the git now; and Wine's winecfg
     gone=()
-    for rel in Windows/System32/git.exe Windows/System32/sh.exe Windows/SysWOW64/git.exe Windows/SysWOW64/sh.exe; do
+    for rel in Windows/System32/git.exe Windows/System32/sh.exe Windows/SysWOW64/git.exe Windows/SysWOW64/sh.exe \
+               Windows/System32/winecfg.exe Windows/SysWOW64/winecfg.exe; do
         [ -e "$C/$rel" ] && grep -qa "Wine builtin DLL" "$C/$rel" && gone+=("$rel")
     done
     if [ ${#gone[@]} -gt 0 ]; then

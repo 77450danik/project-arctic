@@ -54,9 +54,9 @@ if [ -d "$OUT/kernel/nvidia-legacy" ]; then
 fi
 cp -a "$OUT/wine/usr/." "$RFS/usr/"
 
-INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop,hiberfil}.c)
+INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop,hiberfil,tuning}.c)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}" \
-    "$ROOT/host/init/gate.c" -lcrypt
+    "$ROOT/host/init/gate.c" "$ROOT/host/init/hang.c" -lcrypt
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"
 # WSL in Arctic: the distributions of D:\WSL, for wsl.exe and bash.exe (docs/updates.md).
@@ -98,7 +98,6 @@ export WINEPREFIX=/var/tmp/prefix HOME=/var/tmp/home USER=User LOGNAME=User LANG
 export WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
 mkdir -p "$HOME"
 wine wineboot.exe --init
-wine winecfg.exe -v win11
 wine reg.exe add 'HKCU\Control Panel\Desktop' /v Wallpaper /d 'C:\Windows\Web\Wallpaper\Arctic\img0.jpg' /f
 wine reg.exe add 'HKCU\Control Panel\Desktop' /v WallpaperStyle /d 10 /f
 for reg in /usr/share/arctic/registry/*.reg; do wine reg.exe import "Z:$reg"; done
@@ -206,6 +205,12 @@ bash "$ROOT/ci/install-chrome.sh" "$PFX"
 # Windows programs, Linux is only behind wsl.exe (docs/linux-gate.md)
 bash "$ROOT/ci/install-windows-tools.sh" "$PFX"
 
+# Add-AppxPackage for the packages installers made for Windows 11 add beside
+# a program: their File Explorer menu (runtime/powershell/Appx). pwsh looks
+# for modules in Windows PowerShell's folder too
+mkdir -p "$PFX/drive_c/windows/system32/WindowsPowerShell/v1.0/Modules"
+cp -r "$ROOT/runtime/powershell/Appx" "$PFX/drive_c/windows/system32/WindowsPowerShell/v1.0/Modules/"
+
 # the Snipping Tool in Start, as in Windows 11 (Win+Shift+S starts it too)
 python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Ножиці.lnk" \
     'C:\windows\system32\snippingtool.exe'
@@ -223,6 +228,9 @@ fi
 python3 "$ROOT/runtime/browser/build.py" --out "$OUT/browser" \
     --install "$PFX/drive_c/Program Files/Internet Explorer"
 rm -f "$PFX"/drive_c/windows/{system32,syswow64}/iexplore.exe "$RFS"/usr/lib/wine/*-windows/iexplore.exe
+# Wine's own settings program is not Arctic's: the version it set is in
+# runtime/registry/version.reg, the rest has Control Panel
+rm -f "$PFX"/drive_c/windows/{system32,syswow64}/winecfg.exe "$RFS"/usr/lib/wine/*-windows/winecfg.exe
 python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Internet Explorer.lnk" \
     'C:\Program Files\Internet Explorer\iexplore.exe'
 

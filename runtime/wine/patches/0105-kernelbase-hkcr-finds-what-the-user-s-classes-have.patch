@@ -1,0 +1,161 @@
+Subject: kernelbase: HKEY_CLASSES_ROOT finds what the user's classes have.
+
+HKEY_CLASSES_ROOT is, in Windows, HKCU\Software\Classes merged over
+HKLM\Software\Classes; Wine's is the machine's alone. A program installed
+for one user registers its URL protocol there (steam:, discord:, the
+sign-in link of an editor), and a browser that opens the link reads
+HKCR\<scheme>: it found nothing and the link did nothing. RegOpenKeyEx now
+looks for a key the machine's classes have not got in the user's, at the
+same place: under HKEY_CLASSES_ROOT itself and under any key of the
+machine's classes (CLSID\{...} of a COM class registered for the user).
+A key both have is the machine's, as before.
+---
+diff --git a/dlls/kernelbase/registry.c b/dlls/kernelbase/registry.c
+index 7ec30c2c..30fcef74 100644
+--- a/dlls/kernelbase/registry.c
++++ b/dlls/kernelbase/registry.c
+@@ -636,6 +636,110 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegCreateKeyExA( HKEY hkey, LPCSTR name, DWORD
+ }
+ 
+ 
++/* HKEY_CLASSES_ROOT is, in Windows, HKCU\Software\Classes merged over
++ * HKLM\Software\Classes; here it is the machine's alone. What a program
++ * installed for one user registered (a URL protocol: steam:, discord:; a
++ * file type; a COM class) is in the user's classes only: a key the
++ * machine's classes have not got is looked for there, at the same place.
++ * root_is_classes: the key opened from is HKEY_CLASSES_ROOT itself */
++static NTSTATUS open_user_class( HKEY *retkey, HKEY root, BOOL root_is_classes, const UNICODE_STRING *name,
++                                 DWORD options, ACCESS_MASK access )
++{
++    static const WCHAR machine[] = L"\\Registry\\Machine\\Software\\Classes";
++    static const WCHAR wow[] = L"\\Wow6432Node";
++    static const WCHAR user[] = L"Software\\Classes";
++    const DWORD machine_len = ARRAY_SIZE(machine) - 1, wow_len = ARRAY_SIZE(wow) - 1, user_len = ARRAY_SIZE(user) - 1;
++    char buffer[512], *buf_ptr = buffer;
++    KEY_NAME_INFORMATION *info = (KEY_NAME_INFORMATION *)buffer;
++    DWORD len = sizeof(buffer), rest_len = 0;
++    const WCHAR *rest = NULL;
++    UNICODE_STRING path;
++    NTSTATUS status = STATUS_SUCCESS;
++    HANDLE hkcu;
++    WCHAR *str;
++
++    if (!root_is_classes)
++    {
++        status = NtQueryKey( root, KeyNameInformation, info, len, &len );
++        while (status == STATUS_BUFFER_OVERFLOW)
++        {
++            if (buf_ptr != buffer) HeapFree( GetProcessHeap(), 0, buf_ptr );
++            if (!(buf_ptr = HeapAlloc( GetProcessHeap(), 0, len ))) return STATUS_OBJECT_NAME_NOT_FOUND;
++            info = (KEY_NAME_INFORMATION *)buf_ptr;
++            status = NtQueryKey( root, KeyNameInformation, info, len, &len );
++        }
++        rest_len = info->NameLength / sizeof(WCHAR);
++        if (status || rest_len < machine_len || wcsnicmp( info->Name, machine, machine_len ) ||
++            (rest_len > machine_len && info->Name[machine_len] != '\\'))
++        {
++            status = STATUS_OBJECT_NAME_NOT_FOUND;
++            goto done;
++        }
++        rest = info->Name + machine_len;
++        rest_len -= machine_len;
++    }
++    /* the 32-bit view of the classes has the user's as they are */
++    if (rest_len >= wow_len && !wcsnicmp( rest, wow, wow_len ) && (rest_len == wow_len || rest[wow_len] == '\\'))
++    {
++        rest += wow_len;
++        rest_len -= wow_len;
++    }
++
++    if (!(str = HeapAlloc( GetProcessHeap(), 0, (user_len + rest_len + 1) * sizeof(WCHAR) + name->Length )))
++    {
++        status = STATUS_NO_MEMORY;
++        goto done;
++    }
++    memcpy( str, user, user_len * sizeof(WCHAR) );
++    if (rest_len) memcpy( str + user_len, rest, rest_len * sizeof(WCHAR) );
++    path.Buffer = str;
++    path.Length = (user_len + rest_len) * sizeof(WCHAR);
++    if (name->Length)
++    {
++        str[path.Length / sizeof(WCHAR)] = '\\';
++        memcpy( str + path.Length / sizeof(WCHAR) + 1, name->Buffer, name->Length );
++        path.Length += sizeof(WCHAR) + name->Length;
++    }
++    path.MaximumLength = path.Length;
++
++    if (!(status = RtlOpenCurrentUser( MAXIMUM_ALLOWED, &hkcu )))
++    {
++        status = open_key( retkey, hkcu, &path, options, (access & ~KEY_WOW64_32KEY) | KEY_WOW64_64KEY, FALSE );
++        NtClose( hkcu );
++    }
++    HeapFree( GetProcessHeap(), 0, str );
++
++done:
++    if (buf_ptr != buffer) HeapFree( GetProcessHeap(), 0, buf_ptr );
++    return status;
++}
++
++/* open_key, and when the key is not there under HKEY_CLASSES_ROOT, the
++ * user's class (open_user_class). special: the handle the caller passed, a
++ * predefined one maybe */
++static NTSTATUS open_key_or_user_class( HKEY *retkey, HKEY special, HKEY root, UNICODE_STRING *name, DWORD options,
++                                        ACCESS_MASK access )
++{
++    UNICODE_STRING asked = *name;
++    NTSTATUS status = open_key( retkey, root, name, options, access, FALSE );
++
++    if ((status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND) &&
++        (HandleToUlong(special) == HandleToUlong(HKEY_CLASSES_ROOT) ||
++         HandleToUlong(special) < HandleToUlong(HKEY_SPECIAL_ROOT_FIRST) ||
++         HandleToUlong(special) > HandleToUlong(HKEY_SPECIAL_ROOT_LAST)))
++    {
++        HKEY user_key;
++        if (!open_user_class( &user_key, root, HandleToUlong(special) == HandleToUlong(HKEY_CLASSES_ROOT),
++                              &asked, options, access ))
++        {
++            *retkey = user_key;
++            status = STATUS_SUCCESS;
++        }
++    }
++    return status;
++}
++
++
+ /******************************************************************************
+  * RegOpenKeyExW   (kernelbase.@)
+  *
+@@ -644,6 +748,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegCreateKeyExA( HKEY hkey, LPCSTR name, DWORD
+ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExW( HKEY hkey, LPCWSTR name, DWORD options, REGSAM access, PHKEY retkey )
+ {
+     UNICODE_STRING nameW;
++    HKEY special = hkey;
+ 
+     if (retkey && (!name || !name[0]) &&
+         (HandleToUlong(hkey) >= HandleToUlong(HKEY_SPECIAL_ROOT_FIRST)) &&
+@@ -661,7 +766,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExW( HKEY hkey, LPCWSTR name, DWORD o
+     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
+ 
+     RtlInitUnicodeString( &nameW, name );
+-    return RtlNtStatusToDosError( open_key( retkey, hkey, &nameW, options, access, FALSE ) );
++    return RtlNtStatusToDosError( open_key_or_user_class( retkey, special, hkey, &nameW, options, access ) );
+ }
+ 
+ 
+@@ -689,6 +794,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExA( HKEY hkey, LPCSTR name, DWORD op
+ {
+     STRING nameA;
+     NTSTATUS status;
++    HKEY special = hkey;
+ 
+     if (retkey && (!name || !name[0]) &&
+         (HandleToUlong(hkey) >= HandleToUlong(HKEY_SPECIAL_ROOT_FIRST)) &&
+@@ -712,7 +818,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExA( HKEY hkey, LPCSTR name, DWORD op
+                                                  &nameA, FALSE )))
+     {
+         UNICODE_STRING nameW = NtCurrentTeb()->StaticUnicodeString;
+-        status = open_key( retkey, hkey, &nameW, options, access, FALSE );
++        status = open_key_or_user_class( retkey, special, hkey, &nameW, options, access );
+     }
+     return RtlNtStatusToDosError( status );
+ }

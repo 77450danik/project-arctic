@@ -54,6 +54,9 @@
 | ProductName файлів «Wine 11.18» | «Arctic» |
 | FileDescription «Wine <модуль>» | «Arctic <модуль>» |
 | «Wine HID device», «Wine HID compatible device» у диспетчері пристроїв | «HID-compliant device», «HID Input Device» |
+| `Software\Wine\Time Zones\TZ Mapping` (kernelbase.rgs, ніхто не читає) | прибрано |
+| ProgID `WINEDBROWPRX.*`, `WINEDBRSTPRX.*` (msdaps) | `DBROWPRX.*`, `DBRSTPRX.*` |
+| `winecfg.exe` і його IFEO в `dpi.reg` | прибрано; версію Windows 11 пише `runtime/registry/version.reg` |
 
 - Реєстр, зроблений раніше: arctic-init (`rename_wine_keys`) переносить ключі
   в тексті кущів до старту wineserver, один раз, коли реєстр відстає від
@@ -62,6 +65,11 @@
 - Не перейменовано те, чого програма не показує і за чим частини
   знаходять одна одну: файли `winebus.sys` тощо, шина `WINEBUS`, група
   `WinePlugPlay`, інтерфейси `IWine*`, `/usr/share/wine` на боці Linux.
+  Так само ключі, названі іменами файлів драйверів: служби `winebus`,
+  `winehid`, `wineusb`, `winebth`, їхні пристрої `ROOT\WINE\…` і
+  `WINEBUS\…`, процесор друку `wineps`, `Drivers\winealsa.drv` (GUID
+  аудіопристроїв). Перейменувати їх — перейменувати самі драйвери: миша,
+  клавіатура, геймпади і звук ризикують більше, ніж варте ім'я.
 - ReactOS: патч `0085` (опис comctl32, browseui, shdocvw, CompanyName без
   «Wine Team»).
 - Патч `0098`: ntdll більше не експортує `wine_get_version` (і

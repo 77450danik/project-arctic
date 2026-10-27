@@ -1,0 +1,206 @@
+Subject: mountmgr.sys: A drive letter stays its volume's while the volume is away.
+
+Patch 0060 gave a volume back its letter only when nothing had taken it yet,
+and wrote down whatever letter it got. A USB stick, whose MBR partition has no
+GUID and so no letter kept, came before the disks after a power cut and took
+D:; each disk then took the next letter and kept it, D: E: F: became E: F: G:
+for good. As MountedDevices does in Windows: a volume with no letter yet gets
+the first one that no volume uses and none keeps; an MBR partition is known by
+its disk's signature and its number, a disk with no partition table by its
+file system's serial number; the letter goes to the disk at once, and only
+when it changes.
+---
+diff --git a/dlls/mountmgr.sys/arctic.c b/dlls/mountmgr.sys/arctic.c
+index 6fd1764..c15521f 100644
+--- a/dlls/mountmgr.sys/arctic.c
++++ b/dlls/mountmgr.sys/arctic.c
+@@ -68,6 +68,48 @@ static BOOL parse_guid( const char *str, GUID *guid )
+     return TRUE;
+ }
+ 
++/* An MBR partition has no GUID: blkid names it by the disk's signature and
++ * the partition's number, "1a2b3c4d-02". Windows keeps such a volume in
++ * MountedDevices by the signature and the partition's place on the disk; a
++ * GUID made of the two lets it keep its letter the same way (a USB stick, as
++ * a rule, has such a table). Data3 0 is never a generated GUID's. */
++static BOOL parse_mbr_partition( const char *str, GUID *guid )
++{
++    unsigned int signature, number;
++    char end;
++
++    if (strlen( str ) != 11 || sscanf( str, "%8x-%2x%c", &signature, &number, &end ) != 2) return FALSE;
++    memset( guid, 0, sizeof(*guid) );
++    guid->Data1 = signature;
++    memcpy( guid->Data4, "MBR", 3 );
++    guid->Data4[7] = number;
++    return TRUE;
++}
++
++/* A disk with no partition table at all: the serial number of its file
++ * system, NTFS's 16 hex digits or FAT's and exFAT's "1A2B-3C4D". */
++static BOOL parse_fs_serial( const char *str, GUID *guid )
++{
++    unsigned int high, low;
++    char end;
++
++    memset( guid, 0, sizeof(*guid) );
++    if (strlen( str ) == 16 && sscanf( str, "%8x%8x%c", &high, &low, &end ) == 2)
++    {
++        guid->Data1 = high;
++        guid->Data2 = low >> 16;
++        memcpy( guid->Data4, "NTFS", 4 );
++    }
++    else if (strlen( str ) == 9 && sscanf( str, "%4x-%4x%c", &high, &low, &end ) == 2)
++    {
++        guid->Data1 = high << 16 | low;
++        memcpy( guid->Data4, "FAT", 3 );
++    }
++    else return FALSE;
++    guid->Data4[7] = low & 0xff;
++    return TRUE;
++}
++
+ /* a record is key=value lines: device, mount, type (fixed, removable or
+  * cdrom), fs, label, uuid, partuuid, read_only */
+ static void add_volume_record( const char *name )
+@@ -104,7 +146,9 @@ static void add_volume_record( const char *name )
+     if (!strcmp( type, "cdrom" )) device_type = DEVICE_CDROM;
+     else if (!strcmp( type, "removable" )) device_type = DEVICE_HARDDISK; /* DRIVE_REMOVABLE */
+     else device_type = DEVICE_HARDDISK_VOL;                            /* DRIVE_FIXED */
+-    if (parse_guid( partuuid, &guid ) || parse_guid( uuid, &guid )) guid_ptr = &guid;
++    if (parse_guid( partuuid, &guid ) || parse_mbr_partition( partuuid, &guid ) ||
++        parse_guid( uuid, &guid ) || parse_fs_serial( uuid, &guid ))
++        guid_ptr = &guid;
+ 
+     TRACE( "%s: %s on %s, %s, label %s\n", debugstr_a(name), debugstr_a(device), debugstr_a(mount),
+            type, debugstr_a(label) );
+diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
+index 93b1392..eafe8ac 100644
+--- a/dlls/mountmgr.sys/device.c
++++ b/dlls/mountmgr.sys/device.c
+@@ -1276,9 +1276,20 @@ NTSTATUS remove_volume( const char *udi )
+ /* Arctic: a volume keeps its letter from one start to the next, as Windows
+  * keeps it in MountedDevices. The host names disks (sdb2) in the order it
+  * finds them, which changes from start to start, so the volume is known by
+- * the GUID of its partition here. */
++ * the GUID of its partition here (arctic.c makes one for an MBR partition).
++ * As in Windows, a letter stays the volume's while the volume is away: a
++ * stick that came before the disks took D: and moved every disk one letter
++ * on, for good, since each then kept its new letter. */
+ static const WCHAR drive_letters_keyW[] = L"System\\Arctic\\DriveLetters";
+ 
++static int drive_letter_of( const WCHAR *value, DWORD size )
++{
++    if (size < sizeof(WCHAR)) return -1;
++    if (value[0] >= 'a' && value[0] <= 'z') return value[0] - 'a';
++    if (value[0] >= 'A' && value[0] <= 'Z') return value[0] - 'A';
++    return -1;
++}
++
+ static void drive_letter_name( const GUID *guid, WCHAR *name, unsigned int size )
+ {
+     swprintf( name, size, L"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", (unsigned int)guid->Data1,
+@@ -1298,11 +1309,8 @@ static int remembered_drive_letter( const GUID *guid, const char *udi )
+     if (!guid) return -1;
+     if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, KEY_QUERY_VALUE, &key )) return -1;
+     drive_letter_name( guid, name, ARRAY_SIZE(name) );
+-    if (!RegQueryValueExW( key, name, NULL, &type, (BYTE *)value, &size ) && type == REG_SZ && size)
+-    {
+-        if (value[0] >= 'a' && value[0] <= 'z') letter = value[0] - 'a';
+-        else if (value[0] >= 'A' && value[0] <= 'Z') letter = value[0] - 'A';
+-    }
++    if (!RegQueryValueExW( key, name, NULL, &type, (BYTE *)value, &size ) && type == REG_SZ)
++        letter = drive_letter_of( value, size );
+     RegCloseKey( key );
+     /* A: and B: are floppies, C: is the system's own */
+     if (letter < 3) return -1;
+@@ -1315,17 +1323,77 @@ static int remembered_drive_letter( const GUID *guid, const char *udi )
+     return letter;
+ }
+ 
++/* the letters kept for the other volumes, there now or not */
++static unsigned int reserved_drive_letters( const GUID *guid )
++{
++    WCHAR own[40] = L"", name[40], value[4];
++    DWORD index, name_len, size, type;
++    unsigned int reserved = 0;
++    HKEY key;
++    LONG ret;
++    int letter;
++
++    if (guid) drive_letter_name( guid, own, ARRAY_SIZE(own) );
++    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, KEY_QUERY_VALUE, &key )) return 0;
++    for (index = 0;; index++)
++    {
++        name_len = ARRAY_SIZE(name);
++        size = sizeof(value) - sizeof(WCHAR);
++        if ((ret = RegEnumValueW( key, index, name, &name_len, NULL, &type, (BYTE *)value, &size )) ==
++            ERROR_NO_MORE_ITEMS)
++            break;
++        if (ret || type != REG_SZ || !wcsicmp( name, own )) continue;
++        if ((letter = drive_letter_of( value, size )) >= 3) reserved |= 1u << letter;
++    }
++    RegCloseKey( key );
++    return reserved;
++}
++
++/* a letter for a volume that has none: the first one from D: that no volume
++ * uses and none keeps, as Windows gives it; -1 leaves it to the old way */
++static int free_drive_letter( enum device_type type, unsigned int reserved )
++{
++    struct dos_drive *drive;
++    unsigned int used = reserved;
++    int letter;
++
++    if (type == DEVICE_FLOPPY) return -1;
++    LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry ) used |= 1u << drive->drive;
++    for (letter = 3; letter < 26; letter++)
++        if (!(used & (1u << letter))) return letter;
++    return -1;
++}
++
++static BOOL has_drive( const char *udi )
++{
++    struct dos_drive *drive;
++
++    if (!udi) return FALSE;
++    LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
++        if (drive->volume->udi && !strcmp( udi, drive->volume->udi )) return TRUE;
++    return FALSE;
++}
++
+ static void remember_drive_letter( const GUID *guid, int letter )
+ {
+-    WCHAR name[40], value[] = L"A:";
++    WCHAR name[40], value[] = L"A:", old[4] = {0};
++    DWORD size = sizeof(old) - sizeof(WCHAR), type;
+     HKEY key;
+ 
+-    if (!guid || RegCreateKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, NULL, 0, KEY_SET_VALUE, NULL,
+-                                  &key, NULL ))
++    if (!guid || RegCreateKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, NULL, 0,
++                                  KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, &key, NULL ))
+         return;
+     value[0] += letter;
+     drive_letter_name( guid, name, ARRAY_SIZE(name) );
+-    RegSetValueExW( key, name, 0, REG_SZ, (const BYTE *)value, sizeof(value) );
++    /* written only when it changes, and on the disk at once: the registry is
++     * otherwise saved every half minute, and a power cut in between gave the
++     * letter to another volume at the next start */
++    if (RegQueryValueExW( key, name, NULL, &type, (BYTE *)old, &size ) || type != REG_SZ ||
++        drive_letter_of( old, size ) != letter)
++    {
++        RegSetValueExW( key, name, 0, REG_SZ, (const BYTE *)value, sizeof(value) );
++        RegFlushKey( key );
++    }
+     RegCloseKey( key );
+ }
+ 
+@@ -1346,6 +1414,7 @@ NTSTATUS add_dos_device( int letter, const char *udi, const char *unix_device,
+     volume = find_matching_volume( udi, unix_device, mount_point, type );
+ 
+     if (letter == -1) letter = remembered_drive_letter( partition, udi );
++    if (letter == -1 && !has_drive( udi )) letter = free_drive_letter( type, reserved_drive_letters( partition ) );
+     if (letter == -1)  /* auto-assign a letter */
+     {
+         struct add_drive_params params = { unix_device, type, &letter };

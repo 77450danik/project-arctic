@@ -11,11 +11,15 @@
 # - the HID, USB and Bluetooth buses in the Device Manager: Arctic's as the
 #   maker, and the devices are named as Windows names them ("HID-compliant
 #   device", "XINPUT compatible HID device");
-# - the voice of speech: Arctic Default Voice.
+# - the voice of speech: Arctic Default Voice;
+# - kernelbase's Software\Wine\Time Zones goes, msdaps' WINEDB*PRX ProgIDs
+#   are DB*PRX.
 #
 # Names a program never shows stay (winebus.sys, the WINEBUS bus, the
 # WinePlugPlay group, IWine* interfaces): the drivers and the 32/64-bit
-# marshalling find each other by them.
+# marshalling find each other by them. So do the names of the drivers' files
+# as keys: the services winebus, winehid, wineusb, winebth and ROOT\WINE of
+# their devices, the wineps print processor, Drivers\winealsa.drv.
 use strict;
 use warnings;
 use File::Find;
@@ -113,6 +117,14 @@ for my $po (glob 'po/*.po') {
         $_ = join '', @out;
     });
 }
+
+# kernelbase registers Software\Wine\Time Zones\TZ Mapping, a table of Unix
+# zone names nothing reads: it goes
+edit('dlls/kernelbase/kernelbase.rgs', sub {
+    s{^([ \t]*)NoRemove Wine\r?\n\1\{\r?\n.*?^\1\}\r?\n}{}ms or die "kernelbase.rgs: no Wine key\n";
+});
+# msdaps' row and rowset proxies: their ProgIDs, which no code looks up
+edit('dlls/msdaps/row_server.idl', sub { s{"WINEDB(ROW|RST)PRX\.}{"DB$1PRX.}g or die "row_server.idl: no ProgIDs\n" });
 
 # The voice speech lists (an empty token of sapi's)
 edit('dlls/sapi/sapi.rgs', sub { s{'Wine Default Voice'}{'Arctic Default Voice'} or die "sapi.rgs: no voice\n" });

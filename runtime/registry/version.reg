@@ -1,0 +1,29 @@
+REGEDIT4
+
+; The version of Windows programs are told: Windows 11, 22000. What
+; "winecfg -v win11" wrote; winecfg itself is not in Arctic.
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion]
+"CurrentVersion"="6.3"
+"CurrentMajorVersionNumber"=dword:0000000a
+"CurrentMinorVersionNumber"=dword:00000000
+"CurrentBuild"="22000"
+"CurrentBuildNumber"="22000"
+"UBR"=dword:0000024c
+"CSDVersion"=""
+"ProductName"="Microsoft Windows 11"
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\ProductOptions]
+"ProductType"="WinNT"
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Windows]
+"CSDVersion"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment]
+"OS"="Windows_NT"
+; Windows PowerShell's module folders, which pwsh looks in too (the Appx
+; module of runtime/powershell is there)
+"PSModulePath"="C:\\Program Files\\WindowsPowerShell\\Modules;C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules"
+
+[HKEY_CURRENT_USER\Software\Arctic\Runtime]
+"Version"=-

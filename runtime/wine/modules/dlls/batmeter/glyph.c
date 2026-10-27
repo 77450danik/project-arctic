@@ -70,13 +70,50 @@ static BOOL inside( const short *outline, float x, float y )
     return winding != 0;
 }
 
-/* how much of each pixel the glyph covers, size x size, top row first */
-float *glyph_coverage( WCHAR code, int size )
+/* the box every battery glyph fits in, font units: the battery is a wide
+ * strip across the middle of the em */
+static void glyphs_box( float *left, float *top, float *right, float *bottom )
+{
+    *left = *bottom = EM;
+    *right = *top = 0;
+    for (UINT g = 0; g < ARRAY_SIZE(glyphs); g++)
+    {
+        const WCHAR *codes = &battery_codes[0][0];
+        BOOL battery = glyphs[g].code == 0xe996;
+
+        for (UINT k = 0; k < sizeof(battery_codes) / sizeof(*codes); k++)
+            battery |= codes[k] == glyphs[g].code;
+        if (!battery) continue;
+        for (const short *c = glyphs[g].outline; *c; c += 1 + 2 * c[0])
+            for (int i = 0; i < c[0]; i++)
+            {
+                *left = min( *left, c[1 + 2 * i] );
+                *right = max( *right, c[1 + 2 * i] );
+                *bottom = min( *bottom, c[2 + 2 * i] );
+                *top = max( *top, c[2 + 2 * i] );
+            }
+    }
+}
+
+/* how much of each pixel the glyph covers, size x size, top row first: the em
+ * over the square, or with fit the glyphs' box across it (a pixel spare at
+ * either end), centred */
+static float *coverage( WCHAR code, int size, BOOL fit )
 {
     const short *outline = find_outline( code );
-    float *cov = calloc( size * size, sizeof(float) ), scale = (float)EM / size;
+    float *cov = calloc( size * size, sizeof(float) ), scale = (float)EM / size, x0 = 0, y0 = EM;
 
     if (!cov || !outline) return cov;
+    if (fit && size > 2)
+    {
+        float left, top, right, bottom;
+
+        glyphs_box( &left, &top, &right, &bottom );
+        scale = max( right - left, top - bottom ) / (size - 2);
+        x0 = (left + right) / 2 - scale * size / 2;
+        /* whole pixels from the top: the outline stays as sharp as at the em */
+        y0 = (top + bottom) / 2 + scale * (int)(size / 2);
+    }
     for (int py = 0; py < size; py++)
     {
         for (int px_ = 0; px_ < size; px_++)
@@ -86,14 +123,19 @@ float *glyph_coverage( WCHAR code, int size )
             for (int j = 0; j < SUPERSAMPLE; j++)
                 for (int i = 0; i < SUPERSAMPLE; i++)
                 {
-                    float x = (px_ + (i + 0.5f) / SUPERSAMPLE) * scale;
-                    float y = EM - (py + (j + 0.5f) / SUPERSAMPLE) * scale;
+                    float x = x0 + (px_ + (i + 0.5f) / SUPERSAMPLE) * scale;
+                    float y = y0 - (py + (j + 0.5f) / SUPERSAMPLE) * scale;
                     if (inside( outline, x, y )) hits++;
                 }
             cov[py * size + px_] = (float)hits / (SUPERSAMPLE * SUPERSAMPLE);
         }
     }
     return cov;
+}
+
+float *glyph_coverage( WCHAR code, int size )
+{
+    return coverage( code, size, FALSE );
 }
 
 static HBITMAP create_dib( HDC hdc, int width, int height, UINT32 **bits )
@@ -130,11 +172,12 @@ void draw_glyph( HDC hdc, WCHAR code, int x, int y, int size, COLORREF color, BY
     free( cov );
 }
 
-/* the notification area's icon: white on the dark taskbar, black on a light one */
+/* the notification area's icon: white on the dark taskbar, black on a light
+ * one; the battery as wide as the icon, the size of the others beside it */
 HICON make_glyph_icon( WCHAR code, int size )
 {
     ICONINFO info = { .fIcon = TRUE };
-    float *cov = glyph_coverage( code, size );
+    float *cov = coverage( code, size, TRUE );
     UINT32 *bits;
     HICON icon = NULL;
 

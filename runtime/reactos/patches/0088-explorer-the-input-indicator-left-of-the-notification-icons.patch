@@ -1,0 +1,46 @@
+diff --git a/base/shell/explorer/trayntfy.cpp b/base/shell/explorer/trayntfy.cpp
+index 95c5cdc..a3efc54 100644
+--- a/base/shell/explorer/trayntfy.cpp
++++ b/base/shell/explorer/trayntfy.cpp
+@@ -1033,26 +1033,29 @@ public:
+                 swpFlags);
+         }
+ 
++        /* Arctic: the input indicator first, the icons after it, then the clock */
+         if (m_hwndInput)
+         {
+             if (IsHorizontal)
+             {
+                 rcClient.right -= INPUT_INDICATOR_WIDTH;
+-                ::SetWindowPos(m_hwndInput, NULL, rcClient.right, rcClient.top,
++                ::SetWindowPos(m_hwndInput, NULL, ContentMargin.cxLeftWidth, rcClient.top,
+                                INPUT_INDICATOR_WIDTH, rcClient.bottom - rcClient.top, swpFlags);
+             }
+             else
+             {
+                 rcClient.bottom -= INPUT_INDICATOR_WIDTH;
+-                ::SetWindowPos(m_hwndInput, NULL, rcClient.left, rcClient.bottom,
++                ::SetWindowPos(m_hwndInput, NULL, rcClient.left, ContentMargin.cyTopHeight,
+                                rcClient.right - rcClient.left, INPUT_INDICATOR_WIDTH, swpFlags);
+             }
+         }
++        const int cxInput = m_hwndInput && IsHorizontal ? INPUT_INDICATOR_WIDTH : 0;
++        const int cyInput = m_hwndInput && !IsHorizontal ? INPUT_INDICATOR_WIDTH : 0;
+ 
+         POINT ptPager;
+         if (IsHorizontal)
+         {
+-            ptPager.x = ContentMargin.cxLeftWidth;
++            ptPager.x = ContentMargin.cxLeftWidth + cxInput;
+             ptPager.y = ((rcClient.bottom - rcClient.top) - trayNotifySize.cy) / 2;
+             if (g_TaskbarSettings.UseCompactTrayIcons())
+                 ptPager.y += ContentMargin.cyTopHeight;
+@@ -1062,7 +1065,7 @@ public:
+             ptPager.x = ((rcClient.right - rcClient.left) - trayNotifySize.cx) / 2;
+             if (g_TaskbarSettings.UseCompactTrayIcons())
+                 ptPager.x += ContentMargin.cxLeftWidth;
+-            ptPager.y = ContentMargin.cyTopHeight;
++            ptPager.y = ContentMargin.cyTopHeight + cyInput;
+         }
+ 
+         ::SetWindowPos(m_hwndPager,
