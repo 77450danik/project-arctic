@@ -2,7 +2,7 @@
  * Network and Sharing Center: resources
  *
  * The dialogs are Windows' own (tcpipcfg.dll.mui, netshell.dll.mui, uk-UA:
- * dialogs_uk.rcinc, written by tools/res2rc.py), the icons netcenter.dll's.
+ * dialogs_uk.rcinc, written by tools/res2rc.py), the icons Arctic's (tools/cpl-icons.py).
  * The texts are Windows' where it has them (netcenter, tcpipcfg, netshell);
  * Windows 7's map and tasks, and what Arctic adds, are Arctic's.
  *

@@ -1,0 +1,81 @@
+diff -ru a/dll/shellext/netshell/res/netshell.rgs b/dll/shellext/netshell/res/netshell.rgs
+--- a/dll/shellext/netshell/res/netshell.rgs	2026-10-20 23:32:38.111741822 +0200
++++ b/dll/shellext/netshell/res/netshell.rgs	2026-10-20 23:32:38.125809154 +0200
+@@ -8,7 +8,7 @@
+             {
+                 val ThreadingModel = s 'Both'
+             }
+-            DefaultIcon = s '%MODULE%'
++            DefaultIcon = e '%%SystemRoot%%\system32\imageres.dll,-9001'
+             ShellFolder
+             {
+                 val Attributes = d '0x20000000'
+@@ -35,7 +35,7 @@
+             {
+                 val ThreadingModel = s 'Both'
+             }
+-            DefaultIcon = s '%MODULE%'
++            DefaultIcon = e '%%SystemRoot%%\system32\imageres.dll,-9001'
+         }
+         ForceRemove {7007acc8-3202-11d1-aad2-00805fc1270e} = s 'Network Connections Enum'
+         {
+diff -ru a/dll/win32/shell32/res/rgs/adminfoldershortcut.rgs b/dll/win32/shell32/res/rgs/adminfoldershortcut.rgs
+--- a/dll/win32/shell32/res/rgs/adminfoldershortcut.rgs	2026-10-20 23:32:38.080276280 +0200
++++ b/dll/win32/shell32/res/rgs/adminfoldershortcut.rgs	2026-10-20 23:32:38.116844279 +0200
+@@ -7,7 +7,7 @@
+ 			val '{305CA226-D286-468e-B848-2B2E8E697B74} 2' = d '5'
+ 			val InfoTip = e '@%%SystemRoot%%\system32\SHELL32.dll,-22921'
+ 			val LocalizedString = e '@%%SystemRoot%%\system32\SHELL32.dll,-22982'
+-			DefaultIcon = e '%%SystemRoot%%\system32\main.cpl,-500'
++			DefaultIcon = e '%%SystemRoot%%\system32\imageres.dll,-114'
+ 			InprocServer32 = s '%MODULE%'
+ 			{
+ 				val ThreadingModel = s 'Apartment'
+diff -ru a/dll/win32/shell32/res/rgs/controlpanel.rgs b/dll/win32/shell32/res/rgs/controlpanel.rgs
+--- a/dll/win32/shell32/res/rgs/controlpanel.rgs	2026-10-20 23:32:38.105150379 +0200
++++ b/dll/win32/shell32/res/rgs/controlpanel.rgs	2026-10-20 23:32:38.122413040 +0200
+@@ -84,7 +84,7 @@
+ 			val '{305CA226-D286-468e-B848-2B2E8E697B74} 2' = d '1'
+ 			val InfoTip = e '@%%SystemRoot%%\system32\SHELL32.dll,-30348'
+ 			val LocalizedString = e '@%%SystemRoot%%\system32\SHELL32.dll,-32517'
+-			DefaultIcon = e '%%SystemRoot%%\system32\SHELL32.dll,-40'
++			DefaultIcon = e '%%SystemRoot%%\system32\imageres.dll,-80'
+ 			Shell
+ 			{
+ 				Open
+diff -ru a/dll/win32/shell32/res/rgs/folderoptions.rgs b/dll/win32/shell32/res/rgs/folderoptions.rgs
+--- a/dll/win32/shell32/res/rgs/folderoptions.rgs	2026-10-20 23:32:38.100021747 +0200
++++ b/dll/win32/shell32/res/rgs/folderoptions.rgs	2026-10-20 23:32:38.121440890 +0200
+@@ -7,7 +7,7 @@
+ 			val '{305CA226-D286-468e-B848-2B2E8E697B74} 2' = d '1'
+ 			val InfoTip = e '@%%SystemRoot%%\system32\SHELL32.dll,-22924'
+ 			val LocalizedString = e '@%%SystemRoot%%\system32\SHELL32.dll,-22985'
+-			DefaultIcon = e '%%SystemRoot%%\system32\SHELL32.dll,-210'
++			DefaultIcon = e '%%SystemRoot%%\system32\imageres.dll,-166'
+ 			Shell
+ 			{
+ 				Open
+diff -ru a/dll/win32/shell32/res/rgs/fontsfoldershortcut.rgs b/dll/win32/shell32/res/rgs/fontsfoldershortcut.rgs
+--- a/dll/win32/shell32/res/rgs/fontsfoldershortcut.rgs	2026-10-20 23:32:38.085468567 +0200
++++ b/dll/win32/shell32/res/rgs/fontsfoldershortcut.rgs	2026-10-20 23:32:38.118463783 +0200
+@@ -7,7 +7,7 @@
+ 			val '{305CA226-D286-468e-B848-2B2E8E697B74} 2' = d '&Hffffffff'
+ 			val InfoTip = e '@%%SystemRoot%%\system32\SHELL32.dll,-22920'
+ 			val LocalizedString = e '@%%SystemRoot%%\system32\SHELL32.dll,-22981'
+-			DefaultIcon = e '%%SystemRoot%%\system32\main.cpl,-400'
++			DefaultIcon = e '%%SystemRoot%%\system32\imageres.dll,-77'
+ 			InprocServer32 = s '%MODULE%'
+ 			{
+ 				val ThreadingModel = s 'Apartment'
+diff -ru a/dll/win32/shell32/res/rgs/printers.rgs b/dll/win32/shell32/res/rgs/printers.rgs
+--- a/dll/win32/shell32/res/rgs/printers.rgs	2026-10-20 23:32:38.092911074 +0200
++++ b/dll/win32/shell32/res/rgs/printers.rgs	2026-10-20 23:32:38.119747749 +0200
+@@ -8,7 +8,7 @@
+ 			val InfoTip = e '@%%SystemRoot%%\system32\SHELL32.dll,-12696'
+ 			val IntroText = e '@%%SystemRoot%%\system32\SHELL32.dll,-31757'
+ 			val LocalizedString = e '@%%SystemRoot%%\system32\SHELL32.dll,-9319'
+-			DefaultIcon = e '%%SystemRoot%%\System32\shell32.dll,-138'
++			DefaultIcon = e '%%SystemRoot%%\System32\imageres.dll,-51'
+ 			InprocServer32 = s '%MODULE%'
+ 			{
+ 				val ThreadingModel = s 'Apartment'

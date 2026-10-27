@@ -1,0 +1,29 @@
+REGEDIT4
+
+; The Control Panel's own folders take their icons from imageres.dll by
+; Windows' numbers (tools/cpl-icons.py). ReactOS's registration says so too
+; (patch 0086); this is for a system registered before it.
+
+; Taskbar and Navigation
+[HKEY_CLASSES_ROOT\CLSID\{0DF44EAA-FF21-4412-828E-260A8728E7F1}\DefaultIcon]
+@="C:\\Windows\\System32\\imageres.dll,-80"
+
+; Administrative Tools
+[HKEY_CLASSES_ROOT\CLSID\{D20EA4E1-3957-11d2-A40B-0C5020524153}\DefaultIcon]
+@="C:\\Windows\\System32\\imageres.dll,-114"
+
+; Fonts
+[HKEY_CLASSES_ROOT\CLSID\{D20EA4E1-3957-11d2-A40B-0C5020524152}\DefaultIcon]
+@="C:\\Windows\\System32\\imageres.dll,-77"
+
+; Printers
+[HKEY_CLASSES_ROOT\CLSID\{2227A280-3AEA-1069-A2DE-08002B30309D}\DefaultIcon]
+@="C:\\Windows\\System32\\imageres.dll,-51"
+
+; File Explorer Options
+[HKEY_CLASSES_ROOT\CLSID\{6DFD7C5C-2451-11d3-A299-00C04F8EF6AF}\DefaultIcon]
+@="C:\\Windows\\System32\\imageres.dll,-166"
+
+; Network Connections
+[HKEY_CLASSES_ROOT\CLSID\{7007ACC7-3202-11D1-AAD2-00805FC1270E}\DefaultIcon]
+@="C:\\Windows\\System32\\imageres.dll,-9001"

@@ -3,8 +3,7 @@
  *
  * The Ukrainian words are Windows' own (usercpl.dll.mui, uk-UA) where it has
  * them, in the wording of Windows 7 for User Account Control ("контроль
- * облікових записів"); the icon is Windows' own too
- * (SystemResources\usercpl.dll.mun, the icon DefaultIcon points at). What is
+ * облікових записів"); the icon is Arctic's (tools/cpl-icons.py). What is
  * about the Linux subsystem is Arctic's own (docs/linux-gate.md).
  *
  * This library is free software; you can redistribute it and/or

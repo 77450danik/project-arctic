@@ -2,7 +2,7 @@
  * Sound of the Control Panel: resources
  *
  * The dialogs are Windows' own (mmsys.cpl.mui, uk-UA: dialogs_uk.rcinc,
- * written by tools/res2rc.py), the icons mmres.dll's, the names of the
+ * written by tools/res2rc.py), the icons Arctic's (tools/cpl-icons.py), the names of the
  * sound events mmres.dll.mui's (events.rcinc, tools/make-sounds.py). The
  * Ukrainian texts are Windows' where it has them.
  *

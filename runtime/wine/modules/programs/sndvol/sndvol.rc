@@ -3,7 +3,7 @@
  *
  * The dialogs are Windows' own (SndVol.exe.mui, uk-UA, written by
  * tools/res2rc.py), with buttons where Windows has one-button toolbars; the
- * icons are mmres.dll's.
+ * icons are Arctic's (tools/cpl-icons.py).
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public

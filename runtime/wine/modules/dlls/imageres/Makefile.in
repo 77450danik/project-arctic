@@ -1,0 +1,8 @@
+MODULE    = imageres.dll
+
+EXTRADLLFLAGS = -Wb,--data-only
+
+VER_FILEDESCRIPTION_STR = "Image resources"
+
+SOURCES = \
+	imageres.rc

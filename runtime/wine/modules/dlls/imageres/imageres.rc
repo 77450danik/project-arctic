@@ -1,0 +1,34 @@
+/*
+ * imageres.dll: icons by the numbers Windows gives them
+ *
+ * Windows keeps most of the system's icons in imageres.dll, and what is
+ * registered names them by number ("imageres.dll,-114" is Administrative
+ * Tools): Arctic's have the same numbers. Arctic's own pictures, put
+ * together by tools/cpl-icons.py from ICONS/ and the Longhorn theme; 9001
+ * and up are numbers Windows does not use here.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+/* @makedep: 51.ico */
+51 ICON 51.ico
+/* @makedep: 77.ico */
+77 ICON 77.ico
+/* @makedep: 80.ico */
+80 ICON 80.ico
+/* @makedep: 87.ico */
+87 ICON 87.ico
+/* @makedep: 109.ico */
+109 ICON 109.ico
+/* @makedep: 114.ico */
+114 ICON 114.ico
+/* @makedep: 149.ico */
+149 ICON 149.ico
+/* @makedep: 166.ico */
+166 ICON 166.ico
+/* Network Connections (netshell.dll's in Windows) */
+/* @makedep: 9001.ico */
+9001 ICON 9001.ico
