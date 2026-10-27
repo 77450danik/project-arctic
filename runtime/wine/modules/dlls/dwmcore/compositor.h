@@ -40,6 +40,15 @@ struct surface
     int                 dst_width, dst_height; /* wp_viewport destination, 0 if unset */
     struct wl_resource *viewport;
 
+    /* a game that draws faster than the monitor shows (VSync off) */
+    bool                outpaces;            /* composed, not shown directly: its buffers come back at once */
+    uint32_t            early_commits;       /* frames that came while the last one still waited for a flip */
+    uint32_t            commits;             /* frames since rate_since */
+    uint32_t            slow_seconds;        /* seconds in a row below 60 % of the refresh */
+    uint64_t            last_commit;         /* when its last GPU frame came */
+    uint64_t            last_interval;       /* ... and how long after the one before */
+    uint64_t            rate_since;
+
     /* on the GPU: the pixels as an image */
     void               *texture;             /* NULL if none */
     uint32_t            texture_generation;  /* of the device it was made on */
@@ -194,6 +203,8 @@ bool gpu_active(void);
 bool gpu_render( struct output *output, bool vrr );  /* composes and queues a flip; false if it could not */
 void gpu_output_gone( struct output *output );
 bool gpu_frame_released( void *buffer );     /* true if the buffer was one of our frames */
+void gpu_frame_done(void);                   /* the frame the GPU drew is drawn: what it used goes */
+void compositor_watch_gpu( int fd );         /* gpu_frame_done once fd signals; -1 stops watching */
 void gpu_surface_gone( struct surface *s );
 void gpu_dmabuf_gone( struct dmabuf *buffer );
 void gpu_image_free( struct window_image *image );
@@ -232,6 +243,7 @@ void     scene_surfaces( const struct window_draw *draw,
 struct surface *surface_for_window( uint32_t hwnd );
 struct window_state *window_state( uint32_t hwnd );
 bool     window_is_shown_directly( uint32_t hwnd );
+uint32_t scene_cover_window( struct output *output );
 
 /* thumbnails drawn in a window */
 struct thumbnail_draw

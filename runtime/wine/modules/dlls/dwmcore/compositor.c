@@ -75,6 +75,10 @@ WINE_DEFAULT_DEBUG_CHANNEL(dwm);
 
 #define SOCKET_NAME "arctic-0"
 
+#ifndef WS_EX_NOREDIRECTIONBITMAP
+#define WS_EX_NOREDIRECTIONBITMAP 0x00200000
+#endif
+
 static struct wl_display      *display;
 static struct wl_event_source *frame_timer;
 struct wl_list                 all_surfaces;
@@ -98,6 +102,10 @@ static struct wl_list          window_states;  /* struct window_state */
 static bool                    windows_known;  /* the first list came: windows that show later animate */
 static struct arctic_dwm_entry *attributes;  /* from dwmapi */
 static uint32_t                attribute_count;
+/* the log of games' frames (rates, hitches, how they are shown): only while
+ * C:\ProgramData\Arctic\dwm-diagnostics is there, which the Games panel's
+ * "Діагностика кадрів" makes (docs/games.md) */
+static bool                    frame_diagnostics;
 static bool                    animating;    /* frames keep coming until every animation ends */
 
 /* Aero Snap: where a window dragged to a screen edge would go */
@@ -549,10 +557,22 @@ bool window_is_shown_directly( uint32_t hwnd )
 static void for_each_window_surface( const struct dwm_window *w,
                                      void (*callback)( struct surface *s, int x, int y, void *ctx ), void *ctx )
 {
-    struct surface *s;
+    struct surface *s, *child;
 
     wl_list_for_each( s, &all_surfaces, all_link )
-        if (s->hwnd == w->hwnd && s->xdg_toplevel) callback( s, w->left, w->top, ctx );
+    {
+        if (s->hwnd != w->hwnd || !s->xdg_toplevel) continue;
+        /* A window without a redirection bitmap shows nothing of what GDI
+         * draws in it, only what a swap chain puts there: Discord's input
+         * trap over a game, never painted, covered the game in white. */
+        if (w->ex_style & WS_EX_NOREDIRECTIONBITMAP)
+        {
+            wl_list_for_each( child, &s->children, child_link )
+                callback( child, w->left + child->sub_x, w->top + child->sub_y, ctx );
+            continue;
+        }
+        callback( s, w->left, w->top, ctx );
+    }
     wl_list_for_each( s, &all_surfaces, all_link )
         if (s->hwnd == w->hwnd && s->subsurface) callback( s, w->left, w->top, ctx );
     /* what another process draws (Vulkan, Direct3D) has no role, and covers
@@ -774,9 +794,20 @@ static bool window_backdrop( const struct window_state *ws, bool *blur, uint32_t
     return true;
 }
 
+/* A layered window is see-through where it draws nothing: what a swap chain
+ * draws in it is blended by its alpha, whatever the buffer's format says.
+ * Discord's overlay over a game is such a window, with no GDI surface at all:
+ * Chromium's GPU buffer (XRGB, transparent pixels 00000000, its widgets
+ * opaque, dwm-dump) laid black over the whole game. */
+static bool per_pixel_alpha( const struct dwm_window *w )
+{
+    return !!(w->ex_style & WS_EX_LAYERED);
+}
+
 static enum layer_mode layer_mode( const struct surface *s, const struct window_draw *draw )
 {
     if (s->alpha) return LAYER_PREMULTIPLIED;
+    if (s->dmabuf && draw && draw->w && per_pixel_alpha( draw->w )) return LAYER_PREMULTIPLIED;
     if (!draw || !draw->backdrop) return LAYER_OPAQUE;
     return draw->ws && draw->ws->has_attr && draw->ws->attr.light ? LAYER_KEYED_LIGHT : LAYER_KEYED;
 }
@@ -1551,12 +1582,13 @@ static bool cursor_on( const struct kms_output *o )
 /* The buffer of a window that fills the monitor, with nothing over it: a game
  * or a video full screen. The client surface it draws in lies over the
  * window's own (the GDI part) and must cover all of it. */
-static struct surface *fullscreen_content( const struct kms_output *o, uint32_t *hwnd )
+static struct surface *fullscreen_content( const struct kms_output *o, uint32_t *hwnd, bool *overlaid )
 {
     const struct kms_mode *mode = &o->modes[o->mode];
     RECT rect = { o->x, o->y, o->x + mode->width, o->y + mode->height };
     struct surface *s, *top, *child;
 
+    if (overlaid) *overlaid = false;
     wl_list_for_each( s, &toplevels, stack_link )
         if (!s->hwnd && s->x < rect.right && s->y < rect.bottom &&
             s->x + s->width > rect.left && s->y + s->height > rect.top) return NULL;
@@ -1568,6 +1600,15 @@ static struct surface *fullscreen_content( const struct kms_output *o, uint32_t 
 
         if (!(w->style & WS_VISIBLE) || (w->style & WS_MINIMIZE)) continue;
         if (w->right <= rect.left || w->left >= rect.right || w->bottom <= rect.top || w->top >= rect.bottom) continue;
+        /* An overlay over a game (Discord's, the Games overlay: layered, the
+         * clicks go through it) shows the game under it, which is still the
+         * content; shown directly, the overlay would be gone (and its
+         * transparent pixels were black): the monitor is composed. */
+        if (w->ex_style & (WS_EX_LAYERED | WS_EX_TRANSPARENT))
+        {
+            if (overlaid) *overlaid = true;
+            continue;
+        }
         /* the topmost window on the monitor is the one that fills it */
         if (w->left != rect.left || w->top != rect.top || w->right != rect.right || w->bottom != rect.bottom)
             return NULL;
@@ -1575,7 +1616,8 @@ static struct surface *fullscreen_content( const struct kms_output *o, uint32_t 
         top = s;
         wl_list_for_each( child, &s->children, child_link )
             if (!child->hwnd && has_content( child )) top = child;
-        if (!top->dmabuf || top->src_x || top->src_y) return NULL;
+        /* the plane shows no alpha: what is see-through is composed */
+        if (!top->dmabuf || top->alpha || top->src_x || top->src_y) return NULL;
         wl_list_for_each( child, &top->children, child_link )
             if (!child->hwnd && has_content( child )) return NULL;
         x = w->left + (top == s ? 0 : top->sub_x);
@@ -1588,6 +1630,17 @@ static struct surface *fullscreen_content( const struct kms_output *o, uint32_t 
         return top;
     }
     return NULL;
+}
+
+/* the window whose opaque GPU buffer fills the monitor: the windows under it
+ * are not drawn when the monitor is composed; 0 if none */
+uint32_t scene_cover_window( struct output *output )
+{
+    struct surface *content;
+    uint32_t hwnd = 0;
+
+    if (!output->kms || !(content = fullscreen_content( output->kms, &hwnd, NULL )) || content->alpha) return 0;
+    return hwnd;
 }
 
 static uint32_t source_width( const struct surface *s )
@@ -1635,7 +1688,7 @@ static void present_directly( struct output *output, struct surface *content, bo
     if (o->front_buffer == buffer &&
         o->vrr_on == (vrr && o->vrr_capable && o->vrr_prop && !o->vrr_refused)) return;
     dmabuf_ref( buffer );
-    if (kms_present( o, buffer->fb, source_width( content ), source_height( content ), vrr, buffer, false )) return;
+    if (kms_present( o, buffer->fb, source_width( content ), source_height( content ), vrr, buffer, false, -1 )) return;
     if (errno == EBUSY)
     {
         dmabuf_unref( buffer );
@@ -1658,7 +1711,7 @@ static void present_composed( struct output *output, bool vrr )
     if (!o->no_flip && (fb = kms_back_buffer( o )))
     {
         copy_shadow( o, fb );
-        if (kms_present( o, fb->fb_id, fb->width, fb->height, vrr, NULL, true )) return;
+        if (kms_present( o, fb->fb_id, fb->width, fb->height, vrr, NULL, true, -1 )) return;
     }
     if (!o->no_flip)
     {
@@ -1685,13 +1738,127 @@ static void count_frame( struct output *output, bool direct, bool vrr, uint64_t 
     else output->stat_composed++;
     output->stat_vrr |= vrr;
     if ((elapsed = now - output->stat_since) < 10000000) return;
-    MESSAGE( "dwm: %s %u frames/s, %u%% shown directly, variable refresh %s\n", output->kms->name,
-             (unsigned int)((output->stat_direct + output->stat_composed) * 1000000ull / elapsed),
-             output->stat_direct * 100 / (output->stat_direct + output->stat_composed),
-             output->stat_vrr ? "on" : "off" );
+    if (frame_diagnostics)
+        MESSAGE( "dwm: %s %u frames/s, %u%% shown directly, variable refresh %s\n", output->kms->name,
+                 (unsigned int)((output->stat_direct + output->stat_composed) * 1000000ull / elapsed),
+                 output->stat_direct * 100 / (output->stat_direct + output->stat_composed),
+                 output->stat_vrr ? "on" : "off" );
     output->stat_direct = output->stat_composed = 0;
     output->stat_vrr = false;
     output->stat_since = 0;
+}
+
+/* Game mode (docs/games.md): a window that has filled a monitor with a GPU
+ * buffer for two seconds is a game, until it has not for three. arctic-init
+ * then pauses what costs the CPU beside it and gives it the priority; it
+ * hears of it through a file: the game's process id, or no file. */
+#define GAME_FILE "/run/arctic/power/game"
+#define GAME_STATS_FILE "/run/arctic/power/game-stats"
+
+#define GAME_OVERLAY_FILE "/run/arctic/power/overlay"  /* gameosd.exe shows: it wants the frames */
+
+static struct surface *game_content;  /* the game's surface, while game mode is on */
+static bool overlay_wants_frames;     /* checked with the diagnostics, every 60 ticks */
+static uint64_t game_since, game_last, game_worst, game_written;
+static uint32_t game_frames, game_fps_tenths, game_avg, game_worst_shown, game_seq;
+static uint32_t game_intervals[256], game_interval_count;  /* since the file was last written */
+
+/* The game's frames for the Games overlay, only while it shows (its file):
+ * ten times a second, the frames a second (tenths), the average and the
+ * longest time between two over the last half second, in microseconds;
+ * then a count of writes and the time between each two frames since the
+ * last write, for its graph of frame times. */
+static void game_frame( uint64_t now )
+{
+    FILE *f;
+
+    if (!overlay_wants_frames)
+    {
+        game_since = game_last = 0;   /* counted afresh once it shows again */
+        game_fps_tenths = game_interval_count = 0;
+        return;
+    }
+    if (game_last)
+    {
+        if (now - game_last > game_worst) game_worst = now - game_last;
+        if (game_interval_count < ARRAY_SIZE(game_intervals))
+            game_intervals[game_interval_count++] = min( now - game_last, 0xffffffffull );
+    }
+    game_last = now;
+    if (!game_since)
+    {
+        game_since = game_written = now;
+        return;
+    }
+    game_frames++;
+    if (now - game_since >= 500000)
+    {
+        game_fps_tenths = game_frames * 10000000ull / (now - game_since);
+        game_avg = (now - game_since) / game_frames;
+        game_worst_shown = game_worst;
+        game_since = now;
+        game_frames = 0;
+        game_worst = 0;
+    }
+    if (now - game_written < 100000 || !game_fps_tenths) return;
+    if ((f = fopen( GAME_STATS_FILE ".new", "w" )))
+    {
+        fprintf( f, "%u %u %u\n%u %u", game_fps_tenths, game_avg, game_worst_shown, ++game_seq, game_interval_count );
+        for (uint32_t i = 0; i < game_interval_count; i++) fprintf( f, " %u", game_intervals[i] );
+        fputc( '\n', f );
+        fclose( f );
+        rename( GAME_STATS_FILE ".new", GAME_STATS_FILE );
+    }
+    game_written = now;
+    game_interval_count = 0;
+}
+
+static void game_seen( struct surface *content, uint64_t now )
+{
+    static pid_t game, pending;
+    static uint64_t pending_since, last_seen;
+    pid_t pid = 0;
+    uid_t uid;
+    gid_t gid;
+    FILE *f;
+
+    if (content && content->resource)
+        wl_client_get_credentials( wl_resource_get_client( content->resource ), &pid, &uid, &gid );
+    if (pid && pid == game)
+    {
+        last_seen = now;
+        game_content = content;
+    }
+    else if (pid && pid != pending)
+    {
+        pending = pid;
+        pending_since = now;
+    }
+    else if (pid && now - pending_since >= 2000000)
+    {
+        game = pid;
+        game_content = content;
+        last_seen = now;
+        pending = 0;
+        if ((f = fopen( GAME_FILE ".new", "w" )))
+        {
+            fprintf( f, "%d\n", game );
+            fclose( f );
+            rename( GAME_FILE ".new", GAME_FILE );
+        }
+        MESSAGE( "dwm: game mode on: process %d fills a monitor\n", game );
+    }
+    if (!pid && pending && now - pending_since >= 2000000) pending = 0;
+    if (game && pid != game && now - last_seen >= 3000000)
+    {
+        MESSAGE( "dwm: game mode off\n" );
+        game = 0;
+        game_content = NULL;
+        game_since = game_last = game_worst = 0;
+        game_frames = game_fps_tenths = game_interval_count = 0;
+        unlink( GAME_FILE );
+        unlink( GAME_STATS_FILE );
+    }
 }
 
 /* A frame for every monitor that needs one and has shown its last one. A
@@ -1715,13 +1882,16 @@ static void repaint(void)
         struct kms_output *o = output->kms;
         struct surface *content;
         uint32_t hwnd = 0;
+        bool overlaid;
 
         if (!o || !o->enabled || !output->needs_frame || o->queued_fb || now < output->not_before) continue;
         if (count == ARRAY_SIZE(ready)) break;
-        content = fullscreen_content( o, &hwnd );
+        content = fullscreen_content( o, &hwnd, &overlaid );
+        game_seen( content, now );
         ready[count].output = output;
         ready[count].vrr = content && vrr_allowed && !vrr_turned_off( o );
-        ready[count].content = content && now >= no_direct_until && can_show_directly( o, content ) ? content : NULL;
+        ready[count].content = content && !overlaid && !content->outpaces && now >= no_direct_until &&
+                               can_show_directly( o, content ) ? content : NULL;
         if (ready[count].content) output->direct_hwnd = hwnd;
         else
         {
@@ -1775,12 +1945,83 @@ static bool flips_pending(void)
     return false;
 }
 
+/* What each visible window is made of, once, when C:\ProgramData\Arctic\dwm-dump
+ * appears: its surfaces, their buffers and a few of their pixels (ARGB).
+ * A window that shows wrong (an overlay all black) is told apart from what
+ * its program drew. */
+static void dump_pixels( const char *what, const uint32_t *pixels, int width, int height )
+{
+    static const int at[5][2] = { { 1, 1 }, { 2, 1 }, { 1, 2 }, { 2, 2 }, { 1, 3 } };  /* quarters */
+    char line[256];
+    int len = 0;
+
+    for (int i = 0; i < 5; i++)
+    {
+        int x = width * at[i][0] / 4, y = height * at[i][1] / 4;
+        if (x >= width || y >= height) continue;
+        len += snprintf( line + len, sizeof(line) - len, " %08x", pixels[(size_t)y * width + x] );
+    }
+    MESSAGE( "dwm: dump:     %s pixels%s\n", what, line );
+}
+
+static void dump_surface( const char *role, struct surface *s )
+{
+    MESSAGE( "dwm: dump:   %s %ux%u %s%s at %d,%d sub %d,%d\n", role, s->width, s->height,
+             s->dmabuf ? "dmabuf" : s->pixels ? "shm" : "empty", s->alpha ? " alpha" : "", s->x, s->y,
+             s->sub_x, s->sub_y );
+    if (s->pixels && s->width > 0 && s->height > 0) dump_pixels( "shm", s->pixels, s->width, s->height );
+    if (s->dmabuf && s->width > 0 && s->height > 0)
+    {
+        uint32_t *pixels = malloc( (size_t)s->width * s->height * 4 );
+
+        if (pixels && dmabuf_read( s->dmabuf, pixels )) dump_pixels( "dmabuf", pixels, s->width, s->height );
+        free( pixels );
+    }
+}
+
+static void dump_scene(void)
+{
+    static uint32_t ticks;
+    static char path[512], diagnostics_path[512];
+    struct surface *s, *child;
+    const char *prefix;
+
+    if (++ticks % 60) return;
+    if (!path[0])
+    {
+        if (!(prefix = getenv( "WINEPREFIX" ))) return;
+        snprintf( path, sizeof(path), "%s/dosdevices/c:/ProgramData/Arctic/dwm-dump", prefix );
+        snprintf( diagnostics_path, sizeof(diagnostics_path), "%s/dosdevices/c:/ProgramData/Arctic/dwm-diagnostics",
+                  prefix );
+    }
+    frame_diagnostics = !access( diagnostics_path, F_OK );
+    overlay_wants_frames = !access( GAME_OVERLAY_FILE, F_OK );
+    if (access( path, F_OK )) return;
+    unlink( path );
+    for (uint32_t i = 0; i < window_count; i++)
+    {
+        const struct dwm_window *w = &windows[i];
+
+        if (!(w->style & WS_VISIBLE)) continue;
+        MESSAGE( "dwm: dump: window %#x style %08x ex %08x (%d,%d)-(%d,%d)\n", w->hwnd, w->style, w->ex_style,
+                 w->left, w->top, w->right, w->bottom );
+        wl_list_for_each( s, &all_surfaces, all_link )
+        {
+            if (s->hwnd != w->hwnd) continue;
+            dump_surface( s->xdg_toplevel ? "toplevel" : s->subsurface ? "subsurface" : "other process", s );
+            wl_list_for_each( child, &s->children, child_link ) if (!child->hwnd) dump_surface( "  child", child );
+        }
+    }
+    MESSAGE( "dwm: dump: end\n" );
+}
+
 /* frames a flip could not take yet, the pacing of flips that finish at once,
  * and frame callbacks of surfaces while nothing is flipped */
 static int frame_tick( void *data )
 {
     uint32_t hz = screen_refresh_hz();
 
+    dump_scene();
     if (animating) damage();
     repaint();
     if (kms_now() - last_callbacks >= 1000000 / hz && !flips_pending()) send_frame_callbacks();
@@ -1792,6 +2033,23 @@ static int kms_event( int fd, uint32_t mask, void *data )
 {
     kms_dispatch();
     return 0;
+}
+
+/* the GPU drew the last frame: the clients' buffers it read go back to them */
+static struct wl_event_source *gpu_source;
+
+static int gpu_event( int fd, uint32_t mask, void *data )
+{
+    gpu_frame_done();
+    return 0;
+}
+
+void compositor_watch_gpu( int fd )
+{
+    if (gpu_source) wl_event_source_remove( gpu_source );
+    gpu_source = NULL;
+    if (fd >= 0) gpu_source = wl_event_loop_add_fd( wl_display_get_event_loop( display ), fd, WL_EVENT_READABLE,
+                                                    gpu_event, NULL );
 }
 
 /**********************************************************************
@@ -1914,6 +2172,79 @@ static void copy_buffer( struct surface *s, struct wl_resource *buffer )
     s->alpha = wl_shm_buffer_get_format( shm ) == WL_SHM_FORMAT_ARGB8888;
 }
 
+/* A game that draws faster than the monitor shows (VSync off, a mailbox swap
+ * chain) waits for its own buffers while the monitor shows them directly: it
+ * holds two of them, the one on screen and the one queued for the next
+ * refresh, and the game gets one frame a refresh. Such a surface is composed
+ * instead, which hands its buffers back at once, as Windows copies the frames
+ * of a discrete card to the integrated one, and shown directly again once it
+ * draws well below the monitor's rate: a game near it (CS2 at 45-55 frames/s
+ * on 60 Hz) went back and forth every second, a stutter each time. A game
+ * with VSync on waits for the refresh itself and never sends a frame while
+ * the last one is queued. */
+static bool buffer_queued( const struct dmabuf *buffer )
+{
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++) if (kms.outputs[i].queued_buffer == buffer) return true;
+    return false;
+}
+
+/* A frame of a game that came late after steady ones: a hitch the player
+ * sees, with the time, to put beside what the machine did then
+ * (docs/games.md). At most a line a second. */
+static void note_hitch( struct surface *s, uint32_t hwnd, uint64_t now )
+{
+    static uint64_t last_line;
+    uint64_t interval = now - s->last_commit;
+
+    if (!frame_diagnostics) return;
+    if (!s->last_commit || s->last_interval > 40000 || interval < 50000 || interval > 3000000) return;
+    if (now - last_line < 1000000) return;
+    last_line = now;
+    MESSAGE( "dwm: window %#x hitch: a frame %u ms after the one before (%llu.%03llu s)\n", hwnd,
+             (unsigned int)(interval / 1000), (unsigned long long)(now / 1000000),
+             (unsigned long long)(now / 1000 % 1000) );
+}
+
+static void track_pace( struct surface *s, const struct dmabuf *last )
+{
+    uint64_t now = kms_now(), elapsed;
+    uint32_t hz = screen_refresh_hz();
+    struct surface *window = s;
+
+    while (window->parent && !window->hwnd) window = window->parent;
+    if (s->outpaces || shown_directly( window->hwnd )) note_hitch( s, window->hwnd, now );
+    if (s == game_content) game_frame( now );
+    if (s->last_commit) s->last_interval = now - s->last_commit;
+    s->last_commit = now;
+    if (!s->rate_since) s->rate_since = now;
+    s->commits++;
+    if (last && buffer_queued( last )) s->early_commits++;
+    if (!s->outpaces && s->early_commits >= 3)
+    {
+        if (frame_diagnostics)
+            MESSAGE( "dwm: window %#x draws faster than the monitor shows: composed\n", window->hwnd );
+        s->outpaces = true;
+        s->rate_since = now;
+        s->commits = s->early_commits = 0;
+        return;
+    }
+    if ((elapsed = now - s->rate_since) < 1000000) return;
+    /* Slower than 60 % of the refresh for five seconds in a row: a heavy
+     * moment of a fight (CS2 down to 30 frames/s for a second) went back and
+     * forth, and every switch was a hitch just when it mattered. */
+    if (!s->outpaces || s->commits * 100000000ull >= (uint64_t)hz * 60 * elapsed) s->slow_seconds = 0;
+    else if (++s->slow_seconds >= 5)
+    {
+        if (frame_diagnostics)
+            MESSAGE( "dwm: window %#x draws %u frames/s: shown directly again\n", window->hwnd,
+                     (unsigned int)(s->commits * 1000000ull / elapsed) );
+        s->outpaces = false;
+        s->slow_seconds = 0;
+    }
+    s->rate_since = now;
+    s->commits = s->early_commits = 0;
+}
+
 /* A game's frame changes only the monitor that shows it directly: the others
  * are not composed again for it. */
 static bool wake_direct_output( struct surface *s )
@@ -1968,6 +2299,7 @@ static void surface_commit( struct wl_client *client, struct wl_resource *resour
 
         if (buffer != s->dmabuf)
         {
+            if (buffer) track_pace( s, s->dmabuf );
             if (buffer) dmabuf_ref( buffer );
             if (s->dmabuf) dmabuf_unref( s->dmabuf );
             s->dmabuf = buffer;
@@ -2052,6 +2384,7 @@ static void surface_destroyed( struct wl_resource *resource )
     if (s->hwnd && s->xdg_toplevel && has_content( s ) && (ws = window_state( s->hwnd )) && ws->shown)
         gpu_snapshot( ws, &ws->last );
     gpu_surface_gone( s );
+    if (s == game_content) game_content = NULL;
     unmap_toplevel( s );
     wl_list_remove( &s->all_link );
     wl_list_remove( &s->pending_buffer_destroy.link );

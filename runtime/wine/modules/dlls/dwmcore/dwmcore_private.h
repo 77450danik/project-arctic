@@ -130,10 +130,12 @@ struct kms_mode *kms_find_mode( struct kms_output *output, uint32_t width, uint3
 /* Frames. kms_present queues a flip to fb, showing src_width x src_height of
  * it over the whole mode, with variable refresh on or off; buffer is what the
  * compositor gets back once it is off screen. A composed frame falls back to
- * a legacy flip; a client's buffer is composed instead. It returns false if
- * the flip cannot be made; output->no_flip then says whether it never will. */
+ * a legacy flip; a client's buffer is composed instead. in_fence is a sync
+ * file the flip waits for (the GPU still draws the frame), -1 if none. It
+ * returns false if the flip cannot be made; output->no_flip then says whether
+ * it never will. */
 bool kms_present( struct kms_output *output, uint32_t fb, uint32_t src_width, uint32_t src_height,
-                  bool vrr, void *buffer, bool composed );
+                  bool vrr, void *buffer, bool composed, int in_fence );
 struct kms_fb *kms_back_buffer( struct kms_output *output );   /* NULL if both are busy */
 struct kms_fb *kms_front_buffer( struct kms_output *output );
 bool kms_can_scanout( struct kms_output *output, uint32_t fb, uint32_t src_width, uint32_t src_height );

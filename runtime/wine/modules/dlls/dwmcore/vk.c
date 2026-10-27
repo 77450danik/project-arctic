@@ -35,6 +35,7 @@
 #include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/dma-buf.h>
 #include <math.h>
 #include <poll.h>
 #include <stdarg.h>
@@ -42,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
 #include <wayland-server.h>
@@ -107,6 +109,7 @@ struct texture
     bool             acquired;            /* ... taken from the client for this frame */
     bool             transitioned;        /* ... and not for the first time */
     int              fd;                  /* ... the client's, not ours to close */
+    struct dmabuf   *owner;               /* ... the buffer it is */
 };
 
 struct staging
@@ -159,6 +162,8 @@ static VkResult (*get_memory_fd)( VkDevice, const VkMemoryGetFdInfoKHR *, int * 
 static VkResult (*get_memory_fd_properties)( VkDevice, VkExternalMemoryHandleTypeFlagBits, int,
                                              VkMemoryFdPropertiesKHR * );
 static VkResult (*get_image_modifier)( VkDevice, VkImage, VkImageDrmFormatModifierPropertiesEXT * );
+static VkResult (*get_fence_fd)( VkDevice, const VkFenceGetFdInfoKHR *, int * );  /* NULL: frames are waited for */
+static VkResult (*import_semaphore_fd)( VkDevice, const VkImportSemaphoreFdInfoKHR * );
 
 /* the frame being recorded */
 static bool            in_frame;
@@ -166,6 +171,16 @@ static bool            pass_open;
 static int             bound_pipeline;
 static struct texture *acquired[256];
 static uint32_t        acquired_count;
+static VkSemaphore     client_waits[256];  /* what the clients' GPUs still draw into what it reads */
+static uint32_t        client_wait_count;
+
+/* The frame of a monitor the GPU still draws. dwm does not wait for it: the
+ * flip does, and the clients are served meanwhile; what it reads stays until
+ * it is drawn, the clients' buffers too. */
+static bool            frame_pending;
+static int             frame_done_fd = -1;  /* readable once it is drawn */
+static struct dmabuf  *frame_reads[256];
+static uint32_t        frame_read_count;
 
 /* where the frame is drawn: a monitor's image, or a window's */
 static struct
@@ -305,11 +320,11 @@ static void texture_destroy( struct texture *t )
     free( t );
 }
 
-/* gone now, or once the frame that may draw with it is with the GPU */
+/* gone now, or once the frame that may draw with it is drawn */
 static void texture_free( struct texture *t )
 {
     if (!t) return;
-    if (!in_frame)
+    if (!in_frame && !frame_pending)
     {
         texture_destroy( t );
         return;
@@ -602,6 +617,51 @@ static void end_pass(void)
     pass_open = false;
 }
 
+/* what a frame used is let go once the GPU has drawn it */
+static void frame_drawn(void)
+{
+    uint32_t count = frame_read_count;
+
+    if (frame_done_fd >= 0)
+    {
+        compositor_watch_gpu( -1 );
+        close( frame_done_fd );
+    }
+    frame_done_fd = -1;
+    frame_pending = false;
+    frame_read_count = 0;
+    vkResetCommandBuffer( setup_cmd, 0 );
+    vkResetCommandBuffer( draw_cmd, 0 );
+    for (uint32_t i = 0; i < garbage_count; i++) texture_destroy( garbage[i] );
+    garbage_count = 0;
+    /* the clients get their buffers back */
+    for (uint32_t i = 0; i < count; i++) dmabuf_unref( frame_reads[i] );
+}
+
+/* the frame the GPU still draws, before anything else is recorded */
+static bool wait_frame(void)
+{
+    struct pollfd pfd = { .fd = frame_done_fd, .events = POLLIN };
+    bool ok = true;
+
+    if (!frame_pending) return true;
+    if (frame_done_fd >= 0 && poll( &pfd, 1, WAIT_NS / 1000000 ) <= 0)
+    {
+        ERR( "the GPU did not draw a frame\n" );
+        vkDeviceWaitIdle( device );
+        ok = false;
+    }
+    frame_drawn();
+    if (!ok && compositing) give_up( "the GPU does not draw" );
+    return ok;
+}
+
+/* the compositor saw the frame's sync file signal */
+void gpu_frame_done(void)
+{
+    if (frame_pending) frame_drawn();
+}
+
 static bool begin_frame(void)
 {
     VkCommandBufferBeginInfo begin =
@@ -619,8 +679,10 @@ static bool begin_frame(void)
         vkResetCommandBuffer( draw_cmd, 0 );
         for (uint32_t i = 0; i < garbage_count; i++) texture_destroy( garbage[i] );
         garbage_count = 0;
+        client_wait_count = 0;
         in_frame = false;
     }
+    if (!wait_frame()) return false;
     staging_reset();
     if (vkBeginCommandBuffer( setup_cmd, &begin ) != VK_SUCCESS) return false;
     if (vkBeginCommandBuffer( draw_cmd, &begin ) != VK_SUCCESS)
@@ -636,20 +698,27 @@ static bool begin_frame(void)
     return true;
 }
 
-/* the frame goes to the GPU; true once all of it is drawn */
-static bool end_frame(void)
+/* The frame goes to the GPU. Without done, it returns once all of it is
+ * drawn. With done, it does not wait where it can: *done gets a sync file
+ * that signals when the frame is drawn, for the flip to wait for, and -1 if it
+ * is drawn already. */
+static bool finish_frame( int *done )
 {
+    static VkPipelineStageFlags stages[ARRAY_SIZE(client_waits)];
     VkCommandBuffer cmds[2] = { setup_cmd, draw_cmd };
     VkSubmitInfo submit =
     {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = client_wait_count,
+        .pWaitSemaphores = client_waits,
+        .pWaitDstStageMask = stages,
         .commandBufferCount = 2,
         .pCommandBuffers = cmds,
     };
     VkResult res;
 
+    if (done) *done = -1;
     end_pass();
-    /* the clients get their buffers back */
     for (uint32_t i = 0; i < acquired_count; i++)
     {
         struct texture *t = acquired[i];
@@ -657,27 +726,62 @@ static bool end_frame(void)
         barrier( draw_cmd, t, 0, 1, t->layout, VK_IMAGE_LAYOUT_GENERAL, queue_family, VK_QUEUE_FAMILY_FOREIGN_EXT );
         t->layout = VK_IMAGE_LAYOUT_GENERAL;
         t->acquired = false;
+        /* the client gets it back once the frame is drawn */
+        if (t->owner && frame_read_count < ARRAY_SIZE(frame_reads))
+        {
+            dmabuf_ref( t->owner );
+            frame_reads[frame_read_count++] = t->owner;
+        }
     }
     acquired_count = 0;
+    for (uint32_t i = 0; i < client_wait_count; i++) stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    client_wait_count = 0;
     vkEndCommandBuffer( setup_cmd );
     vkEndCommandBuffer( draw_cmd );
     in_frame = false;
+    frame_pending = true;
 
-    if ((res = vkQueueSubmit( queue, 1, &submit, fence )) == VK_SUCCESS)
-        res = vkWaitForFences( device, 1, &fence, VK_TRUE, WAIT_NS );
+    if ((res = vkQueueSubmit( queue, 1, &submit, fence )) == VK_SUCCESS && done && get_fence_fd)
+    {
+        VkFenceGetFdInfoKHR info =
+        {
+            .sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR,
+            .fence = fence,
+            .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
+        };
+        int fd = -1;
+
+        /* the export takes the fence's payload with it: the sync file stands for the frame now */
+        if (get_fence_fd( device, &info, &fd ) == VK_SUCCESS)
+        {
+            if (fd < 0)
+            {
+                frame_drawn();
+                return true;
+            }
+            frame_done_fd = fd;
+            if ((*done = fcntl( fd, F_DUPFD_CLOEXEC, 0 )) < 0) return wait_frame();
+            compositor_watch_gpu( fd );
+            return true;
+        }
+    }
+    if (res == VK_SUCCESS) res = vkWaitForFences( device, 1, &fence, VK_TRUE, WAIT_NS );
     if (res == VK_SUCCESS) vkResetFences( device, 1, &fence );
     else
     {
         ERR( "the GPU did not draw a frame: %d\n", res );
         vkDeviceWaitIdle( device );
         vkResetFences( device, 1, &fence );
-        if (compositing) give_up( "the GPU does not draw" );
     }
-    vkResetCommandBuffer( setup_cmd, 0 );
-    vkResetCommandBuffer( draw_cmd, 0 );
-    for (uint32_t i = 0; i < garbage_count; i++) texture_destroy( garbage[i] );
-    garbage_count = 0;
+    frame_drawn();
+    if (res != VK_SUCCESS && compositing) give_up( "the GPU does not draw" );
     return res == VK_SUCCESS;
+}
+
+/* the frame goes to the GPU; true once all of it is drawn */
+static bool end_frame(void)
+{
+    return finish_frame( NULL );
 }
 
 /* drawing begins, or goes on, in the image the frame is drawn into now */
@@ -887,6 +991,7 @@ static void shutdown_vk(void)
     struct staging *s, *next_s;
     struct set_pool *p, *next_p;
 
+    if (device) wait_frame();
     /* frames KMS still holds are named when it lets them go: they stay, empty */
     for (out = gpu_outputs; out; out = next_out)
     {
@@ -936,6 +1041,8 @@ static void shutdown_vk(void)
         if (set_layout) vkDestroyDescriptorSetLayout( device, set_layout, NULL );
         if (render_pass) vkDestroyRenderPass( device, render_pass, NULL );
         if (fence) vkDestroyFence( device, fence, NULL );
+        for (int i = 0; i < ARRAY_SIZE(client_waits); i++)
+            if (client_waits[i]) vkDestroySemaphore( device, client_waits[i], NULL );
         if (command_pool) vkDestroyCommandPool( device, command_pool, NULL );
         vkDestroyDevice( device, NULL );
     }
@@ -948,6 +1055,10 @@ static void shutdown_vk(void)
     set_layout = VK_NULL_HANDLE;
     render_pass = VK_NULL_HANDLE;
     fence = VK_NULL_HANDLE;
+    memset( client_waits, 0, sizeof(client_waits) );
+    client_wait_count = 0;
+    get_fence_fd = NULL;
+    import_semaphore_fd = NULL;
     command_pool = VK_NULL_HANDLE;
     device = VK_NULL_HANDLE;
     instance = VK_NULL_HANDLE;
@@ -1294,7 +1405,7 @@ static bool init_device(void)
     VkQueueFamilyProperties families[16];
     uint32_t family_count = ARRAY_SIZE(families), extension_count, enabled_count = 0;
     VkExtensionProperties *extensions;
-    const char *enabled[8], *copy = getenv( "ARCTIC_DWM_COPY" );
+    const char *enabled[10], *copy = getenv( "ARCTIC_DWM_COPY" );
     float priority = 1;
     VkDeviceQueueCreateInfo queue_info =
     {
@@ -1320,7 +1431,25 @@ static bool init_device(void)
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 2,
     };
+    VkExportFenceCreateInfo fence_export =
+    {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
+    };
     VkFenceCreateInfo fence_info = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    VkPhysicalDeviceExternalFenceInfo fence_query =
+    {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO,
+        .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
+    };
+    VkExternalFenceProperties fence_props = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES };
+    VkPhysicalDeviceExternalSemaphoreInfo semaphore_query =
+    {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
+        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+    };
+    VkExternalSemaphoreProperties semaphore_props = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES };
+    bool fence_fd = false, semaphore_fd = false;
     VkCommandBuffer buffers[2];
     VkResult res;
 
@@ -1366,6 +1495,23 @@ static bool init_device(void)
         if (has_extension( extensions, extension_count, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME ))
             enabled[enabled_count++] = VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME;
     }
+    /* a frame's end as a sync file for the flip, and the clients' fences
+     * waited for by the GPU: dwm itself waits for neither */
+    vkGetPhysicalDeviceExternalFenceProperties( physical, &fence_query, &fence_props );
+    if (has_extension( extensions, extension_count, VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME ) &&
+        (fence_props.externalFenceFeatures & VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT))
+    {
+        enabled[enabled_count++] = VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME;
+        fence_info.pNext = &fence_export;
+        fence_fd = true;
+    }
+    vkGetPhysicalDeviceExternalSemaphoreProperties( physical, &semaphore_query, &semaphore_props );
+    if (has_extension( extensions, extension_count, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME ) &&
+        (semaphore_props.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT))
+    {
+        enabled[enabled_count++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+        semaphore_fd = true;
+    }
     free( extensions );
     queue_info.queueFamilyIndex = queue_family;
     device_info.enabledExtensionCount = enabled_count;
@@ -1380,6 +1526,11 @@ static bool init_device(void)
     get_memory_fd_properties = (void *)vkGetDeviceProcAddr( device, "vkGetMemoryFdPropertiesKHR" );
     get_image_modifier = (void *)vkGetDeviceProcAddr( device, "vkGetImageDrmFormatModifierPropertiesEXT" );
     if (!get_memory_fd || !get_memory_fd_properties || !get_image_modifier) has_dmabuf = false;
+    if (fence_fd) get_fence_fd = (void *)vkGetDeviceProcAddr( device, "vkGetFenceFdKHR" );
+    if (semaphore_fd) import_semaphore_fd = (void *)vkGetDeviceProcAddr( device, "vkImportSemaphoreFdKHR" );
+    if (has_dmabuf && (get_fence_fd || import_semaphore_fd))
+        MESSAGE( "dwm: frames end as sync files: %s, clients waited for by the GPU: %s\n",
+                 get_fence_fd ? "yes" : "no", import_semaphore_fd ? "yes" : "no" );
 
     pool_info.queueFamilyIndex = queue_family;
     if (vkCreateCommandPool( device, &pool_info, NULL, &command_pool ) != VK_SUCCESS) return false;
@@ -1529,16 +1680,53 @@ failed:
     return NULL;
 }
 
+/* what the client's GPU still draws into the buffer, for the frame's GPU to
+ * wait for (the buffer's implicit fences as a sync file) */
+static bool gpu_waits_for_client( struct texture *t )
+{
+#ifdef DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+    struct dma_buf_export_sync_file sync = { .flags = DMA_BUF_SYNC_READ, .fd = -1 };
+    VkSemaphoreCreateInfo info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    VkImportSemaphoreFdInfoKHR import =
+    {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+        .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+    };
+    VkSemaphore *semaphore = &client_waits[client_wait_count];
+
+    if (!import_semaphore_fd || client_wait_count == ARRAY_SIZE(client_waits)) return false;
+    if (!*semaphore && vkCreateSemaphore( device, &info, NULL, semaphore ) != VK_SUCCESS)
+    {
+        *semaphore = VK_NULL_HANDLE;
+        return false;
+    }
+    if (ioctl( t->fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &sync )) return false;
+    import.semaphore = *semaphore;
+    import.fd = sync.fd;
+    if (import_semaphore_fd( device, &import ) != VK_SUCCESS)
+    {
+        close( sync.fd );
+        return false;
+    }
+    client_wait_count++;  /* the semaphore took the sync file */
+    return true;
+#else
+    return false;
+#endif
+}
+
 /* The client's buffer is ours for the frame. What the client's GPU still
- * draws into it is waited for, as a scanout would wait; a client that never
- * finishes does not hold the desktop for long. */
+ * draws into it is waited for, as a scanout would wait: by the GPU where it
+ * can, else here, and a client that never finishes does not hold the desktop
+ * for long. */
 static bool acquire( struct texture *t )
 {
     struct pollfd pfd = { .fd = t->fd, .events = POLLIN };
 
     if (t->acquired) return true;
     if (!in_frame || acquired_count == ARRAY_SIZE(acquired)) return false;
-    poll( &pfd, 1, 100 );
+    if (!gpu_waits_for_client( t )) poll( &pfd, 1, 100 );
     barrier( setup_cmd, t, 0, 1, t->transitioned ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_QUEUE_FAMILY_FOREIGN_EXT, queue_family );
     t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1564,6 +1752,7 @@ static struct texture *dmabuf_texture( struct dmabuf *buffer )
         return NULL;
     }
     t = buffer->texture;
+    t->owner = buffer;
     return acquire( t ) ? t : NULL;
 }
 
@@ -2048,20 +2237,33 @@ static enum layer_mode plain_mode( const struct surface *s, const struct window_
     return s->alpha ? LAYER_PREMULTIPLIED : LAYER_OPAQUE;
 }
 
-/* the desktop from ox,oy on, into an image of width x height */
-static void draw_scene( struct texture *target, int ox, int oy, int width, int height )
+/* the desktop from ox,oy on, into an image of width x height; cover is a
+ * window that hides everything under it there (a game full screen), 0 if none */
+static void draw_scene( struct texture *target, int ox, int oy, int width, int height, uint32_t cover )
 {
     static struct window_draw draws[512];
     struct window_draw plain;
     struct xform identity = { 1, 1, 0, 0 };
     struct layer_ctx ctx = { &plain, &identity, NULL, 1 };
-    uint32_t count;
+    uint32_t count, first = 0;
 
     set_target( target, ox, oy, width, height );
     clear( ((background >> 16) & 0xff) / 255.0f, ((background >> 8) & 0xff) / 255.0f, (background & 0xff) / 255.0f, 1 );
 
     count = scene_windows( draws, ARRAY_SIZE(draws) );
-    for (uint32_t i = 0; i < count; i++)
+    /* drawn as it is, not faded or moved by an animation: the windows under
+     * it would only be painted over */
+    for (uint32_t i = count; cover && i-- > 0;)
+    {
+        const struct window_draw *d = &draws[i];
+
+        if (!d->w || d->w->hwnd != cover) continue;
+        if (d->opacity >= 1 && !d->from_snapshot && !d->as_image && !d->preview && d->shown.left <= ox &&
+            d->shown.top <= oy && d->shown.right >= ox + width && d->shown.bottom >= oy + height)
+            first = i;
+        break;
+    }
+    for (uint32_t i = first; i < count; i++)
     {
         const struct window_draw *draw_ = &draws[i];
 
@@ -2105,8 +2307,11 @@ static struct gpu_output *output_frames( struct output *output, int width, int h
 
     if (out && (out->width != width || out->height != height))
     {
-        /* a new mode: frames of the new size once the old ones are off screen */
-        if (out->locked) return NULL;
+        /* A new mode: frames of the new size at once; the old ones go once
+         * KMS lets them go (gpu_frame_released). Waiting for that first never
+         * ended where the mode changed without a modeset (a scaled mode, a
+         * game's 1400x1050, has the timings of the native one): nothing else
+         * takes the old frame off screen, and dwm showed nothing new. */
         out->owner = NULL;
         output->gpu = NULL;
         free_output( out );
@@ -2387,7 +2592,7 @@ bool gpu_render( struct output *output, bool vrr )
     const uint8_t *data = NULL;
     struct gpu_output *out;
     struct texture *target;
-    int width, height;
+    int width, height, done = -1;
     bool busy;
 
     if (!gpu_active() || !o) return false;
@@ -2414,7 +2619,7 @@ bool gpu_render( struct output *output, bool vrr )
     }
 
     if (!begin_frame()) return false;
-    draw_scene( target, o->x, o->y, width, height );
+    draw_scene( target, o->x, o->y, width, height, scene_cover_window( output ) );
     if (frame)
     {
         /* the card reads it as its layout has it; the next frame draws it anew */
@@ -2424,20 +2629,24 @@ bool gpu_render( struct output *output, bool vrr )
         target->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     }
     else data = read_texture( target );
-    if (!end_frame()) return false;
+    /* a frame the card shows: the flip waits for the GPU, not dwm */
+    if (!finish_frame( frame ? &done : NULL )) return false;
 
     /* the pointer is drawn into the frame */
     kms_show_cursor( o, false, 0, 0 );
     if (frame)
     {
+        bool shown;
+
         hold_frame( frame );
-        if (!frame->held) return false;
-        if (kms_present( o, frame->fb, width, height, vrr, frame, true ))
+        shown = frame->held && kms_present( o, frame->fb, width, height, vrr, frame, true, done );
+        if (done >= 0) close( done );
+        if (shown)
         {
             trial_passed();
             return true;
         }
-        gpu_frame_released( frame );
+        if (frame->held) gpu_frame_released( frame );
         return false;  /* busy; or it cannot flip, and the next frame is copied */
     }
 
@@ -2445,7 +2654,7 @@ bool gpu_render( struct output *output, bool vrr )
     copy_to_fb( data, width, height, fb );
     if (!o->no_flip)
     {
-        if (kms_present( o, fb->fb_id, fb->width, fb->height, vrr, NULL, true ))
+        if (kms_present( o, fb->fb_id, fb->width, fb->height, vrr, NULL, true, -1 ))
         {
             trial_passed();
             return true;
@@ -2486,7 +2695,7 @@ bool gpu_capture( int x, int y, int width, int height, uint32_t *pixels )
     }
     if (!begin_frame()) return false;
     cursor_hidden = true;
-    draw_scene( capture_target, x, y, width, height );
+    draw_scene( capture_target, x, y, width, height, 0 );
     cursor_hidden = hidden;
     data = (const uint32_t *)read_texture( capture_target );
     ok = end_frame() && data;

@@ -136,14 +136,15 @@ static void object_properties( uint32_t obj, uint32_t type, const char *const *n
 }
 
 enum { PLANE_FB_ID, PLANE_CRTC_ID, PLANE_SRC_X, PLANE_SRC_Y, PLANE_SRC_W, PLANE_SRC_H,
-       PLANE_CRTC_X, PLANE_CRTC_Y, PLANE_CRTC_W, PLANE_CRTC_H, PLANE_TYPE, PLANE_PROP_COUNT };
+       PLANE_CRTC_X, PLANE_CRTC_Y, PLANE_CRTC_W, PLANE_CRTC_H, PLANE_TYPE, PLANE_IN_FENCE_FD, PLANE_PROP_COUNT };
 
 /* the properties a flip sets, looked up once per plane */
 static const uint32_t *plane_properties( uint32_t plane )
 {
     static const char *const names[PLANE_PROP_COUNT] =
     {
-        "FB_ID", "CRTC_ID", "SRC_X", "SRC_Y", "SRC_W", "SRC_H", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "type"
+        "FB_ID", "CRTC_ID", "SRC_X", "SRC_Y", "SRC_W", "SRC_H", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "type",
+        "IN_FENCE_FD"
     };
     static struct { uint32_t plane, ids[PLANE_PROP_COUNT]; } cache[32];
     int slot = 0;
@@ -727,7 +728,7 @@ static void read_crtc_state( struct kms_output *out )
 /* the whole of src_width x src_height of fb over the view: the whole mode,
  * or where a scaled one shows on it */
 static bool flip_atomic( struct kms_output *out, uint32_t fb, uint32_t src_width, uint32_t src_height, bool vrr,
-                         uint32_t flags )
+                         uint32_t flags, int in_fence )
 {
     const uint32_t *prop = plane_properties( out->plane );
     const uint64_t plane_values[PLANE_TYPE] =
@@ -735,8 +736,8 @@ static bool flip_atomic( struct kms_output *out, uint32_t fb, uint32_t src_width
         fb, out->crtc_id, 0, 0, (uint64_t)src_width << 16, (uint64_t)src_height << 16,
         (uint64_t)(int64_t)out->view.x, (uint64_t)(int64_t)out->view.y, out->view.width, out->view.height
     };
-    uint32_t objs[2] = { out->plane, out->crtc_id }, counts[2] = { PLANE_TYPE, 1 }, props[PLANE_TYPE + 1];
-    uint64_t values[PLANE_TYPE + 1];
+    uint32_t objs[2] = { out->plane, out->crtc_id }, counts[2] = { PLANE_TYPE, 1 }, props[PLANE_TYPE + 2];
+    uint64_t values[PLANE_TYPE + 2];
     struct drm_mode_atomic atomic =
     {
         .flags = flags,
@@ -753,9 +754,23 @@ static bool flip_atomic( struct kms_output *out, uint32_t fb, uint32_t src_width
         props[i] = prop[i];
         values[i] = plane_values[i];
     }
-    props[PLANE_TYPE] = out->vrr_prop;
-    values[PLANE_TYPE] = vrr;
+    /* the card shows the frame once the GPU has drawn it */
+    if (in_fence >= 0)
+    {
+        props[counts[0]] = prop[PLANE_IN_FENCE_FD];
+        values[counts[0]++] = in_fence;
+    }
+    props[counts[0]] = out->vrr_prop;
+    values[counts[0]] = vrr;
     return !ioctl( kms.fd, DRM_IOCTL_MODE_ATOMIC, &atomic );
+}
+
+/* a flip that cannot take the fence: the frame is waited for here */
+static void wait_fence( int fd )
+{
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+
+    if (fd >= 0 && poll( &pfd, 1, 5000 ) <= 0) WARN( "the GPU did not draw a frame in time\n" );
 }
 
 static bool flip_legacy( struct kms_output *out, uint32_t fb )
@@ -775,19 +790,25 @@ static bool flip_legacy( struct kms_output *out, uint32_t fb )
 }
 
 bool kms_present( struct kms_output *out, uint32_t fb, uint32_t src_width, uint32_t src_height,
-                  bool vrr, void *buffer, bool composed )
+                  bool vrr, void *buffer, bool composed, int in_fence )
 {
     uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
     bool vrr_before = out->vrr_on;
 
     if (!out->enabled || out->queued_fb || out->no_flip) return false;
     vrr = vrr && out->vrr_capable && out->vrr_prop && !out->vrr_refused;
+    if (in_fence >= 0 && (!out->plane || !plane_properties( out->plane )[PLANE_IN_FENCE_FD]))
+    {
+        wait_fence( in_fence );
+        in_fence = -1;
+    }
 
-    if (out->plane && flip_atomic( out, fb, src_width, src_height, vrr, flags ))
+    if (out->plane && flip_atomic( out, fb, src_width, src_height, vrr, flags, in_fence ))
         out->vrr_on = vrr;
     else if (out->plane && errno == EBUSY)
         return false;
-    else if (out->plane && vrr != out->vrr_on && flip_atomic( out, fb, src_width, src_height, out->vrr_on, flags ))
+    else if (out->plane && vrr != out->vrr_on &&
+             flip_atomic( out, fb, src_width, src_height, out->vrr_on, flags, in_fence ))
     {
         /* switching it would take a modeset, which blanks the screen: not in the middle of a game */
         MESSAGE( "dwm: %s cannot switch variable refresh without a modeset\n", out->name );
@@ -802,6 +823,7 @@ bool kms_present( struct kms_output *out, uint32_t fb, uint32_t src_width, uint3
             WARN( "%s: atomic flip failed: %s\n", out->name, strerror( errno ) );
             out->plane = 0;
         }
+        wait_fence( in_fence );
         if (!flip_legacy( out, fb )) return false;
     }
 
@@ -833,7 +855,7 @@ struct kms_fb *kms_front_buffer( struct kms_output *out )
 bool kms_can_scanout( struct kms_output *out, uint32_t fb, uint32_t src_width, uint32_t src_height )
 {
     return out->enabled && out->plane &&
-           flip_atomic( out, fb, src_width, src_height, out->vrr_on, DRM_MODE_ATOMIC_TEST_ONLY );
+           flip_atomic( out, fb, src_width, src_height, out->vrr_on, DRM_MODE_ATOMIC_TEST_ONLY, -1 );
 }
 
 /* client buffers imported as framebuffers, with the GEM handles they hold */
@@ -1012,7 +1034,7 @@ static bool test_scaling( struct kms_output *out, const struct kms_mode *mode, u
     for (uint32_t i = 0; i < ARRAY_SIZE(tries) && !ok; i++)
     {
         mode_view( mode, tries[i], out );
-        ok = flip_atomic( out, fb.fb_id, mode->width, mode->height, out->vrr_on, DRM_MODE_ATOMIC_TEST_ONLY );
+        ok = flip_atomic( out, fb.fb_id, mode->width, mode->height, out->vrr_on, DRM_MODE_ATOMIC_TEST_ONLY, -1 );
         *scaling = tries[i];
     }
     if (!ok) WARN( "%s cannot scale %ux%u up: %s\n", out->name, mode->width, mode->height, strerror( errno ) );
@@ -1211,7 +1233,7 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
         }
         if (next[i].enabled && (next[i].modeset || !out->enabled || next[i].mode != out->mode ||
                                 next[i].x != out->x || next[i].y != out->y))
-            MESSAGE( "dwm: %s %ux%u@%u at %d,%d%s\n", out->name, out->modes[next[i].mode].width,
+            MESSAGE( "dwm: %s %ux%u@%u at %d,%d%s%s\n", out->name, out->modes[next[i].mode].width,
                      out->modes[next[i].mode].height, whole_hz( out->modes[next[i].mode].refresh ),
                      next[i].x, next[i].y, is_scaled( &out->modes[next[i].mode] ) ? ", " : "",
                      is_scaled( &out->modes[next[i].mode] ) ? scaling_name( next[i].scaling ) : "" );
