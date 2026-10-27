@@ -1,0 +1,28 @@
+REGEDIT4
+
+; Games (docs/games.md): Arctic's item of the Control Panel, a shell folder of
+; powercpl.dll as Power Options is: game mode, the frame rate limit, the
+; overlay, the keys, and the tuning this machine allows
+[HKEY_CLASSES_ROOT\CLSID\{5C3B7E41-9A2D-4F68-B1E0-7D4A2C9F3E86}]
+@="Games"
+"LocalizedString"="@C:\\Windows\\System32\\powercpl.dll,-1500"
+"InfoTip"="@C:\\Windows\\System32\\powercpl.dll,-1501"
+"System.ApplicationName"="Arctic.Games"
+"System.ControlPanel.Category"="2,5"
+
+[HKEY_CLASSES_ROOT\CLSID\{5C3B7E41-9A2D-4F68-B1E0-7D4A2C9F3E86}\DefaultIcon]
+@="C:\\Windows\\System32\\powercpl.dll,-2"
+
+[HKEY_CLASSES_ROOT\CLSID\{5C3B7E41-9A2D-4F68-B1E0-7D4A2C9F3E86}\InProcServer32]
+@="C:\\Windows\\System32\\powercpl.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\CLSID\{5C3B7E41-9A2D-4F68-B1E0-7D4A2C9F3E86}\ShellFolder]
+"Attributes"=dword:28000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{5C3B7E41-9A2D-4F68-B1E0-7D4A2C9F3E86}]
+@="Games"
+
+; the overlay and its keys: it waits for them, and reads nothing while hidden
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run]
+"GamesOverlay"="gameosd.exe"

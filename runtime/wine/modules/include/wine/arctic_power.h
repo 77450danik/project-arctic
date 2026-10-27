@@ -125,6 +125,29 @@ struct arctic_power_apply
     UINT32 failed;                 /* out: the fields that could not be set, one bit each in order */
 };
 
+/* what the Games overlay shows (gameosd.exe, docs/games.md), read about twice
+ * a second; ARCTIC_UNKNOWN for what the machine does not tell */
+struct arctic_sensors
+{
+    UINT32 cpu_load_percent;       /* all cores, since the last reading */
+    UINT32 cpu_mhz;                /* the cores' average */
+    UINT32 cpu_temperature_mc;     /* the package: coretemp, k10temp, zenpower or a thermal zone */
+    UINT32 cpu_power_mw;           /* RAPL */
+    UINT32 ram_used_mb, ram_total_mb;
+    WCHAR  gpu_name[64];           /* the card games run on: a dedicated one that is awake, else the one the panel hangs on */
+    UINT32 gpu_load_percent;
+    UINT32 gpu_temperature_mc;
+    UINT32 gpu_mhz;
+    UINT32 gpu_memory_used_mb, gpu_memory_total_mb;
+    UINT32 gpu_power_mw;
+    UINT32 game_pid;               /* unix: what dwm found filling a monitor, 0 without (game mode) */
+    UINT32 fps_tenths;             /* the game's frames a second, times ten */
+    UINT32 frame_us;               /* ... the average time between two */
+    UINT32 frame_worst_us;         /* ... and the longest, over the last half second */
+    UINT32 cpu_voltage_mv;         /* the cores' (Intel's MSR, read by the host; zenpower) */
+    UINT32 gpu_voltage_mv;         /* amdgpu's */
+};
+
 /* powrprof.dll's power scheme API that Wine's powrprof.h does not declare */
 DWORD WINAPI PowerGetActiveScheme( HKEY root, GUID **scheme );
 DWORD WINAPI PowerSetActiveScheme( HKEY root, GUID *scheme );
@@ -160,6 +183,9 @@ BOOL WINAPI ArcticCpuInfo( struct arctic_cpu_info *info );
 BOOL WINAPI ArcticPowerApply( struct arctic_power_apply *apply );
 /* "sleep", "hibernate" or "wifi-powersave on|off": asks the host, waits for its answer */
 BOOL WINAPI ArcticPowerRequest( const char *request );
+/* the overlay's readings; NVIDIA's library stays open between them, so the
+ * overlay calls it with NULL once it hides (an open NVML keeps the card awake) */
+BOOL WINAPI ArcticSensors( struct arctic_sensors *sensors );
 
 /* HKLM\SYSTEM\CurrentControlSet\Control\Power: what the power policy keeps */
 #define ARCTIC_POWER_KEY         L"SYSTEM\\CurrentControlSet\\Control\\Power"

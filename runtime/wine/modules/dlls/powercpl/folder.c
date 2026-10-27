@@ -39,6 +39,8 @@ struct page_item
 #include "poppack.h"
 
 const CLSID CLSID_PowerOptions = { 0x025a5937, 0xa6be, 0x4686, { 0xa8, 0x44, 0x36, 0xfe, 0x4b, 0xec, 0x8b, 0x6d } };
+/* Arctic's Games: {5C3B7E41-9A2D-4F68-B1E0-7D4A2C9F3E86} */
+const CLSID CLSID_Games = { 0x5c3b7e41, 0x9a2d, 0x4f68, { 0xb1, 0xe0, 0x7d, 0x4a, 0x2c, 0x9f, 0x3e, 0x86 } };
 
 HRESULT view_create_for( enum page page, const GUID *scheme, BOOL creating, IShellFolder *folder,
                          const ITEMIDLIST *root, REFIID riid, void **out );
@@ -57,7 +59,8 @@ struct folder
 
 static const UINT page_names[PAGE_COUNT] =
 {
-    IDS_POWER_OPTIONS, IDS_PAGE_EDIT, IDS_PAGE_CREATE, IDS_PAGE_SYSTEM, IDS_BATTERY_TITLE, IDS_GRAPHICS_TITLE
+    IDS_POWER_OPTIONS, IDS_PAGE_EDIT, IDS_PAGE_CREATE, IDS_PAGE_SYSTEM, IDS_BATTERY_TITLE, IDS_GRAPHICS_TITLE,
+    IDS_GAMES_TITLE, IDS_TUNING_TITLE
 };
 
 const WCHAR *page_name( enum page page )
@@ -355,7 +358,7 @@ static ULONG WINAPI persist_Release( IPersistFolder2 *iface )
 
 static HRESULT WINAPI persist_GetClassID( IPersistFolder2 *iface, CLSID *clsid )
 {
-    *clsid = CLSID_PowerOptions;
+    *clsid = page_home( impl_from_IPersistFolder2( iface )->page ) == PAGE_GAMES ? CLSID_Games : CLSID_PowerOptions;
     return S_OK;
 }
 
@@ -387,11 +390,11 @@ static const IPersistFolder2Vtbl persist_vtbl =
 };
 
 /* Power Options in File Explorer, as "control powercfg.cpl" opens it; with
- * "battery" or "graphics", one of Arctic's pages */
+ * "battery" or "graphics", one of Arctic's pages; "games" and "tuning" are
+ * the Games item's (its key in the overlay) */
 BOOL WINAPI ArcticOpenPowerOptions( const WCHAR *page )
 {
-    static const WCHAR path[] = L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}"
-                                L"\\::{025A5937-A6BE-4686-A844-36FE4BEC8B6D}";
+    const WCHAR *path = POWER_OPTIONS_PATH;
     SHELLEXECUTEINFOW info = { sizeof(info) };
     ITEMIDLIST *pidl;
     enum page which = PAGE_PLANS;
@@ -399,11 +402,14 @@ BOOL WINAPI ArcticOpenPowerOptions( const WCHAR *page )
 
     if (page && !wcsicmp( page, L"battery" )) which = PAGE_BATTERY;
     else if (page && !wcsicmp( page, L"graphics" )) which = PAGE_GRAPHICS;
+    else if (page && !wcsicmp( page, L"games" )) which = PAGE_GAMES;
+    else if (page && !wcsicmp( page, L"tuning" )) which = PAGE_TUNING;
+    if (page_home( which ) == PAGE_GAMES) path = GAMES_PATH;
     CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
     if (FAILED(SHParseDisplayName( path, NULL, &pidl, 0, NULL ))) return FALSE;
     /* File Explorer opened on the ID list of a page showed Power Options
      * itself: it opens there, and the window goes to the page as its links do */
-    start_page_set( which );
+    start_page_set( which == page_home( which ) ? PAGE_PLANS : which );
     info.fMask = SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI;
     info.lpIDList = pidl;
     info.nShow = SW_SHOWNORMAL;

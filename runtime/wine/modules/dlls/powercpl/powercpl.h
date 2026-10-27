@@ -208,7 +208,84 @@
 #define IDC_GFX_FAST               1205
 #define IDC_GFX_FAST_GPU           1206
 
+/* Games (page_games.c, Arctic's) */
+#define IDS_GAMES_TITLE            1500
+#define IDS_GAMES_TIP              1501
+#define IDS_TUNING_TITLE           1502
+#define IDS_GAME_MODE              1503
+#define IDS_GAME_MODE_TEXT         1504
+#define IDS_FRAME_RATE             1505
+#define IDS_MAX_FPS                1506
+#define IDS_NO_LIMIT               1507
+#define IDS_MAX_FPS_TEXT           1508
+#define IDS_OVERLAY                1509
+#define IDS_OVERLAY_SHOW           1510
+#define IDS_OVERLAY_ALWAYS         1511
+#define IDS_POSITION               1512
+#define IDS_TOP_LEFT               1513   /* to IDS_TOP_LEFT + 3, as enum osd_corner */
+#define IDS_TOP_RIGHT              1514
+#define IDS_BOTTOM_LEFT            1515
+#define IDS_BOTTOM_RIGHT           1516
+#define IDS_SIZE                   1517
+#define IDS_OSD_SHOWS              1518
+#define IDS_OSD_FPS                1520
+#define IDS_OSD_FRAME_TIME         1521
+#define IDS_OSD_CPU_LOAD           1522
+#define IDS_OSD_CPU_MHZ            1523
+#define IDS_OSD_CPU_TEMP           1524
+#define IDS_OSD_CPU_POWER          1525
+#define IDS_OSD_RAM                1526
+#define IDS_OSD_GPU_LOAD           1527
+#define IDS_OSD_GPU_MHZ            1528
+#define IDS_OSD_GPU_TEMP           1529
+#define IDS_OSD_GPU_MEMORY         1530
+#define IDS_OSD_GPU_POWER          1531
+#define IDS_OSD_FRAME_GRAPH              1532
+#define IDS_HOTKEYS                1540
+#define IDS_HOTKEY_OVERLAY         1541
+#define IDS_HOTKEY_PANEL           1542
+#define IDS_HOTKEY_TEXT            1543
+#define IDS_DIAGNOSTICS            1544
+#define IDS_FRAME_LOG              1545
+#define IDS_FRAME_LOG_TEXT         1546
+#define IDS_TUNING_PROCESSOR       1550
+#define IDS_CORE_OFFSET            1551
+#define IDS_CACHE_OFFSET           1552
+#define IDS_PL1                    1553
+#define IDS_PL2                    1554
+#define IDS_CPU_MAX                1555
+#define IDS_STANDARD_W             1556
+#define IDS_CPU_LOCKED             1562
+#define IDS_TUNING_GPU             1563
+#define IDS_GPU_POWER_LIMIT        1564
+#define IDS_GPU_CORE_OFFSET        1565
+#define IDS_GPU_MEM_OFFSET         1566
+#define IDS_GPU_MAX                1567
+#define IDS_GPU_LOCKED             1568
+#define IDS_APPLY_AT_START         1569
+#define IDS_APPLY_AT_START_TEXT    1570
+#define IDS_APPLY                  1571
+#define IDS_RESET                  1572
+#define IDS_STATUS_APPLIED         1573
+#define IDS_STATUS_HELD            1574
+#define IDS_STATUS_FAILED          1575
+#define IDS_NOW                    1576
+#define IDS_TEMPERATURE            1578
+#define IDS_FREQUENCY              1579
+#define IDS_POWER_DRAW             1580
+#define IDS_LOAD                   1581
+#define IDS_OSD_CPU_VOLTAGE        1533
+#define IDS_TURBO                  1590
+#define IDS_TURBO_LOCKED           1591
+#define IDS_TASK_OVERCLOCK         1592
+#define IDS_TASK_UNDERVOLT         1593
+#define IDS_TASK_GPU_FOR_GAME      1594
+#define IDS_TASK_SHOW_FPS          1595
+#define IDS_TASK_LIMIT_FPS         1596
+#define IDS_TASK_OVERLAY_KEY       1597
+
 #define IDI_POWER                  1
+#define IDI_GAMES                  2   /* the Games item's (games.reg) */
 
 extern HINSTANCE powercpl_instance;
 
@@ -225,8 +302,20 @@ enum page
     PAGE_SYSTEM,      /* Настройки системи */
     PAGE_BATTERY,     /* Акумулятор і відеокарти */
     PAGE_GRAPHICS,    /* Настройки графіки */
+    PAGE_GAMES,       /* Ігри: an item of the Control Panel of its own */
+    PAGE_TUNING,      /* Продуктивність, a page of Ігри */
     PAGE_COUNT
 };
+
+/* the Control Panel item a page belongs to: Power Options, or Games */
+static inline enum page page_home( enum page page )
+{
+    return page == PAGE_GAMES || page == PAGE_TUNING ? PAGE_GAMES : PAGE_PLANS;
+}
+
+#define CONTROL_PANEL_PATH  L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}"
+#define POWER_OPTIONS_PATH  CONTROL_PANEL_PATH L"\\::{025A5937-A6BE-4686-A844-36FE4BEC8B6D}"
+#define GAMES_PATH          CONTROL_PANEL_PATH L"\\::{5C3B7E41-9A2D-4F68-B1E0-7D4A2C9F3E86}"
 
 HRESULT folder_create( enum page page, const GUID *scheme, BOOL creating, REFIID riid, void **out );
 const WCHAR *page_name( enum page page );
@@ -307,6 +396,11 @@ BOOL battery_command( struct view *view, UINT id, UINT code, HWND control );
 void battery_timer( struct view *view );
 void graphics_build( struct view *view );
 BOOL graphics_command( struct view *view, UINT id, UINT code, HWND control );
+void games_build( struct view *view );
+BOOL games_command( struct view *view, UINT id, UINT code, HWND control );
+void tuning_build( struct view *view );
+BOOL tuning_command( struct view *view, UINT id, UINT code, HWND control );
+void tuning_timer( struct view *view );
 
 /* the task links every page's left pane has */
 void nav_power_tasks( struct view *view );

@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -371,6 +372,7 @@ static struct
     nvml_return (*utilization)( nvml_device device, struct nvml_utilization *util );
     nvml_return (*memory)( nvml_device device, struct nvml_memory *memory );
     nvml_return (*processes)( nvml_device device, unsigned int *count, struct nvml_process *infos );
+    nvml_return (*clock)( nvml_device device, int type, unsigned int *mhz );
 } nvml;
 
 static BOOL nvml_load(void)
@@ -388,6 +390,7 @@ static BOOL nvml_load(void)
     nvml.utilization = dlsym( lib, "nvmlDeviceGetUtilizationRates" );
     nvml.memory = dlsym( lib, "nvmlDeviceGetMemoryInfo" );
     nvml.processes = dlsym( lib, "nvmlDeviceGetGraphicsRunningProcesses_v3" );
+    nvml.clock = dlsym( lib, "nvmlDeviceGetClockInfo" );
     if (!nvml.init || !nvml.shutdown || !nvml.by_pci || nvml.init()) return FALSE;
     nvml.ready = TRUE;
     return TRUE;
@@ -1118,12 +1121,318 @@ static NTSTATUS power_apply( void *args )
     return STATUS_SUCCESS;
 }
 
+/**********************************************************************
+ *          The Games overlay's readings
+ */
+
+/* all cores' busy time since the last reading, from /proc/stat */
+static UINT32 cpu_load(void)
+{
+    static unsigned long long last_busy, last_total;
+    unsigned long long v[10] = { 0 }, busy, total = 0;
+    char line[256];
+    UINT32 ret = ARCTIC_UNKNOWN;
+    FILE *f;
+
+    if (!(f = fopen( "/proc/stat", "re" ))) return ARCTIC_UNKNOWN;
+    if (fgets( line, sizeof(line), f ) &&
+        sscanf( line, "cpu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9] ) >= 4)
+    {
+        /* guest time is counted in user time already */
+        for (int i = 0; i < 8; i++) total += v[i];
+        busy = total - v[3] - v[4];
+        if (last_total && total > last_total)
+            ret = min( 100, (UINT32)((busy - last_busy) * 100 / (total - last_total)) );
+        last_busy = busy;
+        last_total = total;
+    }
+    fclose( f );
+    return ret;
+}
+
+static UINT32 cpu_mhz(void)
+{
+    unsigned long long sum = 0;
+    unsigned int count = 0;
+    char dir[PATH_MAX];
+    struct dirent *de;
+    long long khz;
+    DIR *d;
+
+    if (!(d = opendir( CPU_DIR ))) return ARCTIC_UNKNOWN;
+    while ((de = readdir( d )))
+    {
+        if (strncmp( de->d_name, "cpu", 3 ) || de->d_name[3] < '0' || de->d_name[3] > '9') continue;
+        snprintf( dir, sizeof(dir), CPU_DIR "/%s/cpufreq", de->d_name );
+        if ((khz = read_num( dir, "scaling_cur_freq" )) <= 0) continue;
+        sum += khz;
+        count++;
+    }
+    closedir( d );
+    return count ? sum / count / 1000 : ARCTIC_UNKNOWN;
+}
+
+/* the package's temperature: Intel's coretemp (its "Package id" input),
+ * AMD's k10temp or zenpower (Tctl), else the thermal zone the processor
+ * or the firmware reports */
+static UINT32 cpu_temperature(void)
+{
+    static char found[PATH_MAX];
+    static BOOL searched;
+    char dir[PATH_MAX], name[32], label[64], input[32];
+    struct dirent *de;
+    long long value;
+    DIR *d;
+
+    if (!searched)
+    {
+        searched = TRUE;
+        if ((d = opendir( "/sys/class/hwmon" )))
+        {
+            while (!found[0] && (de = readdir( d )))
+            {
+                if (de->d_name[0] == '.') continue;
+                snprintf( dir, sizeof(dir), "/sys/class/hwmon/%s", de->d_name );
+                if (!read_str( dir, "name", name, sizeof(name) )) continue;
+                if (strcmp( name, "coretemp" ) && strcmp( name, "k10temp" ) && strcmp( name, "zenpower" )) continue;
+                snprintf( found, sizeof(found), "%s/temp1_input", dir );
+                for (int i = 1; i < 16; i++)
+                {
+                    snprintf( input, sizeof(input), "temp%d_label", i );
+                    if (!read_str( dir, input, label, sizeof(label) )) continue;
+                    if (!strncmp( label, "Package", 7 ) || !strcmp( label, "Tctl" ) || !strcmp( label, "Tdie" ))
+                    {
+                        snprintf( found, sizeof(found), "%s/temp%d_input", dir, i );
+                        break;
+                    }
+                }
+            }
+            closedir( d );
+        }
+        for (int pass = 0; pass < 2 && !found[0]; pass++)
+        {
+            if (!(d = opendir( "/sys/class/thermal" ))) break;
+            while (!found[0] && (de = readdir( d )))
+            {
+                if (strncmp( de->d_name, "thermal_zone", 12 )) continue;
+                snprintf( dir, sizeof(dir), "/sys/class/thermal/%s", de->d_name );
+                if (read_str( dir, "type", name, sizeof(name) ) && !strcmp( name, pass ? "acpitz" : "x86_pkg_temp" ))
+                    snprintf( found, sizeof(found), "%s/temp", dir );
+            }
+            closedir( d );
+        }
+    }
+    if (!found[0]) return ARCTIC_UNKNOWN;
+    snprintf( dir, sizeof(dir), "%s", found );
+    *strrchr( dir, '/' ) = 0;
+    value = read_num( dir, strrchr( found, '/' ) + 1 );
+    return value > 0 ? clamp_u32( value ) : ARCTIC_UNKNOWN;
+}
+
+static void memory( struct arctic_sensors *s )
+{
+    unsigned long long total = 0, available = 0, kb;
+    char line[128];
+    FILE *f;
+
+    if (!(f = fopen( "/proc/meminfo", "re" ))) return;
+    while (fgets( line, sizeof(line), f ))
+    {
+        if (sscanf( line, "MemTotal: %llu", &kb ) == 1) total = kb;
+        else if (sscanf( line, "MemAvailable: %llu", &kb ) == 1) available = kb;
+    }
+    fclose( f );
+    if (!total) return;
+    s->ram_total_mb = total >> 10;
+    s->ram_used_mb = (total - min( available, total )) >> 10;
+}
+
+/* NVIDIA's library, held while the overlay reads: opening it each half
+ * second costs more than the reading */
+static BOOL sensors_nvml;
+
+/* the card games run on: a dedicated one awake, else the first */
+static void gpu_sensors( struct arctic_sensors *s )
+{
+    struct arctic_gpu_list *list = malloc( sizeof(*list) );
+    struct gpu_list_params params = { list, FALSE };
+    struct arctic_gpu *gpu = NULL;
+    char pci[32], device[PATH_MAX], card[PATH_MAX], hw[PATH_MAX];
+    struct dirent *de;
+    long long value;
+    DIR *d;
+
+    if (!list) return;
+    gpu_list( &params );
+    for (UINT32 i = 0; i < list->count; i++)
+        if (!list->gpus[i].integrated && list->gpus[i].active) gpu = &list->gpus[i];
+    if (!gpu && list->count) gpu = &list->gpus[0];
+    if (!gpu)
+    {
+        free( list );
+        return;
+    }
+    memcpy( s->gpu_name, gpu->name, sizeof(s->gpu_name) - sizeof(WCHAR) );
+    s->gpu_load_percent = gpu->busy_percent;
+    s->gpu_temperature_mc = gpu->temperature_mc;
+    s->gpu_power_mw = gpu->power_mw;
+    s->gpu_memory_used_mb = gpu->memory_used_mb;
+    s->gpu_memory_total_mb = gpu->memory_total_mb;
+    to_narrow( pci, sizeof(pci), gpu->pci );
+    snprintf( device, sizeof(device), "/sys/bus/pci/devices/%s", pci );
+
+    if (gpu->vendor == ARCTIC_GPU_NVIDIA && gpu->active)
+    {
+        nvml_device handle;
+        unsigned int mw, celsius, mhz;
+        struct nvml_utilization util;
+        struct nvml_memory mem;
+
+        if (!sensors_nvml) sensors_nvml = nvml_load();
+        if (sensors_nvml && !nvml.by_pci( pci, &handle ))
+        {
+            if (nvml.power && !nvml.power( handle, &mw )) s->gpu_power_mw = mw;
+            if (nvml.temperature && !nvml.temperature( handle, 0, &celsius )) s->gpu_temperature_mc = celsius * 1000;
+            if (nvml.utilization && !nvml.utilization( handle, &util )) s->gpu_load_percent = util.gpu;
+            if (nvml.clock && !nvml.clock( handle, 0, &mhz )) s->gpu_mhz = mhz;
+            if (nvml.memory && !nvml.memory( handle, &mem ))
+            {
+                s->gpu_memory_used_mb = mem.used >> 20;
+                s->gpu_memory_total_mb = mem.total >> 20;
+            }
+        }
+    }
+    else if (gpu->active)
+    {
+        /* amdgpu, radeon, nouveau: the hwmon's clock in Hz */
+        snprintf( hw, sizeof(hw), "%s/hwmon", device );
+        if ((d = opendir( hw )))
+        {
+            while ((de = readdir( d )))
+            {
+                if (strncmp( de->d_name, "hwmon", 5 )) continue;
+                snprintf( card, sizeof(card), "%s/%s", hw, de->d_name );
+                if ((value = read_num( card, "freq1_input" )) > 0) s->gpu_mhz = value / 1000000;
+                if ((value = read_num( card, "in0_input" )) > 0) s->gpu_voltage_mv = value;
+                break;
+            }
+            closedir( d );
+        }
+        /* i915: the card's actual frequency */
+        if (s->gpu_mhz == ARCTIC_UNKNOWN && (d = opendir( "/sys/class/drm" )))
+        {
+            while ((de = readdir( d )))
+            {
+                char link[PATH_MAX], card_pci[32];
+
+                if (strncmp( de->d_name, "card", 4 ) || strchr( de->d_name, '-' )) continue;
+                snprintf( link, sizeof(link), "/sys/class/drm/%s/device", de->d_name );
+                if (!pci_of( link, card_pci, sizeof(card_pci) ) || strcmp( card_pci, pci )) continue;
+                snprintf( card, sizeof(card), "/sys/class/drm/%s", de->d_name );
+                if ((value = read_num( card, "gt_act_freq_mhz" )) >= 0) s->gpu_mhz = value;
+                break;
+            }
+            closedir( d );
+        }
+    }
+    free( list );
+}
+
+/* The cores' voltage: Intel's is in a register only the host reads; it
+ * writes it while the file asking for it was touched in the last seconds.
+ * AMD's comes from zenpower (SVI2's core rail). */
+static UINT32 cpu_voltage(void)
+{
+    static char zen[PATH_MAX];
+    static BOOL searched;
+    char dir[PATH_MAX], name[32], buf[32];
+    struct dirent *de;
+    long long mv;
+    DIR *d;
+    int fd;
+
+    if ((fd = open( "/run/arctic/power/sensors-wanted", O_WRONLY | O_CREAT | O_CLOEXEC, 0644 )) >= 0)
+    {
+        futimens( fd, NULL );
+        close( fd );
+    }
+    if (read_str( "/run/arctic/power", "cpu-voltage", buf, sizeof(buf) ) && atoi( buf ) > 0) return atoi( buf );
+
+    if (!searched)
+    {
+        searched = TRUE;
+        if ((d = opendir( "/sys/class/hwmon" )))
+        {
+            while ((de = readdir( d )))
+            {
+                if (de->d_name[0] == '.') continue;
+                snprintf( dir, sizeof(dir), "/sys/class/hwmon/%s", de->d_name );
+                if (read_str( dir, "name", name, sizeof(name) ) && !strcmp( name, "zenpower" ))
+                {
+                    snprintf( zen, sizeof(zen), "%s", dir );
+                    break;
+                }
+            }
+            closedir( d );
+        }
+    }
+    if (zen[0] && (mv = read_num( zen, "in1_input" )) > 0) return mv;
+    return ARCTIC_UNKNOWN;
+}
+
+/* dwm's files: the game, and its frames twice a second */
+static void game_frames( struct arctic_sensors *s )
+{
+    unsigned int fps, avg, worst;
+    char buf[64];
+
+    if (read_str( "/run/arctic/power", "game", buf, sizeof(buf) )) s->game_pid = strtoul( buf, NULL, 10 );
+    if (!s->game_pid || !read_str( "/run/arctic/power", "game-stats", buf, sizeof(buf) )) return;
+    if (sscanf( buf, "%u %u %u", &fps, &avg, &worst ) != 3) return;
+    s->fps_tenths = fps;
+    s->frame_us = avg;
+    s->frame_worst_us = worst;
+}
+
+static NTSTATUS sensors( void *args )
+{
+    struct sensors_params *params = args;
+    struct arctic_sensors *s = params->sensors;
+
+    if (!s)
+    {
+        if (sensors_nvml) nvml.shutdown();
+        sensors_nvml = FALSE;
+        return STATUS_SUCCESS;
+    }
+    memset( s, 0, sizeof(*s) );
+    s->cpu_load_percent = s->cpu_mhz = s->cpu_temperature_mc = s->cpu_power_mw = ARCTIC_UNKNOWN;
+    s->ram_used_mb = s->ram_total_mb = ARCTIC_UNKNOWN;
+    s->gpu_load_percent = s->gpu_temperature_mc = s->gpu_mhz = s->gpu_power_mw = ARCTIC_UNKNOWN;
+    s->gpu_memory_used_mb = s->gpu_memory_total_mb = ARCTIC_UNKNOWN;
+    s->fps_tenths = s->frame_us = s->frame_worst_us = ARCTIC_UNKNOWN;
+    s->gpu_voltage_mv = ARCTIC_UNKNOWN;
+
+    s->cpu_load_percent = cpu_load();
+    s->cpu_voltage_mv = cpu_voltage();
+    s->cpu_mhz = cpu_mhz();
+    s->cpu_temperature_mc = cpu_temperature();
+    rapl_find();
+    s->cpu_power_mw = meter_read( &rapl_package );
+    memory( s );
+    gpu_sensors( s );
+    game_frames( s );
+    return STATUS_SUCCESS;
+}
+
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     power_status,
     gpu_list,
     cpu_info,
     power_apply,
+    sensors,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
@@ -1138,12 +1447,21 @@ static NTSTATUS wow64_gpu_list( void *args )
     return gpu_list( &params );
 }
 
+static NTSTATUS wow64_sensors( void *args )
+{
+    struct { ULONG sensors; } const *params32 = args;
+    struct sensors_params params = { ULongToPtr( params32->sensors ) };
+
+    return sensors( &params );
+}
+
 const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     power_status,
     wow64_gpu_list,
     cpu_info,
     power_apply,
+    wow64_sensors,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );

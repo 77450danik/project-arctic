@@ -1,0 +1,164 @@
+diff --git a/include/ntuser.h b/include/ntuser.h
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -1126,6 +1126,7 @@
+     NtUserCallOneParam_SetThreadDpiAwarenessContext,
+     NtUserCallOneParam_D3DKMTOpenAdapterFromGdiDisplayName,
+     NtUserCallOneParam_GetAsyncKeyboardState,
++    NtUserCallOneParam_AllowSetForegroundWindow,
+     /* temporary exports */
+     NtUserGetDeskPattern,
+ };
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -813,9 +813,7 @@
+  */
+ BOOL WINAPI AllowSetForegroundWindow( DWORD procid )
+ {
+-    /* FIXME: If Win98/2000 style SetForegroundWindow behavior is
+-     * implemented, then fix this function. */
+-    return TRUE;
++    return NtUserCallOneParam( procid, NtUserCallOneParam_AllowSetForegroundWindow );
+ }
+ 
+ 
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -8034,6 +8034,21 @@
+ /***********************************************************************
+  *	     NtUserCallOneParam    (win32u.@)
+  */
++/* AllowSetForegroundWindow: the foreground process lets another one (or any,
++ * ASFW_ANY) take the foreground, as Steam does for the game it starts */
++static BOOL allow_set_foreground_window( DWORD pid )
++{
++    BOOL ret;
++
++    SERVER_START_REQ( allow_set_foreground )
++    {
++        req->pid = pid;
++        ret = !wine_server_call_err( req );
++    }
++    SERVER_END_REQ;
++    return ret;
++}
++
+ ULONG_PTR WINAPI NtUserCallOneParam( ULONG_PTR arg, ULONG code )
+ {
+     switch(code)
+@@ -8082,6 +8097,9 @@
+     case NtUserCallOneParam_GetAsyncKeyboardState:
+         return get_async_keyboard_state( (void *)arg );
+ 
++    case NtUserCallOneParam_AllowSetForegroundWindow:
++        return allow_set_foreground_window( arg );
++
+     /* temporary exports */
+     case NtUserGetDeskPattern:
+         return get_entry( &entry_DESKPATTERN, 256, (WCHAR *)arg );
+diff --git a/server/protocol.def b/server/protocol.def
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -3247,6 +3247,11 @@
+     int            send_msg_new;  /* whether we have to send a msg to the new window */
+ @END
+ 
++/* Let a process take the foreground (AllowSetForegroundWindow) */
++@REQ(allow_set_foreground)
++    process_id_t   pid;           /* the process, or ASFW_ANY (-1) for any */
++@END
++
+ /* Set the current thread focus window */
+ @REQ(set_focus_window)
+     user_handle_t  handle;        /* handle to the focus window */
+diff --git a/server/user.h b/server/user.h
+--- a/server/user.h
++++ b/server/user.h
+@@ -81,6 +81,7 @@
+     struct timeout_user *close_timeout;    /* timeout before closing the desktop */
+     struct thread_input *foreground_input; /* thread input of foreground thread */
+     process_id_t         foreground_pid;   /* id of the foreground process */
++    process_id_t         foreground_allowed; /* AllowSetForegroundWindow: it may take the foreground, -1 any, 0 none */
+     unsigned int         users;            /* processes and threads using this desktop */
+     unsigned char        alt_pressed;      /* last key press was Alt (used to determine msg on release) */
+     struct key_repeat    key_repeat;       /* key auto-repeat */
+diff --git a/server/winstation.c b/server/winstation.c
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -279,6 +279,7 @@
+     desktop->close_timeout = NULL;
+     desktop->foreground_input = NULL;
+     desktop->foreground_pid = 0;
++    desktop->foreground_allowed = 0;
+     desktop->users = 0;
+     desktop->clip_flags = 0;
+     desktop->cursor_win = 0;
+diff --git a/server/queue.c b/server/queue.c
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -1761,6 +1761,9 @@
+     list_add_tail( &hotkey->queue->msg_list[POST_MESSAGE], &msg->entry );
+     set_queue_bits( hotkey->queue, QS_POSTMESSAGE|QS_ALLPOSTMESSAGE|QS_HOTKEY );
+     hotkey->queue->hotkey_count++;
++    /* the user's input went to it: it may take the foreground, as on Windows
++     * the thread a hotkey goes to may (Alt+Tab out of a game) */
++    if (hotkey->queue->input) hotkey->queue->input->user_time = monotonic_time;
+     return 1;
+ }
+ 
+@@ -1891,7 +1894,12 @@
+     flags = thread ? get_rawinput_device_flags( thread->process, msg ) : 0;
+     if (thread) input = thread->queue->input;
+     if (input && (get_hardware_msg_bit( msg->msg ) & (QS_KEY | QS_MOUSEBUTTON)))
++    {
+         input->user_time = monotonic_time;
++        /* the user's next input takes back what AllowSetForegroundWindow let, unless it goes to that process */
++        if (desktop->foreground_allowed && (!thread || thread->process->id != desktop->foreground_allowed))
++            desktop->foreground_allowed = 0;
++    }
+ 
+     if (!win || !thread || (flags & RIDEV_NOLEGACY))
+     {
+@@ -3796,6 +3804,30 @@
+ }
+ 
+ 
++/* Whether the current process may set the foreground window: it has the
++ * foreground, the foreground process let it (AllowSetForegroundWindow), or
++ * the user's last input went to it. A game Steam starts is let by Steam: the
++ * foreground belongs to steamwebhelper, which did not start it. */
++static int can_set_foreground( struct desktop *desktop, struct msg_queue *queue )
++{
++    if (is_current_process_foreground( desktop )) return 1;
++    if (desktop->foreground_allowed == (process_id_t)-1 || desktop->foreground_allowed == current->process->id)
++        return 1;
++    return !queue || !queue->input || !desktop->foreground_input ||
++           queue->input->user_time >= desktop->foreground_input->user_time;
++}
++
++/* let a process take the foreground (AllowSetForegroundWindow), if this one may */
++DECL_HANDLER(allow_set_foreground)
++{
++    struct desktop *desktop;
++
++    if (!(desktop = get_thread_desktop( current, 0 ))) return;
++    if (!can_set_foreground( desktop, current->queue )) set_error( STATUS_ACCESS_DENIED );
++    else desktop->foreground_allowed = req->pid;
++    release_object( desktop );
++}
++
+ /* set the system foreground window */
+ DECL_HANDLER(set_foreground_window)
+ {
+@@ -3816,8 +3848,7 @@
+     if (set_foreground && !req->internal)
+     {
+         /* allow a process to set foreground after changing desktop, or each window to be set foreground at least once */
+-        if (!is_current_process_foreground( desktop ) && queue->input && desktop->foreground_input &&
+-            queue->input->user_time < desktop->foreground_input->user_time)
++        if (!can_set_foreground( desktop, queue ))
+         {
+             set_error( STATUS_ACCESS_DENIED );
+             goto done;

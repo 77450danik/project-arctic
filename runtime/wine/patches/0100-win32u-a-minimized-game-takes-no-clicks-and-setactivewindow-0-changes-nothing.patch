@@ -1,0 +1,62 @@
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2590,6 +2590,10 @@
+         if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
+             return get_active_window();  /* Windows doesn't seem to return an error here */
+     }
++    /* Windows 10 and later change nothing and return 0, without an error
++     * (user32 tests, test_SetActiveWindow_0). CS2 calls it before activating
++     * its window again, and SDL minimized the game, as having lost focus. */
++    else return 0;
+ 
+     if (!set_active_window( hwnd, &prev, FALSE, TRUE, 0 )) return 0;
+     return prev;
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2147,7 +2147,9 @@
+     UINT style_mask, ex_style_mask;
+     RECT visible_rect, rect = {0};
+ 
+-    if (get_present_rect( hwnd, &rect, get_thread_dpi() )) return rect;
++    /* a minimized game's swap chain no longer covers the monitor: its window
++     * kept taking the clicks there after Alt+Tab (CS2) */
++    if (!(style & WS_MINIMIZE) && get_present_rect( hwnd, &rect, get_thread_dpi() )) return rect;
+     if (IsRectEmpty( &rects->window ) || EqualRect( &rects->window, &rects->client ) || shaped || !decorated_mode) return rects->window;
+     if (!user_driver->pGetWindowStyleMasks( hwnd, style, ex_style, &style_mask, &ex_style_mask )) return rects->window;
+     if (!adjust_window_rect( &rect, style & style_mask, FALSE, ex_style & ex_style_mask, round_dpi( dpi ) )) return rects->window;
+@@ -2238,7 +2240,8 @@
+     if (get_window_region( hwnd, FALSE, &shape, &dummy )) shaped = FALSE;
+     else if ((shaped = !!shape)) NtGdiDeleteObjectApp( shape );
+ 
+-    if (!get_present_rect( hwnd, &rects->visible, get_thread_dpi() )) rects->visible = rects->window;
++    if ((style & WS_MINIMIZE) || !get_present_rect( hwnd, &rects->visible, get_thread_dpi() ))
++        rects->visible = rects->window;
+     if (is_child) monitor_rects = map_dpi_window_rects( *rects, get_thread_dpi(), raw_dpi );
+     else monitor_rects = map_window_rects_virt_to_raw( *rects, get_thread_dpi() );
+ 
+@@ -2414,7 +2417,7 @@
+ 
+         if (win->dwStyle & WS_THICKFRAME) swp_flags |= WINE_SWP_RESIZABLE;
+         if (is_child) monitor_rects = map_dpi_window_rects( *new_rects, dpi, raw_dpi );
+-        else if (!IsRectEmpty( &win->present_rect ))
++        else if (!IsRectEmpty( &win->present_rect ) && !(win->dwStyle & WS_MINIMIZE))
+         {
+             MONITORINFO monitor_info = monitor_info_from_rect( new_rects->window, dpi );
+             struct window_rects rects = { monitor_info.rcMonitor, monitor_info.rcMonitor, monitor_info.rcMonitor };
+@@ -4587,7 +4590,13 @@
+     {
+         if (set_foreground_window( hwnd_to, FALSE, FALSE )) return;
+     }
+-    if (NtUserSetActiveWindow( hwnd_to )) NtUserSetActiveWindow( 0 );
++    /* what NtUserSetActiveWindow did before it left SetActiveWindow(0) alone */
++    {
++        HWND prev;
++
++        if (set_active_window( hwnd_to, &prev, FALSE, TRUE, 0 ) && prev)
++            set_active_window( 0, NULL, FALSE, TRUE, 0 );
++    }
+ }
+ 
+ /*******************************************************************

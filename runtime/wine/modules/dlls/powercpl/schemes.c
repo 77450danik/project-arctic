@@ -163,8 +163,10 @@ void nav_power_tasks( struct view *view )
     view_nav_link( view, load_string( IDS_TASK_SLEEP ), go_page, PAGE_EDIT );
     view_nav_link( view, load_string( IDS_TASK_BATTERY ), go_page, PAGE_BATTERY );
     view_nav_link( view, load_string( IDS_TASK_GRAPHICS ), go_page, PAGE_GRAPHICS );
+    view_nav_link( view, load_string( IDS_TASK_OVERCLOCK ), go_page, PAGE_TUNING );
 
     view_nav_see_also( view, load_string( IDS_SEE_PERSONALIZATION ), run_cpl, 0 );
     if (laptop) view_nav_see_also( view, load_string( IDS_SEE_MOBILITY ), go_page, PAGE_BATTERY );
     view_nav_see_also( view, load_string( IDS_SEE_ACCOUNTS ), run_cpl, 1 );
+    view_nav_see_also( view, load_string( IDS_GAMES_TITLE ), go_page, PAGE_GAMES );
 }

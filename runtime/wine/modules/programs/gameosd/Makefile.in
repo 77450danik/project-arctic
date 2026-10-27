@@ -1,0 +1,8 @@
+MODULE    = gameosd.exe
+IMPORTS   = powrprof user32 gdi32 kernel32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Games overlay"
+
+SOURCES = \
+	main.c

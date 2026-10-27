@@ -69,3 +69,4 @@
 @ stdcall ArcticPowerApply(ptr)
 @ stdcall ArcticPowerRequest(str)
 @ stdcall ArcticPowerStatus(ptr)
+@ stdcall ArcticSensors(ptr)

@@ -23,7 +23,7 @@
 
 HINSTANCE powercpl_instance;
 
-extern const CLSID CLSID_PowerOptions;
+extern const CLSID CLSID_PowerOptions, CLSID_Games;
 
 static LONG object_count;
 
@@ -79,11 +79,17 @@ static ULONG WINAPI factory_Release( IClassFactory *iface )
     return 1;
 }
 
+struct factory
+{
+    IClassFactory IClassFactory_iface;
+    enum page page;                      /* the item's own page */
+};
+
 static HRESULT WINAPI factory_CreateInstance( IClassFactory *iface, IUnknown *outer, REFIID riid, void **out )
 {
     *out = NULL;
     if (outer) return CLASS_E_NOAGGREGATION;
-    return folder_create( PAGE_PLANS, NULL, FALSE, riid, out );
+    return folder_create( CONTAINING_RECORD( iface, struct factory, IClassFactory_iface )->page, NULL, FALSE, riid, out );
 }
 
 static HRESULT WINAPI factory_LockServer( IClassFactory *iface, BOOL lock )
@@ -102,11 +108,15 @@ static const IClassFactoryVtbl factory_vtbl =
     factory_LockServer,
 };
 
-static IClassFactory factory = { &factory_vtbl };
+static struct factory power_factory = { { &factory_vtbl }, PAGE_PLANS };
+static struct factory games_factory = { { &factory_vtbl }, PAGE_GAMES };
 
 HRESULT WINAPI DllGetClassObject( REFCLSID clsid, REFIID riid, void **out )
 {
-    if (IsEqualCLSID( clsid, &CLSID_PowerOptions )) return IClassFactory_QueryInterface( &factory, riid, out );
+    if (IsEqualCLSID( clsid, &CLSID_PowerOptions ))
+        return IClassFactory_QueryInterface( &power_factory.IClassFactory_iface, riid, out );
+    if (IsEqualCLSID( clsid, &CLSID_Games ))
+        return IClassFactory_QueryInterface( &games_factory.IClassFactory_iface, riid, out );
     *out = NULL;
     return CLASS_E_CLASSNOTAVAILABLE;
 }

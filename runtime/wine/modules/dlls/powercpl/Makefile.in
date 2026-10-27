@@ -11,6 +11,7 @@ SOURCES = \
 	page_battery.c \
 	page_create.c \
 	page_edit.c \
+	page_games.c \
 	page_graphics.c \
 	page_plans.c \
 	page_system.c \

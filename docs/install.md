@@ -71,7 +71,14 @@ Killed process … (CrRendererMain) anon-rss:696968kB`).
 - Стиснення пам'яті, як у Windows 10: swap на zram (половина RAM, zstd). Без
   нього ядро одразу вбиває найбільшу програму.
 - Об'єднання пам'яті (KSM), як «memory combining» у Windows 8+: однакові
-  сторінки NT-процесів (`PR_SET_MEMORY_MERGE`) зливаються.
+  сторінки NT-процесів (`PR_SET_MEMORY_MERGE`) зливаються. `ksmd` працює з
+  `SCHED_IDLE`, лише на вільних ядрах: у CS2 він забирав 20–30 % ядра в гри.
+- Кеші шейдерів драйверів — на C:, як у Windows: NVIDIA у
+  `C:\Users\User\AppData\Local\NVIDIA` (`__GL_SHADER_DISK_CACHE_PATH`, до
+  4 ГБ), Mesa в `...\AppData\Local\Mesa`. У `HOME` (`/run/nt/home`, tmpfs)
+  вони пропадали з кожним перезапуском, і кожна гра починала як уперше:
+  неоптимізовані конвеєри DXVK і компіляція під час гри (CS2: GTX 1050 на
+  100 %, 40 к/с).
 - `host.log` кожні 30 с: `memory: N of M MB free, shmem, compressed,
   combined; найбільші процеси`; на C: зберігається й `kernel.log`.
 

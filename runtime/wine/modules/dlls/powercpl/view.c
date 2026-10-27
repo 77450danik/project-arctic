@@ -434,7 +434,7 @@ static void build( struct view *view )
 {
     static const page_build_proc builders[PAGE_COUNT] =
     {
-        plans_build, edit_build, create_build, system_build, battery_build, graphics_build
+        plans_build, edit_build, create_build, system_build, battery_build, graphics_build, games_build, tuning_build
     };
 
     view_clear( view );
@@ -471,7 +471,18 @@ void view_navigate( struct view *view, enum page page, const GUID *scheme, BOOL 
     ITEMIDLIST *item, *pidl;
 
     if (!view->browser || !view->root) return;
-    if (page == PAGE_PLANS)
+    /* the other item of the Control Panel: there, and on to the page as its window opens */
+    if (page_home( page ) != page_home( view->state.page ))
+    {
+        if (FAILED(SHParseDisplayName( page_home( page ) == PAGE_GAMES ? GAMES_PATH : POWER_OPTIONS_PATH, NULL, &pidl,
+                                       0, NULL )))
+            return;
+        start_page_set( page );
+        IShellBrowser_BrowseObject( view->browser, pidl, SBSP_ABSOLUTE | SBSP_SAMEBROWSER );
+        ILFree( pidl );
+        return;
+    }
+    if (page == page_home( page ))
     {
         IShellBrowser_BrowseObject( view->browser, view->root, SBSP_ABSOLUTE | SBSP_SAMEBROWSER );
         return;
@@ -636,6 +647,8 @@ static BOOL page_command( struct view *view, UINT id, UINT code, HWND control )
     case PAGE_SYSTEM: return system_command( view, id, code, control );
     case PAGE_BATTERY: return battery_command( view, id, code, control );
     case PAGE_GRAPHICS: return graphics_command( view, id, code, control );
+    case PAGE_GAMES: return games_command( view, id, code, control );
+    case PAGE_TUNING: return tuning_command( view, id, code, control );
     default: return FALSE;
     }
 }
@@ -765,6 +778,7 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
     case WM_TIMER:
         if (view && wp == TIMER_PAGE && view->state.page == PAGE_BATTERY) battery_timer( view );
+        if (view && wp == TIMER_PAGE && view->state.page == PAGE_TUNING) tuning_timer( view );
         return 0;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
@@ -787,7 +801,7 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         if (view) view->hwnd = hwnd;
         break;
     case WM_APP_START_PAGE:
-        if (view && wp != PAGE_PLANS) view_navigate( view, wp, NULL, FALSE );
+        if (view && wp != view->state.page && page_home( wp ) == view->state.page) view_navigate( view, wp, NULL, FALSE );
         return 0;
     case WM_SIZE:
         if (view && view->content)
@@ -976,7 +990,8 @@ static HRESULT WINAPI view_CreateViewWindow( IShellView *iface, IShellView *prev
     ShowWindow( view->hwnd, SW_SHOWNA );
     *hwnd = view->hwnd;
     /* "control powercfg.cpl,,battery": on to that page once the window is up */
-    if (view->state.page == PAGE_PLANS) PostMessageW( view->hwnd, WM_APP_START_PAGE, start_page_take(), 0 );
+    if (view->state.page == page_home( view->state.page ))
+        PostMessageW( view->hwnd, WM_APP_START_PAGE, start_page_take(), 0 );
     return S_OK;
 }
 

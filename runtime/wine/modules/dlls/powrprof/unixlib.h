@@ -19,12 +19,18 @@ struct gpu_list_params
     UINT32 with_users;
 };
 
+struct sensors_params
+{
+    struct arctic_sensors *sensors;   /* NULL: let NVIDIA's library go */
+};
+
 enum powrprof_funcs
 {
     unix_power_status,   /* struct arctic_power_status */
     unix_gpu_list,       /* struct gpu_list_params */
     unix_cpu_info,       /* struct arctic_cpu_info */
     unix_power_apply,    /* struct arctic_power_apply */
+    unix_sensors,        /* struct sensors_params */
     unix_funcs_count
 };
 

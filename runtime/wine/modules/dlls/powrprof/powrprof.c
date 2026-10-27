@@ -544,6 +544,14 @@ BOOL WINAPI ArcticCpuInfo( struct arctic_cpu_info *info )
     return TRUE;
 }
 
+BOOL WINAPI ArcticSensors( struct arctic_sensors *sensors )
+{
+    struct sensors_params params = { sensors };
+
+    if (!init_unix() || WINE_UNIX_CALL( unix_sensors, &params )) return FALSE;
+    return TRUE;
+}
+
 BOOL WINAPI ArcticPowerApply( struct arctic_power_apply *apply )
 {
     if (!init_unix() || WINE_UNIX_CALL( unix_power_apply, apply )) return FALSE;
