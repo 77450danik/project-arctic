@@ -1,0 +1,45 @@
+REGEDIT4
+
+; Date and Time of the Control Panel (timedate.cpl): a page in Explorer, as
+; {E2E7934B-...} (Microsoft.DateAndTime) is a folder in Windows
+[HKEY_CLASSES_ROOT\CLSID\{E2E7934B-DCE5-43C4-9576-7FE4F75E7480}]
+@="Date and Time"
+"LocalizedString"="@C:\\Windows\\System32\\timedate.cpl,-1"
+"InfoTip"="@C:\\Windows\\System32\\timedate.cpl,-2"
+"System.ApplicationName"="Microsoft.DateAndTime"
+"System.ControlPanel.Category"="6"
+
+[HKEY_CLASSES_ROOT\CLSID\{E2E7934B-DCE5-43C4-9576-7FE4F75E7480}\DefaultIcon]
+@="C:\\Windows\\System32\\timedate.cpl,-1"
+
+[HKEY_CLASSES_ROOT\CLSID\{E2E7934B-DCE5-43C4-9576-7FE4F75E7480}\InProcServer32]
+@="C:\\Windows\\System32\\timedate.cpl"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\CLSID\{E2E7934B-DCE5-43C4-9576-7FE4F75E7480}\ShellFolder]
+"Attributes"=dword:28000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{E2E7934B-DCE5-43C4-9576-7FE4F75E7480}]
+@="Date and Time"
+
+; "control timedate.cpl" opens the page; the Control Panel lists the page, not the applet
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\don't load]
+"timedate.cpl"="no"
+
+; The tz database's names of today, which the host's zone file has, beside
+; the older ones CLDR gives (Europe/Kiev): without them ntdll found no zone
+; for Kyiv and took the first whose rules matched (Chisinau)
+[HKEY_LOCAL_MACHINE\Software\Arctic\Runtime\Time Zones\TZ Mapping]
+"Europe/Kyiv"="FLE Standard Time"
+"Asia/Kolkata"="India Standard Time"
+"Asia/Kathmandu"="Nepal Standard Time"
+"Asia/Yangon"="Myanmar Standard Time"
+"Asia/Ho_Chi_Minh"="SE Asia Standard Time"
+"America/Nuuk"="Greenland Standard Time"
+"Pacific/Kanton"="UTC+13"
+"Atlantic/Faroe"="GMT Standard Time"
+"America/Argentina/Buenos_Aires"="Argentina Standard Time"
+"America/Indiana/Indianapolis"="US Eastern Standard Time"
+"America/Kentucky/Louisville"="Eastern Standard Time"
+"Pacific/Chuuk"="West Pacific Standard Time"
+"Pacific/Pohnpei"="Central Pacific Standard Time"

@@ -1,0 +1,57 @@
+# 2026-11-04: Personalization in the display's properties: the light and the
+# dark mode for Windows and for programs, the title bars over a blurred
+# backdrop. The default is Windows dark, programs light. Notepad, open all
+# along, follows each change; Chrome reads the programs' mode. Run with
+# --resolution 1920x1080.
+sleep 25
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 8
+# Notepad's title bar over the aurora: the blur shows
+drag 500 14 1300 250
+sleep 3
+shot p1-default-caption
+key win-r
+sleep 2
+type control desk.cpl,,@Appearance
+key ret
+sleep 12
+shot p2-page
+# the second tile: Dark
+key tab
+sleep 1
+key spc
+sleep 15
+shot p3-dark
+key ctrl-shift-esc
+sleep 10
+shot p4-dark-taskmgr
+key alt-f4
+sleep 3
+key win-r
+sleep 2
+type control timedate.cpl
+key ret
+sleep 25
+shot p5-dark-timedate
+key alt-f4
+sleep 3
+key win-r
+sleep 2
+type chrome --no-first-run --no-default-browser-check chrome://settings
+key ret
+sleep 30
+shot p6-dark-chrome
+key alt-f4
+sleep 3
+# the page again, its first tile: Light
+key win-r
+sleep 2
+type control desk.cpl,,@Appearance
+key ret
+sleep 10
+key spc
+sleep 15
+shot p7-light

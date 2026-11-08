@@ -76,6 +76,7 @@
 #define VOLUMES_DIR "/run/arctic/volumes" /* written by arctic-volume */
 #define EJECT_DIR "/run/arctic/eject"     /* requests from mountmgr.sys */
 #define POWER_DIR "/run/arctic/power"     /* sleep, hibernation, Wi-Fi requests from powrprof.dll */
+#define TIME_DIR "/run/arctic/time"       /* requests of the Date and Time page (timedate.cpl) */
 
 static int console = -1, kmsg = -1, hostlog = -1, ntlog = -1;
 static int dev_mode, anim = -1, stopped; /* anim: the boot screen's commands (bootanim.h) */
@@ -149,7 +150,9 @@ static void nt_stop(const char *code, const char *what)
 }
 
 static char winedebug[256] = "WINEDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
-static char tz_env[128] = "TZ=:/usr/share/zoneinfo/Europe/Kyiv"; /* set_clock: the system's time zone */
+/* set_clock: the system's time zone, for the log; programs take it from
+ * /etc/localtime, which follows a change (apply_zone) */
+static char tz_env[128] = "ARCTIC_TIME_ZONE=Europe/Kyiv";
 static char dev_program[128];                        /* arctic.run= */
 /* C: on a stick: writes go to it in the background, nobody waits for it
  * (docs/persistence.md, "Повільна флешка"). A flush returns at once (Wine
@@ -1966,6 +1969,99 @@ static void wait_for_display(void)
     say("display ready in %.1f s (%s)", uptime(), access(HARDWARE_SETTLED, F_OK) ? "every display GPU's card" : "all hardware");
 }
 
+/* Wine's shared image cache (WINE_IMAGE_CACHE, Wine 0059) keeps a copy of
+ * every image it could not map from its file, laid out as it is mapped:
+ * Chromium's and Electron's DLLs, 200-300 MB each, in /run, that is in
+ * memory. Nothing took them out: after a day 1.1 GB of 2 GB were images of
+ * programs long closed. Every three minutes, at the lowest priority, the
+ * copies no process maps any more go (not one written in the last two
+ * minutes: a process may be about to map it). One loaded again is written
+ * again, as the first time. */
+#define IMAGE_CACHE PREFIX "/imagecache"
+
+static int name_listed(char **names, size_t count, const char *name)
+{
+    for (size_t i = 0; i < count; i++)
+        if (!strcmp(names[i], name))
+            return 1;
+    return 0;
+}
+
+static void sweep_image_cache(void)
+{
+    char **used = NULL, path[64], line[4096];
+    size_t used_count = 0, used_size = 0;
+    time_t now = time(NULL);
+    struct dirent *de;
+    DIR *dir;
+
+    if (!(dir = opendir("/proc")))
+        return;
+    while ((de = readdir(dir))) {
+        FILE *maps;
+
+        if (de->d_name[0] < '0' || de->d_name[0] > '9')
+            continue;
+        snprintf(path, sizeof(path), "/proc/%s/maps", de->d_name);
+        if (!(maps = fopen(path, "re")))
+            continue;
+        while (fgets(line, sizeof(line), maps)) {
+            char *name = strstr(line, IMAGE_CACHE "/"), *end;
+
+            if (!name)
+                continue;
+            name += sizeof(IMAGE_CACHE);
+            if ((end = strpbrk(name, " \n")))
+                *end = 0; /* and " (deleted)" */
+            if (!*name || name_listed(used, used_count, name))
+                continue;
+            if (used_count == used_size) {
+                size_t size = used_size ? used_size * 2 : 64;
+                char **more = realloc(used, size * sizeof(*more));
+
+                if (!more)
+                    break;
+                used = more;
+                used_size = size;
+            }
+            if (!(used[used_count] = strdup(name)))
+                break;
+            used_count++;
+        }
+        fclose(maps);
+    }
+    closedir(dir);
+
+    if ((dir = opendir(IMAGE_CACHE))) {
+        while ((de = readdir(dir))) {
+            struct stat st;
+
+            if (de->d_name[0] == '.' || name_listed(used, used_count, de->d_name))
+                continue;
+            if (fstatat(dirfd(dir), de->d_name, &st, AT_SYMLINK_NOFOLLOW) || now - st.st_mtime < 120)
+                continue;
+            unlinkat(dirfd(dir), de->d_name, 0);
+        }
+        closedir(dir);
+    }
+    for (size_t i = 0; i < used_count; i++)
+        free(used[i]);
+    free(used);
+}
+
+static void start_image_cache_sweep(void)
+{
+    struct sched_param param = {0};
+
+    if (fork())
+        return;
+    sched_setscheduler(0, SCHED_IDLE, &param);
+    for (;;) {
+        sleep(180);
+        sweep_image_cache();
+    }
+}
+
 static void prepare_nt(void)
 {
     char from[256], to[256];
@@ -1976,6 +2072,7 @@ static void prepare_nt(void)
     make_dir(PREFIX "/dosdevices", 0755, 1);
     make_dir(EJECT_DIR, 0755, 1);
     make_dir(POWER_DIR, 0755, 1);
+    make_dir(TIME_DIR, 0755, 1);
     if (symlink(C_DRIVE, PREFIX "/dosdevices/c:") && errno != EEXIST)
         say("dosdevices/c: %s", strerror(errno));
     lchown(PREFIX "/dosdevices/c:", nt_uid, nt_gid);
@@ -2003,25 +2100,94 @@ static void prepare_nt(void)
  * (Windows writes it so; the kernel read it as UTC, and the time was hours
  * off: the browser's sign-in to a site failed with "400"). It is read in
  * the system's time zone, C:\Windows\System32\config\Host\timezone ("Europe/
- * Warsaw"; Kyiv when there is none), which every program gets as TZ. */
+ * Warsaw"; Kyiv when there is none).
+ *
+ * Programs get no TZ: /etc/localtime (a link in the image) is LOCALTIME, a
+ * link to the zone's file. glibc looks at that file again whenever it changes
+ * (TZ named one file for good), and so do wineserver's time zone bias and
+ * ntdll's zone: the Date and Time page changes the zone of every program
+ * while they run, as in Windows. ntdll names the zone by the file's name
+ * (Europe/Kyiv) through Arctic\Runtime\Time Zones\TZ Mapping. */
+#define LOCALTIME "/run/arctic/localtime"
+#define DEFAULT_ZONE "Europe/Kyiv"
+
+static int zone_valid(const char *zone)
+{
+    char path[160];
+
+    if (!zone[0] || strspn(zone, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_/+-0123456789") != strlen(zone) ||
+        strstr(zone, "..") || zone[0] == '/' || strlen(zone) > 64)
+        return 0;
+    snprintf(path, sizeof(path), "/usr/share/zoneinfo/%s", zone);
+    return !access(path, R_OK);
+}
+
+/* where the host keeps a setting of the clock: on C: when C: keeps what is
+ * written, else for this session */
+static void time_state_path(const char *name, char *path, size_t size)
+{
+    snprintf(path, size, "%s/%s", c_on_disk ? HOST_STATE : TIME_DIR, name);
+}
+
+static void read_time_state(const char *name, char *value, size_t size)
+{
+    char path[PATH_MAX];
+
+    value[0] = 0;
+    time_state_path(name, path, sizeof(path));
+    read_line(path, value, size);
+}
+
+static void write_time_state(const char *name, const char *value)
+{
+    char path[PATH_MAX], line[256];
+
+    time_state_path(name, path, sizeof(path));
+    snprintf(line, sizeof(line), "%s\n", value);
+    write_whole(path, line, strlen(line));
+}
+
+/* the system's zone, now and for every program */
+static int apply_zone(const char *zone)
+{
+    char path[160], env[176];
+
+    if (!zone_valid(zone))
+        return -1;
+    snprintf(path, sizeof(path), "/usr/share/zoneinfo/%s", zone);
+    mkdir("/run/arctic", 0755);
+    unlink(LOCALTIME ".new");
+    if (symlink(path, LOCALTIME ".new") || rename(LOCALTIME ".new", LOCALTIME)) {
+        say("time zone %s: %s", zone, strerror(errno));
+        return -1;
+    }
+    snprintf(tz_env, sizeof(tz_env), "ARCTIC_TIME_ZONE=%s", zone);
+    /* arctic-init's own clock: TZ, whose name changes with the zone */
+    snprintf(env, sizeof(env), ":%s", path);
+    setenv("TZ", env, 1);
+    tzset();
+    return 0;
+}
+
 static void set_clock(void)
 {
-    char zone[96] = "", path[160];
+    char zone[96] = "";
     struct rtc_time rtc;
     struct tm tm = {0};
     int fd;
 
+    mkdir("/run/arctic", 0755);
+    mkdir(TIME_DIR, 0755);
     read_line(HOST_STATE "/timezone", zone, sizeof(zone));
-    if (zone[0] && strspn(zone, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_/+-0123456789") == strlen(zone) &&
-        !strstr(zone, "..")) {
-        snprintf(path, sizeof(path), "/usr/share/zoneinfo/%s", zone);
-        if (!access(path, R_OK))
-            snprintf(tz_env, sizeof(tz_env), "TZ=:%s", path);
-        else
-            say("time zone %s: no such zone", zone);
+    if (zone[0] && !zone_valid(zone)) {
+        say("time zone %s: no such zone", zone);
+        zone[0] = 0;
     }
-    putenv(tz_env);
-    tzset();
+    if (!zone[0])
+        read_line(TIME_DIR "/timezone", zone, sizeof(zone));
+    if (!zone_valid(zone))
+        snprintf(zone, sizeof(zone), "%s", DEFAULT_ZONE);
+    apply_zone(zone);
 
     if ((fd = open("/dev/rtc0", O_RDONLY | O_CLOEXEC)) < 0)
         return;
@@ -2035,49 +2201,274 @@ static void set_clock(void)
         tm.tm_isdst = -1;
         struct timeval tv = {.tv_sec = mktime(&tm)};
         if (tv.tv_sec > 0 && !settimeofday(&tv, NULL))
-            say("clock from the real-time clock as local time (%s)", tz_env + 4);
+            say("clock from the real-time clock as local time (%s)", tz_env + 17);
     }
     close(fd);
 }
 
-/* Then the time from the network, as Windows' time service takes it from
- * time.windows.com (SNTP). The real-time clock is left as it is: Windows,
- * next to Arctic, keeps it. In the background, while the network comes. */
-static void sync_time(void)
+/* The real-time clock in local time, as Windows writes it: when the time
+ * was set by hand */
+static void write_rtc(time_t now)
 {
-    if (fork())
-        return;
-    for (int attempt = 0; attempt < 24; attempt++) {
-        struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_DGRAM}, *ai = NULL;
-        unsigned char packet[48] = {0x1b}; /* client, version 3 */
-        struct timeval wait = {3, 0};
-        int s;
+    struct rtc_time rtc = {0};
+    struct tm tm;
+    int fd;
 
-        if (attempt)
-            sleep(5);
-        if (getaddrinfo("time.windows.com", "123", &hints, &ai) || !ai)
-            continue;
-        s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (!localtime_r(&now, &tm) || (fd = open("/dev/rtc0", O_RDONLY | O_CLOEXEC)) < 0)
+        return;
+    rtc.tm_sec = tm.tm_sec;
+    rtc.tm_min = tm.tm_min;
+    rtc.tm_hour = tm.tm_hour;
+    rtc.tm_mday = tm.tm_mday;
+    rtc.tm_mon = tm.tm_mon;
+    rtc.tm_year = tm.tm_year;
+    if (ioctl(fd, RTC_SET_TIME, &rtc))
+        say("real-time clock: %s", strerror(errno));
+    close(fd);
+}
+
+/* the time server, "off" when the clock is not set from the network
+ * ("Установлювати час автоматично" of the Date and Time page) */
+static void time_server(char *server, size_t size)
+{
+    read_time_state("time-server", server, size);
+    if (!server[0])
+        snprintf(server, size, "time.windows.com");
+}
+
+/* One SNTP question: 0 and the server's time, or -1 and why */
+static int sntp_query(const char *server, struct timeval *tv, const char **why)
+{
+    struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_DGRAM}, *ai = NULL;
+    unsigned char packet[48] = {0x1b}; /* client, version 3 */
+    struct timeval wait = {3, 0};
+    int s, ret = -1;
+
+    *why = "no-server";
+    if (getaddrinfo(server, "123", &hints, &ai) || !ai)
+        return -1;
+    *why = "no-answer";
+    if ((s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0)) >= 0) {
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait));
-        if (s >= 0 && sendto(s, packet, sizeof(packet), 0, ai->ai_addr, ai->ai_addrlen) == sizeof(packet) &&
+        if (sendto(s, packet, sizeof(packet), 0, ai->ai_addr, ai->ai_addrlen) == sizeof(packet) &&
             recv(s, packet, sizeof(packet), 0) == sizeof(packet)) {
             /* the transmit time: seconds since 1900, then a binary fraction */
             uint32_t sec = (uint32_t)packet[40] << 24 | packet[41] << 16 | packet[42] << 8 | packet[43];
             uint32_t frac = (uint32_t)packet[44] << 24 | packet[45] << 16 | packet[46] << 8 | packet[47];
-            struct timeval now, tv = {.tv_sec = (time_t)sec - 2208988800u, .tv_usec = (suseconds_t)((uint64_t)frac * 1000000 >> 32)};
-            gettimeofday(&now, NULL);
-            if (sec && !settimeofday(&tv, NULL))
-                say("clock from time.windows.com, %+ld s", (long)(tv.tv_sec - now.tv_sec));
-            close(s);
-            freeaddrinfo(ai);
-            _exit(0);
+            if (sec) {
+                tv->tv_sec = (time_t)sec - 2208988800u;
+                tv->tv_usec = (suseconds_t)((uint64_t)frac * 1000000 >> 32);
+                ret = 0;
+            }
         }
-        if (s >= 0)
-            close(s);
-        freeaddrinfo(ai);
+        close(s);
     }
-    say("no time from time.windows.com");
-    _exit(1);
+    freeaddrinfo(ai);
+    return ret;
+}
+
+/* the clock set from the server: its offset in milliseconds, kept with when */
+static int sntp_set(const char *server, long *offset_ms, const char **why)
+{
+    struct timeval tv, now;
+    char line[160];
+
+    if (sntp_query(server, &tv, why))
+        return -1;
+    gettimeofday(&now, NULL);
+    if (settimeofday(&tv, NULL)) {
+        *why = "not-allowed";
+        return -1;
+    }
+    *offset_ms = (long)(tv.tv_sec - now.tv_sec) * 1000 + (long)(tv.tv_usec - now.tv_usec) / 1000;
+    snprintf(line, sizeof(line), "%lld %s", (long long)tv.tv_sec, server);
+    write_time_state("time-synced", line);
+    say("clock from %s, %+ld ms", server, *offset_ms);
+    return 0;
+}
+
+/* The zone where the machine is, by its address on the Internet: what
+ * ip-api.com says (plain HTTP, its free service). Only when "Установлювати
+ * часовий пояс автоматично" is on. */
+static int detect_zone(char *zone, size_t size)
+{
+    static const char request[] = "GET /line/?fields=status,timezone HTTP/1.0\r\nHost: ip-api.com\r\n"
+                                  "User-Agent: Arctic\r\nConnection: close\r\n\r\n";
+    struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_STREAM}, *ai = NULL;
+    struct timeval wait = {5, 0};
+    char reply[2048], *body, *line;
+    size_t got = 0;
+    ssize_t n;
+    int s;
+
+    zone[0] = 0;
+    if (getaddrinfo("ip-api.com", "80", &hints, &ai) || !ai)
+        return -1;
+    if ((s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0) {
+        freeaddrinfo(ai);
+        return -1;
+    }
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &wait, sizeof(wait));
+    if (!connect(s, ai->ai_addr, ai->ai_addrlen) && write(s, request, sizeof(request) - 1) == sizeof(request) - 1)
+        while (got < sizeof(reply) - 1 && (n = read(s, reply + got, sizeof(reply) - 1 - got)) > 0)
+            got += n;
+    close(s);
+    freeaddrinfo(ai);
+    reply[got] = 0;
+    /* the body: "success", then the zone */
+    if (!(body = strstr(reply, "\r\n\r\n")) || strncmp(body + 4, "success", 7))
+        return -1;
+    line = body + 4 + 7;
+    line += strspn(line, "\r\n");
+    line[strcspn(line, "\r\n")] = 0;
+    if (!zone_valid(line))
+        return -1;
+    snprintf(zone, size, "%s", line);
+    return 0;
+}
+
+/* the zone found, kept and in use */
+static int set_zone(const char *zone)
+{
+    if (apply_zone(zone))
+        return -1;
+    write_time_state("timezone", zone);
+    say("time zone: %s", zone);
+    return 0;
+}
+
+/* Then the time from the network, as Windows' time service takes it from
+ * time.windows.com (SNTP), or from the server the Date and Time page names,
+ * unless it says not to. The real-time clock is left as it is: Windows,
+ * next to Arctic, keeps it. The zone too, when it is found automatically.
+ * In the background, while the network comes. */
+static void sync_time(void)
+{
+    char server[128], auto_zone[16];
+    const char *why = "";
+    long offset;
+    int synced = 0;
+
+    time_server(server, sizeof(server));
+    read_time_state("timezone-auto", auto_zone, sizeof(auto_zone));
+    if (!strcmp(server, "off") && strcmp(auto_zone, "on"))
+        return;
+    if (fork())
+        return;
+    for (int attempt = 0; attempt < 24; attempt++) {
+        if (attempt)
+            sleep(5);
+        if (!strcmp(server, "off") || !sntp_set(server, &offset, &why)) {
+            synced = 1;
+            break;
+        }
+        if (!strcmp(why, "not-allowed"))
+            break;
+    }
+    if (!synced)
+        say("no time from %s (%s)", server, why);
+    if (!strcmp(auto_zone, "on")) {
+        char zone[96];
+        for (int attempt = 0; attempt < 6; attempt++) {
+            if (attempt)
+                sleep(5);
+            if (!detect_zone(zone, sizeof(zone))) {
+                if (strcmp(zone, tz_env + 17))
+                    set_zone(zone);
+                break;
+            }
+        }
+    }
+    _exit(synced ? 0 : 1);
+}
+
+/* The answer the Date and Time page waits for, written whole before it appears */
+static void time_answer(const char *text)
+{
+    int fd = open(TIME_DIR "/.result", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+
+    if (fd < 0)
+        return;
+    if (write(fd, text, strlen(text)) < 0)
+        say("time: %s", strerror(errno));
+    fchown(fd, nt_uid, nt_gid);
+    close(fd);
+    rename(TIME_DIR "/.result", TIME_DIR "/result");
+}
+
+/* What the Date and Time page (timedate.cpl) asks the host, one line in
+ * TIME_DIR/request:
+ *   state                   the settings: server=, zone=, zone-auto=, synced=
+ *   set SECONDS             the time, in seconds since 1970 (UTC), by hand
+ *   zone NAME               the zone, a name of the tz database
+ *   sync SERVER             the time from that server now
+ *   auto SERVER|off         the clock set from that server at every start
+ *   zone-auto on|off        the zone found by the address at every start
+ *   zone-detect             the zone found now
+ * The answer: "done ..." or "refused why". */
+static void serve_time(void)
+{
+    char request[256] = "", answer[512];
+    const char *why = "";
+
+    if (access(TIME_DIR "/request", F_OK))
+        return;
+    read_line(TIME_DIR "/request", request, sizeof(request));
+    unlink(TIME_DIR "/request");
+
+    if (!strcmp(request, "state")) {
+        char server[128], zone[96], zone_auto[16], synced[192];
+        time_server(server, sizeof(server));
+        snprintf(zone, sizeof(zone), "%s", tz_env + 17);
+        read_time_state("timezone-auto", zone_auto, sizeof(zone_auto));
+        read_time_state("time-synced", synced, sizeof(synced));
+        snprintf(answer, sizeof(answer), "done server=%s\nzone=%s\nzone-auto=%s\nsynced=%s\n", server, zone,
+                 strcmp(zone_auto, "on") ? "off" : "on", synced);
+        time_answer(answer);
+    } else if (!strncmp(request, "set ", 4)) {
+        long long seconds = strtoll(request + 4, NULL, 10);
+        struct timeval tv = {.tv_sec = (time_t)seconds};
+        if (seconds < 946684800LL || settimeofday(&tv, NULL)) {
+            time_answer("refused bad-time\n");
+            return;
+        }
+        write_rtc(tv.tv_sec);
+        say("time set by hand");
+        time_answer("done\n");
+    } else if (!strncmp(request, "zone ", 5)) {
+        time_answer(set_zone(request + 5) ? "refused bad-zone\n" : "done\n");
+    } else if (!strncmp(request, "sync ", 5)) {
+        long offset = 0;
+        if (sntp_set(request + 5, &offset, &why)) {
+            snprintf(answer, sizeof(answer), "refused %s\n", why);
+            time_answer(answer);
+            return;
+        }
+        snprintf(answer, sizeof(answer), "done %ld\n", offset);
+        time_answer(answer);
+    } else if (!strncmp(request, "auto ", 5)) {
+        const char *server = request + 5;
+        if (strcmp(server, "off") && (!server[0] || strspn(server, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-") != strlen(server))) {
+            time_answer("refused bad-server\n");
+            return;
+        }
+        write_time_state("time-server", server);
+        time_answer("done\n");
+    } else if (!strncmp(request, "zone-auto ", 10)) {
+        write_time_state("timezone-auto", strcmp(request + 10, "on") ? "off" : "on");
+        time_answer("done\n");
+    } else if (!strcmp(request, "zone-detect")) {
+        char zone[96];
+        if (detect_zone(zone, sizeof(zone)) || set_zone(zone)) {
+            time_answer("refused no-zone\n");
+            return;
+        }
+        snprintf(answer, sizeof(answer), "done %s\n", zone);
+        time_answer(answer);
+    } else {
+        time_answer("refused unknown\n");
+    }
 }
 
 /* The host's own state that a C: keeping what is written keeps too, in
@@ -3322,6 +3713,13 @@ int main(void)
     struct rlimit files = {524288, 524288};
     if (setrlimit(RLIMIT_NOFILE, &files))
         say("open files limit: %s", strerror(errno));
+    /* Every stretch of memory a program commits, frees or protects apart from
+     * its neighbours is a mapping of its own under Wine: Chrome's YouTube tab
+     * passed the kernel's 65530 in 20 minutes and its next 40 KB failed
+     * ("Out of Memory" with 1.7 GB in use). SteamOS's limit, for the same
+     * reason with games. */
+    if (write_sysfs("/proc/sys/vm/max_map_count", "2147483642"))
+        say("map count limit: %s", strerror(errno));
     /* right after C: is mounted (already true by here) and before
      * wineserver starts: docs/linux-gate.md, "Де живе пароль" */
     if (gate_prepare_state_dir())
@@ -3339,6 +3737,7 @@ int main(void)
     nt_gid = pw->pw_gid;
     keep_host_state();
     set_clock();
+    sync_time();
     start_memory_compression();
     start_memory_combining();
 
@@ -3387,6 +3786,7 @@ int main(void)
 
     /* The NT world */
     prepare_nt();
+    start_image_cache_sweep();
     char *wineserver[] = {"/usr/bin/wineserver", "-f", "-p", NULL};
     wineserver_pid = spawn(wineserver, 1, ntlog);
     say("wineserver pid %d", wineserver_pid);
@@ -3511,6 +3911,7 @@ int main(void)
             hang_watch(ntlog, LOG_DIR, nt_uid);
         serve_ejects();
         serve_power();
+        serve_time();
         serve_game_mode();
         serve_keys();
         if (!keys_applied && !access(HARDWARE_SETTLED, F_OK)) {

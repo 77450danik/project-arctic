@@ -1,0 +1,94 @@
+diff -ru a/dll/win32/shell32/CDefaultContextMenu.cpp b/dll/win32/shell32/CDefaultContextMenu.cpp
+--- a/dll/win32/shell32/CDefaultContextMenu.cpp	2026-10-30 16:44:34.965343200 +0000
++++ b/dll/win32/shell32/CDefaultContextMenu.cpp	2026-10-30 16:55:59.145311300 +0000
+@@ -8,6 +8,9 @@
+ 
+ #include "precomp.h"
+ #include <compat_undoc.h>
++extern "C" {
++#include <ndk/cmfuncs.h>
++}
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dmenu);
+ 
+@@ -757,6 +760,28 @@
+     return bOn;
+ }
+ 
++/* Arctic: whether a class key is "*" or AllFilesystemObjects, whose verbs every
++ * file has. As in Windows, none of them is the default of an item: "Open with
++ * Code" a program adds to all files does not open a shortcut, whose Open comes
++ * from its handler */
++static BOOL
++IsClassOfEveryItem(HKEY hkClass)
++{
++    struct
++    {
++        KEY_BASIC_INFORMATION Info;
++        WCHAR Room[32];
++    } kbi;
++    ULONG cb;
++
++    if (!NT_SUCCESS(NtQueryKey(hkClass, KeyBasicInformation, &kbi, sizeof(kbi), &cb)))
++        return FALSE;
++    UINT cch = kbi.Info.NameLength / sizeof(WCHAR);
++    return (cch == 1 && kbi.Info.Name[0] == L'*') ||
++           (cch == _countof(L"AllFilesystemObjects") - 1 &&
++            !_wcsnicmp(kbi.Info.Name, L"AllFilesystemObjects", cch));
++}
++
+ UINT
+ CDefaultContextMenu::AddStaticContextMenusToMenu(
+     HMENU hMenu,
+@@ -785,8 +810,9 @@
+ 
+         fState = MFS_ENABLED;
+ 
+-        /* set first entry as default */
+-        if (first)
++        /* set first entry as default. Arctic: not one every file has, and
++           none on a background, which has no default in Windows */
++        if (first && m_cidl && !IsClassOfEveryItem(info.hkClass))
+         {
+             fState |= MFS_DEFAULT;
+             first = false;
+@@ -1005,6 +1031,17 @@
+ 
+     // Don't want to pick something like cut or delete as the default but
+     // a static or dynamic verb is a good default.
++    // Arctic: not a verb every file has (then the first handler's item, as
++    // "Open with" of a file no program opens), and nothing on a background
++    if (!m_cidl)
++        return;
++    POSITION head = m_StaticEntries.GetHeadPosition();
++    if (head && IsClassOfEveryItem(m_StaticEntries.GetNext(head).hkClass))
++    {
++        if (m_iIdSHELast > m_iIdSHEFirst)
++            SetMenuDefaultItem(hMenu, idCmdFirst + m_iIdSHEFirst, MF_BYCOMMAND);
++        return;
++    }
+     if (m_iIdSCMLast > m_iIdSCMFirst || m_iIdSHELast > m_iIdSHEFirst)
+         SetMenuDefaultItem(hMenu, idCmdFirst, MF_BYCOMMAND);
+ }
+@@ -1032,13 +1069,19 @@
+     }
+ 
+     /* Add static context menu handlers */
++    UINT IndexStatic = IndexMenu;
+     cIds = AddStaticContextMenusToMenu(hMenu, &IndexMenu, idCmdFirst, idCmdLast, uFlags);
+     m_iIdSCMFirst = 0; // FIXME: This should be = idCmdFirst?
+     m_iIdSCMLast = cIds;
+     idCmdNext = idCmdFirst + cIds;
+ 
+-    /* Add dynamic context menu handlers */
+-    cIds += AddShellExtensionsToMenu(hMenu, &IndexMenu, idCmdNext, idCmdLast, uFlags);
++    /* Add dynamic context menu handlers. Arctic: above the verbs when none of
++       them is the default (a shortcut's Open comes from its handler), so the
++       default leads the menu as in Windows */
++    UINT IndexExt = (m_cidl && (int)GetMenuDefaultItem(hMenu, TRUE, 0) == -1) ? IndexStatic : IndexMenu;
++    UINT IndexExtFirst = IndexExt;
++    cIds += AddShellExtensionsToMenu(hMenu, &IndexExt, idCmdNext, idCmdLast, uFlags);
++    IndexMenu += IndexExt - IndexExtFirst;
+     m_iIdSHEFirst = m_iIdSCMLast;
+     m_iIdSHELast = cIds;
+     idCmdNext = idCmdFirst + cIds;

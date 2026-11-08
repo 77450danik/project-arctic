@@ -87,14 +87,16 @@ static void preset_look( struct look *look )
     look->text = TEXT_AUTO;
     switch (look->preset)
     {
+    /* the looks of Windows 10 and 11 are light or dark with the mode of
+     * Windows (desk.cpl, Personalization) */
     case PRESET_WIN10:
         look->effect = ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND;
-        look->color = RGB( 0x10, 0x10, 0x10 );
+        look->color = system_mode_light() ? RGB( 0xee, 0xee, 0xee ) : RGB( 0x10, 0x10, 0x10 );
         look->opacity = 75;
         break;
     case PRESET_WIN11:
         look->effect = ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND;
-        look->color = RGB( 0x1c, 0x1c, 0x1c );
+        look->color = system_mode_light() ? RGB( 0xf3, 0xf3, 0xf3 ) : RGB( 0x1c, 0x1c, 0x1c );
         look->opacity = 85;
         break;
     case PRESET_ACCENT:
@@ -104,17 +106,17 @@ static void preset_look( struct look *look )
         break;
     case PRESET_BLUR:
         look->effect = ARCTIC_ACCENT_ENABLE_BLURBEHIND;
-        look->color = RGB( 0, 0, 0 );
+        look->color = system_mode_light() ? RGB( 0xff, 0xff, 0xff ) : RGB( 0, 0, 0 );
         look->opacity = 30;
         break;
     case PRESET_CLEAR:
         look->effect = ARCTIC_ACCENT_ENABLE_TRANSPARENTGRADIENT;
-        look->color = RGB( 0, 0, 0 );
+        look->color = system_mode_light() ? RGB( 0xff, 0xff, 0xff ) : RGB( 0, 0, 0 );
         look->opacity = 25;
         break;
     case PRESET_SOLID:
         look->effect = ARCTIC_ACCENT_ENABLE_GRADIENT;
-        look->color = RGB( 0x10, 0x10, 0x10 );
+        look->color = system_mode_light() ? RGB( 0xee, 0xee, 0xee ) : RGB( 0x10, 0x10, 0x10 );
         look->opacity = 100;
         break;
     }
@@ -166,7 +168,7 @@ void look_load_taskbar( struct look *look )
     if (look->preset == PRESET_CUSTOM)
     {
         look->effect = ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND;
-        look->color = RGB( 0x10, 0x10, 0x10 );
+        look->color = system_mode_light() ? RGB( 0xee, 0xee, 0xee ) : RGB( 0x10, 0x10, 0x10 );
         look->opacity = 75;
         read_look_values( key, look );
     }
@@ -261,6 +263,9 @@ void WINAPI ArcticApplyTaskbarLook( HWND tray )
 /* ... and a taskbar that draws dark on white over a light look: says which */
 BOOL WINAPI ArcticApplyTaskbarLookEx( HWND tray )
 {
+    /* the taskbar came: the programs' mode is set again after an update */
+    personalize_sync();
+    gadgets_start();
     taskbar_can_be_light = TRUE;
     ArcticApplyTaskbarLook( tray );
     return taskbar_light;
@@ -335,16 +340,16 @@ void start_look_defaults( int style, struct look *look )
     switch (style)
     {
     case STYLE_WIN10:
-        look->color = RGB( 0x1f, 0x1f, 0x1f );
+        look->color = system_mode_light() ? RGB( 0xee, 0xee, 0xee ) : RGB( 0x1f, 0x1f, 0x1f );
         look->opacity = 80;
         break;
     case STYLE_WIN11:
-        look->color = RGB( 0x20, 0x20, 0x20 );
+        look->color = system_mode_light() ? RGB( 0xf3, 0xf3, 0xf3 ) : RGB( 0x20, 0x20, 0x20 );
         look->opacity = 85;
         break;
     default:
         /* the acrylic the standard menu had before it followed the taskbar */
-        look->color = RGB( 0x20, 0x20, 0x20 );
+        look->color = system_mode_light() ? RGB( 0xf3, 0xf3, 0xf3 ) : RGB( 0x20, 0x20, 0x20 );
         look->opacity = 80;
         break;
     }

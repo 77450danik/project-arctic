@@ -1,0 +1,165 @@
+# 2026-11-08: the dark menu bar, a maximized window minimized twice, a shaken
+# window, the taskbar's own menu, a maximized window after a mode change, the
+# buttons of Windows 11 in the middle and Start's picture.
+# Run with --resolution 1920x1080. Buttons have no labels by default: 48 wide
+# after Start's 48, in the order of the windows.
+sleep 25
+# the dark mode, for programs too; the page stays open
+key win-r
+sleep 2
+type control desk.cpl,,@Appearance
+key ret
+sleep 12
+shot q0-desk
+key tab
+sleep 1
+key spc
+sleep 12
+# the strip of the menu bar is dark to its end
+key ctrl-shift-esc
+sleep 10
+shot q1-taskmgr-menu
+key alt-f4
+sleep 3
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 8
+shot q1b-notepad-dark
+key win-r
+sleep 2
+type "C:Program FilesGoogleChromeApplicationrome.exe" --no-first-run --no-default-browser-check --start-maximized about:blank
+key ret
+sleep 30
+shot q2-chrome-maximized
+# the page's button, Notepad's, Chrome's: Chrome minimized and back, twice
+move 168 1060
+sleep 1
+click
+sleep 3
+click
+sleep 4
+shot q3-restored-once
+click
+sleep 3
+click
+sleep 4
+shot q4-restored-twice
+# the button's own menu
+click right
+sleep 3
+shot q5-menu
+key esc
+sleep 2
+# Notepad in front of what stays open, and shaken: the others go
+move 120 1060
+sleep 1
+click
+sleep 3
+shot q6-before-shake
+move 500 14
+sleep 1
+down
+sleep 0.2
+move 650 14
+sleep 0.1
+move 450 14
+sleep 0.1
+move 650 14
+sleep 0.1
+move 450 14
+sleep 0.1
+move 650 14
+sleep 0.5
+up
+sleep 4
+shot q7-shaken
+# shaken again: they come back
+move 650 14
+sleep 1
+down
+sleep 0.2
+move 800 14
+sleep 0.1
+move 600 14
+sleep 0.1
+move 800 14
+sleep 0.1
+move 600 14
+sleep 0.1
+move 800 14
+sleep 0.5
+up
+sleep 5
+shot q7b-shaken-again
+# a maximized window after the mode changes and back: Chrome in front
+move 168 1060
+sleep 1
+click
+sleep 4
+key win-r
+sleep 2
+type dispmode 1280x1024
+key ret
+sleep 8
+shot q7c-mode-small
+key win-r
+sleep 2
+type dispmode 1920x1080
+key ret
+sleep 8
+shot q7d-mode-back
+# the buttons of Windows 11, in the middle
+key win-r
+sleep 2
+type rundll32 shell32.dll,Options_RunDLL 1
+key ret
+sleep 10
+key ctrl-tab
+sleep 2
+key ctrl-tab
+sleep 3
+key down
+sleep 1
+key tab
+sleep 1
+key down
+sleep 1
+shot q8-page
+key ret
+sleep 6
+move 900 500
+sleep 2
+shot q9-win11-center
+# under the pointer, and the menu of Windows 11
+move 960 1056
+sleep 2
+shot q10-hover
+click right
+sleep 3
+shot q11-menu11
+key esc
+sleep 2
+# Start's picture, with Windows 10's buttons in the middle
+key win-r
+sleep 2
+type cmd /c reg add HKCU\Software\Arctic\Taskbar /v StartImage /t REG_SZ /d C:\Windows\Web\Wallpaper\Windows\img0.jpg /f
+key ret
+sleep 6
+key win-r
+sleep 2
+type rundll32 shell32.dll,Options_RunDLL 1
+key ret
+sleep 10
+key ctrl-tab
+sleep 2
+key ctrl-tab
+sleep 3
+key up
+sleep 1
+key ret
+sleep 6
+move 900 500
+sleep 2
+shot q12-start-picture

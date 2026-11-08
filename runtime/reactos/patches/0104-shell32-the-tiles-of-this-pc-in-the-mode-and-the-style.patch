@@ -1,0 +1,174 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] shell32: The tiles of This PC in the mode and the style.
+
+A selected tile was Windows 10's light blue in the dark mode as well, under
+white text. Its colours follow the mode now; the bars of the drives are thin
+and round with the style of Windows 11.
+---
+diff --git a/dll/win32/shell32/CDefView.cpp b/dll/win32/shell32/CDefView.cpp
+index 05a9453..e360eb7 100644
+--- a/dll/win32/shell32/CDefView.cpp
++++ b/dll/win32/shell32/CDefView.cpp
+@@ -37,6 +37,7 @@ TODO:
+ 
+ #include <atlwin.h>
+ #include <ui/rosctrls.h>
++#include <uxtheme.h>
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(shell);
+ 
+@@ -4237,6 +4238,64 @@ HICON CDefView::TileIcon(int iImage, PCUITEMID_CHILD pidl, int size)
+     return icon;
+ }
+ 
++/* Arctic: what the tiles of This PC follow */
++static BOOL ArcticWindowIsDark(void)
++{
++    COLORREF color = GetSysColor(COLOR_WINDOW);
++
++    return GetRValue(color) * 3 + GetGValue(color) * 6 + GetBValue(color) < 1280;
++}
++
++static BOOL ArcticStyle11(void)
++{
++    WCHAR size[64] = L"";
++
++    return SUCCEEDED(GetCurrentThemeName(NULL, 0, NULL, 0, size, _countof(size))) && !lstrcmpiW(size, L"Windows 11");
++}
++
++/* Arctic: a bar with round ends, its edges soft */
++static VOID ArcticFillPill(HDC hdc, const RECT *prc, COLORREF color)
++{
++    INT cx = prc->right - prc->left, cy = prc->bottom - prc->top;
++    FLOAT r = cy / 2.0f;
++    BITMAPINFO bmi = { { sizeof(bmi.bmiHeader), cx, -cy, 1, 32, BI_RGB } };
++    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
++    UINT32 *bits = NULL;
++    HBITMAP bitmap;
++    HDC mem;
++
++    if (cx <= 0 || cy <= 0 || !(bitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, (void **)&bits, NULL, 0)))
++        return;
++    for (INT y = 0; y < cy; y++)
++    {
++        for (INT x = 0; x < cx; x++)
++        {
++            INT hits = 0;
++
++            for (INT j = 0; j < 4; j++)
++            {
++                for (INT i = 0; i < 4; i++)
++                {
++                    FLOAT px = x + (i + 0.5f) / 4, py = y + (j + 0.5f) / 4;
++                    FLOAT dx = max(max(r - px, px - (cx - r)), 0.0f), dy = py - r;
++
++                    if (dx * dx + dy * dy <= r * r)
++                        hits++;
++                }
++            }
++            UINT a = hits * 255 / 16;
++            bits[y * cx + x] = (a << 24) | ((GetRValue(color) * a / 255) << 16) | ((GetGValue(color) * a / 255) << 8) |
++                               (GetBValue(color) * a / 255);
++        }
++    }
++    mem = CreateCompatibleDC(hdc);
++    HGDIOBJ old = SelectObject(mem, bitmap);
++    GdiAlphaBlend(hdc, prc->left, prc->top, cx, cy, mem, 0, 0, cx, cy, blend);
++    SelectObject(mem, old);
++    DeleteDC(mem);
++    DeleteObject(bitmap);
++}
++
+ LRESULT CDefView::OnCustomDraw(LPNMLVCUSTOMDRAW cd)
+ {
+     if (m_FolderSettings.ViewMode != FVM_TILE)
+@@ -4288,13 +4347,20 @@ void CDefView::DrawTile(LPNMLVCUSTOMDRAW cd)
+     if (!ListView_GetItem(m_ListView, &lvi))
+         return;
+ 
+-    /* Windows 10's light blue: hot, selected, selected without the focus */
++    /* Windows 10's light blue, or grey in the dark mode: hot, selected, selected without the focus */
++    BOOL dark = ArcticWindowIsDark(), style11 = ArcticStyle11();
+     BOOL selected = (lvi.state & LVIS_SELECTED) != 0, hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+     BOOL active = ::GetFocus() == m_ListView.m_hWnd;
+     if (selected || hot)
+     {
+         COLORREF fill = selected ? (active ? RGB(0xcc, 0xe8, 0xff) : RGB(0xd9, 0xd9, 0xd9)) : RGB(0xe5, 0xf3, 0xff);
+         COLORREF edge = selected ? (active ? RGB(0x99, 0xd1, 0xff) : RGB(0xd9, 0xd9, 0xd9)) : RGB(0xe5, 0xf3, 0xff);
++
++        if (dark)
++        {
++            fill = selected ? (active ? RGB(0x43, 0x43, 0x43) : RGB(0x38, 0x38, 0x38)) : RGB(0x2d, 0x2d, 0x2d);
++            edge = selected && active ? RGB(0x6e, 0x6e, 0x6e) : fill;
++        }
+         HBRUSH brush = CreateSolidBrush(fill);
+         HPEN pen = CreatePen(PS_SOLID, 1, edge);
+         HGDIOBJ oldBrush = SelectObject(hdc, brush), oldPen = SelectObject(hdc, pen);
+@@ -4336,7 +4402,7 @@ void CDefView::DrawTile(LPNMLVCUSTOMDRAW cd)
+     HGDIOBJ oldFont = SelectObject(hdc, font);
+     TEXTMETRICW tm;
+     GetTextMetricsW(hdc, &tm);
+-    int lineH = tm.tmHeight, barH = MulDiv(14, dpi, 96), gap = MulDiv(3, dpi, 96);
++    int lineH = tm.tmHeight, barH = MulDiv(style11 ? 6 : 14, dpi, 96), gap = MulDiv(style11 ? 6 : 3, dpi, 96);
+     int left = rc.left + pad + cx + MulDiv(8, dpi, 96), right = rc.right - pad;
+     int block = drive ? lineH * 2 + barH + gap * 2 : lineH;
+     int top = rc.top + (rc.bottom - rc.top - block) / 2;
+@@ -4347,20 +4413,36 @@ void CDefView::DrawTile(LPNMLVCUSTOMDRAW cd)
+     if (drive)
+     {
+         RECT bar = { left, line.bottom + gap, min(right, left + MulDiv(180, dpi, 96)), line.bottom + gap + barH };
+-        HBRUSH back = CreateSolidBrush(RGB(0xe6, 0xe6, 0xe6)), border = CreateSolidBrush(RGB(0xbc, 0xbc, 0xbc));
+-        FillRect(hdc, &bar, back);
+-        FrameRect(hdc, &bar, border);
+         ULONGLONG used = total.QuadPart - freeAll.QuadPart;
+-        RECT fill = bar;
+-        InflateRect(&fill, -1, -1);
+-        fill.right = fill.left + (LONG)((fill.right - fill.left) * (double)used / (double)total.QuadPart);
+         /* more than nine tenths used: red, as Windows warns of a full drive */
+-        HBRUSH meter = CreateSolidBrush(used * 10 > total.QuadPart * 9 ? RGB(0xda, 0x26, 0x26) : RGB(0x26, 0xa0, 0xda));
+-        if (fill.right > fill.left)
+-            FillRect(hdc, &fill, meter);
+-        DeleteObject(back);
+-        DeleteObject(border);
+-        DeleteObject(meter);
++        BOOL full = used * 10 > total.QuadPart * 9;
++        RECT fill = bar;
++
++        if (style11)
++        {
++            /* Windows 11's: thin, round, in the accent of the mode */
++            ArcticFillPill(hdc, &bar, dark ? RGB(0x45, 0x45, 0x45) : RGB(0xdc, 0xdc, 0xdc));
++            fill.right = fill.left + (LONG)((fill.right - fill.left) * (double)used / (double)total.QuadPart);
++            fill.right = max(fill.right, fill.left + barH);
++            ArcticFillPill(hdc, &fill, full ? (dark ? RGB(0xff, 0x99, 0xa4) : RGB(0xc4, 0x2b, 0x1c)) :
++                                              (dark ? RGB(0x60, 0xcd, 0xff) : RGB(0x00, 0x5f, 0xb8)));
++        }
++        else
++        {
++            HBRUSH back = CreateSolidBrush(dark ? RGB(0x3a, 0x3a, 0x3a) : RGB(0xe6, 0xe6, 0xe6));
++            HBRUSH border = CreateSolidBrush(dark ? RGB(0x5a, 0x5a, 0x5a) : RGB(0xbc, 0xbc, 0xbc));
++            HBRUSH meter = CreateSolidBrush(full ? RGB(0xda, 0x26, 0x26) : RGB(0x26, 0xa0, 0xda));
++
++            FillRect(hdc, &bar, back);
++            FrameRect(hdc, &bar, border);
++            InflateRect(&fill, -1, -1);
++            fill.right = fill.left + (LONG)((fill.right - fill.left) * (double)used / (double)total.QuadPart);
++            if (fill.right > fill.left)
++                FillRect(hdc, &fill, meter);
++            DeleteObject(back);
++            DeleteObject(border);
++            DeleteObject(meter);
++        }
+ 
+         WCHAR freeText[64], totalText[64], format[64], text[192];
+         StrFormatByteSizeW(avail.QuadPart, freeText, _countof(freeText));
+@@ -4368,7 +4450,7 @@ void CDefView::DrawTile(LPNMLVCUSTOMDRAW cd)
+         if (!LoadStringW(shell32_hInstance, IDS_DRIVE_FREE_OF, format, _countof(format)))
+             StringCchCopyW(format, _countof(format), L"%s free of %s");
+         StringCchPrintfW(text, _countof(text), format, freeText, totalText);
+-        SetTextColor(hdc, RGB(0x6d, 0x6d, 0x6d));
++        SetTextColor(hdc, dark ? RGB(0xa6, 0xa6, 0xa6) : RGB(0x6d, 0x6d, 0x6d));
+         RECT line2 = { left, bar.bottom + gap, right, bar.bottom + gap + lineH };
+         DrawTextW(hdc, text, -1, &line2, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+     }

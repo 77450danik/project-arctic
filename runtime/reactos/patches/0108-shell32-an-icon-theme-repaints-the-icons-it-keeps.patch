@@ -1,0 +1,134 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] shell32: An icon theme repaints the icons it keeps.
+
+user32 takes a module's icons from the icon theme (HKCU\Software\Arctic\Icons).
+When the theme changes, the icons the cache keeps of the modules either
+theme has are made again at their indexes, so views keep their indexes
+and only paint again.
+---
+diff --git a/dll/win32/shell32/iconcache.cpp b/dll/win32/shell32/iconcache.cpp
+index ae4dc97..27b07ad 100644
+--- a/dll/win32/shell32/iconcache.cpp
++++ b/dll/win32/shell32/iconcache.cpp
+@@ -661,6 +661,112 @@ static INT SIC_LoadIcon (LPCWSTR sSourceFile, INT dwSourceIndex, DWORD dwFlags)
+  *  look in the cache for a proper icon. if not available the icon is taken
+  *  from the file and cached
+  */
++/* Arctic: an icon theme (HKCU\\Software\\Arctic\\Icons\\Theme: user32 takes the
++   icons of a module from %WINDIR%\\Resources\\Icons\\<theme>\\<module> when it is
++   there). When it changes, the icons kept of the modules either theme has are
++   made again at their indexes: what shows them keeps its indexes, and only
++   paints again. */
++static WCHAR SIC_Theme[64];
++static DWORD SIC_ThemeChecked;
++static BOOL SIC_ThemeKnown;
++
++static void SIC_ReadTheme(WCHAR *pszName, DWORD cchName)
++{
++    DWORD cbData = cchName * sizeof(WCHAR), dwType;
++    HKEY hKey;
++
++    StringCchCopyW(pszName, cchName, L"We10X");
++    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Arctic\\Icons", 0, KEY_QUERY_VALUE, &hKey))
++        return;
++    if (RegQueryValueExW(hKey, L"Theme", NULL, &dwType, (BYTE *)pszName, &cbData) || dwType != REG_SZ)
++        StringCchCopyW(pszName, cchName, L"We10X");
++    pszName[cchName - 1] = 0;
++    RegCloseKey(hKey);
++}
++
++static BOOL SIC_ThemeHas(LPCWSTR pszTheme, LPCWSTR pszSourceFile)
++{
++    WCHAR szPath[MAX_PATH], szBase[MAX_PATH];
++
++    if (!pszTheme[0] || !GetWindowsDirectoryW(szPath, _countof(szPath)))
++        return FALSE;
++    StringCchCopyW(szBase, _countof(szBase), PathFindFileNameW(pszSourceFile));
++    PathRemoveExtensionW(szBase);
++    StringCchCatW(szPath, _countof(szPath), L"\\Resources\\Icons\\");
++    StringCchCatW(szPath, _countof(szPath), pszTheme);
++    StringCchCatW(szPath, _countof(szPath), L"\\");
++    StringCchCatW(szPath, _countof(szPath), szBase);
++    return PathIsDirectoryW(szPath);
++}
++
++static void SIC_RefreshTheme(LPCWSTR pszOld, LPCWSTR pszNew)
++{
++    for (INT i = 0; sic_hdpa && i < DPA_GetPtrCount(sic_hdpa); i++)
++    {
++        LPSIC_ENTRY lpsice = (LPSIC_ENTRY)DPA_GetPtr(sic_hdpa, i);
++        HICON hiconLarge = NULL, hiconSmall = NULL, hiconDesktop;
++
++        if (!SIC_ThemeHas(pszOld, lpsice->sSourceFile) && !SIC_ThemeHas(pszNew, lpsice->sSourceFile))
++            continue;
++        PrivateExtractIconsW(lpsice->sSourceFile, (INT)lpsice->dwSourceIndex, ShellLargeIconSize, ShellLargeIconSize,
++                             &hiconLarge, NULL, 1, LR_COPYFROMRESOURCE);
++        PrivateExtractIconsW(lpsice->sSourceFile, (INT)lpsice->dwSourceIndex, ShellSmallIconSize, ShellSmallIconSize,
++                             &hiconSmall, NULL, 1, LR_COPYFROMRESOURCE);
++        if (hiconLarge && hiconSmall)
++        {
++            if (lpsice->dwFlags & GIL_FORSHORTCUT)
++            {
++                HICON hiconLargeShortcut = SIC_OverlayShortcutImage(hiconLarge, SIC_LIST_BIG);
++                HICON hiconSmallShortcut = SIC_OverlayShortcutImage(hiconSmall, SIC_LIST_SMALL);
++
++                if (hiconLargeShortcut && hiconSmallShortcut)
++                {
++                    DestroyIcon(hiconLarge);
++                    DestroyIcon(hiconSmall);
++                    hiconLarge = hiconLargeShortcut;
++                    hiconSmall = hiconSmallShortcut;
++                }
++                else
++                {
++                    if (hiconLargeShortcut) DestroyIcon(hiconLargeShortcut);
++                    if (hiconSmallShortcut) DestroyIcon(hiconSmallShortcut);
++                }
++            }
++            hiconDesktop = SIC_LoadDesktopIcon(lpsice->sSourceFile, (INT)lpsice->dwSourceIndex, lpsice->dwFlags);
++            ImageList_ReplaceIcon(ShellSmallIconList, lpsice->dwListIndex, hiconSmall);
++            ImageList_ReplaceIcon(ShellBigIconList, lpsice->dwListIndex, hiconLarge);
++            ImageList_ReplaceIcon(ShellDesktopIconList, lpsice->dwListIndex, hiconDesktop ? hiconDesktop : hiconLarge);
++            if (hiconDesktop) DestroyIcon(hiconDesktop);
++        }
++        if (hiconLarge) DestroyIcon(hiconLarge);
++        if (hiconSmall) DestroyIcon(hiconSmall);
++    }
++}
++
++/* at most twice a second: icons are looked up all the time */
++static void SIC_CheckTheme(void)
++{
++    WCHAR szTheme[64], szOld[64];
++    DWORD dwNow = GetTickCount();
++
++    if (SIC_ThemeKnown && dwNow - SIC_ThemeChecked < 500)
++        return;
++    SIC_ReadTheme(szTheme, _countof(szTheme));
++    EnterCriticalSection(&SHELL32_SicCS);
++    SIC_ThemeChecked = dwNow;
++    if (!SIC_ThemeKnown || wcscmp(szTheme, SIC_Theme))
++    {
++        BOOL bKnown = SIC_ThemeKnown;
++
++        StringCchCopyW(szOld, _countof(szOld), SIC_Theme);
++        StringCchCopyW(SIC_Theme, _countof(SIC_Theme), szTheme);
++        SIC_ThemeKnown = TRUE;
++        if (bKnown)
++            SIC_RefreshTheme(szOld, szTheme);
++    }
++    LeaveCriticalSection(&SHELL32_SicCS);
++}
++
+ INT SIC_GetIconIndex (LPCWSTR sSourceFile, INT dwSourceIndex, DWORD dwFlags )
+ {
+     SIC_ENTRY sice;
+@@ -676,6 +782,7 @@ INT SIC_GetIconIndex (LPCWSTR sSourceFile, INT dwSourceIndex, DWORD dwFlags )
+ 
+     if (!sic_hdpa)
+         SIC_Initialize();
++    SIC_CheckTheme();
+ 
+     EnterCriticalSection(&SHELL32_SicCS);
+ 

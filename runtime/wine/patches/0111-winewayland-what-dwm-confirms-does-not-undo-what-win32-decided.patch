@@ -1,0 +1,26 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] winewayland: What dwm confirms does not undo what Win32 has decided since.
+
+dwm.exe decides nothing about a window's state: it only confirms what
+Win32 asked for, later. A program restored from the taskbar that sets its
+placement meanwhile (Chromium does) got the confirmation of an older state,
+and WS_MAXIMIZE went while the window kept its size: minimized a second
+time, it came back not maximized.
+---
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 9a36798..01c8058 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -611,7 +611,10 @@ static void wayland_configure_window(HWND hwnd)
+     if (rect.left == rect.right || rect.bottom == rect.top) flags |= SWP_NOSIZE;
+ 
+     style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+-    if (!(state & WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED) != !(style & WS_MAXIMIZE)
++    /* dwm.exe only confirms the state Win32 asked for: a confirmation that
++     * comes after Win32 has changed its mind again must not undo it */
++    if (!process_wayland.arctic_shell_v1
++        && !(state & WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED) != !(style & WS_MAXIMIZE)
+         && !(state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN))
+     {
+         arctic_log_configure(hwnd, (style & WS_MAXIMIZE) ? "un-maximized" : "maximized", width, height,

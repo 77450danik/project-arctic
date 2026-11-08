@@ -8,7 +8,10 @@
  * (ITaskbarList3::ThumbBarAddButtons: play, pause, next...). The X closes a
  * window, a click on it switches to it, a click on a button tells the
  * program (WM_COMMAND, THBN_CLICKED). It goes a moment after the pointer
- * leaves both the taskbar button and the flyout.
+ * leaves both the taskbar button and the flyout. Moved to another button it
+ * slides there. With the buttons of Windows 11 it is rounded and stands a
+ * little off the taskbar, what lights up in it is rounded, and so are the
+ * thumbnails (dwm.exe, for a flyout with corners of its own).
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -17,6 +20,7 @@
  */
 
 #include "private.h"
+#include "winreg.h"
 #include "commctrl.h"
 #include "wine/debug.h"
 
@@ -25,6 +29,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(twinui);
 #define TIMER_SHOW    1
 #define TIMER_HIDE    2
 #define TIMER_REFRESH 3
+#define TIMER_SLIDE   4
+#define SLIDE_FRAME   10         /* ms */
 #define SHOW_DELAY    400
 #define HIDE_DELAY    300
 
@@ -70,6 +76,81 @@ static BOOL        hot_close, pressed;
 static HFONT       font;
 static LONG        buttons_serial = -1;
 static BOOL        with_bar;                    /* some window has buttons */
+static BOOL        style11;                     /* the buttons of Windows 11 */
+static POINT       slide_from, slide_to;
+static DWORD       slide_start;
+static int         slide_time;                  /* ms */
+
+/* the style of the taskbar's buttons, and the corners that go with it */
+static void load_style(void)
+{
+    DWORD value = 0, size = sizeof(value), corner;
+
+    RegGetValueW( HKEY_CURRENT_USER, L"Software\\Arctic\\Taskbar", L"ButtonStyle", RRF_RT_REG_DWORD, NULL, &value, &size );
+    style11 = value == 1;
+    corner = style11 ? ARCTIC_FLYOUT_CORNER : 1 /* DWMWCP_DONOTROUND */;
+    DwmSetWindowAttribute( flyout, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corner, sizeof(corner) );
+}
+
+/* what lights up in the flyout of Windows 11 */
+static void fill_round( HDC hdc, const RECT *rect, int radius, COLORREF color, BYTE alpha )
+{
+    enum { SAMPLES = 4 };
+    int width = rect->right - rect->left, height = rect->bottom - rect->top;
+    BITMAPINFO info = {{ sizeof(info.bmiHeader), width, -height, 1, 32, BI_RGB }};
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    HDC mem;
+    HBITMAP bitmap;
+    DWORD *bits;
+
+    if (width <= 0 || height <= 0) return;
+    mem = CreateCompatibleDC( hdc );
+    if ((bitmap = CreateDIBSection( hdc, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0 )))
+    {
+        HGDIOBJ old = SelectObject( mem, bitmap );
+
+        for (int row = 0; row < height; row++)
+        {
+            for (int col = 0; col < width; col++)
+            {
+                int hits = 0;
+                DWORD a;
+
+                for (int j = 0; j < SAMPLES; j++)
+                {
+                    for (int i = 0; i < SAMPLES; i++)
+                    {
+                        float x = col + (i + 0.5f) / SAMPLES, y = row + (j + 0.5f) / SAMPLES;
+                        float dx = max( max( radius - x, x - (width - radius) ), 0.f );
+                        float dy = max( max( radius - y, y - (height - radius) ), 0.f );
+
+                        if (dx * dx + dy * dy <= radius * radius) hits++;
+                    }
+                }
+                a = hits * alpha / (SAMPLES * SAMPLES);
+                bits[row * width + col] = (a << 24) | ((GetRValue( color ) * a / 255) << 16) |
+                                          ((GetGValue( color ) * a / 255) << 8) | (GetBValue( color ) * a / 255);
+            }
+        }
+        GdiAlphaBlend( hdc, rect->left, rect->top, width, height, mem, 0, 0, width, height, blend );
+        SelectObject( mem, old );
+        DeleteObject( bitmap );
+    }
+    DeleteDC( mem );
+}
+
+/* one step of the way to another button, quick at first and slowing */
+static void slide_step(void)
+{
+    int elapsed = GetTickCount() - slide_start, left;
+    float t = elapsed >= slide_time ? 1.0f : (float)elapsed / slide_time;
+
+    left = 1000 - (int)(1000 * (1 - t) * (1 - t) * (1 - t));
+    SetWindowPos( flyout, NULL, slide_from.x + (slide_to.x - slide_from.x) * left / 1000,
+                  slide_from.y + (slide_to.y - slide_from.y) * left / 1000, 0, 0,
+                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE );
+    if (t >= 1.0f) KillTimer( flyout, TIMER_SLIDE );
+}
 
 static void load_buttons(void)
 {
@@ -116,6 +197,7 @@ static void hide_flyout(void)
     KillTimer( flyout, TIMER_SHOW );
     KillTimer( flyout, TIMER_HIDE );
     KillTimer( flyout, TIMER_REFRESH );
+    KillTimer( flyout, TIMER_SLIDE );
     drop_thumbnails();
     count = 0;
     hot = hot_button = -1;
@@ -199,8 +281,12 @@ static void layout( const RECT *monitor )
 static void show_flyout( const HWND *hwnds, UINT n, const RECT *button )
 {
     MONITORINFO info = { sizeof(info) };
-    int width, height, x, y;
+    int width, height, x, y, gap;
+    BOOL was_shown = IsWindowVisible( flyout );
+    RECT before;
 
+    GetWindowRect( flyout, &before );
+    KillTimer( flyout, TIMER_SLIDE );
     drop_thumbnails();
     count = 0;
     for (UINT i = 0; i < n && count < MAX_ITEMS; i++)
@@ -215,6 +301,7 @@ static void show_flyout( const HWND *hwnds, UINT n, const RECT *button )
         return;
     }
     load_buttons();
+    load_style();
 
     GetMonitorInfoW( MonitorFromRect( button, MONITOR_DEFAULTTONEAREST ), &info );
     layout( &info.rcMonitor );
@@ -224,9 +311,22 @@ static void show_flyout( const HWND *hwnds, UINT n, const RECT *button )
     /* over the button, on the taskbar's edge, inside the monitor */
     x = (button->left + button->right - width) / 2;
     x = max( info.rcMonitor.left, min( x, info.rcMonitor.right - width ) );
-    if (button->top > (info.rcMonitor.top + info.rcMonitor.bottom) / 2) y = button->top - height;
-    else y = button->bottom;
-    SetWindowPos( flyout, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE );
+    gap = style11 ? px( 8 ) : 0;
+    if (button->top > (info.rcMonitor.top + info.rcMonitor.bottom) / 2) y = button->top - height - gap;
+    else y = button->bottom + gap;
+
+    /* already over another button: it goes there, the time and the curve of its style */
+    if (was_shown && before.left != x)
+    {
+        SetWindowPos( flyout, HWND_TOPMOST, before.left, y, width, height, SWP_NOACTIVATE );
+        slide_from.x = before.left;
+        slide_from.y = slide_to.y = y;
+        slide_to.x = x;
+        slide_start = GetTickCount();
+        slide_time = style11 ? 200 : 150;
+        SetTimer( flyout, TIMER_SLIDE, SLIDE_FRAME, NULL );
+    }
+    else SetWindowPos( flyout, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE );
 
     for (UINT i = 0; i < count; i++)
     {
@@ -281,7 +381,17 @@ static void paint( HDC hdc, const RECT *client )
         RECT text;
         HICON icon;
 
-        if (is_hot && hot_button < 0) fill_alpha( hdc, &item->rect, INK, 0x1a );
+        if (is_hot && hot_button < 0)
+        {
+            if (style11)
+            {
+                RECT lit = item->rect;
+
+                InflateRect( &lit, -px( 4 ), -px( 4 ) );
+                fill_round( hdc, &lit, px( 4 ), INK, 0x14 );
+            }
+            else fill_alpha( hdc, &item->rect, INK, 0x1a );
+        }
 
         icon = window_icon( item->hwnd, FALSE );
         DrawIconEx( hdc, item->rect.left + PADDING, (TITLE_HEIGHT - ICON_SIZE) / 2 + PADDING / 2, icon,
@@ -299,7 +409,15 @@ static void paint( HDC hdc, const RECT *client )
 
         if (is_hot)
         {
-            if (hot_close) fill_alpha( hdc, &item->close, RGB(0xe8, 0x11, 0x23), 255 );
+            if (hot_close && style11)
+            {
+                RECT lit = item->close;
+
+                InflateRect( &lit, -px( 4 ), -px( 4 ) );
+                OffsetRect( &lit, -px( 2 ), px( 2 ) );
+                fill_round( hdc, &lit, px( 4 ), RGB(0xc4, 0x2b, 0x1c), 255 );
+            }
+            else if (hot_close) fill_alpha( hdc, &item->close, RGB(0xe8, 0x11, 0x23), 255 );
             draw_glyph_close( hdc, &item->close, hot_close ? RGB(255, 255, 255) : INK );
         }
 
@@ -382,6 +500,11 @@ static LRESULT CALLBACK flyout_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
                     InvalidateRect( hwnd, NULL, TRUE );
                 }
             }
+            return 0;
+        }
+        if (wparam == TIMER_SLIDE)
+        {
+            slide_step();
             return 0;
         }
         KillTimer( hwnd, wparam );

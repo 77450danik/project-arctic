@@ -74,14 +74,24 @@ enum
     STYLE_COUNT
 };
 
-#define COLOR_TITLE    RGB( 0x00, 0x33, 0x99 )   /* the main instruction's blue */
-#define COLOR_GROUP    RGB( 0x1e, 0x39, 0x5b )   /* a section's header (Windows 7) */
-#define COLOR_TEXT     RGB( 0x00, 0x00, 0x00 )
-#define COLOR_GRAY     RGB( 0x6d, 0x6d, 0x6d )
-#define COLOR_LINK     RGB( 0x00, 0x66, 0xcc )
-#define COLOR_LINK_HOT RGB( 0x33, 0x99, 0xff )
-#define COLOR_NAV_LINK RGB( 0x1e, 0x39, 0x5b )   /* the task pane's links (Windows 7) */
-#define COLOR_LINE     RGB( 0xd5, 0xdf, 0xe5 )
+/* the programs' mode (desk.cpl, Personalization) as the system colours
+ * have it: a page is dark where windows are */
+static inline BOOL cp_dark(void)
+{
+    COLORREF c = GetSysColor( COLOR_WINDOW );
+    return GetRValue( c ) + GetGValue( c ) + GetBValue( c ) < 3 * 128;
+}
+
+#define COLOR_TITLE    (cp_dark() ? RGB( 0x99, 0xc9, 0xff ) : RGB( 0x00, 0x33, 0x99 ))  /* the main instruction's blue */
+#define COLOR_GROUP    (cp_dark() ? RGB( 0xd8, 0xe2, 0xec ) : RGB( 0x1e, 0x39, 0x5b ))  /* a section's header (Windows 7) */
+#define COLOR_TEXT     (cp_dark() ? RGB( 0xff, 0xff, 0xff ) : RGB( 0x00, 0x00, 0x00 ))
+#define COLOR_GRAY     (cp_dark() ? RGB( 0xa0, 0xa0, 0xa0 ) : RGB( 0x6d, 0x6d, 0x6d ))
+#define COLOR_LINK     (cp_dark() ? RGB( 0x99, 0xd6, 0xff ) : RGB( 0x00, 0x66, 0xcc ))
+#define COLOR_LINK_HOT (cp_dark() ? RGB( 0xc4, 0xe8, 0xff ) : RGB( 0x33, 0x99, 0xff ))
+#define COLOR_NAV_LINK (cp_dark() ? RGB( 0xd8, 0xe2, 0xec ) : RGB( 0x1e, 0x39, 0x5b ))  /* the task pane's links (Windows 7) */
+#define COLOR_LINE     (cp_dark() ? RGB( 0x3c, 0x3c, 0x3c ) : RGB( 0xd5, 0xdf, 0xe5 ))
+/* the page under it all */
+#define COLOR_PAGE     (cp_dark() ? RGB( 0x19, 0x19, 0x19 ) : RGB( 0xff, 0xff, 0xff ))
 
 void view_clear( struct view *view );
 void view_text( struct view *view, int style, const WCHAR *text );

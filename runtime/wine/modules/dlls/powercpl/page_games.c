@@ -566,17 +566,17 @@ static void draw_dial( HDC hdc, struct canvas *canvas, int cx, int cy, UINT mhz,
         font_big = dial_font( px( 32 ), FW_LIGHT );
         font_small = dial_font( px( 12 ), FW_NORMAL );
     }
-    draw_arc( canvas, cx, cy, r, outer, 135, 270, RGB( 0xe8, 0xe8, 0xe8 ) );
+    draw_arc( canvas, cx, cy, r, outer, 135, 270, view_dark() ? RGB( 0x3c, 0x3c, 0x3c ) : RGB( 0xe8, 0xe8, 0xe8 ) );
     if (mhz != ARCTIC_UNKNOWN && top_mhz)
         draw_arc( canvas, cx, cy, r, outer, 135, 270.0f * min( 1.0f, (float)mhz / top_mhz ), RGB( 0x00, 0x78, 0xd7 ) );
-    draw_arc( canvas, cx, cy, r_inner, inner, 135, 270, RGB( 0xf2, 0xf2, 0xf2 ) );
+    draw_arc( canvas, cx, cy, r_inner, inner, 135, 270, view_dark() ? RGB( 0x2b, 0x2b, 0x2b ) : RGB( 0xf2, 0xf2, 0xf2 ) );
     if (celsius != ARCTIC_UNKNOWN)
         draw_arc( canvas, cx, cy, r_inner, inner, 135, 270.0f * min( 1.0f, celsius / 100.0f ), temperature_color( celsius ) );
 
     if (mhz != ARCTIC_UNKNOWN) swprintf( text, ARRAY_SIZE(text), L"%u", mhz );
     else lstrcpyW( text, L"—" );
-    centered( hdc, font_big, RGB( 0, 0, 0 ), text, cx, cy - px( 34 ), cy + px( 6 ) );
-    centered( hdc, font_small, RGB( 0x6d, 0x6d, 0x6d ), L"МГц", cx, cy + px( 4 ), cy + px( 20 ) );
+    centered( hdc, font_big, view_dark() ? RGB( 0xff, 0xff, 0xff ) : RGB( 0, 0, 0 ), text, cx, cy - px( 34 ), cy + px( 6 ) );
+    centered( hdc, font_small, view_dark() ? RGB( 0xa0, 0xa0, 0xa0 ) : RGB( 0x6d, 0x6d, 0x6d ), L"МГц", cx, cy + px( 4 ), cy + px( 20 ) );
     if (celsius != ARCTIC_UNKNOWN)
     {
         swprintf( text, ARRAY_SIZE(text), L"%u °C", celsius );
@@ -585,10 +585,10 @@ static void draw_dial( HDC hdc, struct canvas *canvas, int cx, int cy, UINT mhz,
     if (voltage_mv != ARCTIC_UNKNOWN)
     {
         volts( text, ARRAY_SIZE(text), voltage_mv );
-        centered( hdc, font_small, RGB( 0x6d, 0x6d, 0x6d ), text, cx, cy + px( 38 ), cy + px( 54 ) );
+        centered( hdc, font_small, view_dark() ? RGB( 0xa0, 0xa0, 0xa0 ) : RGB( 0x6d, 0x6d, 0x6d ), text, cx, cy + px( 38 ), cy + px( 54 ) );
     }
-    centered( hdc, view_font( STYLE_BOLD ), RGB( 0, 0, 0 ), name, cx, cy + px( 74 ), cy + px( 92 ) );
-    centered( hdc, font_small, RGB( 0x6d, 0x6d, 0x6d ), details, cx, cy + px( 92 ), cy + px( 108 ) );
+    centered( hdc, view_font( STYLE_BOLD ), view_dark() ? RGB( 0xff, 0xff, 0xff ) : RGB( 0, 0, 0 ), name, cx, cy + px( 74 ), cy + px( 92 ) );
+    centered( hdc, font_small, view_dark() ? RGB( 0xa0, 0xa0, 0xa0 ) : RGB( 0x6d, 0x6d, 0x6d ), details, cx, cy + px( 92 ), cy + px( 108 ) );
 }
 
 static void join( WCHAR *text, size_t count, const WCHAR *part )
@@ -621,7 +621,13 @@ static void paint_dials( struct view *view, HDC hdc, const RECT *rect )
     info.bmiHeader.biBitCount = 32;
     if (canvas.width <= 0 || canvas.height <= 0) return;
     if (!(bitmap = CreateDIBSection( hdc, &info, DIB_RGB_COLORS, (void **)&canvas.bits, NULL, 0 ))) return;
-    memset( canvas.bits, 0xff, canvas.width * canvas.height * 4 );
+    {
+        /* the page's colour, white or the dark mode's */
+        COLORREF page = view_page_color();
+        UINT32 pixel = (GetRValue( page ) << 16) | (GetGValue( page ) << 8) | GetBValue( page );
+
+        for (int i = 0; i < canvas.width * canvas.height; i++) canvas.bits[i] = pixel;
+    }
     mem = CreateCompatibleDC( hdc );
     SelectObject( mem, bitmap );
     SetBkMode( mem, TRANSPARENT );

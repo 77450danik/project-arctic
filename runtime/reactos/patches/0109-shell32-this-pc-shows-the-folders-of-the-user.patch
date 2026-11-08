@@ -1,0 +1,183 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] shell32: This PC shows the folders of the user.
+
+As in Windows 10 and 11: Desktop, Documents, Downloads, Music, Pictures and
+Videos by Windows' own CLSIDs (MyComputer\NameSpace, arctic.reg), each a
+CMyDocsFolder on the folder its CLSID names, before the drives.
+---
+diff --git a/dll/win32/shell32/folders/CMyDocsFolder.cpp b/dll/win32/shell32/folders/CMyDocsFolder.cpp
+index 91b5640..43178c8 100644
+--- a/dll/win32/shell32/folders/CMyDocsFolder.cpp
++++ b/dll/win32/shell32/folders/CMyDocsFolder.cpp
+@@ -23,9 +23,62 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL (mydocs);
+ 
++/* Arctic: the folders of This PC and theirs */
++static const struct
++{
++    const CLSID *pclsid;
++    int csidl;
++} g_ThisPCFolders[] =
++{
++    { &CLSID_ThisPCDesktop, CSIDL_DESKTOPDIRECTORY },
++    { &CLSID_ThisPCDocuments, CSIDL_PERSONAL },
++    { &CLSID_ThisPCDownloads, -1 },
++    { &CLSID_ThisPCMusic, CSIDL_MYMUSIC },
++    { &CLSID_ThisPCPictures, CSIDL_MYPICTURES },
++    { &CLSID_ThisPCVideos, CSIDL_MYVIDEO },
++};
++
++static int ThisPCFolderIndex(LPCITEMIDLIST pidl)
++{
++    const CLSID *pclsid;
++
++    if (!pidl || !pidl->mkid.cb || !(pclsid = _ILGetGUIDPointer(pidl)))
++        return -1;
++    for (UINT i = 0; i < _countof(g_ThisPCFolders); i++)
++    {
++        if (IsEqualCLSID(*pclsid, *g_ThisPCFolders[i].pclsid))
++            return i;
++    }
++    return -1;
++}
++
++BOOL SHELL32_IsThisPCUserFolder(LPCITEMIDLIST pidl)
++{
++    return ThisPCFolderIndex(pidl) >= 0;
++}
++
++/* Downloads has no CSIDL: where Windows keeps it, else in the profile */
++static BOOL GetDownloadsPath(LPWSTR pszPath, UINT cchPath)
++{
++    WCHAR szValue[MAX_PATH];
++    DWORD cbValue = sizeof(szValue);
++
++    if (!SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders",
++                     L"{374DE290-123F-4565-9164-39C4925E467B}", NULL, szValue, &cbValue) &&
++        ExpandEnvironmentStringsW(szValue, pszPath, cchPath) && PathIsDirectoryW(pszPath))
++    {
++        return TRUE;
++    }
++    if (FAILED(SHGetFolderPathW(NULL, CSIDL_PROFILE, NULL, SHGFP_TYPE_CURRENT, pszPath)))
++        return FALSE;
++    return PathAppendW(pszPath, L"Downloads");
++}
++
+ CMyDocsFolder::CMyDocsFolder()
+ {
+     m_pidlInner = NULL;
++    m_clsid = CLSID_MyDocuments;
++    m_csidl = CSIDL_PERSONAL;
+ }
+ 
+ CMyDocsFolder::~CMyDocsFolder()
+@@ -52,9 +105,12 @@ HRESULT CMyDocsFolder::EnsureFolder()
+         return S_OK;
+ 
+ 
+-    HRESULT hr = SHELL32_CoCreateInitSF(m_pidlInner,
+-                                        &CLSID_ShellFSFolder,
+-                                        CSIDL_PERSONAL,
++    PERSIST_FOLDER_TARGET_INFO pfti = {0};
++    pfti.dwAttributes = -1;
++    pfti.csidl = m_csidl;
++    if (m_csidl == -1 && !GetDownloadsPath(pfti.szTargetParsingName, _countof(pfti.szTargetParsingName)))
++        return E_FAIL;
++    HRESULT hr = SHELL32_CoCreateInitSF(m_pidlInner, &pfti, NULL, &CLSID_ShellFSFolder,
+                                         IID_PPV_ARG(IShellFolder2, &m_pisfInner));
+ 
+     if (FAILED_UNEXPECTEDLY(hr))
+@@ -260,7 +316,7 @@ HRESULT WINAPI CMyDocsFolder::GetClassID(CLSID *lpClassId)
+     if (!lpClassId)
+         return E_POINTER;
+ 
+-    memcpy(lpClassId, &CLSID_MyDocuments, sizeof(GUID));
++    *lpClassId = m_clsid;
+ 
+     return S_OK;
+ }
+@@ -278,6 +334,14 @@ HRESULT WINAPI CMyDocsFolder::Initialize(PCIDLIST_ABSOLUTE pidl)
+     if (!m_pidlInner)
+         return E_OUTOFMEMORY;
+ 
++    /* Arctic: one of This PC's folders, by the CLSID of its item */
++    int iFolder = ThisPCFolderIndex(ILFindLastID(m_pidlInner));
++    if (iFolder >= 0)
++    {
++        m_clsid = *g_ThisPCFolders[iFolder].pclsid;
++        m_csidl = g_ThisPCFolders[iFolder].csidl;
++    }
++
+     return EnsureFolder();
+ }
+ 
+diff --git a/dll/win32/shell32/folders/CMyDocsFolder.h b/dll/win32/shell32/folders/CMyDocsFolder.h
+index 246702a..c26c2d9 100644
+--- a/dll/win32/shell32/folders/CMyDocsFolder.h
++++ b/dll/win32/shell32/folders/CMyDocsFolder.h
+@@ -22,6 +22,17 @@
+ #ifndef _SHFLDR_MYDOCUMENTS_H_
+ #define _SHFLDR_MYDOCUMENTS_H_
+ 
++/* Arctic: the folders of the user that This PC shows, as Windows 10 and 11 do,
++   by Windows' own CLSIDs; CMyDocsFolder is each, on the folder its CLSID names */
++static const CLSID CLSID_ThisPCDesktop =   { 0xb4bfcc3a, 0xdb2c, 0x424c, { 0xb0, 0x29, 0x7f, 0xe9, 0x9a, 0x87, 0xc6, 0x41 } };
++static const CLSID CLSID_ThisPCDocuments = { 0xd3162b92, 0x9365, 0x467a, { 0x95, 0x6b, 0x92, 0x70, 0x3a, 0xca, 0x08, 0xaf } };
++static const CLSID CLSID_ThisPCDownloads = { 0x088e3905, 0x0323, 0x4b02, { 0x98, 0x26, 0x5d, 0x99, 0x42, 0x8e, 0x11, 0x5f } };
++static const CLSID CLSID_ThisPCMusic =     { 0x3dfdf296, 0xdbec, 0x4fb4, { 0x81, 0xd1, 0x6a, 0x34, 0x38, 0xbc, 0xf4, 0xde } };
++static const CLSID CLSID_ThisPCPictures =  { 0x24ad3ad4, 0xa569, 0x4530, { 0x98, 0xe1, 0xab, 0x02, 0xf9, 0x41, 0x7a, 0xa8 } };
++static const CLSID CLSID_ThisPCVideos =    { 0xf86fa3ab, 0x70d2, 0x4fc7, { 0x9c, 0x99, 0xfc, 0xbf, 0x05, 0x46, 0x7f, 0x3a } };
++
++BOOL SHELL32_IsThisPCUserFolder(LPCITEMIDLIST pidl);
++
+ class CMyDocsFolder :
+     public CComCoClass<CMyDocsFolder, &CLSID_MyDocuments>,
+     public CComObjectRootEx<CComMultiThreadModelNoCS>,
+@@ -32,6 +43,8 @@ class CMyDocsFolder :
+     private:
+         CComPtr<IShellFolder2> m_pisfInner;
+         LPITEMIDLIST m_pidlInner;
++        CLSID m_clsid;      // Arctic: My Documents, or a folder of This PC
++        int m_csidl;        // ... its folder; -1: Downloads
+ 
+         HRESULT EnsureFolder();
+ 
+diff --git a/dll/win32/shell32/folders/CDrivesFolder.cpp b/dll/win32/shell32/folders/CDrivesFolder.cpp
+index 49654ea..81f2b00 100644
+--- a/dll/win32/shell32/folders/CDrivesFolder.cpp
++++ b/dll/win32/shell32/folders/CDrivesFolder.cpp
+@@ -908,6 +908,14 @@ HRESULT WINAPI CDrivesFolder::CompareIDs(LPARAM lParam, PCUIDLIST_RELATIVE pidl1
+     {
+         case IDS_SHV_COLUMN_NAME:
+         {
++            /* Arctic: the user's folders first, as in Windows 10 and 11, then the drives */
++            int iRank1 = SHELL32_IsThisPCUserFolder(pidl1) ? 0 : pszDrive1 ? 1 : 2;
++            int iRank2 = SHELL32_IsThisPCUserFolder(pidl2) ? 0 : pszDrive2 ? 1 : 2;
++            if (iRank1 != iRank2)
++            {
++                hres = MAKE_COMPARE_HRESULT(iRank1 - iRank2);
++                break;
++            }
+             if (!pszDrive1 && !pszDrive2)
+                 return SHELL32_CompareDetails(this, lParam, pidl1, pidl2);
+             else if (pszDrive1 && pszDrive2)
+diff --git a/dll/win32/shell32/shell32.cpp b/dll/win32/shell32/shell32.cpp
+index 040b1b5..7ce61cd 100644
+--- a/dll/win32/shell32/shell32.cpp
++++ b/dll/win32/shell32/shell32.cpp
+@@ -332,6 +332,13 @@ BEGIN_OBJECT_MAP(ObjectMap)
+     OBJECT_ENTRY(CLSID_ControlPanel, CControlPanelFolder)
+     OBJECT_ENTRY(CLSID_OpenControlPanel, COpenControlPanel)
+     OBJECT_ENTRY(CLSID_MyDocuments, CMyDocsFolder)
++    /* Arctic: This PC's folders */
++    OBJECT_ENTRY(CLSID_ThisPCDesktop, CMyDocsFolder)
++    OBJECT_ENTRY(CLSID_ThisPCDocuments, CMyDocsFolder)
++    OBJECT_ENTRY(CLSID_ThisPCDownloads, CMyDocsFolder)
++    OBJECT_ENTRY(CLSID_ThisPCMusic, CMyDocsFolder)
++    OBJECT_ENTRY(CLSID_ThisPCPictures, CMyDocsFolder)
++    OBJECT_ENTRY(CLSID_ThisPCVideos, CMyDocsFolder)
+     OBJECT_ENTRY(CLSID_NetworkPlaces, CNetFolder)
+     OBJECT_ENTRY(CLSID_FontsFolderShortcut, CFontsFolder)
+     OBJECT_ENTRY(CLSID_Printers, CPrinterFolder)

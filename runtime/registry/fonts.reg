@@ -1,0 +1,23 @@
+REGEDIT4
+
+; Tahoma, Marlett, Symbol, Webdings and Wingdings are files of C:\Windows\Fonts,
+; as in Windows (ci/wine-fonts.py): by their names, not by the Unix paths Wine
+; gave them when they were in its data directory
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Fonts]
+"Marlett (TrueType)"="marlett.ttf"
+"Symbol (TrueType)"="symbol.ttf"
+"Tahoma (TrueType)"="tahoma.ttf"
+"Tahoma Bold (TrueType)"="tahomabd.ttf"
+"Webdings (TrueType)"="webdings.ttf"
+"Wingdings (TrueType)"="wingding.ttf"
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Fonts]
+"Marlett (TrueType)"="marlett.ttf"
+"Symbol (TrueType)"="symbol.ttf"
+"Tahoma (TrueType)"="tahoma.ttf"
+"Tahoma Bold (TrueType)"="tahomabd.ttf"
+"Webdings (TrueType)"="webdings.ttf"
+"Wingdings (TrueType)"="wingding.ttf"
+
+; Wine's list of the fonts it registered from outside C:\Windows\Fonts
+[-HKEY_CURRENT_USER\Software\Arctic\Runtime\Fonts\External Fonts]

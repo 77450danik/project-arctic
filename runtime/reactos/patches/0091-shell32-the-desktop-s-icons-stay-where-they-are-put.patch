@@ -1,0 +1,610 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Tue, 3 Nov 2026 12:00:00 +0100
+Subject: [PATCH] shell32: The desktop's icons stay where they are put.
+
+The desktop was always auto-arranged ("Remove LVS_AUTOARRANGE when the view
+is able to save ItemPos"): an icon could not be dragged anywhere. As in
+Windows 10, Auto arrange is off and Align to grid on by default, and both
+are in the desktop's View menu. An icon dropped stays in the nearest cell
+of the grid, one dropped over another goes to the nearest free cell, a new
+one takes the first free cell, top to bottom and then the next column, and
+"Sort by" lays them all out again in that order. Where they are is kept in
+the desktop's bag (Bags\1\Desktop, ArcticItemPos) by the items' parsing
+names, in thousandths of a cell, so another icon size or scale keeps each in
+its cell. A desktop that was auto-arranged before this is once given
+Windows' defaults (ArcticFree).
+---
+--- a/dll/win32/shell32/CDefView.cpp
++++ b/dll/win32/shell32/CDefView.cpp
+@@ -356,6 +356,18 @@
+     HRESULT FillArrangeAsMenu(HMENU hmenuArrange);
+     HRESULT CheckViewMode(HMENU hmenuView);
+     void SetDesktopIconSize(INT nLogical, BOOL bSave);
++    /* Arctic: the desktop's icons stay where they are put */
++    BOOL m_bDesktopPlaced;
++    BOOL DesktopFreeLayout() { return IsDesktop() && m_ListView && GetAutoArrange() != S_OK; }
++    void DesktopGrid(SIZE *cell, POINT *offset, int *cols, int *rows);
++    BOOL DesktopItemName(int nItem, WCHAR *name, UINT cch);
++    BOOL DesktopCellOf(int nItem, POINT *cell);
++    void DesktopPutInCell(int nItem, POINT cell);
++    void DesktopRestorePositions();
++    void DesktopPlaceNewItem(int nItem);
++    void DesktopSettle(BOOL bSelectedOnly);
++    void DesktopInOrder();
++    void DesktopSavePositions();
+     LRESULT DoColumnContextMenu(LRESULT lParam);
+     HRESULT SelectAndPositionItem(int Idx, UINT fSVSI, POINT *ppt);
+     UINT GetSelections();
+@@ -638,6 +650,7 @@
+     m_HasCutItems(false),
+     m_Destroyed(FALSE)
+ {
++    m_bDesktopPlaced = FALSE;
+     ZeroMemory(&m_FolderSettings, sizeof(m_FolderSettings));
+     ZeroMemory(&m_ptLastMousePos, sizeof(m_ptLastMousePos));
+     ZeroMemory(&m_Category, sizeof(m_Category));
+@@ -921,8 +934,10 @@
+     DWORD dwStyle, dwExStyle, ListExStyle;
+     TRACE("%p\n", this);
+ 
++    /* Arctic: the desktop keeps where its icons are put (DesktopSavePositions):
++     * it arranges them only when Auto arrange is on, as Windows does */
+     dwStyle = WS_TABSTOP | WS_VISIBLE | WS_CHILDWINDOW | WS_CLIPSIBLINGS | WS_CLIPCHILDREN |
+-              LVS_SHAREIMAGELISTS | LVS_EDITLABELS | LVS_AUTOARRANGE; // FIXME: Remove LVS_AUTOARRANGE when the view is able to save ItemPos
++              LVS_SHAREIMAGELISTS | LVS_EDITLABELS | (IsDesktop() ? 0 : LVS_AUTOARRANGE);
+     dwExStyle = (m_FolderSettings.fFlags & FWF_NOCLIENTEDGE) ? 0 : WS_EX_CLIENTEDGE;
+     ListExStyle = LVS_EX_LABELTIP | GetShellStateListExStyle();
+ 
+@@ -2515,6 +2530,16 @@
+     /* Resize the ListView to fit our window */
+     ::MoveWindow(m_ListView, 0, 0, wWidth, wHeight, TRUE);
+ 
++    /* Arctic: the desktop's icons go where they were once it has its size;
++     * on a smaller screen, those beyond it come into free cells */
++    if (DesktopFreeLayout() && wWidth && wHeight)
++    {
++        if (!m_bDesktopPlaced)
++            DesktopRestorePositions();
++        else
++            DesktopSettle(FALSE);
++    }
++
+     _DoFolderViewCB(SFVM_SIZE, 0, 0);
+ 
+     _ForceStatusBarResize();
+@@ -2631,6 +2656,9 @@
+     {
+         UINT listCol = (UINT)GetMenuItemDataById(m_hMenuArrangeModes, dwCmdID);
+         _Sort(listCol);
++        /* Arctic: on the desktop "Sort by" lays the icons out again in that order */
++        if (DesktopFreeLayout())
++            DesktopInOrder();
+         return 0;
+     }
+ 
+@@ -2658,13 +2686,25 @@
+             if (_GetSnapToGrid() == S_OK)
+                 m_ListView.SetExtendedListViewStyle(0, LVS_EX_SNAPTOGRID);
+             else
++            {
+                 ArrangeGrid();
++                if (DesktopFreeLayout())
++                    DesktopSettle(FALSE);
++            }
++            if (IsDesktop())
++                DesktopSavePositions();
+             break;
+         case FCIDM_SHVIEW_AUTOARRANGE:
+             if (GetAutoArrange() == S_OK)
+                 m_ListView.ModifyStyle(LVS_AUTOARRANGE, 0);
+             else
+                 AutoArrange();
++            /* Arctic: the desktop keeps the choice, and where its icons are when it is off */
++            if (IsDesktop())
++            {
++                m_bDesktopPlaced = TRUE;
++                DesktopSavePositions();
++            }
+             break;
+         case FCIDM_SHVIEW_SELECTALL:
+             if (_DoFolderViewCB(SFVM_CANSELECTALL, 0, 0) != S_FALSE)
+@@ -3101,7 +3141,11 @@
+             if (!child0)
+                 break;
+             if (LV_FindItemByPidl(child0) < 0)
+-                LV_AddItem(child0);
++            {
++                int nItem = LV_AddItem(child0);
++                if (nItem >= 0 && DesktopFreeLayout() && m_bDesktopPlaced)
++                    DesktopPlaceNewItem(nItem);
++            }
+             else
+                 LV_UpdateItem(child0);
+             break;
+@@ -3114,11 +3158,20 @@
+         case SHCNE_RENAMEFOLDER:
+         case SHCNE_RENAMEITEM:
+             if (child0 && child1)
++            {
+                 LV_RenameItem(child0, child1);
++                /* its place goes with its new name */
++                if (DesktopFreeLayout() && m_bDesktopPlaced)
++                    DesktopSavePositions();
++            }
+             else if (child0)
+                 LV_DeleteItem(child0);
+             else if (child1)
+-                LV_AddItem(child1);
++            {
++                int nItem = LV_AddItem(child1);
++                if (nItem >= 0 && DesktopFreeLayout() && m_bDesktopPlaced)
++                    DesktopPlaceNewItem(nItem);
++            }
+             break;
+         case SHCNE_UPDATEITEM:
+             if (child0)
+@@ -3180,10 +3233,350 @@
+         return;
+     m_ListView.SetImageList(SIC_GetDesktopImageList(), LVSIL_NORMAL);
+     ImageList_Destroy(old);
+-    m_ListView.Arrange(LVA_DEFAULT);
++    /* each icon in the same cell of the new grid */
++    if (DesktopFreeLayout() && m_bDesktopPlaced)
++        DesktopRestorePositions();
++    else
++        m_ListView.Arrange(LVA_DEFAULT);
+     m_ListView.Invalidate();
+ }
+ 
++/**********************************************************************
++ * Arctic: the desktop's icons where the user puts them
++ *
++ * As Windows 10 keeps them, Auto arrange off and Align to grid on by
++ * default: an icon dragged stays where it is dropped, in the nearest cell
++ * of the grid; one dropped over another goes to the nearest free cell; a new
++ * one takes the first free cell, top to bottom, then the next column; "Sort
++ * by" lays them all out again in that order. Where they are is kept in the
++ * desktop's bag (Bags\1\Desktop, "ArcticItemPos"), by the items' parsing
++ * names, in thousandths of a cell: the same cells at another icon size or
++ * scale. Windows keeps its own "ItemPos" there by the screen's size.
++ */
++
++#define DESKTOP_BAG L"Software\\Microsoft\\Windows\\Shell\\Bags\\1\\Desktop"
++#define DESKTOP_POS_MAGIC 0x534f5041 /* 'APOS' */
++
++void CDefView::DesktopGrid(SIZE *cell, POINT *offset, int *cols, int *rows)
++{
++    DWORD spacing = ListView_GetItemSpacing(m_ListView.m_hWnd, FALSE);
++    HIMAGELIST himl = ListView_GetImageList(m_ListView.m_hWnd, LVSIL_NORMAL);
++    int cx = 32, cy = 32;
++    RECT rc;
++
++    if (himl)
++        ImageList_GetIconSize(himl, &cx, &cy);
++    cell->cx = max(1, (int)LOWORD(spacing));
++    cell->cy = max(1, (int)HIWORD(spacing));
++    /* where the list view puts an icon in its cell (ICON_TOP_PADDING) */
++    offset->x = (cell->cx - cx) / 2;
++    offset->y = 4;
++    ::GetClientRect(m_ListView.m_hWnd, &rc);
++    *cols = max(1, (int)(rc.right / cell->cx));
++    *rows = max(1, (int)(rc.bottom / cell->cy));
++}
++
++BOOL CDefView::DesktopItemName(int nItem, WCHAR *name, UINT cch)
++{
++    PCUITEMID_CHILD pidl = _PidlByItem(nItem);
++    STRRET str;
++
++    if (!pidl || FAILED(m_pSFParent->GetDisplayNameOf(pidl, SHGDN_INFOLDER | SHGDN_FORPARSING, &str)))
++        return FALSE;
++    return SUCCEEDED(StrRetToBufW(&str, pidl, name, cch)) && name[0];
++}
++
++BOOL CDefView::DesktopCellOf(int nItem, POINT *cell)
++{
++    SIZE size;
++    POINT off, pt;
++    int cols, rows;
++
++    DesktopGrid(&size, &off, &cols, &rows);
++    if (!m_ListView.GetItemPosition(nItem, &pt))
++        return FALSE;
++    cell->x = max(0L, (pt.x - off.x + size.cx / 2) / size.cx);
++    cell->y = max(0L, (pt.y - off.y + size.cy / 2) / size.cy);
++    return TRUE;
++}
++
++void CDefView::DesktopPutInCell(int nItem, POINT cell)
++{
++    SIZE size;
++    POINT off, pt;
++    int cols, rows;
++
++    DesktopGrid(&size, &off, &cols, &rows);
++    pt.x = cell.x * size.cx + off.x;
++    pt.y = cell.y * size.cy + off.y;
++    m_ListView.SetItemPosition(nItem, &pt);
++}
++
++/* the first free cell, top to bottom and then the next column, or the one
++ * nearest to a cell */
++static BOOL DesktopFreeCell(const BYTE *taken, int cols, int rows, const POINT *nearTo, POINT *cell)
++{
++    LONG best = -1;
++
++    for (int x = 0; x < cols; x++)
++    {
++        for (int y = 0; y < rows; y++)
++        {
++            LONG d;
++
++            if (taken[x * rows + y])
++                continue;
++            if (!nearTo)
++            {
++                cell->x = x;
++                cell->y = y;
++                return TRUE;
++            }
++            d = (x - nearTo->x) * (x - nearTo->x) + (y - nearTo->y) * (y - nearTo->y);
++            if (best < 0 || d < best)
++            {
++                best = d;
++                cell->x = x;
++                cell->y = y;
++            }
++        }
++    }
++    return best >= 0;
++}
++
++/* what the bag keeps: the header, then for each item x, y (thousandths of a
++ * cell), the length of its name and the name */
++static BOOL DesktopFindSaved(const BYTE *data, DWORD size, const WCHAR *name, LONG *gx, LONG *gy)
++{
++    DWORD pos = sizeof(DWORD), len = lstrlenW(name);
++
++    if (size < sizeof(DWORD) || *(const DWORD *)data != DESKTOP_POS_MAGIC)
++        return FALSE;
++    while (pos + 2 * sizeof(LONG) + sizeof(WORD) <= size)
++    {
++        LONG x = *(const LONG *)(data + pos), y = *(const LONG *)(data + pos + sizeof(LONG));
++        WORD cch = *(const WORD *)(data + pos + 2 * sizeof(LONG));
++        const WCHAR *saved = (const WCHAR *)(data + pos + 2 * sizeof(LONG) + sizeof(WORD));
++
++        pos += 2 * sizeof(LONG) + sizeof(WORD) + cch * sizeof(WCHAR);
++        if (pos > size)
++            break;
++        if (cch == len && !_wcsnicmp(saved, name, cch))
++        {
++            *gx = x;
++            *gy = y;
++            return TRUE;
++        }
++    }
++    return FALSE;
++}
++
++void CDefView::DesktopRestorePositions()
++{
++    int count = m_ListView.GetItemCount(), cols, rows;
++    DWORD size = 0;
++    BYTE *data = NULL, *taken, *placed;
++    SIZE cell;
++    POINT off;
++    RECT rc;
++
++    ::GetClientRect(m_ListView.m_hWnd, &rc);
++    if (rc.right <= 0 || rc.bottom <= 0)
++        return;
++    m_bDesktopPlaced = TRUE;
++    if (!count)
++        return;
++    DesktopGrid(&cell, &off, &cols, &rows);
++    if (SHGetValueW(HKEY_CURRENT_USER, DESKTOP_BAG, L"ArcticItemPos", NULL, NULL, &size) == ERROR_SUCCESS && size &&
++        (data = (BYTE *)HeapAlloc(GetProcessHeap(), 0, size)) != NULL &&
++        SHGetValueW(HKEY_CURRENT_USER, DESKTOP_BAG, L"ArcticItemPos", NULL, data, &size) != ERROR_SUCCESS)
++        size = 0;
++    taken = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cols * rows);
++    placed = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, count);
++    if (!taken || !placed)
++        goto done;
++
++    m_ListView.SetRedraw(FALSE);
++    /* those the bag knows, in their cells while they are on the screen and free */
++    for (int i = 0; data && i < count; i++)
++    {
++        WCHAR name[MAX_PATH];
++        LONG gx, gy;
++        POINT c;
++
++        if (!DesktopItemName(i, name, _countof(name)) || !DesktopFindSaved(data, size, name, &gx, &gy))
++            continue;
++        c.x = (gx + 500) / 1000;
++        c.y = (gy + 500) / 1000;
++        if (gx < 0 || gy < 0 || c.x >= cols || c.y >= rows || taken[c.x * rows + c.y])
++            continue;
++        if (_GetSnapToGrid() == S_OK)
++            DesktopPutInCell(i, c);
++        else
++        {
++            POINT pt = { (LONG)((LONGLONG)gx * cell.cx / 1000) + off.x, (LONG)((LONGLONG)gy * cell.cy / 1000) + off.y };
++            m_ListView.SetItemPosition(i, &pt);
++        }
++        taken[c.x * rows + c.y] = placed[i] = 1;
++    }
++    /* the others in the first free cells */
++    for (int i = 0; i < count; i++)
++    {
++        POINT c;
++
++        if (placed[i])
++            continue;
++        if (!DesktopFreeCell(taken, cols, rows, NULL, &c))
++            break;
++        DesktopPutInCell(i, c);
++        taken[c.x * rows + c.y] = 1;
++    }
++    m_ListView.SetRedraw(TRUE);
++    m_ListView.Invalidate();
++    DesktopSavePositions();
++
++done:
++    if (data)
++        HeapFree(GetProcessHeap(), 0, data);
++    if (taken)
++        HeapFree(GetProcessHeap(), 0, taken);
++    if (placed)
++        HeapFree(GetProcessHeap(), 0, placed);
++}
++
++/* a new item: where its name was kept, or the first free cell */
++void CDefView::DesktopPlaceNewItem(int nItem)
++{
++    int count = m_ListView.GetItemCount(), cols, rows;
++    BYTE *taken;
++    SIZE cell;
++    POINT off, c;
++
++    DesktopGrid(&cell, &off, &cols, &rows);
++    if (!(taken = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cols * rows)))
++        return;
++    for (int i = 0; i < count; i++)
++    {
++        if (i != nItem && DesktopCellOf(i, &c) && c.x < cols && c.y < rows)
++            taken[c.x * rows + c.y] = 1;
++    }
++    if (DesktopFreeCell(taken, cols, rows, NULL, &c))
++        DesktopPutInCell(nItem, c);
++    HeapFree(GetProcessHeap(), 0, taken);
++    DesktopSavePositions();
++}
++
++/* No two icons in one cell, none beyond the screen: the selected ones (just
++ * dropped), or every one, go to the nearest free cell when theirs is taken */
++void CDefView::DesktopSettle(BOOL bSelectedOnly)
++{
++    int count = m_ListView.GetItemCount(), cols, rows;
++    BYTE *taken;
++    SIZE cell;
++    POINT off, c;
++    BOOL snap = _GetSnapToGrid() == S_OK;
++
++    if (!count)
++        return;
++    DesktopGrid(&cell, &off, &cols, &rows);
++    if (!(taken = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cols * rows)))
++        return;
++    /* first the icons that stay */
++    if (bSelectedOnly)
++    {
++        for (int i = 0; i < count; i++)
++        {
++            if (!(m_ListView.GetItemState(i, LVIS_SELECTED) & LVIS_SELECTED) && DesktopCellOf(i, &c) &&
++                c.x < cols && c.y < rows)
++                taken[c.x * rows + c.y] = 1;
++        }
++    }
++    for (int i = 0; i < count; i++)
++    {
++        POINT want, free;
++
++        if (bSelectedOnly && !(m_ListView.GetItemState(i, LVIS_SELECTED) & LVIS_SELECTED))
++            continue;
++        if (!DesktopCellOf(i, &want))
++            continue;
++        if (want.x < cols && want.y < rows && !taken[want.x * rows + want.y])
++        {
++            /* without the grid an icon stays where it was dropped, on the screen */
++            if (snap)
++                DesktopPutInCell(i, want);
++            taken[want.x * rows + want.y] = 1;
++            continue;
++        }
++        if (!snap && want.x < cols && want.y < rows)
++            continue;
++        want.x = min(want.x, (LONG)cols - 1);
++        want.y = min(want.y, (LONG)rows - 1);
++        if (!DesktopFreeCell(taken, cols, rows, &want, &free))
++            break;
++        DesktopPutInCell(i, free);
++        taken[free.x * rows + free.y] = 1;
++    }
++    HeapFree(GetProcessHeap(), 0, taken);
++}
++
++/* after "Sort by": in the list's new order, cell by cell */
++void CDefView::DesktopInOrder()
++{
++    int count = m_ListView.GetItemCount(), cols, rows;
++    SIZE cell;
++    POINT off;
++
++    DesktopGrid(&cell, &off, &cols, &rows);
++    m_ListView.SetRedraw(FALSE);
++    for (int i = 0; i < count; i++)
++    {
++        POINT c = { (LONG)(min(i / rows, cols - 1)), (LONG)(i % rows) };
++        DesktopPutInCell(i, c);
++    }
++    m_ListView.SetRedraw(TRUE);
++    m_ListView.Invalidate();
++    DesktopSavePositions();
++}
++
++void CDefView::DesktopSavePositions()
++{
++    int count, cols, rows;
++    SIZE cell;
++    POINT off;
++    BYTE *data;
++    DWORD size, pos;
++
++    if (!IsDesktop() || !m_ListView)
++        return;
++    SaveViewState();
++    if (!DesktopFreeLayout() || !m_bDesktopPlaced)
++        return;
++    count = m_ListView.GetItemCount();
++    DesktopGrid(&cell, &off, &cols, &rows);
++    size = sizeof(DWORD) + count * (2 * sizeof(LONG) + sizeof(WORD) + MAX_PATH * sizeof(WCHAR));
++    if (!(data = (BYTE *)HeapAlloc(GetProcessHeap(), 0, size)))
++        return;
++    *(DWORD *)data = DESKTOP_POS_MAGIC;
++    pos = sizeof(DWORD);
++    for (int i = 0; i < count; i++)
++    {
++        WCHAR name[MAX_PATH];
++        POINT pt;
++        WORD cch;
++
++        if (!DesktopItemName(i, name, _countof(name)) || !m_ListView.GetItemPosition(i, &pt))
++            continue;
++        cch = (WORD)lstrlenW(name);
++        *(LONG *)(data + pos) = (LONG)((LONGLONG)(pt.x - off.x) * 1000 / cell.cx);
++        *(LONG *)(data + pos + sizeof(LONG)) = (LONG)((LONGLONG)(pt.y - off.y) * 1000 / cell.cy);
++        *(WORD *)(data + pos + 2 * sizeof(LONG)) = cch;
++        memcpy(data + pos + 2 * sizeof(LONG) + sizeof(WORD), name, cch * sizeof(WCHAR));
++        pos += 2 * sizeof(LONG) + sizeof(WORD) + cch * sizeof(WCHAR);
++    }
++    SHSetValueW(HKEY_CURRENT_USER, DESKTOP_BAG, L"ArcticItemPos", REG_BINARY, data, pos);
++    HeapFree(GetProcessHeap(), 0, data);
++}
++
+ LRESULT CDefView::OnSettingChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
+     if (lParam && !lstrcmpiW((PCWSTR)lParam, L"DesktopIconSize"))
+@@ -3376,6 +3769,8 @@
+ 
+     m_ListView.DeleteAllItems();
+     FillList();
++    if (DesktopFreeLayout() && m_bDesktopPlaced)
++        DesktopRestorePositions();
+ 
+     return S_OK;
+ }
+@@ -3510,6 +3905,11 @@
+         m_ViewModeOwn = TRUE;
+         m_ViewModeTiles = ReadDWORD(pPB, L"ArcticTiles", 0) != 0;
+         cvs.FolderSettings.fFlags = ReadDWORD(pPB, L"FFlags", FWF_NOGROUPING);
++        /* Arctic: the desktop was always auto-arranged before its icons could
++         * stay where they are put: once, Windows 10's defaults instead, Auto
++         * arrange off and Align to grid on */
++        if ((m_FolderSettings.fFlags & FWF_DESKTOP) && !ReadDWORD(pPB, L"ArcticFree", 0))
++            cvs.FolderSettings.fFlags = (cvs.FolderSettings.fFlags & ~FWF_AUTOARRANGE) | FWF_SNAPTOGRID;
+         data = ReadDWORD(pPB, L"Sort", ~0ul);
+         cvs.SortColId = data != ~0ul ? (WORD)data : LISTVIEW_SORT_INFO::UNSPECIFIEDCOLUMN;
+         cvs.SortDir = (INT8)ReadDWORD(pPB, L"SortDir", 1);
+@@ -3596,6 +3996,8 @@
+         hr = SHPropertyBag_WriteDWORD(pPB, L"Mode", uViewMode);
+         SHPropertyBag_WriteDWORD(pPB, L"ArcticTiles", 1);
+         SHPropertyBag_WriteDWORD(pPB, L"FFlags", m_FolderSettings.fFlags);
++        if (IsDesktop())
++            SHPropertyBag_WriteDWORD(pPB, L"ArcticFree", 1);
+         SHPropertyBag_WriteDWORD(pPB, L"Sort", cvs.SortColId);
+         SHPropertyBag_WriteDWORD(pPB, L"SortDir", cvs.SortDir);
+         pStream = cols.Count ? SHCreateMemStream((LPBYTE)&cols, cbColumns) : NULL;
+@@ -5072,6 +5474,12 @@
+                     m_ListView.SetItemPosition(iItem, &ptItem);
+                 }
+             }
++            /* Arctic: on the desktop, not over another icon, and kept there */
++            if (DesktopFreeLayout())
++            {
++                DesktopSettle(TRUE);
++                DesktopSavePositions();
++            }
+         }
+         m_ListView.SetRedraw(TRUE);
+     }
+--- a/dll/win32/shell32/CDefViewBckgrndMenu.cpp
++++ b/dll/win32/shell32/CDefViewBckgrndMenu.cpp
+@@ -174,6 +174,25 @@
+         if (items[i].size == (UINT)size)
+             CheckMenuRadioItem(hView, FCIDM_SHVIEW_DESKICON_LARGE, FCIDM_SHVIEW_DESKICON_SMALL, items[i].id, MF_BYCOMMAND);
+     }
++
++    /* then Windows 10's Auto arrange icons and Align icons to grid, as the
++       desktop has them now (Windows' defaults: off and on) */
++    BOOL bAuto = FALSE, bGrid = TRUE;
++    CComPtr<IShellView> psv;
++    HWND hwndSV = NULL, hwndList;
++    if (m_site && SUCCEEDED(IUnknown_QueryService(m_site, SID_SFolderView, IID_PPV_ARG(IShellView, &psv))) &&
++        SUCCEEDED(psv->GetWindow(&hwndSV)) && (hwndList = FindWindowExW(hwndSV, NULL, WC_LISTVIEWW, NULL)))
++    {
++        bAuto = (GetWindowLongPtrW(hwndList, GWL_STYLE) & LVS_AUTOARRANGE) != 0;
++        bGrid = (ListView_GetExtendedListViewStyle(hwndList) & LVS_EX_SNAPTOGRID) != 0;
++    }
++    AppendMenuW(hView, MF_SEPARATOR, 0, NULL);
++    if (!LoadStringW(shell32_hInstance, IDS_DESKICON_AUTOARRANGE, text, _countof(text)))
++        StringCchCopyW(text, _countof(text), L"&Auto arrange icons");
++    AppendMenuW(hView, MF_STRING | (bAuto ? MF_CHECKED : 0), FCIDM_SHVIEW_AUTOARRANGE, text);
++    if (!LoadStringW(shell32_hInstance, IDS_DESKICON_ALIGN, text, _countof(text)))
++        StringCchCopyW(text, _countof(text), L"A&lign icons to grid");
++    AppendMenuW(hView, MF_STRING | (bGrid ? MF_CHECKED : 0) | (bAuto ? MF_GRAYED : 0), FCIDM_SHVIEW_ALIGNTOGRID, text);
+ }
+ 
+ HRESULT
+--- a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
++++ b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+@@ -259,8 +259,9 @@
+     FOLDERSETTINGS fs;
+     RECT rcShellView = {0,0,0,0};
+     fs.ViewMode = FVM_ICON;
++    /* Arctic: Windows 10's defaults, the icons where they are put, on the grid */
+     fs.fFlags = FWF_DESKTOP | FWF_NOCLIENTEDGE | FWF_NOSCROLL | FWF_TRANSPARENT |
+-                FWF_AUTOARRANGE | (fHideIcons ? FWF_NOICONS : 0);
++                FWF_SNAPTOGRID | (fHideIcons ? FWF_NOICONS : 0);
+     hRet = m_ShellView->CreateViewWindow(NULL, &fs, (IShellBrowser *)this, &rcShellView, &m_hWndShellView);
+     if (FAILED_UNEXPECTEDLY(hRet))
+         return hRet;
+--- a/dll/win32/shell32/shresdef.h
++++ b/dll/win32/shell32/shresdef.h
+@@ -894,6 +894,8 @@
+ #define IDS_DESKICON_LARGE       21940
+ #define IDS_DESKICON_MEDIUM      21941
+ #define IDS_DESKICON_SMALL       21942
++#define IDS_DESKICON_AUTOARRANGE 21943
++#define IDS_DESKICON_ALIGN       21944
+ 
+ #define IDI_SHELL_DELETE5 16721
+ 
+--- a/dll/win32/shell32/lang/en-US.rc
++++ b/dll/win32/shell32/lang/en-US.rc
+@@ -1147,4 +1147,6 @@
+     IDS_DESKICON_LARGE "&Large icons"
+     IDS_DESKICON_MEDIUM "&Medium icons"
+     IDS_DESKICON_SMALL "&Small icons"
++    IDS_DESKICON_AUTOARRANGE "&Auto arrange icons"
++    IDS_DESKICON_ALIGN "A&lign icons to grid"
+ END
+--- a/dll/win32/shell32/lang/uk-UA.rc
++++ b/dll/win32/shell32/lang/uk-UA.rc
+@@ -1147,4 +1147,6 @@
+     IDS_DESKICON_LARGE "&Великі значки"
+     IDS_DESKICON_MEDIUM "&Звичайні значки"
+     IDS_DESKICON_SMALL "&Дрібні значки"
++    IDS_DESKICON_AUTOARRANGE "&Автоматично впорядковувати значки"
++    IDS_DESKICON_ALIGN "В&ирівняти значки за сіткою"
+ END

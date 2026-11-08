@@ -1,0 +1,85 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 4 Nov 2026 12:00:00 +0100
+Subject: [PATCH] explorer: The light taskbar shows Arctic's logo in black.
+
+Over a light look the Start button drew the four panes of Windows' logo.
+It draws its own picture, the snowflake it shows over a dark look, in
+black.
+---
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -347,15 +347,55 @@
+         return 0;
+     }
+ 
++    /* Arctic: the button's own picture (IDB_START, Arctic's snowflake) in
++     * black, centred: its coverage is its alpha, or its lightness where it
++     * has none (it is white, for the dark look) */
++    VOID DrawLogoInBlack(HDC hdc, const RECT *prc)
++    {
++        BITMAPINFO bi = {{sizeof(bi.bmiHeader), 0, 0, 1, 32, BI_RGB}};
++        BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
++        DWORD *pBits;
++        HBITMAP hbm;
++        HDC hdcMem;
++        HGDIOBJ hOld;
++        BOOL bAlpha = FALSE;
++        int cx, cy, i;
++
++        if (!m_ImageList || !ImageList_GetIconSize(m_ImageList, &cx, &cy) || cx <= 0 || cy <= 0)
++            return;
++        bi.bmiHeader.biWidth = cx;
++        bi.bmiHeader.biHeight = -cy;
++        hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)&pBits, NULL, 0);
++        if (!hbm)
++            return;
++        hdcMem = CreateCompatibleDC(hdc);
++        hOld = SelectObject(hdcMem, hbm);
++        ZeroMemory(pBits, cx * cy * sizeof(DWORD));
++        ImageList_Draw(m_ImageList, 0, hdcMem, 0, 0, ILD_TRANSPARENT);
++        for (i = 0; i < cx * cy && !bAlpha; i++)
++            bAlpha = (pBits[i] >> 24) != 0;
++        for (i = 0; i < cx * cy; i++)
++        {
++            DWORD p = pBits[i], a;
++
++            a = bAlpha ? p >> 24 : max(max((p >> 16) & 0xff, (p >> 8) & 0xff), p & 0xff);
++            pBits[i] = a << 24;  /* black, premultiplied */
++        }
++        GdiAlphaBlend(hdc, (prc->left + prc->right - cx) / 2, (prc->top + prc->bottom - cy) / 2, cx, cy,
++                      hdcMem, 0, 0, cx, cy, bf);
++        SelectObject(hdcMem, hOld);
++        DeleteDC(hdcMem);
++        DeleteObject(hbm);
++    }
++
+     /* Arctic: over a light look, as Windows 10's light taskbar: on white
+      * (the backdrop seen through), darker under the pointer and pressed,
+-     * the four panes of the logo in black */
++     * the logo in black */
+     LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
+         PAINTSTRUCT ps;
+-        RECT rc, rcPane;
++        RECT rc;
+         LRESULT state;
+-        int logo = ArcticDpiScale(16), pane = (logo - ArcticDpiScale(1)) / 2, x, y;
+ 
+         if (!ArcticTaskbarLight())
+         {
+@@ -370,14 +410,7 @@
+             ArcticFillAlpha(hdc, &rc, RGB(0, 0, 0), 0x26);
+         else if (state & BST_HOT)
+             ArcticFillAlpha(hdc, &rc, RGB(0, 0, 0), 0x1a);
+-        x = (rc.right - logo) / 2;
+-        y = (rc.bottom - logo) / 2;
+-        for (int i = 0; i < 4; i++)
+-        {
+-            SetRect(&rcPane, x + (i % 2) * (logo - pane), y + (i / 2) * (logo - pane),
+-                    x + (i % 2) * (logo - pane) + pane, y + (i / 2) * (logo - pane) + pane);
+-            ArcticFillAlpha(hdc, &rcPane, RGB(0, 0, 0), 255);
+-        }
++        DrawLogoInBlack(hdc, &rc);
+         EndPaint(&ps);
+         return 0;
+     }

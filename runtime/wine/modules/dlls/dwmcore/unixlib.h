@@ -119,6 +119,8 @@ struct dwm_set_options_params
     UINT32 scaling_count;
     UINT32 scaling_id[DWM_MAX_OUTPUTS];  /* connectors, and how their monitors show modes */
     UINT32 scaling[DWM_MAX_OUTPUTS];     /* smaller than their own (DISPLAYCONFIG_SCALING) */
+    UINT32 shadow_style;  /* of the visual style: 0 Windows 10's shadows, 1 Windows 11's */
+    UINT32 menu_light;    /* the menus' colour is light: they key by darkness */
 };
 
 /* what programs asked of their windows through dwmapi (wine/arctic_dwm.h) */

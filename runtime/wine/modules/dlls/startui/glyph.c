@@ -98,10 +98,14 @@ static const struct stroke control_panel[] =
 static const struct stroke settings[] =
 {
     { ARC, 8, 8, 2.4f, -180, 180 },
-    { ARC, 8, 8, 5, -180, 180 },
-    { LINE, 8, 0.8f, 8, 3 }, { LINE, 8, 13, 8, 15.2f }, { LINE, 0.8f, 8, 3, 8 }, { LINE, 13, 8, 15.2f, 8 },
-    { LINE, 2.9f, 2.9f, 4.5f, 4.5f }, { LINE, 11.5f, 11.5f, 13.1f, 13.1f },
-    { LINE, 13.1f, 2.9f, 11.5f, 4.5f }, { LINE, 4.5f, 11.5f, 2.9f, 13.1f },
+    { LINE, 6.72f, 2.65f, 6.98f, 0.77f }, { LINE, 6.98f, 0.77f, 9.02f, 0.77f }, { LINE, 9.02f, 0.77f, 9.28f, 2.65f }, { LINE, 9.28f, 2.65f, 10.87f, 3.31f },
+    { LINE, 10.87f, 3.31f, 12.39f, 2.17f }, { LINE, 12.39f, 2.17f, 13.83f, 3.61f }, { LINE, 13.83f, 3.61f, 12.69f, 5.13f }, { LINE, 12.69f, 5.13f, 13.35f, 6.72f },
+    { LINE, 13.35f, 6.72f, 15.23f, 6.98f }, { LINE, 15.23f, 6.98f, 15.23f, 9.02f }, { LINE, 15.23f, 9.02f, 13.35f, 9.28f }, { LINE, 13.35f, 9.28f, 12.69f, 10.87f },
+    { LINE, 12.69f, 10.87f, 13.83f, 12.39f }, { LINE, 13.83f, 12.39f, 12.39f, 13.83f }, { LINE, 12.39f, 13.83f, 10.87f, 12.69f }, { LINE, 10.87f, 12.69f, 9.28f, 13.35f },
+    { LINE, 9.28f, 13.35f, 9.02f, 15.23f }, { LINE, 9.02f, 15.23f, 6.98f, 15.23f }, { LINE, 6.98f, 15.23f, 6.72f, 13.35f }, { LINE, 6.72f, 13.35f, 5.13f, 12.69f },
+    { LINE, 5.13f, 12.69f, 3.61f, 13.83f }, { LINE, 3.61f, 13.83f, 2.17f, 12.39f }, { LINE, 2.17f, 12.39f, 3.31f, 10.87f }, { LINE, 3.31f, 10.87f, 2.65f, 9.28f },
+    { LINE, 2.65f, 9.28f, 0.77f, 9.02f }, { LINE, 0.77f, 9.02f, 0.77f, 6.98f }, { LINE, 0.77f, 6.98f, 2.65f, 6.72f }, { LINE, 2.65f, 6.72f, 3.31f, 5.13f },
+    { LINE, 3.31f, 5.13f, 2.17f, 3.61f }, { LINE, 2.17f, 3.61f, 3.61f, 2.17f }, { LINE, 3.61f, 2.17f, 5.13f, 3.31f }, { LINE, 5.13f, 3.31f, 6.72f, 2.65f },
     { END },
 };
 
@@ -206,7 +210,7 @@ static const struct stroke resize[] =
 static const struct stroke more[] = { { DISC, 3, 8, 1.2f }, { DISC, 8, 8, 1.2f }, { DISC, 13, 8, 1.2f }, { END } };
 
 /* the crescent of Sleep */
-static const struct stroke sleep_glyph[] = { { ARC, 8, 8, 6.5f, 75, 345 }, { ARC, 11.2f, 5.2f, 4.6f, 100, 250 }, { END } };
+static const struct stroke sleep_glyph[] = { { ARC, 7.4f, 8.6f, 6.3f, 11.4f, 261.7f }, { ARC, 11.2f, 5, 5.4f, 63.9f, 209.2f }, { END } };
 
 static const struct stroke sign_out[] =
 {
@@ -222,11 +226,30 @@ static const struct stroke lock[] =
     { END },
 };
 
+/* Ringer: the bell of the notification center's Do not disturb */
+static const struct stroke bell[] =
+{
+    { ARC, 8, 7, 4.5f, -180, 0 }, { LINE, 3.5f, 7, 3.5f, 10.5f }, { LINE, 12.5f, 7, 12.5f, 10.5f },
+    { LINE, 3.5f, 10.5f, 2, 12 }, { LINE, 12.5f, 10.5f, 14, 12 }, { LINE, 2, 12, 14, 12 },
+    { ARC, 8, 12.6f, 1.8f, 0, 180 }, { LINE, 8, 1.2f, 8, 2.5f },
+    { END },
+};
+
+static const struct stroke bell_off[] =
+{
+    { ARC, 8, 7, 4.5f, -180, 0 }, { LINE, 3.5f, 7, 3.5f, 10.5f }, { LINE, 12.5f, 7, 12.5f, 10.5f },
+    { LINE, 3.5f, 10.5f, 2, 12 }, { LINE, 12.5f, 10.5f, 14, 12 }, { LINE, 2, 12, 14, 12 },
+    { ARC, 8, 12.6f, 1.8f, 0, 180 }, { LINE, 8, 1.2f, 8, 2.5f }, { LINE, 1.5f, 1.5f, 14.5f, 14.5f },
+    { END },
+};
+
+static const struct stroke close_glyph[] = { { LINE, 4, 4, 12, 12 }, { LINE, 12, 4, 4, 12 }, { END } };
+
 static const struct stroke *glyphs[] =
 {
     person, document, picture, music, download, recent, pc, control_panel, settings, update, run, power,
     chevron_right, chevron_left, chevron_down, search, folder, video, network, hamburger, chevron_up, list_glyph,
-    check, pin, unpin, resize, more, sleep_glyph, sign_out, lock,
+    check, pin, unpin, resize, more, sleep_glyph, sign_out, lock, bell, bell_off, close_glyph,
 };
 
 static BOOL near_segment( float x, float y, float ax, float ay, float bx, float by )
@@ -288,7 +311,7 @@ static HBITMAP create_dib( HDC hdc, int width, int height, UINT32 **bits )
 }
 
 /* premultiplied pixels over what is there */
-static void blend_bits( HDC hdc, int x, int y, int width, int height, const UINT32 *pixels )
+void blend_bits( HDC hdc, int x, int y, int width, int height, const UINT32 *pixels )
 {
     BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     HDC mem = CreateCompatibleDC( hdc );

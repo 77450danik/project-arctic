@@ -86,7 +86,7 @@ static UINT               output_count;
 
 static const WCHAR monitor_store_keyW[] =
     L"System\\CurrentControlSet\\Control\\GraphicsDrivers\\MonitorDataStore";
-static HKEY   gpu_preferences, monitor_store, display_power;
+static HKEY   gpu_preferences, monitor_store, display_power, theme_manager, colors;
 static HANDLE options_changed;
 
 /* "ACR0A2B", the Plug and Play id of the monitor from its EDID, as win32u
@@ -161,10 +161,31 @@ static void update_options(void)
     /* csrss.exe on Ctrl+Alt+Del */
     size = sizeof(params.relight);
     if (display_power) RegQueryValueExW( display_power, L"Relight", NULL, NULL, (BYTE *)&params.relight, &size );
+    /* the shadows go with the controls of the visual style (startui's
+     * personalize.c): its size "Windows 11" has Windows 11's */
+    size = sizeof(value) - sizeof(WCHAR);
+    if (theme_manager && !RegQueryValueExW( theme_manager, L"SizeName", NULL, &type, (BYTE *)value, &size ) &&
+        type == REG_SZ)
+    {
+        value[size / sizeof(WCHAR)] = 0;
+        params.shadow_style = !lstrcmpiW( value, L"Windows 11" );
+    }
+    /* the menus' colour (startui's personalize.c): white keys by darkness */
+    size = sizeof(value) - sizeof(WCHAR);
+    if (colors && !RegQueryValueExW( colors, L"Menu", NULL, &type, (BYTE *)value, &size ) && type == REG_SZ)
+    {
+        unsigned int r = 0, g = 0, b = 0;
+
+        value[size / sizeof(WCHAR)] = 0;
+        if (swscanf( value, L"%u %u %u", &r, &g, &b ) == 3) params.menu_light = r * 299 + g * 587 + b * 114 >= 128000;
+    }
     WINE_UNIX_CALL( unix_dwm_set_options, &params );
     if (display_power) RegNotifyChangeKeyValue( display_power, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
     if (gpu_preferences)
         RegNotifyChangeKeyValue( gpu_preferences, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
+    if (theme_manager)
+        RegNotifyChangeKeyValue( theme_manager, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
+    if (colors) RegNotifyChangeKeyValue( colors, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
     if (monitor_store)
         RegNotifyChangeKeyValue( monitor_store, TRUE, REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME,
                                  options_changed, TRUE );
@@ -760,6 +781,9 @@ DWORD WINAPI DwmCoreRun(void)
     RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticDisplay", 0, NULL,
                      REG_OPTION_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_NOTIFY, NULL, &display_power, NULL );
     if (display_power) RegDeleteValueW( display_power, L"MonitorsOff" );
+    RegCreateKeyExW( HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ThemeManager", 0, NULL, 0,
+                     KEY_QUERY_VALUE | KEY_NOTIFY, NULL, &theme_manager, NULL );
+    RegCreateKeyExW( HKEY_CURRENT_USER, L"Control Panel\\Colors", 0, NULL, 0, KEY_QUERY_VALUE | KEY_NOTIFY, NULL, &colors, NULL );
     options_changed = CreateEventW( NULL, FALSE, FALSE, NULL );
     publish_vrr_capability();
     update_options();

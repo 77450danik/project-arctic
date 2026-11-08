@@ -1,0 +1,25 @@
+# 2026-11-03: the Date and Time page, from Run and from the calendar's date;
+# the volume flyout's rounded corners. Run with --resolution 1920x1080.
+sleep 15
+key win-r
+sleep 2
+type control timedate.cpl
+key ret
+sleep 25
+shot d1-page
+key alt-f4
+sleep 3
+move 1868 1060
+click
+sleep 3
+move 1640 670
+click
+sleep 25
+shot d2-from-calendar
+key alt-f4
+sleep 3
+move 1811 1060
+click
+sleep 3
+shot d3-volume
+key esc

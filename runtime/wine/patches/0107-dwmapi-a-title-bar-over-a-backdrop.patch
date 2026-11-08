@@ -1,0 +1,100 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 4 Nov 2026 12:00:00 +0100
+Subject: [PATCH] dwmapi: A title bar over a backdrop, and what programs ask of theirs.
+
+The title bars of Arctic can show what is behind them, blurred and tinted
+(desk.cpl, Personalization). uxtheme draws such a title bar on the colour
+dwm.exe keys and tells it with DWMWA_ARCTIC_CAPTION (wine/arctic_dwm.h):
+how many rows from the window's top are the title bar, the effect, its
+tint, how strongly it blurs, and whether it is drawn dark on white. It goes
+into the table dwm.exe shares, as the accent policy does.
+
+Programs ask for a dark title bar (DWMWA_USE_IMMERSIVE_DARK_MODE, 19
+before Windows 10 20H1, 20 since) or for the colours of the title bar, its
+text and the frame (DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+DWMWA_BORDER_COLOR), as Qt, Electron, .NET and Windows Terminal do. uxtheme
+draws the frame here, so they become properties of the window it reads
+(Arctic.DarkMode: 1 light, 2 dark; Arctic.*Color: the colour with
+0x01000000 set), and the frame is drawn anew.
+---
+--- a/dlls/dwmapi/dwmapi_main.c
++++ b/dlls/dwmapi/dwmapi_main.c
+@@ -170,6 +170,31 @@
+ /**********************************************************************
+  *           DwmSetWindowAttribute         (DWMAPI.@)
+  */
++/* What a program asks of its title bar and frame, as in Windows 11: uxtheme
++ * draws them and reads it from these properties of the window. The mode is
++ * 1 for light, 2 for dark; a colour has 0x01000000 set; none is the
++ * default (DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE). */
++static void set_frame_request( HWND hwnd, DWORD attribute, DWORD value )
++{
++    const WCHAR *name;
++    HANDLE data;
++
++    switch (attribute)
++    {
++    case 34: name = L"Arctic.BorderColor"; break;
++    case 35: name = L"Arctic.CaptionColor"; break;
++    case 36: name = L"Arctic.TextColor"; break;
++    default: name = L"Arctic.DarkMode"; break;
++    }
++    if (attribute == 19 || attribute == 20) data = ULongToHandle( value ? 2 : 1 );
++    else if (value == 0xffffffff || value == 0xfffffffe) data = NULL;
++    else data = ULongToHandle( (value & 0xffffff) | 0x01000000 );
++    if (GetPropW( hwnd, name ) == data) return;
++    if (data) SetPropW( hwnd, name, data );
++    else RemovePropW( hwnd, name );
++    RedrawWindow( hwnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE );
++}
++
+ HRESULT WINAPI DwmSetWindowAttribute(HWND hwnd, DWORD attributenum, LPCVOID attribute, DWORD size)
+ {
+     struct arctic_dwm_shared *shared;
+@@ -199,6 +224,17 @@
+     case DWMWA_ARCTIC_ACCENT:
+         if (size < sizeof(struct arctic_accent_policy)) return E_INVALIDARG;
+         break;
++    case DWMWA_ARCTIC_CAPTION:
++        if (size < sizeof(struct arctic_caption)) return E_INVALIDARG;
++        break;
++    case 19: /* DWMWA_USE_IMMERSIVE_DARK_MODE before Windows 10 20H1 */
++    case 20: /* DWMWA_USE_IMMERSIVE_DARK_MODE */
++    case 34: /* DWMWA_BORDER_COLOR */
++    case 35: /* DWMWA_CAPTION_COLOR */
++    case 36: /* DWMWA_TEXT_COLOR */
++        if (size < sizeof(DWORD)) return E_INVALIDARG;
++        set_frame_request( hwnd, attributenum, *(const DWORD *)attribute );
++        return S_OK;
+     default:
+         /* colours of the frame and the like: DWM draws no frame here */
+         TRACE("attribute %lu ignored\n", attributenum);
+@@ -235,6 +271,14 @@
+             window->accent_color = policy->gradient_color;
+             break;
+         }
++        case DWMWA_ARCTIC_CAPTION:
++        {
++            const struct arctic_caption *caption = attribute;
++            window->caption = *caption;
++            window->caption.blur = min( caption->blur, 100 );
++            window->caption.light = !!caption->light;
++            break;
++        }
+         }
+     }
+     else hr = E_OUTOFMEMORY;
+@@ -397,6 +441,13 @@
+         hr = S_OK;
+         break;
+     }
++    case 19:
++    case 20: /* DWMWA_USE_IMMERSIVE_DARK_MODE */
++        if (!pv_attribute) return E_INVALIDARG;
++        if (size < sizeof(DWORD)) return E_NOT_SUFFICIENT_BUFFER;
++        *(DWORD *)pv_attribute = GetPropW( hwnd, L"Arctic.DarkMode" ) == ULongToHandle( 2 );
++        hr = S_OK;
++        break;
+     default:
+         FIXME("attribute %ld not implemented.\n", attribute);
+         hr = E_NOTIMPL;

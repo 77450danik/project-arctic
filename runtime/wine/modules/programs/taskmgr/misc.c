@@ -110,7 +110,7 @@ void users_create( HWND parent )
 {
     WNDCLASSW wc = { 0, users_proc, 0, 0, instance };
 
-    wc.hbrBackground = GetStockObject( WHITE_BRUSH );
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"ArcticTaskUsers";
     RegisterClassW( &wc );
     users_page = CreateWindowExW( 0, wc.lpszClassName, NULL, WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, parent, NULL, instance, NULL );
@@ -222,7 +222,7 @@ void history_create( HWND parent )
 {
     WNDCLASSW wc = { 0, DefWindowProcW, 0, 0, instance };
 
-    wc.hbrBackground = GetStockObject( WHITE_BRUSH );
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"ArcticTaskHistory";
     RegisterClassW( &wc );
     history_page = CreateWindowExW( 0, wc.lpszClassName, NULL, WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, parent, NULL, instance, NULL );

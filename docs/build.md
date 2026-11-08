@@ -54,7 +54,7 @@
 | ProductName файлів «Wine 11.18» | «Arctic» |
 | FileDescription «Wine <модуль>» | «Arctic <модуль>» |
 | «Wine HID device», «Wine HID compatible device» у диспетчері пристроїв | «HID-compliant device», «HID Input Device» |
-| `Software\Wine\Time Zones\TZ Mapping` (kernelbase.rgs, ніхто не читає) | прибрано |
+| `Software\Wine\Time Zones\TZ Mapping` (kernelbase.rgs; за нею ntdll називає пояс хоста, сторінка «Дата й час» іде у зворотний бік) | `Software\Arctic\Runtime\Time Zones\TZ Mapping` |
 | ProgID `WINEDBROWPRX.*`, `WINEDBRSTPRX.*` (msdaps) | `DBROWPRX.*`, `DBRSTPRX.*` |
 | `winecfg.exe` і його IFEO в `dpi.reg` | прибрано; версію Windows 11 пише `runtime/registry/version.reg` |
 

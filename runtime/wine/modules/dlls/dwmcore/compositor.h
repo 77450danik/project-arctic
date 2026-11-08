@@ -147,6 +147,8 @@ enum animation
     ANIM_FADE_OUT,
     ANIM_START10_IN,                         /* Windows 10's Start menu */
     ANIM_START10_OUT,
+    ANIM_START11_IN,                         /* Windows 11's Start menu, and its widgets from the left */
+    ANIM_START11_OUT,
 };
 
 /* what the compositor keeps of a Win32 window between lists */
@@ -200,6 +202,7 @@ extern void update_cursor_image(void);
 /* vk.c */
 bool gpu_start(void);                        /* a Vulkan device for the card: composition on the GPU */
 bool gpu_active(void);
+void gpu_set_shadow_style( unsigned int style );  /* 0 Windows 10's shadows, 1 Windows 11's */
 bool gpu_render( struct output *output, bool vrr );  /* composes and queues a flip; false if it could not */
 void gpu_output_gone( struct output *output );
 bool gpu_frame_released( void *buffer );     /* true if the buffer was one of our frames */
@@ -231,7 +234,12 @@ struct window_draw
     struct xform             live_xform;
     bool                     backdrop;       /* blurred or tinted behind it */
     bool                     blur;
+    bool                     grain;          /* the acrylic's */
+    uint32_t                 strength;       /* of the blur, 1-100; 0 for the default */
     uint32_t                 tint;           /* 0xAARRGGBB, straight alpha */
+    float                    content_alpha;  /* of what the window draws, over its backdrop */
+    uint32_t                 caption;        /* the backdrop is behind these rows from the window's top alone,
+                                                its title bar (DWMWA_ARCTIC_CAPTION); 0: behind all of it */
     enum layer_mode          (*mode)( const struct surface *s, const struct window_draw *draw );
 };
 
@@ -253,6 +261,7 @@ struct thumbnail_draw
     struct frect             dest;           /* screen coordinates */
     RECT                     source_rect;    /* of the source window, relative to its window rect */
     float                    opacity;
+    float                    radius;         /* of its corners, in the shell's rounded flyouts */
     bool                     from_snapshot;  /* minimized or hidden: what it showed last */
 };
 uint32_t scene_thumbnails( const struct window_draw *draw, struct thumbnail_draw *thumbs, uint32_t max );

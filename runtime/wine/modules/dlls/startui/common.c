@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include <math.h>
+
 #include "startui.h"
 #include "shellapi.h"
 #include "shlobj.h"
@@ -54,6 +56,47 @@ void paint_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, COLORREF co
     if (!(format & DT_WORDBREAK)) format |= DT_SINGLELINE | DT_VCENTER;
     DrawTextW( hdc, text, -1, rect, format | DT_NOPREFIX | DT_END_ELLIPSIS );
     SelectObject( hdc, old );
+}
+
+/**********************************************************************
+ *          Smooth scrolling
+ */
+
+#define SMOOTH_TICK_MS  8
+#define SMOOTH_TIME_MS  70.0
+
+/* the list has moved by so many pixels: it is drawn where it was, for now */
+void smooth_scroll_add( struct smooth_scroll *s, HWND hwnd, UINT timer, int pixels, int limit )
+{
+    float offset = s->offset + pixels;
+
+    if (!s->offset) s->last = GetTickCount();
+    s->offset = max( -(float)limit, min( (float)limit, offset ) );
+    SetTimer( hwnd, timer, SMOOTH_TICK_MS, NULL );
+}
+
+/* a tick of its timer: TRUE while it is still on its way */
+BOOL smooth_scroll_step( struct smooth_scroll *s, HWND hwnd, UINT timer )
+{
+    DWORD now = GetTickCount();
+
+    s->offset *= (float)exp( -(double)(now - s->last) / SMOOTH_TIME_MS );
+    s->last = now;
+    if (s->offset > 0.5f || s->offset < -0.5f) return TRUE;
+    s->offset = 0;
+    KillTimer( hwnd, timer );
+    return FALSE;
+}
+
+void smooth_scroll_stop( struct smooth_scroll *s, HWND hwnd, UINT timer )
+{
+    s->offset = 0;
+    KillTimer( hwnd, timer );
+}
+
+int smooth_scroll_offset( const struct smooth_scroll *s )
+{
+    return (int)floor( s->offset + 0.5f );
 }
 
 /* the keyboard's focus around something */

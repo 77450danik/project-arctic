@@ -27,8 +27,9 @@
 #define GREEN          RGB( 0x10, 0x7c, 0x10 )
 #define ORANGE         RGB( 0xf7, 0x63, 0x0c )
 #define RED            RGB( 0xe8, 0x11, 0x23 )
-#define GRID           RGB( 0xe6, 0xe6, 0xe6 )
-#define AXIS_TEXT      RGB( 0x6d, 0x6d, 0x6d )
+#define GRID           (view_dark() ? RGB( 0x3c, 0x3c, 0x3c ) : RGB( 0xe6, 0xe6, 0xe6 ))
+#define AXIS_TEXT      (view_dark() ? RGB( 0xa0, 0xa0, 0xa0 ) : RGB( 0x6d, 0x6d, 0x6d ))
+#define INK            (view_dark() ? RGB( 0xff, 0xff, 0xff ) : RGB( 0x00, 0x00, 0x00 ))
 
 struct battery_data
 {
@@ -91,7 +92,7 @@ static void paint_summary( struct view *view, HDC hdc, const RECT *rect )
     struct battery_data *data = data_of( view );
     const struct arctic_power_status *s = &data->status;
     RECT body = { rect->left, rect->top + px( 14 ), rect->left + px( 96 ), rect->top + px( 62 ) }, fill, tip, text;
-    HBRUSH frame = CreateSolidBrush( RGB( 0x33, 0x33, 0x33 ) ), level;
+    HBRUSH frame = CreateSolidBrush( view_dark() ? RGB( 0xc8, 0xc8, 0xc8 ) : RGB( 0x33, 0x33, 0x33 ) ), level;
     WCHAR buf[128];
     HGDIOBJ old;
 
@@ -110,7 +111,7 @@ static void paint_summary( struct view *view, HDC hdc, const RECT *rect )
 
     /* the charge, big, and the state under it */
     old = SelectObject( hdc, view_font( STYLE_BIG ) );
-    SetTextColor( hdc, RGB( 0, 0, 0 ) );
+    SetTextColor( hdc, INK );
     SetRect( &text, rect->left + px( 120 ), rect->top, rect->left + px( 300 ), rect->top + px( 52 ) );
     if (s->percent != ARCTIC_UNKNOWN) swprintf( buf, ARRAY_SIZE(buf), L"%u %%", s->percent );
     else lstrcpyW( buf, L"—" );
@@ -142,7 +143,7 @@ static void paint_summary( struct view *view, HDC hdc, const RECT *rect )
         SetRect( &text, right - px( 200 ), rect->top + px( 8 ), right, rect->top + px( 26 ) );
         DrawTextW( hdc, load_string( IDS_DRAW_NOW ), -1, &text, DT_SINGLELINE | DT_NOPREFIX | DT_RIGHT );
         SelectObject( hdc, view_font( STYLE_TITLE ) );
-        SetTextColor( hdc, RGB( 0, 0, 0 ) );
+        SetTextColor( hdc, INK );
         format_tenths( s->rate_mw, IDS_WATTS, buf, ARRAY_SIZE(buf) );
         SetRect( &text, right - px( 200 ), rect->top + px( 26 ), right, rect->top + px( 50 ) );
         DrawTextW( hdc, buf, -1, &text, DT_SINGLELINE | DT_NOPREFIX | DT_RIGHT );
@@ -210,7 +211,7 @@ static void paint_graph( struct view *view, HDC hdc, const RECT *rect )
         }
         if (n > 1)
         {
-            HBRUSH fill = CreateSolidBrush( RGB( 0xcc, 0xe4, 0xf7 ) );
+            HBRUSH fill = CreateSolidBrush( view_dark() ? RGB( 0x1d, 0x3b, 0x56 ) : RGB( 0xcc, 0xe4, 0xf7 ) );
             HGDIOBJ old_brush = SelectObject( hdc, fill );
             HPEN none = GetStockObject( NULL_PEN );
 

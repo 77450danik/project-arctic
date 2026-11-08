@@ -1,0 +1,49 @@
+# 2026-11-03: the desktop shows This PC and the Recycle Bin only; shortcuts
+# with alpha (no black squares); an icon dragged anywhere stays there; a
+# balloon goes to the notification center, which the clock opens over the
+# calendar; the volume flyout's rounded corners; the Date and Time page.
+# Run with --resolution 1920x1080.
+sleep 15
+shot n1-desktop
+key win-r
+sleep 2
+type cmd /c copy "%ProgramData%\Microsoft\Windows\Start Menu\Programs\*.lnk" "%USERPROFILE%\Desktop"
+key ret
+sleep 6
+shot n2-shortcuts
+drag 50 60 900 520
+sleep 3
+shot n3-dragged
+key win-r
+sleep 2
+type pwsh -c "Add-Type -A System.Windows.Forms; $n=New-Object System.Windows.Forms.NotifyIcon; $n.Icon=[System.Drawing.SystemIcons]::Information; $n.Visible=1; $n.ShowBalloonTip(5000,'Arctic test','A balloon for the notification center',1); sleep 40"
+key ret
+sleep 30
+shot n4-balloon
+sleep 8
+move 1868 1060
+click
+sleep 3
+shot n5-center-calendar
+key esc
+sleep 2
+move 1836 1060
+click
+sleep 3
+shot n6-volume
+key esc
+sleep 2
+key win-r
+sleep 2
+type control timedate.cpl
+key ret
+sleep 10
+shot n7-datetime
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type cmd /k reg query "HKLM\Software\Arctic\Runtime\Time Zones\TZ Mapping" /v Europe/Kyiv & reg query "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v TimeZoneKeyName
+key ret
+sleep 6
+shot n8-zone

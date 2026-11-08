@@ -309,7 +309,7 @@ void startup_create( HWND parent )
     WNDCLASSW wc = { 0, page_proc, 0, 0, instance };
 
     CoInitialize( NULL );
-    wc.hbrBackground = GetStockObject( WHITE_BRUSH );
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"ArcticTaskStartup";
     RegisterClassW( &wc );
     page = CreateWindowExW( 0, wc.lpszClassName, NULL, WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, parent, NULL, instance, NULL );

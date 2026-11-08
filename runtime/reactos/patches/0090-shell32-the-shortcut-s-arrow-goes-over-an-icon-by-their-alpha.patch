@@ -1,0 +1,154 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Tue, 3 Nov 2026 12:00:00 +0100
+Subject: [PATCH] shell32: The shortcut's arrow goes over an icon by their alpha.
+
+On the desktop, programs' shortcuts (Chrome, OBS, Steam) stood in black
+squares. The arrow was copied in with MaskBlt, which left the icon without
+an alpha channel, and an icon whose mask lets everything through - most
+icons with alpha have such a mask - came out opaque, black where it was
+transparent. The icon and the arrow are now drawn on black and on white,
+which gives what each covers whatever its bitmaps hold, the arrow is laid
+over the icon by their alpha, and the icon is made of that, with a mask of
+what it covers. The masks are still the way when that fails.
+---
+--- a/dll/win32/shell32/iconcache.cpp
++++ b/dll/win32/shell32/iconcache.cpp
+@@ -153,6 +153,116 @@
+ /* declare SIC_LoadOverlayIcon() */
+ static int SIC_LoadOverlayIcon(int icon_idx);
+ 
++/* Arctic: an icon as 32-bit pixels with straight alpha, cx x cy: drawn on
++ * black and on white, the difference is what it covers, whatever its
++ * bitmaps hold (an alpha channel, or only a mask) */
++static BOOL SIC_IconPixels(HICON hIcon, INT cx, INT cy, DWORD *pixels)
++{
++    BITMAPINFO bmi = { { sizeof(BITMAPINFOHEADER), cx, -cy, 1, 32, BI_RGB } };
++    HDC hdc = CreateCompatibleDC(NULL);
++    DWORD *black = NULL, *white = NULL;
++    HBITMAP hbmBlack = hdc ? CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, (void **)&black, NULL, 0) : NULL;
++    HBITMAP hbmWhite = hdc ? CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, (void **)&white, NULL, 0) : NULL;
++    BOOL ret = FALSE;
++
++    if (hbmBlack && hbmWhite)
++    {
++        HGDIOBJ old;
++
++        ZeroMemory(black, cx * cy * sizeof(DWORD));
++        for (INT i = 0; i < cx * cy; i++)
++            white[i] = 0x00ffffff;
++        old = SelectObject(hdc, hbmBlack);
++        DrawIconEx(hdc, 0, 0, hIcon, cx, cy, 0, NULL, DI_NORMAL);
++        SelectObject(hdc, hbmWhite);
++        DrawIconEx(hdc, 0, 0, hIcon, cx, cy, 0, NULL, DI_NORMAL);
++        SelectObject(hdc, old);
++        GdiFlush();
++        for (INT i = 0; i < cx * cy; i++)
++        {
++            DWORD b = black[i], w = white[i], a, out = 0;
++            INT diff = (INT)(((w >> 16) & 0xff) - ((b >> 16) & 0xff) + ((w >> 8) & 0xff) - ((b >> 8) & 0xff) +
++                             (w & 0xff) - (b & 0xff)) / 3;
++
++            a = 255 - min(255, max(0, diff));
++            if (a)
++            {
++                for (INT c = 0; c < 24; c += 8)
++                    out |= min(255UL, ((b >> c) & 0xff) * 255 / a) << c;  /* on black: its colour times its alpha */
++            }
++            pixels[i] = (a << 24) | out;
++        }
++        ret = TRUE;
++    }
++    if (hbmBlack) DeleteObject(hbmBlack);
++    if (hbmWhite) DeleteObject(hbmWhite);
++    if (hdc) DeleteDC(hdc);
++    return ret;
++}
++
++/* Arctic: the shortcut's arrow over an icon, by their alpha. Copying the
++ * arrow in with MaskBlt left the result without an alpha channel, and an
++ * icon whose mask lets everything through (most programs' icons with alpha)
++ * stood in a black square on the desktop. */
++static HICON SIC_ComposeWithAlpha(HICON hIcon, HICON hArrow, INT cx, INT cy)
++{
++    DWORD *base, *arrow;
++    BITMAPINFO bmi = { { sizeof(BITMAPINFOHEADER), cx, -cy, 1, 32, BI_RGB } };
++    HDC hdc;
++    void *bits = NULL;
++    HBITMAP hbmColor = NULL, hbmMask = NULL;
++    BYTE *mask;
++    INT stride = (cx + 15) / 16 * 2;
++    HICON hResult = NULL;
++
++    if (cx <= 0 || cy <= 0 || cx > 512 || cy > 512)
++        return NULL;
++    base = (DWORD *)HeapAlloc(GetProcessHeap(), 0, cx * cy * sizeof(DWORD));
++    arrow = (DWORD *)HeapAlloc(GetProcessHeap(), 0, cx * cy * sizeof(DWORD));
++    mask = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, stride * cy);
++    if (!base || !arrow || !mask || !SIC_IconPixels(hIcon, cx, cy, base) || !SIC_IconPixels(hArrow, cx, cy, arrow))
++        goto done;
++
++    /* the arrow over the icon, straight alpha */
++    for (INT i = 0; i < cx * cy; i++)
++    {
++        DWORD fa = arrow[i] >> 24, ba = base[i] >> 24, oa = fa + ba * (255 - fa) / 255, out = 0;
++
++        if (oa)
++        {
++            for (INT c = 0; c < 24; c += 8)
++            {
++                DWORD fc = (arrow[i] >> c) & 0xff, bc = (base[i] >> c) & 0xff;
++                out |= min(255UL, (fc * fa + bc * ba * (255 - fa) / 255) / oa) << c;
++            }
++        }
++        base[i] = (oa << 24) | out;
++        if (!oa)
++            mask[(i / cx) * stride + (i % cx) / 8] |= 0x80 >> (i % 8);
++    }
++
++    hdc = GetDC(NULL);
++    hbmColor = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
++    ReleaseDC(NULL, hdc);
++    hbmMask = CreateBitmap(cx, cy, 1, 1, mask);
++    if (hbmColor && hbmMask)
++    {
++        ICONINFO info = { TRUE, 0, 0, hbmMask, hbmColor };
++
++        memcpy(bits, base, cx * cy * sizeof(DWORD));
++        GdiFlush();
++        hResult = CreateIconIndirect(&info);
++    }
++
++done:
++    if (hbmColor) DeleteObject(hbmColor);
++    if (hbmMask) DeleteObject(hbmMask);
++    if (base) HeapFree(GetProcessHeap(), 0, base);
++    if (arrow) HeapFree(GetProcessHeap(), 0, arrow);
++    if (mask) HeapFree(GetProcessHeap(), 0, mask);
++    return hResult;
++}
++
+ /*****************************************************************************
+  * SIC_OverlayShortcutImage            [internal]
+  *
+@@ -213,6 +323,21 @@
+         goto fail;
+     }
+ 
++    /* Arctic: by their alpha; the masks below only when that fails */
++    {
++        HICON hAlpha = SIC_ComposeWithAlpha(SourceIcon, ShortcutIcon, TargetBitmapInfo.bmWidth,
++                                            abs(TargetBitmapInfo.bmHeight));
++        if (hAlpha)
++        {
++            DeleteObject(TargetIconInfo.hbmColor);
++            DeleteObject(TargetIconInfo.hbmMask);
++            if (ShortcutIconInfo.hbmColor) DeleteObject(ShortcutIconInfo.hbmColor);
++            DeleteObject(ShortcutIconInfo.hbmMask);
++            DestroyIcon(ShortcutIcon);
++            return hAlpha;
++        }
++    }
++
+     /* Is it possible with the ImageLists ? */
+     if(!ShortcutIconInfo.hbmColor)
+     {

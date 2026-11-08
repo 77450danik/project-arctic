@@ -72,7 +72,7 @@ static LRESULT CALLBACK page_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
         HDC hdc = BeginPaint( hwnd, &ps );
         RECT rc;
         GetClientRect( hwnd, &rc );
-        FillRect( hdc, &rc, GetStockObject( WHITE_BRUSH ) );
+        FillRect( hdc, &rc, GetSysColorBrush( COLOR_WINDOW ) );
         EndPaint( hwnd, &ps );
         return 0;
     }
@@ -83,7 +83,7 @@ void compact_create( HWND parent )
 {
     WNDCLASSW wc = { 0, page_proc, 0, 0, instance };
 
-    wc.hbrBackground = GetStockObject( WHITE_BRUSH );
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"ArcticTaskCompact";
     RegisterClassW( &wc );
     page = CreateWindowExW( 0, wc.lpszClassName, NULL, WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, parent, NULL, instance, NULL );

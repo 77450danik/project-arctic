@@ -1,0 +1,36 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] user32: The menu bar is filled from border to border.
+
+A visual style gives PaintMenuBar the widths of the frame's borders, as
+user32 of Windows takes them; they were used as coordinates, so the bar was
+filled over nothing and only its items were drawn. In the dark mode the rest
+of the strip stayed white, in every program with a menu.
+---
+diff --git a/dlls/user32/menu.c b/dlls/user32/menu.c
+index 8afad35..87d1f15 100644
+--- a/dlls/user32/menu.c
++++ b/dlls/user32/menu.c
+@@ -324,16 +324,18 @@ INT WINAPI GetMenuStringW( HMENU menu, UINT item, WCHAR *str, INT count, UINT fl
+ /***********************************************************************
+  *           PaintMenuBar   (USER32.@)
+  *
+- * Draws the menu bar of a window whose frame a visual style paints, between
+- * left and right, from top down; returns the height of the bar.
++ * Draws the menu bar of a window whose frame a visual style paints, inside
++ * the borders of that frame (their widths), from top down; returns the
++ * height of the bar.
+  */
+ DWORD WINAPI PaintMenuBar( HWND hwnd, HDC hdc, ULONG left, ULONG right, ULONG top, BOOL active )
+ {
+     HMENU menu = GetMenu( hwnd );
+-    RECT rect;
++    RECT rect, window;
+ 
+     if (!menu) return 0;
+-    SetRect( &rect, left, top, right, top + GetSystemMetrics( SM_CYMENU ) );
++    GetWindowRect( hwnd, &window );
++    SetRect( &rect, left, top, window.right - window.left - right, top + GetSystemMetrics( SM_CYMENU ) );
+     return NtUserDrawMenuBarTemp( hwnd, hdc, &rect, menu, NULL );
+ }
+ 

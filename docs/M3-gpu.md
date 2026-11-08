@@ -314,6 +314,43 @@ GPU; перекриті частини теж є, прозоре — чорне.
 мовчить, стає стандартною стрілкою, а монохромні курсори теж передаються
 (Wine `0087`).
 
+## Direct3D 12
+
+Direct3D 12 — це vkd3d-proton, але не готовий реліз, а тег
+(`runtime/vkd3d-proton/VERSION`) з патчами Arctic
+(`runtime/vkd3d-proton/patches`), зібраний `ci/build-vkd3d-proton.sh`
+(локально — `tools/wsl/build-vkd3d-proton.sh`; `build-rootfs.sh` кладе DLL у
+System32 і SysWOW64, `make-update.sh --windows` везе їх на C:). Чому
+(2.11.2026: «у Chrome у рушії WebGPU нічого не малюється, крім неба, 17 кадрів/с»):
+
+- **ExecuteIndirect з root-константами.** Command signature, де перед
+  малюванням стоять константи (або вигляди буферів вершин/індексів, root
+  descriptors), vkd3d-proton виконує через device-generated commands. 3.0.1
+  знає лише `VK_EXT_device_generated_commands`, а його немає ні в NVIDIA на
+  Pascal (GTX 1050, драйвер 580), ні в Mesa на Intel Gen9 — і такий
+  ExecuteIndirect викидався цілком («DGC skip», без рядка в журналі). Dawn
+  (WebGPU у Chrome) так малює кожен `drawIndirect`/`drawIndexedIndirect`,
+  якщо шейдер читає `instance_index`/`vertex_index`: рушій із GPU-відсівом не
+  показував жодного об'єкта. У Windows це робить драйвер на тій самій карті, а
+  Vulkan-драйвер NVIDIA має `VK_NV_device_generated_commands` (32 токени),
+  тож патч `0001` повертає NV-шлях, який upstream прибрав у 76c11d2. Карта з
+  EXT_dgc іде EXT-шляхом, як і була.
+- **Resolve з порожнім SrcRect.** `SrcRect = {0,0,0,0}` у D3D12 — «увесь
+  subresource»; 3.0.1 робив resolve прямокутника 0×0. Dawn так закінчує кожен
+  MSAA-прохід, і ціль resolve лишалась порожньою (`0002` = upstream 021f03f).
+
+Перевірка: `tests/tools/d3d12indirect.c` — обидва випадки, як їх робить Dawn,
+на офскрін-цілі з читанням пікселя; `d3d12.dll` поряд з exe береться
+першим, тож збірку можна спробувати до встановлення (на дискретній карті —
+`GpuPreference=2`). Що драйвер дає з DGC — `vkdgc.exe`
+(`D:\WORK_YT\tmp\arctic-tests`).
+
+Не зроблено: на Intel Gen9 (і будь-якій карті без EXT і NV DGC) ExecuteIndirect
+з константами досі пропускається — потрібна емуляція без DGC. Програма, що
+працює на «Default» (інтегрована), там і лишається без таких викликів;
+`WGPU_BACKEND=vulkan` у `graphics.reg` — давніший обхід того самого для
+програм на wgpu.
+
 ## Перевірка
 
 - Користувач: «Екран» → «Параметри» — прапорець «Змінна частота оновлення»

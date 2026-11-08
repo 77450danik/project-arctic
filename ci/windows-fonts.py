@@ -30,7 +30,7 @@ STYLES = {
 
 
 def rename(source, target, family, style, postscript):
-    font = TTFont(source)
+    font = TTFont(source, recalcTimestamp=False)
     full = family if style == "Regular" else "%s %s" % (family, style)
     names = {
         1: family,

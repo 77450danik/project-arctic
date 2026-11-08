@@ -1,0 +1,97 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] comctl32: Rounded combo boxes, and tabs with the room a style asks for.
+
+Button, edit and the others draw their parent's background under a part
+that is partly transparent; the combo box did not, and its corners kept
+whatever was on the screen. A tab was as wide as its text and six pixels:
+a style with wider content margins now gets them.
+---
+diff --git a/dll/win32/comctl32/combo.c b/dll/win32/comctl32/combo.c
+index e40aaa2..c4d6c9e 100644
+--- a/dll/win32/comctl32/combo.c
++++ b/dll/win32/comctl32/combo.c
+@@ -781,6 +781,9 @@ static LRESULT COMBO_ThemedPaint(HTHEME theme, HEADCOMBO *lphc, HDC hdc)
+         InflateRect(&frame, COMBO_XBORDERSIZE(), COMBO_YBORDERSIZE());
+     }
+ 
++    /* Arctic: a frame with rounded corners shows what is behind them */
++    if (IsThemeBackgroundPartiallyTransparent(theme, 0, IsWindowEnabled(lphc->self) ? CBXS_NORMAL : CBXS_DISABLED))
++        DrawThemeParentBackground(lphc->self, hdc, &frame);
+     DrawThemeBackground(theme, hdc, 0, IsWindowEnabled(lphc->self) ? CBXS_NORMAL : CBXS_DISABLED, &frame, NULL);
+ 
+     /* Paint button */
+diff --git a/dll/win32/comctl32/tab.c b/dll/win32/comctl32/tab.c
+index 86b18aa..73db88b 100644
+--- a/dll/win32/comctl32/tab.c
++++ b/dll/win32/comctl32/tab.c
+@@ -115,6 +115,7 @@ typedef struct
+   BOOL       needsScrolling;  /* TRUE if the size of the tabs is greater than
+                                * the size of the control */
+   BOOL       fHeightSet;      /* was the height of the tabs explicitly set? */
++  BOOL       arcticThemed;    /* Arctic: the tabs were last measured with the theme */
+   BOOL       bUnicode;        /* Unicode control? */
+   HWND       hwndUpDown;      /* Updown control used for scrolling */
+   INT        cbInfo;          /* Number of bytes of caller supplied info per tab */
+@@ -1132,6 +1133,7 @@ static void TAB_SetItemBounds (TAB_INFO *infoPtr)
+   HTHEME      theme = GetWindowTheme (infoPtr->hwnd);
+   LOGFONTW    lfTheme;
+ #endif
++  INT         arctic_hpad = 0, arctic_vpad = 0;
+ 
+   /*
+    * We need to get text information so we need a DC and we need to select
+@@ -1171,6 +1173,23 @@ static void TAB_SetItemBounds (TAB_INFO *infoPtr)
+   /* Now use hPadding and vPadding */
+   infoPtr->uHItemPadding = infoPtr->uHItemPadding_s;
+   infoPtr->uVItemPadding = infoPtr->uVItemPadding_s;
++
++  infoPtr->arcticThemed = GetWindowTheme (infoPtr->hwnd) != NULL;
++
++  /* Arctic: a visual style with wider content margins than the usual 3 gives
++     a tab that much more room */
++  {
++      HTHEME tab_theme = GetWindowTheme (infoPtr->hwnd);
++      MARGINS margins;
++
++      if (tab_theme && SUCCEEDED(GetThemeMargins (tab_theme, NULL, TABP_TABITEM, 0, TMT_CONTENTMARGINS, NULL, &margins)))
++      {
++          INT dpi = GetDeviceCaps (hdc, LOGPIXELSX);
++
++          if (margins.cxLeftWidth > 3) arctic_hpad = MulDiv (margins.cxLeftWidth - 3, dpi, 96);
++          arctic_vpad = MulDiv (max(margins.cyTopHeight, 0) * 2, dpi, 96);
++      }
++  }
+   
+   /* The leftmost item will be "0" aligned */
+   curItemLeftPos = 0;
+@@ -1200,7 +1219,7 @@ static void TAB_SetItemBounds (TAB_INFO *infoPtr)
+      */
+     infoPtr->tabHeight = item_height + 
+ 	                 ((infoPtr->dwStyle & TCS_BUTTONS) ? 2 : 1) *
+-                          infoPtr->uVItemPadding;
++                          infoPtr->uVItemPadding + arctic_vpad;
+ 
+     TRACE("tabH=%d, tmH=%d, iconh=%d\n",
+ 	  infoPtr->tabHeight, fontMetrics.tmHeight, icon_height);
+@@ -1257,7 +1276,7 @@ static void TAB_SetItemBounds (TAB_INFO *infoPtr)
+       GetTextExtentPoint32W(hdc, curr->pszText,
+                             lstrlenW(curr->pszText), &size);
+ 
+-      tabwidth = size.cx + icon_width + 2 * infoPtr->uHItemPadding;
++      tabwidth = size.cx + icon_width + 2 * (infoPtr->uHItemPadding + arctic_hpad);
+ 
+       if (infoPtr->tabMinWidth < 0)
+         tabwidth = max(tabwidth, GET_DEFAULT_MIN_TAB_WIDTH(infoPtr));
+@@ -2632,6 +2651,11 @@ static inline LRESULT TAB_Paint (TAB_INFO *infoPtr, HDC hdcPaint)
+   HDC hdc;
+   PAINTSTRUCT ps;
+ 
++  /* Arctic: a property sheet fills its tabs before the control has its
++     theme: they were measured in the dialog's font, without the style's room */
++  if (!infoPtr->arcticThemed && GetWindowTheme (infoPtr->hwnd))
++    TAB_SetItemBounds (infoPtr);
++
+   if (hdcPaint)
+     hdc = hdcPaint;
+   else

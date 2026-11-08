@@ -504,6 +504,11 @@ RECIPES = {
     11: badge(badge(HDD, NET, "bl", 0.55), ERR, "br", 0.5),             # NETDRIVE_OFF
     12: DRIVE_OPTICAL,                                                  # CDROM
     13: lh("d/drive-harddisk-solidstate"),                              # RAMDISK
+    22: st("CONTROL_PANEL"),                                            # CONTROL_PANEL*
+    36: st("CONTROL_PANEL"),                                            # CONTROL_PANEL*
+    137: st("CONTROL_PANEL"),                                           # CONTROL_PANEL*
+    321: st("CONTROL_PANEL"),                                           # CONTROL_PANEL*
+    330: st("CONTROL_PANEL"),                                           # CONTROL_PANEL*
     14: NET,                                                            # ENTIRE_NETWORK
     15: PC2,                                                            # NETWORK
     17: PRINTER,                                                        # PRINTER

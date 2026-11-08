@@ -1,0 +1,42 @@
+From: Arctic <arctic@localhost>
+Subject: [PATCH] win32u: Aero Snap and Aero Shake take windows that draw their own caption.
+
+File Explorer of Windows 11, and Arctic's, has no WS_CAPTION: its tabs are
+its caption. Dragged by them it snaps to the edges and shakes the others
+away like any window with a frame to size it and a maximize box.
+---
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+--- a/dlls/win32u/defwnd.c	2026-11-08 15:34:06.425484278 +0100
++++ b/dlls/win32u/defwnd.c	2026-11-08 15:34:06.425611587 +0100
+@@ -833,6 +833,13 @@
+     return TRUE;
+ }
+ 
++/* a window that draws its own caption over the client area, as File Explorer
++ * of Windows 11 does: no WS_CAPTION, a frame to size it and a maximize box */
++static BOOL framed_without_caption( DWORD style )
++{
++    return !(style & WS_CHILD) && (style & (WS_THICKFRAME | WS_MAXIMIZEBOX)) == (WS_THICKFRAME | WS_MAXIMIZEBOX);
++}
++
+ /* a program's window with a frame that can go, not what belongs to the
+  * dragged one or what it belongs to */
+ static BOOL shake_takes( HWND hwnd, HWND dragged )
+@@ -841,7 +848,7 @@
+     HWND owner;
+ 
+     if ((style & (WS_VISIBLE | WS_MINIMIZE | WS_CHILD)) != WS_VISIBLE) return FALSE;
+-    if (!(style & WS_MINIMIZEBOX) || (style & WS_CAPTION) != WS_CAPTION) return FALSE;
++    if (!(style & WS_MINIMIZEBOX) || ((style & WS_CAPTION) != WS_CAPTION && !framed_without_caption( style ))) return FALSE;
+     if (exstyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) return FALSE;
+     for (owner = hwnd; owner; owner = get_window_relative( owner, GW_OWNER )) if (owner == dragged) return FALSE;
+     for (owner = dragged; owner; owner = get_window_relative( owner, GW_OWNER )) if (owner == hwnd) return FALSE;
+@@ -900,7 +907,7 @@
+ 
+     thickframe = (style & WS_THICKFRAME) && !((style & (WS_DLGFRAME | WS_BORDER)) == WS_DLGFRAME);
+     can_snap = syscommand == SC_MOVE && !(style & WS_CHILD) && (style & (WS_THICKFRAME | WS_MAXIMIZEBOX)) &&
+-               (style & WS_CAPTION) == WS_CAPTION;
++               ((style & WS_CAPTION) == WS_CAPTION || framed_without_caption( style ));
+ 
+     capture_point = pt;
+     shake_x.origin = pt.x;

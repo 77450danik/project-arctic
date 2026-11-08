@@ -95,4 +95,7 @@ find "$OUT/usr/bin" -type f -exec sh -c 'file -b "$1" | grep -q ELF && strip --s
 rm -rf "$OUT/usr/share/man" "$OUT/usr/share/applications"
 
 echo "$TAG" > "$OUT/version"
+# Wine's IDL compiler for the builds that need one (ci/build-vkd3d-proton.sh):
+# beside the build's config.h, not in usr/, so it stays out of host.sqfs
+install -D -m755 tools/widl/widl "$OUT/build-tools/widl"
 du -sh "$OUT"/usr/lib/wine/* "$OUT"/usr/share/wine

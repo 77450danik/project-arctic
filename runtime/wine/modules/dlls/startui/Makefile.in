@@ -1,19 +1,25 @@
 MODULE    = startui.dll
-IMPORTS   = uuid dwmapi powrprof comctl32 comdlg32 shell32 user32 gdi32 advapi32 ole32
+IMPORTS   = uuid dwmapi powrprof comctl32 comdlg32 shell32 user32 gdi32 advapi32 ole32 version winhttp
 
-VER_FILEDESCRIPTION_STR = "Start menus and the look of the shell"
+VER_FILEDESCRIPTION_STR = "Start menus, the calendar and the look of the shell"
 
 SOURCES = \
 	avatar.c \
+	clock11.c \
 	common.c \
+	explorerui.c \
+	gadgets.c \
 	glyph.c \
 	items.c \
 	main.c \
 	menu.c \
 	menu10.c \
 	menu11.c \
+	personalize.c \
 	popup.c \
 	settings.c \
 	startpage.c \
 	taskbar.c \
+	taskbtn.c \
+	widgets.c \
 	startui.rc

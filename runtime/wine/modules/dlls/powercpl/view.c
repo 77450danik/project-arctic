@@ -34,12 +34,13 @@
 #define CONTENT_MAX    px(600)
 #define CONTENT_PAD    px(10)
 
-#define COLOR_TITLE    RGB( 0x00, 0x33, 0x99 )   /* the main instruction's blue */
-#define COLOR_TEXT     RGB( 0x00, 0x00, 0x00 )
-#define COLOR_GRAY     RGB( 0x6d, 0x6d, 0x6d )
-#define COLOR_LINK     RGB( 0x00, 0x66, 0xcc )
-#define COLOR_LINK_HOT RGB( 0x33, 0x99, 0xff )
-#define COLOR_LINE     RGB( 0xe2, 0xe2, 0xe2 )
+/* light, or dark in the programs' dark mode (view_dark) */
+#define COLOR_TITLE    (view_dark() ? RGB( 0x99, 0xc9, 0xff ) : RGB( 0x00, 0x33, 0x99 ))  /* the main instruction's blue */
+#define COLOR_TEXT     (view_dark() ? RGB( 0xff, 0xff, 0xff ) : RGB( 0x00, 0x00, 0x00 ))
+#define COLOR_GRAY     (view_dark() ? RGB( 0xa0, 0xa0, 0xa0 ) : RGB( 0x6d, 0x6d, 0x6d ))
+#define COLOR_LINK     (view_dark() ? RGB( 0x99, 0xd6, 0xff ) : RGB( 0x00, 0x66, 0xcc ))
+#define COLOR_LINK_HOT (view_dark() ? RGB( 0xc4, 0xe8, 0xff ) : RGB( 0x33, 0x99, 0xff ))
+#define COLOR_LINE     (view_dark() ? RGB( 0x3c, 0x3c, 0x3c ) : RGB( 0xe2, 0xe2, 0xe2 ))
 
 #define TIMER_PAGE     1
 
@@ -90,7 +91,32 @@ struct view
 
 static HFONT fonts[STYLE_BIG + 1];
 static HFONT font_link_hot;
-static HBRUSH white_brush;
+
+/* the programs' mode (desk.cpl, Personalization), as the system colours have it */
+BOOL view_dark(void)
+{
+    COLORREF c = GetSysColor( COLOR_WINDOW );
+    return GetRValue( c ) + GetGValue( c ) + GetBValue( c ) < 3 * 128;
+}
+
+COLORREF view_page_color(void)
+{
+    return view_dark() ? RGB( 0x19, 0x19, 0x19 ) : RGB( 0xff, 0xff, 0xff );
+}
+
+static HBRUSH page_brush(void)
+{
+    static HBRUSH brush;
+    static COLORREF color;
+
+    if (!brush || color != view_page_color())
+    {
+        if (brush) DeleteObject( brush );
+        color = view_page_color();
+        brush = CreateSolidBrush( color );
+    }
+    return brush;
+}
 
 static inline struct view *impl_from_IShellView( IShellView *iface )
 {
@@ -125,7 +151,6 @@ HFONT view_font( int style )
         fonts[STYLE_GRAY] = make_font( px( 12 ), FW_NORMAL, FALSE );
         fonts[STYLE_BIG] = make_font( px( 40 ), FW_LIGHT, FALSE );
         font_link_hot = make_font( px( 12 ), FW_NORMAL, TRUE );
-        white_brush = CreateSolidBrush( RGB( 255, 255, 255 ) );
     }
     return fonts[style];
 }
@@ -676,7 +701,7 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         if ((bitmap = CreateCompatibleBitmap( hdc, max( client.right, 1 ), max( client.bottom, 1 ) )))
         {
             HGDIOBJ old = SelectObject( mem, bitmap );
-            FillRect( mem, &client, white_brush );
+            FillRect( mem, &client, page_brush() );
             if (view) paint_content( view, mem );
             BitBlt( hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY );
             SelectObject( mem, old );
@@ -686,6 +711,11 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         EndPaint( hwnd, &ps );
         return 0;
     }
+    case WM_THEMECHANGED:
+    case WM_SYSCOLORCHANGE:
+        /* the programs' mode changed (desk.cpl, Personalization) */
+        InvalidateRect( hwnd, NULL, TRUE );
+        break;
     case WM_ERASEBKGND:
         return 1;
     case WM_SIZE:
@@ -782,9 +812,9 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
-        SetBkColor( (HDC)wp, RGB( 255, 255, 255 ) );
+        SetBkColor( (HDC)wp, view_page_color() );
         SetTextColor( (HDC)wp, COLOR_TEXT );
-        return (LRESULT)white_brush;
+        return (LRESULT)page_brush();
     }
     return DefWindowProcW( hwnd, msg, wp, lp );
 }
@@ -819,11 +849,16 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         EndPaint( hwnd, &ps );
         return 0;
     }
+    case WM_THEMECHANGED:
+    case WM_SYSCOLORCHANGE:
+        /* the programs' mode changed (desk.cpl, Personalization) */
+        InvalidateRect( hwnd, NULL, TRUE );
+        break;
     case WM_ERASEBKGND:
     {
         RECT rect;
         GetClientRect( hwnd, &rect );
-        FillRect( (HDC)wp, &rect, white_brush );
+        FillRect( (HDC)wp, &rect, page_brush() );
         return 1;
     }
     case WM_MOUSEMOVE:

@@ -1,0 +1,19 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] user32: The system menu is that of Windows.
+
+It ended with "About Wine".
+---
+diff --git a/dlls/user32/user32.rc b/dlls/user32/user32.rc
+index d3c1f3e..3d36e61 100644
+--- a/dlls/user32/user32.rc
++++ b/dlls/user32/user32.rc
+@@ -33,8 +33,6 @@ SYSMENU MENU
+     MENUITEM "Ma&ximize", 61488
+     MENUITEM SEPARATOR
+     MENUITEM "&Close\tAlt+F4", 61536
+-    MENUITEM SEPARATOR
+-    MENUITEM "&About Wine", 61761
+ }
+ 
+ SYSMENUMDI MENU

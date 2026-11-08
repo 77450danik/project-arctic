@@ -1,0 +1,33 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 4 Nov 2026 12:00:00 +0100
+Subject: [PATCH] desk: Personalization instead of the old appearance.
+
+The display's properties show startui.dll's page "Персоналізація"
+(ArcticPersonalizePage) where the old appearance page was: the light and
+the dark mode as Windows 11 chooses them, for Windows and for programs,
+and the look of the title bars. Without startui.dll the old page stays.
+---
+--- a/dll/cpl/desk/desk.c
++++ b/dll/cpl/desk/desk.c
+@@ -230,6 +230,21 @@
+         if (pwszSelectedTab && _wcsicmp(pwszSelectedTab, PropPages[i].Name) == 0)
+             psh.nStartPage = i;
+ 
++        /* Arctic: the page "Персоналізація" of startui.dll instead of the
++         * old appearance: the light and the dark mode, as Windows 11 has
++         * them, and the look of the title bars */
++        if (PropPages[i].idDlg == IDD_APPEARANCE)
++        {
++            typedef HPROPSHEETPAGE (WINAPI *PFN_PERSONALIZE_PAGE)(void);
++            HMODULE hStartUi = LoadLibraryW(L"startui.dll");
++            PFN_PERSONALIZE_PAGE pfnPage = hStartUi ?
++                (PFN_PERSONALIZE_PAGE)GetProcAddress(hStartUi, "ArcticPersonalizePage") : NULL;
++            HPROPSHEETPAGE hPage = pfnPage ? pfnPage() : NULL;
++
++            if (hPage && DisplayAppletPropSheetAddPage(hPage, (LPARAM)&psh))
++                continue;
++        }
++
+         /* Override the background page if requested by a shell extension */
+         if (PropPages[i].idDlg == IDD_BACKGROUND && hpsxa != NULL &&
+             SHReplaceFromPropSheetExtArray(hpsxa, CPLPAGE_DISPLAY_BACKGROUND, DisplayAppletPropSheetAddPage, (LPARAM)&psh) != 0)

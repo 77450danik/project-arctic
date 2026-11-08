@@ -1,0 +1,300 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] browseui: File Explorer in the looks of Windows 10 and 11.
+
+Folder Options chooses: the classic toolbars stay for those who ask for them;
+otherwise they stay hidden and startui.dll draws the ribbon of Windows 10 or
+the tabs, the address and the command bar of Windows 11 around the view.
+---
+diff --git a/dll/win32/browseui/shellbrowser.cpp b/dll/win32/browseui/shellbrowser.cpp
+index d59f312..8bbad55 100644
+--- a/dll/win32/browseui/shellbrowser.cpp
++++ b/dll/win32/browseui/shellbrowser.cpp
+@@ -30,6 +30,26 @@ static BOOL MenusAlwaysShown()
+     return dwShow != 0;
+ }
+ 
++/* Arctic: File Explorer's look, from Folder Options (0 classic, 1 Windows 10,
++ * 2 Windows 11): startui.dll draws the last two around the view */
++#define WM_ARCTIC_BROWSE (WM_APP + 0x51)
++#define WM_ARCTIC_SEARCH (WM_APP + 0x52)
++
++static DWORD ArcticExplorerStyle()
++{
++    DWORD dwStyle = 2, cb = sizeof(dwStyle);
++    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Arctic\\Explorer", L"Style", NULL, &dwStyle, &cb);
++    return dwStyle;
++}
++
++static FARPROC ArcticExplorerProc(LPCSTR pszName)
++{
++    static HMODULE s_hStartUi;
++    if (!s_hStartUi)
++        s_hStartUi = LoadLibraryW(L"startui.dll");
++    return s_hStartUi ? GetProcAddress(s_hStartUi, pszName) : NULL;
++}
++
+ #include <shellapi.h>
+ #include <htiframe.h>
+ #include <strsafe.h>
+@@ -311,6 +331,8 @@ private:
+     CComPtr<IShellView>                     fCurrentShellView;          //
+     LPITEMIDLIST                            fCurrentDirectoryPIDL;      //
+     HWND                                    fStatusBar;
++    HWND                                    m_ArcticChrome = NULL;      // Arctic: the look of Windows 10 or 11
++    LPITEMIDLIST                            m_ArcticSearchScope = NULL; // Arctic: where the search in the window looks
+     CToolbarProxy                           fToolbarProxy;
+     barInfo                                 fClientBars[3];
+     CComPtr<ITravelLog>                     fTravelLog;
+@@ -695,7 +717,105 @@ public:
+         return wc;
+     }
+ 
++    /* Arctic: a tab or the address of the look of Windows 10 or 11 goes somewhere;
++       the tabs keep their own histories */
++    LRESULT OnArcticBrowse(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
++    {
++        LPITEMIDLIST pidl = reinterpret_cast<LPITEMIDLIST>(lParam);
++
++        BrowseToPIDL(pidl, BTP_UPDATE_CUR_HISTORY | (wParam ? 0 : BTP_UPDATE_NEXT_HISTORY));
++        ILFree(pidl);
++        return 0;
++    }
++
++    /* Arctic: the search box of the look of Windows 10 or 11: the results show
++       in the window, the find folder's view, as in Windows; no text goes back
++       where the search began */
++    static LOCATIONITEM *ArcticLocation(PCWSTR pszPath, LOCATIONITEM *pNext)
++    {
++        const SIZE_T cch = lstrlenW(pszPath) + 1;
++        LOCATIONITEM *p = (LOCATIONITEM *)CoTaskMemAlloc(FIELD_OFFSET(LOCATIONITEM, szPath[cch]));
++        if (!p)
++        {
++            FreeList(pNext);
++            return NULL;
++        }
++        p->pNext = pNext;
++        CopyMemory(p->szPath, pszPath, cch * sizeof(WCHAR));
++        return p;
++    }
++
++    static LOCATIONITEM *ArcticSearchLocations(LPCITEMIDLIST pidl)
++    {
++        WCHAR szPath[MAX_PATH];
++        LOCATIONITEM *pList = NULL;
++
++        if (pidl && pidl->mkid.cb && SHGetPathFromIDListW(pidl, szPath) && PathIsDirectoryW(szPath))
++            return ArcticLocation(szPath, NULL);
++        /* This PC and what has no folder of its own: the disks */
++        for (int i = 25; i >= 0; i--)
++        {
++            WCHAR szRoot[4] = { (WCHAR)('A' + i), L':', L'\\', 0 };
++            UINT type;
++
++            if (!(GetLogicalDrives() & (1 << i))) continue;
++            type = GetDriveTypeW(szRoot);
++            if (type != DRIVE_FIXED && type != DRIVE_RAMDISK) continue;
++            if (!(pList = ArcticLocation(szRoot, pList))) return NULL;
++        }
++        return pList;
++    }
++
++    LRESULT OnArcticSearch(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
++    {
++        PCWSTR pszText = reinterpret_cast<PCWSTR>(lParam);
++        CComHeapPtr<ITEMIDLIST> findPidl;
++        BOOL bInResults;
++        HWND hwndView;
++
++        if (FAILED(SHParseDisplayName(L"shell:::{E17D4FC0-5564-11D1-83F2-00A0C90DC849}", NULL, &findPidl, 0, NULL)))
++            return 0;
++        bInResults = fCurrentDirectoryPIDL && ILIsEqual(fCurrentDirectoryPIDL, findPidl);
++        if (!bInResults)
++        {
++            ILFree(m_ArcticSearchScope);
++            m_ArcticSearchScope = fCurrentDirectoryPIDL ? ILClone(fCurrentDirectoryPIDL) : NULL;
++        }
++        if (!pszText || !pszText[0])
++        {
++            if (bInResults && m_ArcticSearchScope)
++                BrowseToPIDL(m_ArcticSearchScope, BTP_UPDATE_CUR_HISTORY | BTP_UPDATE_NEXT_HISTORY);
++            return 0;
++        }
++
++        CComHeapPtr<SearchStart> pStart(static_cast<SearchStart *>(CoTaskMemAlloc(sizeof(SearchStart))));
++        if (!pStart)
++            return 0;
++        ZeroMemory(pStart, sizeof(SearchStart));
++        /* a part of the name, as in Windows: *text* */
++        if (wcspbrk(pszText, L"*?"))
++            StringCchCopyW(pStart->szFileName, _countof(pStart->szFileName), pszText);
++        else
++            StringCchPrintfW(pStart->szFileName, _countof(pStart->szFileName), L"*%s*", pszText);
++        if (!(pStart->pPaths = ArcticSearchLocations(m_ArcticSearchScope)))
++            return 0;
++        if (!bInResults && FAILED(BrowseToPIDL(findPidl, BTP_UPDATE_CUR_HISTORY | BTP_UPDATE_NEXT_HISTORY)))
++        {
++            FreeList(pStart->pPaths);
++            return 0;
++        }
++        if (!fCurrentShellView || FAILED(fCurrentShellView->GetWindow(&hwndView)))
++        {
++            FreeList(pStart->pPaths);
++            return 0;
++        }
++        ::PostMessageW(hwndView, WM_SEARCH_START, 0, (LPARAM)pStart.Detach());
++        return 0;
++    }
++
+     BEGIN_MSG_MAP(CShellBrowser)
++        MESSAGE_HANDLER(WM_ARCTIC_BROWSE, OnArcticBrowse)
++        MESSAGE_HANDLER(WM_ARCTIC_SEARCH, OnArcticSearch)
+         MESSAGE_HANDLER(WM_CREATE, OnCreate)
+         MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
+         MESSAGE_HANDLER(WM_SIZE, OnSize)
+@@ -837,18 +957,28 @@ HRESULT CShellBrowser::Initialize()
+     if (FAILED_UNEXPECTEDLY(hResult))
+         return hResult;
+ 
+-    hResult = IUnknown_ShowDW(clientBar, TRUE);
++    /* Arctic: in the looks of Windows 10 and 11 the old bars stay hidden */
++    DWORD dwArcticStyle = ArcticExplorerStyle();
++    typedef HWND (WINAPI *PFN_ATTACH)(HWND, INT);
++    PFN_ATTACH pAttach = dwArcticStyle ? (PFN_ATTACH)ArcticExplorerProc("ArcticExplorerAttach") : NULL;
++    if (pAttach)
++    {
++        m_settings.fNavPaneVisible = TRUE;
++        m_ArcticChrome = pAttach(m_hWnd, dwArcticStyle);
++    }
++
++    hResult = IUnknown_ShowDW(clientBar, m_ArcticChrome == NULL);
+     if (FAILED_UNEXPECTEDLY(hResult))
+         return hResult;
+ 
+     /* Arctic: the menu bar follows "Always show menus", not the saved toolbars */
+-    _ShowMenuBand(MenusAlwaysShown());
++    _ShowMenuBand(MenusAlwaysShown() && !m_ArcticChrome);
+ 
+     fToolbarProxy.Initialize(m_hWnd, clientBar);
+ 
+     // create status bar
+     DWORD dwStatusStyle = WS_CHILD | WS_CLIPSIBLINGS | SBARS_SIZEGRIP | SBARS_TOOLTIPS;
+-    if (m_settings.fStatusBarVisible)
++    if (m_settings.fStatusBarVisible && !m_ArcticChrome)
+         dwStatusStyle |= WS_VISIBLE;
+     fStatusBar = ::CreateWindowExW(0, STATUSCLASSNAMEW, NULL, dwStatusStyle,
+                                    0, 0, 500, 20, m_hWnd, (HMENU)IDC_STATUSBAR,
+@@ -1220,6 +1350,14 @@ HRESULT CShellBrowser::BrowseToPath(IShellFolder *newShellFolder,
+ 
+     UpdateWindowTitle();
+ 
++    if (m_ArcticChrome)
++    {
++        typedef VOID (WINAPI *PFN_NAVIGATED)(HWND, LPCITEMIDLIST);
++        PFN_NAVIGATED pNavigated = (PFN_NAVIGATED)ArcticExplorerProc("ArcticExplorerNavigated");
++        if (pNavigated)
++            pNavigated(m_ArcticChrome, fCurrentDirectoryPIDL);
++    }
++
+     LPCITEMIDLIST pidlChild;
+     HIMAGELIST himlSmall, himlLarge;
+ 
+@@ -1603,7 +1741,18 @@ void CShellBrowser::RepositionBars()
+ 
+     GetClientRect(&clientRect);
+ 
+-    if (m_settings.fStatusBarVisible && fStatusBar)
++    if (m_ArcticChrome)
++    {
++        typedef VOID (WINAPI *PFN_LAYOUT)(HWND, INT, INT, INT *, INT *);
++        PFN_LAYOUT pLayout = (PFN_LAYOUT)ArcticExplorerProc("ArcticExplorerLayout");
++        INT cyTop = 0, cyBottom = 0;
++
++        if (pLayout)
++            pLayout(m_ArcticChrome, clientRect.right, clientRect.bottom, &cyTop, &cyBottom);
++        clientRect.top += cyTop;
++        clientRect.bottom -= cyBottom;
++    }
++    else if (m_settings.fStatusBarVisible && fStatusBar)
+     {
+         ::GetWindowRect(fStatusBar, &statusRect);
+         ::SetWindowPos(fStatusBar, NULL, clientRect.left, clientRect.bottom - (statusRect.bottom - statusRect.top),
+@@ -1616,6 +1765,19 @@ void CShellBrowser::RepositionBars()
+     {
+         HWND hwnd = fClientBars[x].hwnd;
+         RECT borderSpace = fClientBars[x].borderSpace;
++
++        if (m_ArcticChrome && x == BIInternetToolbar)
++        {
++            /* its own show state comes back when a saved layout loads */
++            if (hwnd == NULL && fClientBars[x].clientBar != NULL)
++            {
++                IUnknown_GetWindow(fClientBars[x].clientBar, &hwnd);
++                fClientBars[x].hwnd = hwnd;
++            }
++            if (hwnd != NULL)
++                ::ShowWindow(hwnd, SW_HIDE);
++            continue;
++        }
+         if (hwnd == NULL && fClientBars[x].clientBar != NULL)
+         {
+             IUnknown_GetWindow(fClientBars[x].clientBar, &hwnd);
+@@ -1624,6 +1786,15 @@ void CShellBrowser::RepositionBars()
+         if (hwnd != NULL)
+         {
+             RECT toolbarRect = clientRect;
++
++            /* Arctic: the band's own margin at the top goes under the rows above it */
++            if (m_ArcticChrome && x == BIVerticalBaseBar)
++            {
++                HDC hdcScreen = ::GetDC(NULL);
++                toolbarRect.top -= MulDiv(6, GetDeviceCaps(hdcScreen, LOGPIXELSY), 96);
++                ::ReleaseDC(NULL, hdcScreen);
++            }
++
+             if (borderSpace.top != 0)
+             {
+                 toolbarRect.bottom = toolbarRect.top + borderSpace.top;
+diff --git a/dll/win32/browseui/shellfind/CFindFolder.cpp b/dll/win32/browseui/shellfind/CFindFolder.cpp
+index bbfed6a..aa4c728 100644
+--- a/dll/win32/browseui/shellfind/CFindFolder.cpp
++++ b/dll/win32/browseui/shellfind/CFindFolder.cpp
+@@ -613,7 +613,9 @@ DWORD WINAPI CFindFolder::SearchThreadProc(LPVOID lpParameter)
+     CStringW status;
+     status.Format(IDS_SEARCH_FILES_FOUND, uTotalFound);
+     PostUpdate(WM_SEARCH_UPDATE_STATUS, status.GetBuffer(), *data);
+-    ::SendMessageW(data->hwnd, WM_SEARCH_STOP, 0, 0);
++    // Arctic: done, by its number: what it found is still in the queue (a sent
++    // message comes before them), and a newer search goes on
++    ::SendMessageW(data->hwnd, WM_SEARCH_STOP, data->SearchId, 0);
+ 
+     CloseHandle(data->hStopEvent);
+     delete data;
+@@ -742,10 +744,15 @@ LRESULT CFindFolder::StartSearch(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &
+ 
+ LRESULT CFindFolder::StopSearch(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
+ {
++    // Arctic: a search that ended by itself keeps its results; an older one ending stops nothing
++    if (wParam && wParam != m_SearchId)
++        return 0;
+     if (m_hStopEvent)
+     {
+         SetEvent(m_hStopEvent);
+         m_hStopEvent = NULL;
++        if (wParam)
++            return 0;
+ 
+         // Wait for all in-flight messages with data we need to free
+         PostMessageW(WM_SEARCH_STOPPED, 0, 0);
+@@ -1211,6 +1218,11 @@ STDMETHODIMP CFindFolder::MessageSFVCB(UINT uMsg, WPARAM wParam, LPARAM lParam)
+             if (FAILED_UNEXPECTEDLY(hr))
+                 return hr;
+ 
++            // Arctic: not beside the look of Windows 10 or 11, whose search box it is
++            HWND hwndBrowser = NULL;
++            if (SUCCEEDED(m_shellBrowser->GetWindow(&hwndBrowser)) && ::GetPropW(hwndBrowser, L"ArcticExplorerChrome"))
++                return S_OK;
++
+             // Open search bar
+             CComPtr<IWebBrowser2> pWebBrowser2;
+             hr = m_shellBrowser->QueryInterface(IID_PPV_ARG(IWebBrowser2, &pWebBrowser2));

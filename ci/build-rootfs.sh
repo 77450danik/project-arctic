@@ -42,7 +42,9 @@ systemd-hwdb update --root="$RFS" --usr
 useradd -R "$RFS" -u 1000 -U -d /run/nt -M -s /usr/bin/nologin -G video,render,input,audio nt
 
 cp -a "$ROOT/host/rootfs/files/." "$RFS/"
-ln -sf /usr/share/zoneinfo/Europe/Kyiv "$RFS/etc/localtime"
+# the system's zone, which arctic-init points /run/arctic/localtime at and the
+# Date and Time page changes while programs run (glibc follows the file)
+ln -sf /run/arctic/localtime "$RFS/etc/localtime"
 echo arctic > "$RFS/etc/hostname"
 mkdir -p "$RFS/mnt/c" "$RFS/usr/share/arctic"
 
@@ -53,6 +55,15 @@ if [ -d "$OUT/kernel/nvidia-legacy" ]; then
     cp -a "$OUT/kernel/nvidia-legacy" "$RFS/usr/lib/arctic/"
 fi
 cp -a "$OUT/wine/usr/." "$RFS/usr/"
+# Wine's fonts become files of C:\Windows\Fonts (ci/wine-fonts.py, below): its
+# data directory keeps none, or Wine would register them by their Unix paths
+WINE_FONTS="$OUT/wine-fonts"
+rm -rf "$WINE_FONTS"
+mkdir -p "$WINE_FONTS"
+if [ -d "$RFS/usr/share/wine/fonts" ]; then
+    cp -a "$RFS/usr/share/wine/fonts/." "$WINE_FONTS/"
+    rm -f "$RFS"/usr/share/wine/fonts/*
+fi
 
 INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop,hiberfil,tuning}.c)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}" \
@@ -128,6 +139,9 @@ timeout 900 arch-chroot "$RFS" /usr/bin/busybox sh /var/tmp/mkprefix.sh
 
 PFX="$RFS/var/tmp/prefix"
 rm -f "$PFX/dosdevices/z:"
+# Tahoma, Marlett, Symbol, Webdings, Wingdings and the bitmap fonts, under
+# their names (runtime/registry/fonts.reg), without Wine's in their tables
+python3 "$ROOT/ci/wine-fonts.py" "$WINE_FONTS" "$PFX/drive_c/windows/Fonts"
 mkdir -p "$PFX/drive_c/windows/Web/Wallpaper/Arctic"
 # Windows always has LocalLow; certificate revocation caches (cryptnet) and
 # low-integrity programs such as browsers look it up and give up without it
@@ -153,8 +167,15 @@ if [ -d "$REACTOS/Windows" ]; then
         mkdir -p "$PFX/drive_c/windows/resources/themes"
         cp -a "$REACTOS/Windows/Resources/Themes/." "$PFX/drive_c/windows/resources/themes/"
     fi
-    # the font of the visual style
-    cp "$ROOT"/runtime/fonts/*.ttf "$PFX/drive_c/windows/Fonts/"
+    # the icon themes (user32's Arctic patch, Personalization's Icons)
+    mkdir -p "$PFX/drive_c/windows/resources/icons"
+    cp -a "$ROOT/runtime/icons/." "$PFX/drive_c/windows/resources/icons/"
+    # the fonts of the visual style
+    cp "$ROOT"/runtime/fonts/*.ttf "$ROOT"/runtime/fonts/*.otf "$PFX/drive_c/windows/Fonts/"
+    mkdir -p "$PFX/drive_c/windows/Licenses"
+    cp "$ROOT/runtime/fonts/Inter-OFL.txt" "$PFX/drive_c/windows/Licenses/Inter.txt"
+    # the desktop clock's lines (startui gadgets.c)
+    cp "$ROOT/runtime/fonts/Quicksand-OFL.txt" "$PFX/drive_c/windows/Licenses/Quicksand.txt"
     # Arial, Times New Roman and Courier New, made from Liberation: Chromium
     # draws no text without them (ci/windows-fonts.py)
     python3 "$ROOT/ci/windows-fonts.py" /usr/share/fonts/liberation "$PFX/drive_c/windows/Fonts"
@@ -196,6 +217,11 @@ while read -r name url sum; do
     find "$GFX/$name" \( -path '*/x32/*.dll' -o -path '*/x86/*.dll' \) -exec cp {} "$PFX/drive_c/windows/syswow64/" \;
 done < "$ROOT/runtime/manifest.txt"
 rm -rf "$GFX"
+# Direct3D 12: vkd3d-proton built with Arctic's patches (ci/build-vkd3d-proton.sh)
+VKD3D="$OUT/vkd3d-proton"
+[ -f "$VKD3D/x64/d3d12core.dll" ] || { echo "no $VKD3D: run ci/build-vkd3d-proton.sh first"; exit 1; }
+cp "$VKD3D"/x64/*.dll "$PFX/drive_c/windows/system32/"
+cp "$VKD3D"/x86/*.dll "$PFX/drive_c/windows/syswow64/"
 ls -l "$PFX"/drive_c/windows/system32/{d3d9,d3d11,dxgi,d3d12,d3d12core,nvapi64}.dll
 cp "$RFS"/usr/lib/nvidia/wine/*.dll "$PFX/drive_c/windows/system32/" 2>/dev/null || true
 

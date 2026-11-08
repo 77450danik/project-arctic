@@ -65,6 +65,7 @@
 #define LINE_ALPHA      0x26
 
 #define TIMER_CARET     1
+#define TIMER_SMOOTH    2
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
@@ -91,6 +92,8 @@ static UINT home_count, pinned_count;
 static struct item **list;       /* All programs or the search results */
 static UINT list_count;
 static int scroll;               /* rows of the list scrolled away */
+static struct smooth_scroll smooth;
+static int list_offset;          /* how much lower the rows are drawn, while painting */
 static struct target hot, pressed, focus;
 static BOOL focus_shown, caret_on, in_popup;
 static HFONT font_item, font_bold, font_header;
@@ -170,10 +173,13 @@ static BOOL left_item_rect( int index, RECT *rect )
     if (mode == MODE_HOME) y = home_y( index );
     else
     {
-        if (index < scroll || index >= scroll + visible_rows()) return FALSE;
-        y = area.top + (index - scroll) * ROW_SMALL;
+        y = area.top + (index - scroll) * ROW_SMALL + list_offset;
+        /* on its way a row can stand half out of the list: the clip cuts it */
+        if (list_offset ? y + ROW_SMALL <= area.top || y >= area.bottom :
+                          index < scroll || index >= scroll + visible_rows())
+            return FALSE;
     }
-    if (y + left_row() > area.bottom) return FALSE;
+    if (!list_offset && y + left_row() > area.bottom) return FALSE;
     SetRect( rect, px( 4 ), y, LEFT_WIDTH - px( 4 ), y + left_row() );
     return TRUE;
 }
@@ -381,7 +387,8 @@ static void paint_left( HDC hdc )
     if (mode != MODE_HOME && left_count() > visible_rows())
     {
         int height = area.bottom - area.top, thumb = max( px( 20 ), height * visible_rows() / left_count() );
-        int top = area.top + (height - thumb) * scroll / max( 1, left_count() - visible_rows() );
+        int range = max( 1, left_count() - visible_rows() ) * ROW_SMALL;
+        int top = area.top + (height - thumb) * max( 0, min( scroll * ROW_SMALL - smooth_scroll_offset( &smooth ), range ) ) / range;
 
         SetRect( &rect, LEFT_WIDTH - px( 4 ), top, LEFT_WIDTH - px( 2 ), top + thumb );
         fill_alpha( hdc, &rect, pal.ink, 0x66 );
@@ -795,6 +802,7 @@ static void scroll_by( int rows )
     int new_scroll = max( 0, min( scroll + rows, max_scroll ) );
 
     if (mode == MODE_HOME || new_scroll == scroll) return;
+    smooth_scroll_add( &smooth, menu, TIMER_SMOOTH, (new_scroll - scroll) * ROW_SMALL, list_area().bottom - list_area().top );
     scroll = new_scroll;
     InvalidateRect( menu, NULL, FALSE );
 }
@@ -986,6 +994,12 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
 
     case WM_TIMER:
+        if (wparam == TIMER_SMOOTH)
+        {
+            smooth_scroll_step( &smooth, hwnd, TIMER_SMOOTH );
+            InvalidateRect( hwnd, NULL, FALSE );
+            return 0;
+        }
         if (wparam == TIMER_CARET && search[0])
         {
             RECT box = search_rect();
@@ -1054,6 +1068,7 @@ void menu_hide(void)
 {
     if (!menu_visible()) return;
     KillTimer( menu, TIMER_CARET );
+    smooth_scroll_stop( &smooth, menu, TIMER_SMOOTH );
     avatar_hide();
     ShowWindow( menu, SW_HIDE );
     hidden_at = GetTickCount();

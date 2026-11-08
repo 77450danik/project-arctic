@@ -23,15 +23,15 @@
 #define INDENT         22
 #define CHEVRON        16
 
-static const COLORREF clr_select      = RGB(204, 232, 255);
-static const COLORREF clr_select_edge = RGB(153, 209, 255);
-static const COLORREF clr_hover       = RGB(229, 243, 255);
-static const COLORREF clr_group       = RGB(30, 66, 150);
-static const COLORREF clr_header_line = RGB(229, 229, 229);
-static const COLORREF clr_header_text = RGB(76, 96, 122);
+#define clr_select      TM_SELECTED
+#define clr_select_edge (tm_dark() ? RGB(0x5a, 0x5a, 0x5a) : RGB(153, 209, 255))
+#define clr_hover       (tm_dark() ? RGB(0x2d, 0x2d, 0x2d) : RGB(229, 243, 255))
+#define clr_group       (tm_dark() ? RGB(0x99, 0xc9, 0xff) : RGB(30, 66, 150))
+#define clr_header_line TM_LINE
+#define clr_header_text (tm_dark() ? RGB(0xc8, 0xd2, 0xdc) : RGB(76, 96, 122))
 
 /* the heat of a cell: pale yellow at nothing, orange at full */
-static COLORREF heat_color( double t )
+static COLORREF heat_color_light( double t )
 {
     static const struct { double at; BYTE r, g, b; } stops[] =
     {
@@ -51,6 +51,18 @@ static COLORREF heat_color( double t )
     return RGB( stops[i - 1].r + (stops[i].r - stops[i - 1].r) * f,
                 stops[i - 1].g + (stops[i].g - stops[i - 1].g) * f,
                 stops[i - 1].b + (stops[i].b - stops[i - 1].b) * f );
+}
+
+/* ... and in the dark mode, the same orange over the dark page */
+static COLORREF heat_color( double t )
+{
+    COLORREF c = heat_color_light( t ), page = RGB(0x26, 0x26, 0x26);
+    double k = 0.15 + 0.45 * (t < 0 ? 0 : t > 1 ? 1 : t);
+
+    if (!tm_dark()) return c;
+    return RGB( GetRValue( page ) + (GetRValue( c ) - GetRValue( page )) * k,
+                GetGValue( page ) + (GetGValue( c ) - GetGValue( page )) * k,
+                GetBValue( page ) + (GetBValue( c ) - GetBValue( page )) * k );
 }
 
 static int row_height(void) { return scale( ROW_HEIGHT ); }
@@ -291,13 +303,13 @@ static void paint_rows( struct grid *g, HDC hdc, const RECT *client, int hover )
                 FillRect( hdc, &hc, b );
                 DeleteObject( b );
             }
-            SetTextColor( hdc, RGB(0, 0, 0) );
+            SetTextColor( hdc, TM_TEXT );
             if (c == 0)
             {
                 int ix = cell.left + scale( PAD ) + row->indent * scale( INDENT );
                 if (row->expandable)
                     draw_chevron( hdc, ix + scale( CHEVRON ) / 2, (rr.top + rr.bottom) / 2, scale( CHEVRON ),
-                                  row->expanded, RGB(80, 80, 80) );
+                                  row->expanded, tm_dark() ? RGB(0xc0, 0xc0, 0xc0) : RGB(80, 80, 80) );
                 if (g->tree) ix += scale( CHEVRON ) + scale( 2 );
                 if (row->icon >= 0)
                     ImageList_Draw( small_icons, row->icon, hdc, ix, (rr.top + rr.bottom - icon) / 2, ILD_TRANSPARENT );
@@ -326,7 +338,7 @@ static void paint( struct grid *g )
     mem = CreateCompatibleDC( hdc );
     bmp = CreateCompatibleBitmap( hdc, max( 1, rc.right ), max( 1, rc.bottom ) );
     oldbmp = SelectObject( mem, bmp );
-    FillRect( mem, &rc, GetStockObject( WHITE_BRUSH ) );
+    FillRect( mem, &rc, GetSysColorBrush( COLOR_WINDOW ) );
     paint_rows( g, mem, &rc, hover_row );
     BitBlt( hdc, 0, header_height( g ), rc.right, rc.bottom - header_height( g ), mem, 0, header_height( g ), SRCCOPY );
     SelectObject( mem, oldbmp );
@@ -345,7 +357,7 @@ static void draw_header_item( struct grid *g, DRAWITEMSTRUCT *di )
     HPEN pen = CreatePen( PS_SOLID, 1, clr_header_line ), old = SelectObject( hdc, pen );
     UINT align = g->cols[c].right ? DT_RIGHT : DT_LEFT;
 
-    FillRect( hdc, &rc, GetStockObject( WHITE_BRUSH ) );
+    FillRect( hdc, &rc, GetSysColorBrush( COLOR_WINDOW ) );
     MoveToEx( hdc, rc.right - 1, rc.top, NULL );
     LineTo( hdc, rc.right - 1, rc.bottom );
     MoveToEx( hdc, rc.left, rc.bottom - 1, NULL );
@@ -377,7 +389,7 @@ static void draw_header_item( struct grid *g, DRAWITEMSTRUCT *di )
         if (g->cols[c].total[0])
         {
             SelectObject( hdc, title_font );
-            SetTextColor( hdc, RGB(0, 0, 0) );
+            SetTextColor( hdc, TM_TEXT );
             DrawTextW( hdc, g->cols[c].total, -1, &top, align | DT_SINGLELINE | DT_BOTTOM | DT_NOPREFIX );
         }
         tr.top = rc.top + scale( 28 );

@@ -1,0 +1,447 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] shell32: The known folders of Vista and later.
+
+The table stopped at what Windows XP has, so Downloads, LocalLow, Saved
+Games and the rest were not found, and a browser fell back to
+Documents\Downloads. Music, Pictures, Videos and Downloads are in the
+profile as since Vista, and what Public holds is under %PUBLIC%.
+---
+diff --git a/dll/win32/shell32/wine/shellpath.c b/dll/win32/shell32/wine/shellpath.c
+index 2700d5d..289e3e5 100644
+--- a/dll/win32/shell32/wine/shellpath.c
++++ b/dll/win32/shell32/wine/shellpath.c
+@@ -59,51 +59,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(shell);
+ static const BOOL is_win64 = sizeof(void *) > sizeof(int);
+ 
+ /* FIXME: Remove this */
+-typedef enum _NT_PRODUCT_TYPE
+-{
+-    NtProductWinNt = 1,
+-    NtProductLanManNt,
+-    NtProductServer
+-} NT_PRODUCT_TYPE, *PNT_PRODUCT_TYPE;
+-
+-/* FIXME: We cannot refresh the RtlGetNtProductType value before reboot. */
+-static BOOL
+-DoGetProductType(PNT_PRODUCT_TYPE ProductType)
+-{
+-    HKEY hKey;
+-    LONG error;
+-    WCHAR szValue[9];
+-    DWORD cbValue;
+-    static DWORD s_dwProductType = 0;
+-
+-    if (s_dwProductType != 0)
+-    {
+-        *ProductType = s_dwProductType;
+-        return TRUE;
+-    }
+-
+-    *ProductType = NtProductServer;
+-
+-    error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\ProductOptions", 0, KEY_READ, &hKey);
+-    if (error)
+-        return FALSE;
+-
+-    cbValue = sizeof(szValue);
+-    error = RegGetValueW(hKey, NULL, L"ProductType", RRF_RT_REG_SZ, NULL, (PVOID)szValue, &cbValue);
+-    if (!error)
+-    {
+-        if (lstrcmpW(szValue, L"WinNT") == 0)
+-            *ProductType = NtProductWinNt;
+-        else if (lstrcmpW(szValue, L"LanmanNT") == 0)
+-            *ProductType = NtProductLanManNt;
+-    }
+-
+-    s_dwProductType = *ProductType;
+-
+-    RegCloseKey(hKey);
+-    return TRUE;
+-}
+-
+ BOOL APIENTRY IsRemovableDrive(DWORD iDrive)
+ {
+     WCHAR szRoot[] = L"C:\\";
+@@ -1201,7 +1156,8 @@ typedef enum _CSIDL_Type {
+     CSIDL_Type_WindowsPath,
+     CSIDL_Type_SystemPath,
+     CSIDL_Type_SystemX86Path,
+-    CSIDL_Type_ProgramData
++    CSIDL_Type_ProgramData,
++    CSIDL_Type_Public       /* Arctic: under %PUBLIC%, as in Vista and later */
+ } CSIDL_Type;
+ 
+ /* Cannot use #if _WIN32_WINNT >= 0x0600 because _WIN32_WINNT == 0x0600 here. */
+@@ -1223,6 +1179,26 @@ typedef struct
+     INT        nShell32IconIndex;
+ } CSIDL_DATA;
+ 
++/* Arctic: known folders of Windows 8 and 10 the SDK's header does not have */
++static const GUID arctic_FOLDERID_Screenshots =
++    { 0xb7bede81, 0xdf94, 0x4682, { 0xa7, 0xd8, 0x57, 0xa5, 0x26, 0x20, 0xb8, 0x6f } };
++static const GUID arctic_FOLDERID_CameraRoll =
++    { 0xab5fb87b, 0x7ce2, 0x4f83, { 0x91, 0x5d, 0x55, 0x08, 0x46, 0xc9, 0x53, 0x7b } };
++static const GUID arctic_FOLDERID_SavedPictures =
++    { 0x3b193882, 0xd3ad, 0x4eab, { 0x96, 0x5a, 0x69, 0x82, 0x9d, 0x1f, 0xb5, 0x9f } };
++static const GUID arctic_FOLDERID_Objects3D =
++    { 0x31c0dd25, 0x9439, 0x4f12, { 0xbf, 0x41, 0x7f, 0xf4, 0xed, 0xa3, 0x87, 0x22 } };
++static const GUID arctic_FOLDERID_AccountPictures =
++    { 0x008ca0b1, 0x55b4, 0x4c56, { 0xb8, 0xa8, 0x4d, 0xe4, 0xb2, 0x99, 0xd3, 0xbe } };
++static const GUID arctic_FOLDERID_RoamingTiles =
++    { 0x00bcfc5a, 0xed94, 0x4e48, { 0x96, 0xa1, 0x3f, 0x62, 0x17, 0xf2, 0x19, 0x90 } };
++static const GUID arctic_FOLDERID_RoamedTileImages =
++    { 0xaaa8d5a5, 0xf1d6, 0x4259, { 0xba, 0xa8, 0x78, 0xe7, 0xef, 0x60, 0x83, 0x5e } };
++static const GUID arctic_FOLDERID_ApplicationShortcuts =
++    { 0xa3918781, 0xe5f2, 0x4890, { 0xb3, 0xd9, 0xa7, 0xe5, 0x43, 0x32, 0x32, 0x8c } };
++static const GUID arctic_FOLDERID_ResourceDir =
++    { 0x8ad10c31, 0x2adb, 0x4296, { 0xa8, 0xf7, 0xe4, 0x70, 0x12, 0x32, 0xc9, 0x72 } };
++
+ static const CSIDL_DATA CSIDL_Data[] =
+ {
+     { /* 0x00 - CSIDL_DESKTOP */
+@@ -1320,7 +1296,7 @@ static const CSIDL_DATA CSIDL_Data[] =
+         CSIDL_Type_User,
+ #endif
+         L"My Music",
+-        MAKEINTRESOURCEW(IDS_MYMUSIC),
++        L"Music",
+         -IDI_SHELL_MY_MUSIC
+     },
+     { /* 0x0e - CSIDL_MYVIDEO */
+@@ -1331,7 +1307,7 @@ static const CSIDL_DATA CSIDL_Data[] =
+         CSIDL_Type_User,
+ #endif
+         L"My Video",
+-        MAKEINTRESOURCEW(IDS_MYVIDEO),
++        L"Videos",
+         -IDI_SHELL_MY_MOVIES
+     },
+     { /* 0x0f - unassigned */
+@@ -1499,7 +1475,7 @@ static const CSIDL_DATA CSIDL_Data[] =
+         CSIDL_Type_User,
+ #endif
+         L"My Pictures",
+-        MAKEINTRESOURCEW(IDS_MYPICTURES),
++        L"Pictures",
+         -IDI_SHELL_MY_PICTURES
+     },
+     { /* 0x28 - CSIDL_PROFILE */
+@@ -1649,8 +1625,7 @@ static const CSIDL_DATA CSIDL_Data[] =
+         NULL,
+         NULL
+     },
+-/* Cannot use #if _WIN32_WINNT >= 0x0600 because _WIN32_WINNT == 0x0600 here. */
+-#ifndef __REACTOS__
++/* Arctic: the known folders of Vista and later, which ReactOS leaves out */
+     { /* 0x3f */
+         &FOLDERID_AddNewPrograms,
+         CSIDL_Type_Disallowed,
+@@ -1717,9 +1692,9 @@ static const CSIDL_DATA CSIDL_Data[] =
+     },
+     { /* 0x49 */
+         &FOLDERID_GameTasks,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Local\\Microsoft\\Windows\\GameExplorer"
+     },
+     { /* 0x4a */
+         &FOLDERID_HomeGroup,
+@@ -1729,15 +1704,15 @@ static const CSIDL_DATA CSIDL_Data[] =
+     },
+     { /* 0x4b */
+         &FOLDERID_ImplicitAppShortcuts,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\ImplicitAppShortcuts"
+     },
+     { /* 0x4c */
+         &FOLDERID_Libraries,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Roaming\\Microsoft\\Windows\\Libraries"
+     },
+     { /* 0x4d - CSIDL_LINKS */
+         &FOLDERID_Links,
+@@ -1783,25 +1758,25 @@ static const CSIDL_DATA CSIDL_Data[] =
+     },
+     { /* 0x54 */
+         &FOLDERID_ProgramFilesX64,
+-        CSIDL_Type_NonExistent,
+-        NULL,
+-        NULL
++        CSIDL_Type_CurrVer,
++        L"ProgramW6432Dir",
++        L"Program Files"
+     },
+     { /* 0x55 */
+         &FOLDERID_ProgramFilesCommonX64,
+-        CSIDL_Type_NonExistent,
+-        NULL,
+-        NULL
++        CSIDL_Type_CurrVer,
++        L"CommonW6432Dir",
++        L"Program Files\\Common Files"
+     },
+     { /* 0x56 */
+         &FOLDERID_Public,
+-        CSIDL_Type_CurrVer, /* FIXME */
++        CSIDL_Type_Public,
+         NULL,
+-        L"Users\\Public"
++        NULL
+     },
+     { /* 0x57 */
+         &FOLDERID_PublicDownloads,
+-        CSIDL_Type_AllUsers,
++        CSIDL_Type_Public,
+         NULL,
+         L"Downloads"
+     },
+@@ -1825,9 +1800,9 @@ static const CSIDL_DATA CSIDL_Data[] =
+     },
+     { /* 0x5b */
+         &FOLDERID_QuickLaunch,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch"
+     },
+     { /* 0x5c */
+         &FOLDERID_RecordedTVLibrary,
+@@ -1837,31 +1812,31 @@ static const CSIDL_DATA CSIDL_Data[] =
+     },
+     { /* 0x5d */
+         &FOLDERID_Ringtones,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Local\\Microsoft\\Windows\\Ringtones"
+     },
+     { /* 0x5e */
+         &FOLDERID_SampleMusic,
+-        CSIDL_Type_AllUsers,
++        CSIDL_Type_Public,
+         NULL,
+         L"Music\\Sample Music"
+     },
+     { /* 0x5f */
+         &FOLDERID_SamplePictures,
+-        CSIDL_Type_AllUsers,
++        CSIDL_Type_Public,
+         NULL,
+         L"Pictures\\Sample Pictures"
+     },
+     { /* 0x60 */
+         &FOLDERID_SamplePlaylists,
+-        CSIDL_Type_AllUsers,
++        CSIDL_Type_Public,
+         NULL,
+         L"Music\\Sample Playlists"
+     },
+     { /* 0x61 */
+         &FOLDERID_SampleVideos,
+-        CSIDL_Type_AllUsers,
++        CSIDL_Type_Public,
+         NULL,
+         L"Videos\\Sample Videos"
+     },
+@@ -1903,9 +1878,9 @@ static const CSIDL_DATA CSIDL_Data[] =
+     },
+     { /* 0x68 */
+         &FOLDERID_SidebarParts,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Local\\Microsoft\\Windows Sidebar\\Gadgets"
+     },
+     { /* 0x69 */
+         &FOLDERID_SyncManagerFolder,
+@@ -1927,9 +1902,9 @@ static const CSIDL_DATA CSIDL_Data[] =
+     },
+     { /* 0x6c */
+         &FOLDERID_UserPinned,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned"
+     },
+     { /* 0x6d */
+         &FOLDERID_UserProfiles,
+@@ -1939,15 +1914,15 @@ static const CSIDL_DATA CSIDL_Data[] =
+     },
+     { /* 0x6e */
+         &FOLDERID_UserProgramFiles,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Local\\Programs"
+     },
+     { /* 0x6f */
+         &FOLDERID_UserProgramFilesCommon,
+-        CSIDL_Type_Disallowed, /* FIXME */
++        CSIDL_Type_User,
+         NULL,
+-        NULL
++        L"AppData\\Local\\Programs\\Common"
+     },
+     { /* 0x70 */
+         &FOLDERID_UsersFiles,
+@@ -1966,8 +1941,61 @@ static const CSIDL_DATA CSIDL_Data[] =
+         CSIDL_Type_Disallowed, /* FIXME */
+         NULL,
+         NULL
++    },
++    { /* 0x73 */
++        &arctic_FOLDERID_Screenshots,
++        CSIDL_Type_User,
++        NULL,
++        L"Pictures\\Screenshots"
++    },
++    { /* 0x74 */
++        &arctic_FOLDERID_CameraRoll,
++        CSIDL_Type_User,
++        NULL,
++        L"Pictures\\Camera Roll"
++    },
++    { /* 0x75 */
++        &arctic_FOLDERID_SavedPictures,
++        CSIDL_Type_User,
++        NULL,
++        L"Pictures\\Saved Pictures"
++    },
++    { /* 0x76 */
++        &arctic_FOLDERID_Objects3D,
++        CSIDL_Type_User,
++        NULL,
++        L"3D Objects"
++    },
++    { /* 0x77 */
++        &arctic_FOLDERID_AccountPictures,
++        CSIDL_Type_User,
++        NULL,
++        L"AppData\\Roaming\\Microsoft\\Windows\\AccountPictures"
++    },
++    { /* 0x78 */
++        &arctic_FOLDERID_RoamingTiles,
++        CSIDL_Type_User,
++        NULL,
++        L"AppData\\Local\\Microsoft\\Windows\\RoamingTiles"
++    },
++    { /* 0x79 */
++        &arctic_FOLDERID_RoamedTileImages,
++        CSIDL_Type_User,
++        NULL,
++        L"AppData\\Local\\Microsoft\\Windows\\RoamedTileImages"
++    },
++    { /* 0x7a */
++        &arctic_FOLDERID_ApplicationShortcuts,
++        CSIDL_Type_User,
++        NULL,
++        L"AppData\\Local\\Microsoft\\Windows\\Application Shortcuts"
++    },
++    { /* 0x7b */
++        &arctic_FOLDERID_ResourceDir,
++        CSIDL_Type_WindowsPath,
++        NULL,
++        L"resources"
+     }
+-#endif
+ };
+ 
+ INT SHGetSpecialFolderID(_In_ LPCWSTR pszName)
+@@ -2149,9 +2177,6 @@ static HRESULT _SHGetDefaultValue(HANDLE hToken, BYTE folder, LPWSTR pszPath)
+ {
+     HRESULT hr;
+     WCHAR resourcePath[MAX_PATH];
+-#ifdef __REACTOS__
+-    NT_PRODUCT_TYPE ProductType;
+-#endif
+ 
+     TRACE("0x%02x,%p\n", folder, pszPath);
+ 
+@@ -2194,22 +2219,12 @@ static HRESULT _SHGetDefaultValue(HANDLE hToken, BYTE folder, LPWSTR pszPath)
+             break;
+ #ifdef __REACTOS__
+         case CSIDL_Type_InMyDocuments:
++            /* Arctic: Music, Pictures, Videos and Downloads are in the
++             * profile, as since Vista, not in Documents as in XP */
+             strcpyW(pszPath, L"%USERPROFILE%");
+-            if (DoGetProductType(&ProductType) && ProductType == NtProductWinNt)
+-            {
+-                if (IS_INTRESOURCE(CSIDL_Data[CSIDL_MYDOCUMENTS].szDefaultPath))
+-                {
+-                    WCHAR szItem[MAX_PATH];
+-                    LoadStringW(shell32_hInstance,
+-                                LOWORD(CSIDL_Data[CSIDL_MYDOCUMENTS].szDefaultPath),
+-                                szItem, ARRAY_SIZE(szItem));
+-                    PathAppendW(pszPath, szItem);
+-                }
+-                else
+-                {
+-                    PathAppendW(pszPath, CSIDL_Data[CSIDL_MYDOCUMENTS].szDefaultPath);
+-                }
+-            }
++            break;
++        case CSIDL_Type_Public:
++            strcpyW(pszPath, L"%PUBLIC%");
+             break;
+ #endif
+         case CSIDL_Type_AllUsers:
+@@ -2860,6 +2875,9 @@ HRESULT WINAPI SHGetFolderPathAndSubDirW(
+         case CSIDL_Type_AllUsers:
+             hr = _SHGetAllUsersProfilePath(dwFlags, folder, szTemp);
+             break;
++        case CSIDL_Type_Public:
++            hr = _SHGetDefaultValue(hToken, folder, szTemp);
++            break;
+         default:
+             FIXME("bogus type %d, please fix\n", type);
+             hr = E_INVALIDARG;
+@@ -3466,3 +3484,22 @@ HRESULT WINAPI SHGetKnownFolderIDList(const KNOWNFOLDERID *rfid, DWORD flags, HA
+         folder |= CSIDL_FLAG_CREATE;
+     return SHGetFolderLocation(NULL, folder, token, 0, pidl);
+ }
++
++/*************************************************************************
++ * SHGetKnownFolderItem           [SHELL32.@]
++ */
++HRESULT WINAPI SHGetKnownFolderItem(const KNOWNFOLDERID *rfid, DWORD flags, HANDLE token, REFIID riid, void **ppv)
++{
++    PIDLIST_ABSOLUTE pidl;
++    HRESULT hr;
++
++    if (!ppv)
++        return E_INVALIDARG;
++    *ppv = NULL;
++    hr = SHGetKnownFolderIDList(rfid, flags, token, &pidl);
++    if (FAILED(hr))
++        return hr;
++    hr = SHCreateItemFromIDList(pidl, riid, ppv);
++    ILFree(pidl);
++    return hr;
++}
+diff --git a/dll/win32/shell32/shell32.spec b/dll/win32/shell32/shell32.spec
+index f115fc6..e0cb0b6 100644
+--- a/dll/win32/shell32/shell32.spec
++++ b/dll/win32/shell32/shell32.spec
+@@ -657,7 +657,7 @@
+ ; Win7+ - These ordinals are higher than any of the ones in win vista
+ @ stdcall -stub -version=0x601+ SHAssocEnumHandlersForProtocolByApplication(wstr ptr ptr)
+ @ stdcall Shell_NotifyIconGetRect(ptr ptr)
+-@ stdcall -stub -version=0x601+ SHGetKnownFolderItem(ptr ptr ptr ptr ptr)
++@ stdcall SHGetKnownFolderItem(ptr long ptr ptr ptr)
+ @ stdcall SHGetItemFromObject(ptr long ptr)
+ @ stdcall -version=0x600+ SHGetItemFromDataObject(ptr long ptr ptr)
+ 

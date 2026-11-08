@@ -88,7 +88,7 @@ struct push
 {
     float proj[4], rect[4], uv[4], clip[4], color[4];
     float radius, opacity, mode, pad;
-    float half_px[2], pad2[2];
+    float half_px[2], key[2];  /* key: keyed above key[1] alone when key[0] is 1 */
 };
 
 struct texture
@@ -1872,6 +1872,12 @@ static void draw_layer( struct surface *s, int x, int y, const struct layer_ctx 
 
     push_init( &pc, ctx->clip, ctx->opacity );
     pc.mode = mode;
+    /* a title bar alone over a backdrop: keyed above this row only */
+    if (ctx->draw->caption && ctx->draw->w && (mode == LAYER_KEYED || mode == LAYER_KEYED_LIGHT))
+    {
+        pc.key[0] = 1;
+        pc.key[1] = (ctx->draw->w->top + (float)ctx->draw->caption) * ctx->xform->sy + ctx->xform->ty;
+    }
     push_rect( &pc, x * ctx->xform->sx + ctx->xform->tx, y * ctx->xform->sy + ctx->xform->ty,
                (x + dw) * ctx->xform->sx + ctx->xform->tx, (y + dh) * ctx->xform->sy + ctx->xform->ty );
     push_uv( &pc, (float)sx0 / s->width, (float)sy0 / s->height,
@@ -2048,10 +2054,11 @@ static void blur_strength( UINT32 strength, int *levels, float *offset )
     else { *levels = 4; *offset = 1.0f + 2.0f * (min( strength, 100 ) - 67) / 33; }
 }
 
-/* what lies behind the window on this monitor, blurred and tinted: acrylic */
+/* what lies behind the window on this monitor, blurred and tinted: acrylic;
+ * behind its title bar alone when it asks for that */
 static void draw_backdrop( const struct window_draw *draw_, int ox, int oy )
 {
-    const struct frect *r = &draw_->shown;
+    struct frect shown = draw_->shown, *r = &shown;
     float tint[4] =
     {
         ((draw_->tint >> 16) & 0xff) / 255.0f, ((draw_->tint >> 8) & 0xff) / 255.0f, (draw_->tint & 0xff) / 255.0f,
@@ -2063,7 +2070,10 @@ static void draw_backdrop( const struct window_draw *draw_, int ox, int oy )
     struct push pc;
     float uv[4], offset;
 
-    blur_strength( draw_->ws && draw_->ws->has_attr ? draw_->ws->attr.blur : 0, &levels, &offset );
+    if (draw_->caption && draw_->w && draw_->w->bottom > draw_->w->top)
+        r->bottom = min( r->bottom, r->top + draw_->caption * (shown.bottom - shown.top) /
+                                             (float)(draw_->w->bottom - draw_->w->top) );
+    blur_strength( draw_->strength, &levels, &offset );
     if (!draw_->blur)
     {
         push_init( &pc, &draw_->clip, draw_->opacity );
@@ -2103,7 +2113,7 @@ static void draw_backdrop( const struct window_draw *draw_, int ox, int oy )
 
     push_init( &pc, &draw_->clip, draw_->opacity );
     push_color( &pc, tint[0], tint[1], tint[2], tint[3] );
-    pc.mode = draw_->ws && draw_->ws->attr.accent == ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND ? 0.02f : 0.0f;
+    pc.mode = draw_->grain ? 0.02f : 0.0f;
     push_rect( &pc, r->left, r->top, r->right, r->bottom );
     push_uv( &pc, (r->left - ox - x0) / width, (r->top - oy - y0) / height,
              (r->right - ox - x0) / width, (r->bottom - oy - y0) / height );
@@ -2115,8 +2125,11 @@ static void draw_thumbnail( const struct thumbnail_draw *t )
     struct window_state *ws = t->source_state;
     struct window_draw draw_;
     const struct window_image *image;
+    struct clip clip;
 
     if (!ws) return;
+    clip.rect = t->dest;
+    clip.radius = t->radius;
     if (t->from_snapshot) image = &ws->snapshot;
     else
     {
@@ -2124,24 +2137,35 @@ static void draw_thumbnail( const struct thumbnail_draw *t )
         if (!render_window_image( &draw_, &ws->scratch, true )) return;
         image = &ws->scratch;
     }
-    draw_image( image, &t->dest, &t->source_rect, NULL, t->opacity );
+    draw_image( image, &t->dest, &t->source_rect, t->radius > 0 ? &clip : NULL, t->opacity );
 }
 
-#define SHADOW_OFFSET 10.0f   /* how far the wide shadow drops */
-#define SHADOW_SIGMA  16.0f
-#define SHADOW_SPREAD 64.0f   /* how far around the window it reaches */
+/* the shadows of the two visual styles: how far the wide one drops, its
+ * sigma, its strength and the close one's, how far around it all reaches */
+static const struct { float offset, sigma, wide, close, spread; } shadow_styles[] =
+{
+    { 3.0f,  7.0f, 0.20f, 0.09f, 28.0f },  /* Windows 10: narrow */
+    { 8.0f, 13.0f, 0.25f, 0.11f, 52.0f },  /* Windows 11: wide and soft */
+};
+static unsigned int shadow_style;
+
+void gpu_set_shadow_style( unsigned int style )
+{
+    shadow_style = style < ARRAY_SIZE(shadow_styles) ? style : 0;
+}
 
 static void draw_shadow( const struct window_draw *draw_ )
 {
     const struct frect *r = &draw_->shown;
+    const float offset = shadow_styles[shadow_style].offset, spread = shadow_styles[shadow_style].spread;
     struct clip clip = draw_->clip;
     struct push pc;
 
     clip.radius = max( clip.radius, 0.0f );
     push_init( &pc, &clip, draw_->opacity );
-    push_color( &pc, SHADOW_OFFSET, SHADOW_SIGMA, 0.30f, 0.14f );
-    push_rect( &pc, r->left - SHADOW_SPREAD, r->top - SHADOW_SPREAD, r->right + SHADOW_SPREAD,
-               r->bottom + SHADOW_SPREAD + SHADOW_OFFSET );
+    push_color( &pc, offset, shadow_styles[shadow_style].sigma, shadow_styles[shadow_style].wide,
+                shadow_styles[shadow_style].close );
+    push_rect( &pc, r->left - spread, r->top - spread, r->right + spread, r->bottom + spread + offset );
     draw( PIPE_SHADOW, NULL, 0, &pc );
 }
 
@@ -2178,7 +2202,7 @@ static void draw_window( const struct window_draw *draw_, int ox, int oy )
 
     if (draw_->from_snapshot)
     {
-        if (ws && ws->snapshot_valid) draw_image( &ws->snapshot, &draw_->shown, NULL, &draw_->clip, draw_->opacity );
+        if (ws && ws->snapshot_valid) draw_image( &ws->snapshot, &draw_->shown, NULL, &draw_->clip, draw_->opacity * draw_->content_alpha );
         if (draw_->live_opacity > 0)
         {
             /* the window as it is now fades in over what it showed before */
@@ -2188,11 +2212,11 @@ static void draw_window( const struct window_draw *draw_, int ox, int oy )
     }
     else if (draw_->as_image && ws && needs_image( draw_ ) && render_window_image( draw_, &ws->scratch, false ))
     {
-        draw_image( &ws->scratch, &draw_->shown, NULL, &draw_->clip, draw_->opacity );
+        draw_image( &ws->scratch, &draw_->shown, NULL, &draw_->clip, draw_->opacity * draw_->content_alpha );
     }
     else
     {
-        struct layer_ctx ctx = { draw_, &draw_->xform, draw_->clip.radius > 0 ? &draw_->clip : NULL, draw_->opacity };
+        struct layer_ctx ctx = { draw_, &draw_->xform, draw_->clip.radius > 0 ? &draw_->clip : NULL, draw_->opacity * draw_->content_alpha };
         scene_surfaces( draw_, draw_tree_callback, &ctx );
     }
     /* black at a fifth: the light grey line of Windows 11 over a white frame */

@@ -1,0 +1,589 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Wed, 4 Nov 2026 12:00:00 +0100
+Subject: [PATCH] uxtheme: Title bars in the mode of Windows, over a backdrop; the dark mode for programs.
+
+The title bars and frames follow the mode of Windows (desk.cpl,
+Personalization; SystemUsesLightTheme), not the visual style's colours,
+which follow the programs' mode: white with black text in the light mode,
+#202020 with white text in the dark one, the Windows 11 caption buttons
+dark or light with them. A program can ask otherwise for its window, as in
+Windows 11 (DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_CAPTION_COLOR,
+DWMWA_TEXT_COLOR, DWMWA_BORDER_COLOR, through dwmapi).
+
+With an effect chosen for them (HKCU\Software\Arctic\Caption), a
+top-level window's title bar is drawn on the colour dwm.exe keys, and
+DWMWA_ARCTIC_CAPTION tells dwm.exe what goes behind it: acrylic, a blur or
+a see-through tint, its colour, opacity and blur. WM_SETTINGCHANGE
+"ImmersiveColorSet" reads it all anew and redraws the frames.
+
+What programs ask of the dark mode by ordinal, as Notepad++ and Qt do:
+ShouldSystemUseDarkMode, ShouldAppsUseDarkMode, SetPreferredAppMode,
+AllowDarkModeForWindow and the rest, from the same settings.
+
+A property page drew its background, the visual style's tab texture, with
+the theme opened for it before the style changed: it stayed light in the
+dark scheme. That theme is opened anew on WM_THEMECHANGED.
+---
+--- a/dll/win32/uxtheme/nonclient.c
++++ b/dll/win32/uxtheme/nonclient.c
+@@ -8,6 +8,8 @@
+ 
+ #include "uxthemep.h"
+ 
++#include <winreg.h>
++
+ #define NC_PREVIEW_MSGBOX_HALF_WIDTH 75
+ #define NC_PREVIEW_MSGBOX_OFFSET_X -29
+ #define NC_PREVIEW_MSGBOX_OFFSET_Y 71
+@@ -85,6 +87,247 @@
+     return hIcon;
+ }
+ 
++/*
++ * Arctic: the title bars and frames follow the mode of Windows (desk.cpl,
++ * Personalization; SystemUsesLightTheme of HKCU\Software\Microsoft\Windows\
++ * CurrentVersion\Themes\Personalize), not the visual style's colours, which
++ * follow the programs' mode: white with black text in the light mode,
++ * #202020 with white text in the dark one. A program can ask for its window
++ * otherwise, as in Windows 11, through dwmapi (Wine patch "dwmapi-a-title-
++ * bar-over-a-backdrop", window properties Arctic.*): the dark or the light
++ * mode (DWMWA_USE_IMMERSIVE_DARK_MODE), the colours of the title bar, its
++ * text and the frame (DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
++ * DWMWA_BORDER_COLOR).
++ *
++ * With an effect chosen for them (HKCU\Software\Arctic\Caption: Effect;
++ * Color, Opacity, Blur, Light), the title bar of a top-level window is drawn
++ * on the colour dwm.exe keys, black or white, and DWMWA_ARCTIC_CAPTION tells
++ * dwm.exe what goes behind it: acrylic, a blur or a see-through tint. Its
++ * tint is the mode's, as Windows 11's Mica, unless a colour is chosen. A
++ * solid colour is drawn here. desk.cpl says WM_SETTINGCHANGE
++ * "ImmersiveColorSet" when any of it changes.
++ */
++
++#define DWMWA_ARCTIC_CAPTION    0x1005
++#define CAPTION_ACCENT_SOLID    1   /* ARCTIC_ACCENT_ENABLE_GRADIENT */
++#define CAPTION_ACCENT_ACRYLIC  4   /* ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND */
++#define CAPTION_WHITE           RGB(0xff, 0xff, 0xff)
++#define CAPTION_DARK            RGB(0x20, 0x20, 0x20)
++#define CAPTION_LIGHT_TINT      RGB(0xf3, 0xf3, 0xf3)
++
++typedef struct
++{
++    BOOL     Loaded;
++    BOOL     SystemLight;   /* the mode of Windows */
++    BOOL     AppsLight;     /* the programs' */
++    DWORD    Effect;        /* 0: none, else ARCTIC_ACCENT_* */
++    BOOL     HasColor;      /* a tint of its own, not the mode's */
++    COLORREF Color;
++    DWORD    Opacity;       /* percent */
++    DWORD    Blur;          /* 1-100 */
++    BOOL     HasLight;      /* text chosen, or for the colour of its own */
++    BOOL     Light;         /* drawn dark on light over the effect */
++} CAPTION_LOOK;
++
++typedef struct
++{
++    BOOL     Keyed;         /* drawn on the colour dwm.exe keys */
++    BOOL     Light;
++    COLORREF Tint;
++    DWORD    Opacity;
++    COLORREF Back, Frame, Text, TextInactive, Glyph, GlyphInactive, GlyphDisabled;
++} CAPTION_COLORS;
++
++static CAPTION_LOOK CaptionLook;
++
++static BOOL ReadCaptionDword(HKEY hKey, LPCWSTR pszName, DWORD *pdwValue)
++{
++    DWORD dwValue, dwSize = sizeof(dwValue), dwType;
++
++    if (!hKey || RegQueryValueExW(hKey, pszName, NULL, &dwType, (BYTE *)&dwValue, &dwSize) || dwType != REG_DWORD)
++        return FALSE;
++    *pdwValue = dwValue;
++    return TRUE;
++}
++
++static const CAPTION_LOOK *GetCaptionLook(void)
++{
++    CAPTION_LOOK look;
++    DWORD dwValue;
++    HKEY hKey = NULL;
++
++    if (CaptionLook.Loaded)
++        return &CaptionLook;
++    RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0,
++                  KEY_READ, &hKey);
++    /* Windows 10's default: Windows dark, programs light */
++    look.SystemLight = ReadCaptionDword(hKey, L"SystemUsesLightTheme", &dwValue) && dwValue;
++    look.AppsLight = !ReadCaptionDword(hKey, L"AppsUseLightTheme", &dwValue) || dwValue;
++    if (hKey)
++        RegCloseKey(hKey);
++    hKey = NULL;
++    RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Arctic\\Caption", 0, KEY_READ, &hKey);
++    look.Effect = ReadCaptionDword(hKey, L"Effect", &dwValue) ? min(dwValue, CAPTION_ACCENT_ACRYLIC)
++                                                               : CAPTION_ACCENT_ACRYLIC;
++    look.HasColor = ReadCaptionDword(hKey, L"Color", &dwValue);
++    look.Color = look.HasColor ? dwValue & 0xffffff : 0;
++    look.Opacity = ReadCaptionDword(hKey, L"Opacity", &dwValue) ? min(dwValue, 100) : 75;
++    look.Blur = ReadCaptionDword(hKey, L"Blur", &dwValue) ? max(1, min(dwValue, 100)) : 60;
++    look.HasLight = ReadCaptionDword(hKey, L"Light", &dwValue);
++    look.Light = look.HasLight && dwValue;
++    if (hKey)
++        RegCloseKey(hKey);
++    look.Loaded = TRUE;
++    CaptionLook = look;
++    return &CaptionLook;
++}
++
++void UXTHEME_ResetCaptionLook(void)
++{
++    CaptionLook.Loaded = FALSE;
++}
++
++/* only the title bar of a top-level window that draws its own client area
++ * under it can be keyed: the rest of the window is not */
++static BOOL CanKeyCaption(PDRAW_CONTEXT pcontext)
++{
++    if (pcontext->wi.dwStyle & (WS_CHILD | WS_MINIMIZE))
++        return FALSE;
++    if (pcontext->wi.dwExStyle & WS_EX_LAYERED)
++        return FALSE;
++    /* not the hidden window of a preview (DrawNCPreview) */
++    if (!IsWindowVisible(pcontext->hWnd))
++        return FALSE;
++    if ((pcontext->wi.dwStyle & WS_CAPTION) != WS_CAPTION)
++        return FALSE;
++    return pcontext->wi.rcClient.top - pcontext->wi.rcWindow.top >= pcontext->CaptionHeight;
++}
++
++static COLORREF MixColor(COLORREF a, COLORREF b, DWORD percent)
++{
++    return RGB((GetRValue(a) * (100 - percent) + GetRValue(b) * percent) / 100,
++               (GetGValue(a) * (100 - percent) + GetGValue(b) * percent) / 100,
++               (GetBValue(a) * (100 - percent) + GetBValue(b) * percent) / 100);
++}
++
++static BOOL IsLightColor(COLORREF color)
++{
++    return GetRValue(color) * 299 + GetGValue(color) * 587 + GetBValue(color) * 114 > 150 * 1000;
++}
++
++/* a colour a program asked for (dwmapi): 0x01000000 with it, none: 0 */
++static ULONG_PTR WindowColor(HWND hWnd, LPCWSTR pszName)
++{
++    return (ULONG_PTR)GetPropW(hWnd, pszName);
++}
++
++static void GetCaptionColors(PDRAW_CONTEXT pcontext, CAPTION_COLORS *colors)
++{
++    const CAPTION_LOOK *look = GetCaptionLook();
++    BOOL top = !(pcontext->wi.dwStyle & WS_CHILD);
++    ULONG_PTR mode = (ULONG_PTR)GetPropW(pcontext->hWnd, L"Arctic.DarkMode");
++    ULONG_PTR caption = WindowColor(pcontext->hWnd, L"Arctic.CaptionColor");
++    ULONG_PTR text = WindowColor(pcontext->hWnd, L"Arctic.TextColor");
++    ULONG_PTR border = WindowColor(pcontext->hWnd, L"Arctic.BorderColor");
++    /* DWMWA_USE_IMMERSIVE_DARK_MODE: 1 light, 2 dark */
++    BOOL modeLight = mode ? mode == 1 : look->SystemLight;
++
++    colors->Keyed = FALSE;
++    colors->Tint = look->HasColor ? look->Color : modeLight ? CAPTION_LIGHT_TINT : CAPTION_DARK;
++    colors->Opacity = look->Opacity;
++    if (caption)
++    {
++        colors->Back = colors->Frame = (COLORREF)(caption & 0xffffff);
++        colors->Light = IsLightColor(colors->Back);
++    }
++    else if (top && look->Effect && look->Effect != CAPTION_ACCENT_SOLID && CanKeyCaption(pcontext))
++    {
++        colors->Keyed = TRUE;
++        colors->Light = look->HasLight ? look->Light : modeLight;
++        colors->Back = colors->Light ? CAPTION_WHITE : RGB(0, 0, 0);
++        /* the frame: the tint over the mode's colour */
++        colors->Frame = MixColor(modeLight ? CAPTION_WHITE : CAPTION_DARK, colors->Tint, colors->Opacity);
++    }
++    else if (top && look->Effect == CAPTION_ACCENT_SOLID)
++    {
++        colors->Light = look->HasLight ? look->Light : modeLight;
++        colors->Back = colors->Frame = colors->Tint;
++    }
++    else
++    {
++        colors->Light = modeLight;
++        colors->Back = colors->Frame = modeLight ? CAPTION_WHITE : CAPTION_DARK;
++    }
++    if (colors->Light)
++    {
++        colors->Text = RGB(0, 0, 0);
++        colors->TextInactive = RGB(0x8c, 0x8c, 0x8c);
++        colors->Glyph = RGB(0x1a, 0x1a, 0x1a);
++        colors->GlyphInactive = RGB(0xa3, 0xa3, 0xa3);
++        colors->GlyphDisabled = RGB(0xc8, 0xc8, 0xc8);
++    }
++    else
++    {
++        colors->Text = RGB(0xff, 0xff, 0xff);
++        colors->TextInactive = RGB(0x99, 0x99, 0x99);
++        colors->Glyph = RGB(0xff, 0xff, 0xff);
++        colors->GlyphInactive = RGB(0x88, 0x88, 0x88);
++        colors->GlyphDisabled = RGB(0x5c, 0x5c, 0x5c);
++    }
++    if (text)
++    {
++        colors->Text = colors->Glyph = (COLORREF)(text & 0xffffff);
++        colors->TextInactive = colors->GlyphInactive = MixColor(colors->Back, colors->Text, 60);
++    }
++    if (border)
++        colors->Frame = (COLORREF)(border & 0xffffff);
++}
++
++static void FillSolid(HDC hdc, const RECT *prc, COLORREF color)
++{
++    COLORREF old = SetBkColor(hdc, color);
++
++    ExtTextOutW(hdc, 0, 0, ETO_OPAQUE, prc, NULL, 0, NULL);
++    SetBkColor(hdc, old);
++}
++
++typedef HRESULT (WINAPI *PDWMSETWINDOWATTRIBUTE)(HWND, DWORD, LPCVOID, DWORD);
++
++/* tells dwm.exe what goes behind the title bar, when that changed */
++static void SetCaptionBackdrop(PDRAW_CONTEXT pcontext, const CAPTION_COLORS *colors)
++{
++    static PDWMSETWINDOWATTRIBUTE pDwmSetWindowAttribute;
++    static BOOL bLooked;
++    const CAPTION_LOOK *look = GetCaptionLook();
++    PWND_DATA pwndData = ThemeGetWndData(pcontext->hWnd);
++    UINT caption[5] = {0};   /* struct arctic_caption of wine/arctic_dwm.h */
++
++    if (pwndData == NULL)
++        return;
++    if (colors && colors->Keyed)
++    {
++        caption[0] = pcontext->CaptionHeight;
++        caption[1] = look->Effect;
++        caption[2] = ((colors->Opacity * 255 / 100) << 24) | (GetBValue(colors->Tint) << 16) |
++                     (GetGValue(colors->Tint) << 8) | GetRValue(colors->Tint);
++        caption[3] = look->Blur;
++        caption[4] = colors->Light;
++    }
++    if (!memcmp(caption, pwndData->CaptionBackdrop, sizeof(caption)))
++        return;
++    if (!bLooked)
++    {
++        HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
++
++        if (hDwm)
++            pDwmSetWindowAttribute = (PDWMSETWINDOWATTRIBUTE)GetProcAddress(hDwm, "DwmSetWindowAttribute");
++        bLooked = TRUE;
++    }
++    if (pDwmSetWindowAttribute &&
++        SUCCEEDED(pDwmSetWindowAttribute(pcontext->hWnd, DWMWA_ARCTIC_CAPTION, caption, sizeof(caption))))
++        memcpy(pwndData->CaptionBackdrop, caption, sizeof(caption));
++}
++
+ HRESULT WINAPI ThemeDrawCaptionText(PDRAW_CONTEXT pcontext, RECT* pRect, int iPartId, int iStateId)
+ {
+     HRESULT hr;
+@@ -93,6 +336,8 @@
+     LOGFONTW logfont;
+     COLORREF textColor;
+     COLORREF oldTextColor;
++    CAPTION_COLORS colors;
++    int oldBkMode;
+     int align = CA_LEFT;
+     int drawStyles = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+ 
+@@ -122,7 +367,9 @@
+     if (hFont)
+         oldFont = SelectObject(pcontext->hDC, hFont);
+ 
+-    textColor = GetThemeSysColor(pcontext->theme, pcontext->Active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT);
++    /* Arctic: the colour of the mode of Windows, not the visual style's */
++    GetCaptionColors(pcontext, &colors);
++    textColor = pcontext->Active ? colors.Text : colors.TextInactive;
+ 
+     GetThemeEnumValue(pcontext->theme, iPartId, iStateId, TMT_CONTENTALIGNMENT, &align);
+     if (align == CA_CENTER)
+@@ -131,15 +378,9 @@
+         drawStyles |= DT_RIGHT;
+ 
+     oldTextColor = SetTextColor(pcontext->hDC, textColor);
+-    DrawThemeText(pcontext->theme,
+-                  pcontext->hDC,
+-                  iPartId,
+-                  iStateId,
+-                  pszText,
+-                  len - 1,
+-                  drawStyles,
+-                  0,
+-                  pRect);
++    oldBkMode = SetBkMode(pcontext->hDC, TRANSPARENT);
++    DrawTextW(pcontext->hDC, pszText, len - 1, pRect, drawStyles | DT_NOPREFIX);
++    SetBkMode(pcontext->hDC, oldBkMode);
+     SetTextColor(pcontext->hDC, oldTextColor);
+ 
+     if (hFont)
+@@ -361,15 +602,12 @@
+     BOOL bHot = iStateId == BUTTON_HOT || iStateId == BUTTON_INACTIVE_HOT;
+     BOOL bPressed = iStateId == BUTTON_PRESSED || iStateId == BUTTON_INACTIVE_PRESSED;
+     BOOL bDisabled = iStateId == BUTTON_DISABLED || iStateId == BUTTON_INACTIVE_DISABLED;
+-    RECT rcCaption;
+-    int iCaptionPart = pcontext->wi.dwStyle & WS_MAXIMIZE ? WP_MAXCAPTION : WP_CAPTION;
++    CAPTION_COLORS colors;
+     COLORREF glyph;
+ 
+     /* the caption under it, as it would be without the button */
+-    SetRect(&rcCaption, 0, 0, pcontext->wi.rcWindow.right - pcontext->wi.rcWindow.left, pcontext->CaptionHeight);
+-    FillRect(pcontext->hDC, prc, GetSysColorBrush(pcontext->Active ? COLOR_ACTIVECAPTION : COLOR_INACTIVECAPTION));
+-    DrawThemeBackground(pcontext->theme, pcontext->hDC, iCaptionPart, pcontext->Active ? FS_ACTIVE : FS_INACTIVE,
+-                        &rcCaption, prc);
++    GetCaptionColors(pcontext, &colors);
++    FillSolid(pcontext->hDC, prc, colors.Back);
+ 
+     if (bClose && bHot)
+     {
+@@ -387,16 +625,19 @@
+     }
+     else
+     {
++        /* darker in the light mode, lighter in the dark one */
++        COLORREF ink = colors.Light ? RGB(0, 0, 0) : RGB(0xff, 0xff, 0xff);
++
+         if (bHot)
+-            FillAlpha(pcontext->hDC, prc, RGB(0, 0, 0), 0x17);
++            FillAlpha(pcontext->hDC, prc, ink, colors.Light ? 0x17 : 0x1a);
+         else if (bPressed)
+-            FillAlpha(pcontext->hDC, prc, RGB(0, 0, 0), 0x0f);
++            FillAlpha(pcontext->hDC, prc, ink, colors.Light ? 0x0f : 0x10);
+         if (bDisabled)
+-            glyph = RGB(0xc8, 0xc8, 0xc8);
++            glyph = colors.GlyphDisabled;
+         else if (bHot || bPressed || pcontext->Active)
+-            glyph = RGB(0x1a, 0x1a, 0x1a);
++            glyph = colors.Glyph;
+         else
+-            glyph = RGB(0xa3, 0xa3, 0xa3);
++            glyph = colors.GlyphInactive;
+     }
+     DrawWin11Glyph(pcontext->hDC, prc, iPartId, glyph, ScreenDpi());
+ }
+@@ -618,9 +859,15 @@
+     rcPart = *prcCurrent;
+     rcPart.bottom = rcPart.top + pcontext->CaptionHeight;
+     prcCurrent->top = rcPart.bottom;
+-    /* Arctic: the theme's rounded corners are see-through; dwm.exe rounds the window instead */
+-    FillRect(pcontext->hDC, &rcPart, GetSysColorBrush(pcontext->Active ? COLOR_ACTIVECAPTION : COLOR_INACTIVECAPTION));
+-    DrawThemeBackground(pcontext->theme, pcontext->hDC,iPart,iState,&rcPart,NULL);
++    /* Arctic: the colour of the mode of Windows, or the one dwm.exe keys to
++     * put its effect behind; dwm.exe rounds the window */
++    {
++        CAPTION_COLORS colors;
++
++        GetCaptionColors(pcontext, &colors);
++        FillSolid(pcontext->hDC, &rcPart, colors.Back);
++        SetCaptionBackdrop(pcontext, &colors);
++    }
+ 
+     /* Add a padding around the objects of the caption */
+     InflateRect(&rcPart, -(int)pcontext->wi.cyWindowBorders-BUTTON_GAP_SIZE,
+@@ -658,25 +905,28 @@
+ ThemeDrawBorders(PDRAW_CONTEXT pcontext, RECT* prcCurrent)
+ {
+     RECT rcPart;
+-    int iState = pcontext->Active ? FS_ACTIVE : FS_INACTIVE;
++    CAPTION_COLORS colors;
++
++    /* Arctic: plain, in the colour of the title bar */
++    GetCaptionColors(pcontext, &colors);
+ 
+     /* Draw the bottom border */
+     rcPart = *prcCurrent;
+     rcPart.top = rcPart.bottom - pcontext->wi.cyWindowBorders;
+     prcCurrent->bottom = rcPart.top;
+-    DrawThemeBackground(pcontext->theme, pcontext->hDC, WP_FRAMEBOTTOM, iState, &rcPart, NULL);
++    FillSolid(pcontext->hDC, &rcPart, colors.Frame);
+ 
+     /* Draw the left border */
+     rcPart = *prcCurrent;
+     rcPart.right = rcPart.left + pcontext->wi.cxWindowBorders ;
+     prcCurrent->left = rcPart.right;
+-    DrawThemeBackground(pcontext->theme, pcontext->hDC,WP_FRAMELEFT, iState, &rcPart, NULL);
++    FillSolid(pcontext->hDC, &rcPart, colors.Frame);
+ 
+     /* Draw the right border */
+     rcPart = *prcCurrent;
+     rcPart.left = rcPart.right - pcontext->wi.cxWindowBorders;
+     prcCurrent->right = rcPart.left;
+-    DrawThemeBackground(pcontext->theme, pcontext->hDC,WP_FRAMERIGHT, iState, &rcPart, NULL);
++    FillSolid(pcontext->hDC, &rcPart, colors.Frame);
+ }
+ 
+ static void
+@@ -805,6 +1055,8 @@
+     }
+     else
+     {
++        /* Arctic: no title bar now, so nothing behind it */
++        SetCaptionBackdrop(pcontext, NULL);
+         DrawClassicFrame(pcontext, prcCurrent);
+     }
+ 
+--- a/dll/win32/uxtheme/themehooks.c
++++ b/dll/win32/uxtheme/themehooks.c
+@@ -350,6 +350,19 @@
+ 
+             if (pwndData->hTabBackgroundBrush != NULL)
+             {
++                /* Arctic: a dialog's texture comes from the theme opened for
++                 * it (ThemeDlgPostWindowProc), which is of the old style:
++                 * it is opened anew, so that the page takes the new one */
++                if (IsThemeDialogTextureEnabled(hWnd))
++                {
++                    HTHEME hOld = GetWindowTheme(hWnd);
++
++                    if (hOld)
++                    {
++                        RemovePropW(hWnd, (LPCWSTR)MAKEINTATOM(atWindowTheme));
++                        CloseThemeData(hOld);
++                    }
++                }
+                 DeleteObject(pwndData->hTabBackgroundBrush);
+                 pwndData->hTabBackgroundBrush = NULL;
+             }
+@@ -384,6 +397,20 @@
+             if (pwndData == NULL)
+                 return 0;
+             pwndData->DirtyThemeRegion = TRUE;
++            break;
++        }
++        case WM_SETTINGCHANGE:
++        {
++            /* Arctic: the mode of Windows or the look of the title bars
++             * changed (desk.cpl, Personalization): the frame is drawn anew */
++            if (lParam && !IsBadStringPtrW((LPCWSTR)lParam, 32) &&
++                !lstrcmpiW((LPCWSTR)lParam, L"ImmersiveColorSet"))
++            {
++                UXTHEME_ResetCaptionLook();
++                if (GetAncestor(hWnd, GA_PARENT) == GetDesktopWindow())
++                    RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
++            }
++            break;
+         }
+     }
+ 
+--- a/dll/win32/uxtheme/uxthemep.h
++++ b/dll/win32/uxtheme/uxthemep.h
+@@ -193,6 +193,9 @@
+     INT  SCROLL_TrackingBar;
+     INT  SCROLL_TrackingPos;
+     INT  SCROLL_TrackingVal;
++
++    /* Arctic: what dwm.exe was told is behind the title bar (DWMWA_ARCTIC_CAPTION) */
++    UINT CaptionBackdrop[5];
+ } WND_DATA, *PWND_DATA;
+ 
+ /* The draw context stores data that are needed by the drawing operations in the non client area of the window */
+@@ -288,6 +291,7 @@
+ void UXTHEME_InitSystem(HINSTANCE hInst);
+ void UXTHEME_UnInitSystem(HINSTANCE hInst);
+ void UXTHEME_LoadTheme(BOOL bLoad);
++void UXTHEME_ResetCaptionLook(void);
+ BOOL CALLBACK UXTHEME_broadcast_theme_changed (HWND hWnd, LPARAM enable);
+ 
+ /* No alpha blending */
+--- a/dll/win32/uxtheme/system.c
++++ b/dll/win32/uxtheme/system.c
+@@ -1584,3 +1584,80 @@
+     MSSTYLES_CloseThemeFile(pt);
+     return S_OK;
+ }
++
++/*
++ * Arctic: what programs ask of the dark mode of Windows 10 and 11 by
++ * ordinal, as Notepad++, Qt and the like do. The modes are desk.cpl's
++ * (Personalization): SystemUsesLightTheme and AppsUseLightTheme of
++ * HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize. In
++ * the dark mode the visual style is dark for every program; these say so.
++ */
++
++static DWORD ReadPersonalizeValue(LPCWSTR pszName, DWORD dwDefault)
++{
++    DWORD dwValue, dwSize = sizeof(dwValue), dwType;
++    HKEY hKey;
++
++    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0,
++                      KEY_QUERY_VALUE, &hKey))
++        return dwDefault;
++    if (RegQueryValueExW(hKey, pszName, NULL, &dwType, (BYTE *)&dwValue, &dwSize) || dwType != REG_DWORD)
++        dwValue = dwDefault;
++    RegCloseKey(hKey);
++    return dwValue;
++}
++
++/* ordinal 138; Windows 10's default: Windows dark, programs light */
++BOOLEAN WINAPI ShouldSystemUseDarkMode(void)
++{
++    return !ReadPersonalizeValue(L"SystemUsesLightTheme", 0);
++}
++
++/* ordinal 132 */
++BOOLEAN WINAPI ShouldAppsUseDarkMode(void)
++{
++    return !ReadPersonalizeValue(L"AppsUseLightTheme", 1);
++}
++
++/* ordinal 104: the modes are read anew */
++void WINAPI RefreshImmersiveColorPolicyState(void)
++{
++    UXTHEME_ResetCaptionLook();
++}
++
++static LONG PreferredAppMode;  /* 0 default, 1 allow dark, 2 force dark, 3 force light */
++
++/* ordinal 135; AllowDarkModeForApp(BOOL) before Windows 10 1903 */
++int WINAPI SetPreferredAppMode(int iMode)
++{
++    return InterlockedExchange(&PreferredAppMode, iMode);
++}
++
++/* ordinal 139 */
++BOOLEAN WINAPI IsDarkModeAllowedForApp(void)
++{
++    return PreferredAppMode == 1 || PreferredAppMode == 2;
++}
++
++/* ordinal 133 */
++BOOLEAN WINAPI AllowDarkModeForWindow(HWND hWnd, BOOLEAN bAllow)
++{
++    if (!IsWindow(hWnd))
++        return FALSE;
++    if (bAllow)
++        SetPropW(hWnd, L"Arctic.AllowDarkMode", (HANDLE)1);
++    else
++        RemovePropW(hWnd, L"Arctic.AllowDarkMode");
++    return TRUE;
++}
++
++/* ordinal 137 */
++BOOLEAN WINAPI IsDarkModeAllowedForWindow(HWND hWnd)
++{
++    return GetPropW(hWnd, L"Arctic.AllowDarkMode") != NULL;
++}
++
++/* ordinal 136: menus are drawn with the visual style, which is already the mode's */
++void WINAPI FlushMenuThemes(void)
++{
++}
+--- a/dll/win32/uxtheme/uxtheme.spec
++++ b/dll/win32/uxtheme/uxtheme.spec
+@@ -93,3 +93,11 @@
+ 93 stdcall SetThemeAppProperties(long)
+ 94 stdcall SetWindowTheme(ptr wstr wstr)
+ 95 stdcall ThemeInitApiHook(long ptr)
++104 stdcall -noname RefreshImmersiveColorPolicyState()
++132 stdcall -noname ShouldAppsUseDarkMode()
++133 stdcall -noname AllowDarkModeForWindow(ptr long)
++135 stdcall -noname SetPreferredAppMode(long)
++136 stdcall -noname FlushMenuThemes()
++137 stdcall -noname IsDarkModeAllowedForWindow(ptr)
++138 stdcall -noname ShouldSystemUseDarkMode()
++139 stdcall -noname IsDarkModeAllowedForApp()

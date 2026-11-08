@@ -184,9 +184,15 @@ static uint32_t keyed_light( uint32_t p )
     return (a << 24) | (min( r, a ) << 16) | (min( g, a ) << 8) | min( b, a );
 }
 
+/* a window whose title bar alone is over a backdrop: rows of the screen from
+ * this one down are not keyed */
+static int keyed_bottom = INT_MAX;
+
 /* the part of the buffer shown (viewport source) scaled to the viewport destination */
 static void blit( const struct surface *s, int x0, int y0, enum layer_mode mode )
 {
+    enum layer_mode row_mode = mode;
+
     int sx0 = 0, sy0 = 0, sw = s->width, sh = s->height, dw, dh;
 
     if (s->src_width > 0 && s->src_height > 0)
@@ -207,6 +213,8 @@ static void blit( const struct surface *s, int x0, int y0, enum layer_mode mode 
         uint32_t *dst;
 
         if (py < screen.top || py >= screen.bottom) continue;
+        if (py >= keyed_bottom && (mode == LAYER_KEYED || mode == LAYER_KEYED_LIGHT))
+            row_mode = s->alpha ? LAYER_PREMULTIPLIED : LAYER_OPAQUE;
         src = s->pixels + (size_t)(sy0 + (dh == sh ? y : sh * y / dh)) * s->width + sx0;
         dst = shadow + (size_t)(py - screen.top) * (screen.right - screen.left) - screen.left;
         for (int x = 0; x < dw; x++)
@@ -216,9 +224,9 @@ static void blit( const struct surface *s, int x0, int y0, enum layer_mode mode 
 
             if (px < screen.left || px >= screen.right) continue;
             p = src[dw == sw ? x : sw * x / dw];
-            if (mode == LAYER_KEYED && !s->alpha) p = keyed( p );
-            if (mode == LAYER_KEYED_LIGHT && !s->alpha) p = keyed_light( p );
-            if (mode == LAYER_OPAQUE || (p >> 24) == 0xff) dst[px] = p | 0xff000000;
+            if (row_mode == LAYER_KEYED && !s->alpha) p = keyed( p );
+            if (row_mode == LAYER_KEYED_LIGHT && !s->alpha) p = keyed_light( p );
+            if (row_mode == LAYER_OPAQUE || (p >> 24) == 0xff) dst[px] = p | 0xff000000;
             else if (p >> 24) dst[px] = over( p, dst[px] );
         }
     }
@@ -599,6 +607,10 @@ void scene_surfaces( const struct window_draw *draw,
  */
 
 #define CORNER_RADIUS 4
+#define CORNER_RADIUS_11 8   /* with the visual style of Windows 11 */
+
+static uint32_t shadow_style;      /* of the visual style: 1 Windows 11's */
+static uint32_t menu_light;        /* the menus' colour is light (personalize.c) */
 
 /* the unix side has no user32 */
 static void set_rect( RECT *rect, int left, int top, int right, int bottom )
@@ -745,13 +757,14 @@ static float monitor_scale( const struct dwm_window *w )
 static float corner_radius( const struct dwm_window *w, const struct window_state *ws )
 {
     UINT32 corner = ws && ws->has_attr ? ws->attr.corner : 0;
-    float radius = CORNER_RADIUS * monitor_scale( w );
+    float radius = (shadow_style ? CORNER_RADIUS_11 : CORNER_RADIUS) * monitor_scale( w );
 
     if (w->style & (WS_CHILD | WS_MAXIMIZE | WS_MINIMIZE)) return 0;
     if (corner == 1 /* DWMWCP_DONOTROUND */ || covers_monitor( w )) return 0;
     if (corner & 0x100) return (corner & 0xff) * monitor_scale( w );  /* ARCTIC_CORNER_RADIUS */
     if (corner == 3 /* DWMWCP_ROUNDSMALL */) return radius / 2;
     if (corner == 2 /* DWMWCP_ROUND */) return radius;
+    if (shadow_style && w->class_atom == 0x8000) return radius;   /* the menus of programs */
     return has_caption( w ) || (w->style & WS_THICKFRAME) ? radius : 0;
 }
 
@@ -763,16 +776,11 @@ static bool window_decorated( const struct dwm_window *w, float radius )
     return radius > 0 || w->class_atom == 0x8000;
 }
 
-/* The backdrop a window asked for: SetWindowCompositionAttribute's accent
- * (the taskbar's acrylic) or DwmEnableBlurBehindWindow. tint is ARGB. */
-static bool window_backdrop( const struct window_state *ws, bool *blur, uint32_t *tint )
+/* what an accent (ARCTIC_ACCENT_*) of a colour 0xAABBGGRR puts behind: tint is ARGB */
+static bool accent_backdrop( uint32_t accent, uint32_t c, bool *blur, uint32_t *tint )
 {
-    uint32_t c;
-
-    if (!ws || !ws->has_attr) return false;
-    c = ws->attr.accent_color;  /* 0xAABBGGRR */
     c = (c & 0xff00ff00) | ((c >> 16) & 0xff) | ((c & 0xff) << 16);
-    switch (ws->attr.accent)
+    switch (accent)
     {
     case ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND:
     case ARCTIC_ACCENT_ENABLE_BLURBEHIND:
@@ -788,10 +796,44 @@ static bool window_backdrop( const struct window_state *ws, bool *blur, uint32_t
         *tint = c | 0xff000000;
         return true;
     }
-    if (!ws->attr.blur_behind) return false;
-    *blur = true;
-    *tint = 0;
-    return true;
+    return false;
+}
+
+/* The backdrop a window asked for: SetWindowCompositionAttribute's accent
+ * (the taskbar's acrylic) or DwmEnableBlurBehindWindow; or, with none, the
+ * one of its title bar alone (DWMWA_ARCTIC_CAPTION, from uxtheme) */
+static void window_effects( struct window_draw *draw, const struct window_state *ws )
+{
+    draw->backdrop = draw->blur = draw->grain = false;
+    draw->caption = 0;
+    draw->strength = 0;
+    draw->content_alpha = 1.0f;
+    if (shadow_style && draw->w && draw->w->class_atom == 0x8000)
+    {
+        /* the menus of programs with Windows 11's style: their colour is the
+         * key, and a near black (or near white) blur shows through it */
+        draw->backdrop = draw->blur = true;
+        draw->tint = menu_light ? 0xb8f2f2f2 : 0xb8121212;
+        draw->strength = 85;
+        return;
+    }
+    if (!ws || !ws->has_attr) return;
+    draw->strength = ws->attr.blur;
+    draw->grain = ws->attr.accent == ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND;
+    if ((draw->backdrop = accent_backdrop( ws->attr.accent, ws->attr.accent_color, &draw->blur, &draw->tint ))) return;
+    if (ws->attr.blur_behind)
+    {
+        draw->backdrop = draw->blur = true;
+        draw->tint = 0;
+        return;
+    }
+    if (!ws->attr.caption.height ||
+        !accent_backdrop( ws->attr.caption.accent, ws->attr.caption.color, &draw->blur, &draw->tint ))
+        return;
+    draw->backdrop = true;
+    draw->caption = ws->attr.caption.height;
+    draw->strength = ws->attr.caption.blur;
+    draw->grain = ws->attr.caption.accent == ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND;
 }
 
 /* A layered window is see-through where it draws nothing: what a swap chain
@@ -809,6 +851,8 @@ static enum layer_mode layer_mode( const struct surface *s, const struct window_
     if (s->alpha) return LAYER_PREMULTIPLIED;
     if (s->dmabuf && draw && draw->w && per_pixel_alpha( draw->w )) return LAYER_PREMULTIPLIED;
     if (!draw || !draw->backdrop) return LAYER_OPAQUE;
+    if (draw->caption) return draw->ws->attr.caption.light ? LAYER_KEYED_LIGHT : LAYER_KEYED;
+    if (draw->w && draw->w->class_atom == 0x8000) return menu_light ? LAYER_KEYED_LIGHT : LAYER_KEYED;
     return draw->ws && draw->ws->has_attr && draw->ws->attr.light ? LAYER_KEYED_LIGHT : LAYER_KEYED;
 }
 
@@ -820,6 +864,9 @@ enum transition
     TRANSITION_SLIDE,                        /* up from below */
     TRANSITION_FADE,
     TRANSITION_START10,                      /* far up from below, quick to slow */
+    TRANSITION_START11,                      /* up from below, slowing into place */
+    TRANSITION_FROM_LEFT,                    /* in from the left, slowing into place */
+    TRANSITION_FROM_RIGHT,                   /* in from the right, slowing into place */
 };
 
 static enum transition window_transition( const struct dwm_window *w, const struct window_state *ws )
@@ -834,11 +881,17 @@ static enum transition window_transition( const struct dwm_window *w, const stru
         case ARCTIC_TRANSITION_FADE: return TRANSITION_FADE;
         case ARCTIC_TRANSITION_SLIDE_UP: return TRANSITION_SLIDE;
         case ARCTIC_TRANSITION_START10: return TRANSITION_START10;
+        case ARCTIC_TRANSITION_START11: return TRANSITION_START11;
+        case ARCTIC_TRANSITION_FROM_LEFT: return TRANSITION_FROM_LEFT;
+        case ARCTIC_TRANSITION_FROM_RIGHT: return TRANSITION_FROM_RIGHT;
         }
     }
     /* layered windows (the toasts) animate themselves */
     if ((w->ex_style & WS_EX_LAYERED) || covers_monitor( w )) return TRANSITION_NONE;
-    if (has_caption( w )) return TRANSITION_WINDOW;
+    /* also one that draws its own caption (File Explorer's tabs): a frame to size it and a maximize box */
+    if (has_caption( w ) || (w->style & (WS_THICKFRAME | WS_MAXIMIZEBOX)) == (WS_THICKFRAME | WS_MAXIMIZEBOX) ||
+        (ws->has_attr && ws->attr.caption.height))
+        return TRANSITION_WINDOW;
     /* menus and flyouts, not the desktop in the work area */
     if ((w->style & WS_POPUP) && !nearly_covers_monitor( w )) return TRANSITION_POPUP;
     return TRANSITION_NONE;
@@ -927,6 +980,15 @@ static void animate_in( struct window_state *ws, const struct dwm_window *w )
     case TRANSITION_POPUP: animate( ws, ANIM_POPUP_IN, moved( r, 0, -8 * monitor_scale( w ) ), r, 0, 1, 167, false ); break;
     case TRANSITION_SLIDE: animate( ws, ANIM_SLIDE_IN, moved( r, 0, 48 * monitor_scale( w ) ), r, 0, 1, 250, false ); break;
     case TRANSITION_FADE: animate( ws, ANIM_FADE_IN, r, r, 0, 1, 150, false ); break;
+    case TRANSITION_START11:
+        animate( ws, ANIM_START11_IN, moved( r, 0, 100 * monitor_scale( w ) ), r, 0, 1, 300, false );
+        break;
+    case TRANSITION_FROM_LEFT:
+        animate( ws, ANIM_START11_IN, moved( r, -120 * monitor_scale( w ), 0 ), r, 0, 1, 300, false );
+        break;
+    case TRANSITION_FROM_RIGHT:
+        animate( ws, ANIM_START11_IN, moved( r, 120 * monitor_scale( w ), 0 ), r, 0, 1, 300, false );
+        break;
     case TRANSITION_START10:
         animate( ws, ANIM_START10_IN, moved( r, 0, 120 * monitor_scale( w ) ), r, 0, 1, 360, false );
         break;
@@ -956,6 +1018,9 @@ static void animate_out( struct window_state *ws, const struct dwm_window *w )
     case TRANSITION_SLIDE: animate( ws, ANIM_SLIDE_OUT, r, moved( r, 0, 48 ), 1, 0, 167, true ); break;
     case TRANSITION_FADE: animate( ws, ANIM_FADE_OUT, r, r, 1, 0, 100, true ); break;
     case TRANSITION_START10: animate( ws, ANIM_START10_OUT, r, moved( r, 0, 40 ), 1, 0, 120, true ); break;
+    case TRANSITION_START11: animate( ws, ANIM_START11_OUT, r, moved( r, 0, 60 ), 1, 0, 150, true ); break;
+    case TRANSITION_FROM_LEFT: animate( ws, ANIM_START11_OUT, r, moved( r, -80, 0 ), 1, 0, 150, true ); break;
+    case TRANSITION_FROM_RIGHT: animate( ws, ANIM_START11_OUT, r, moved( r, 80, 0 ), 1, 0, 150, true ); break;
     }
 }
 
@@ -1224,7 +1289,11 @@ static bool animation_frame( struct window_state *ws, uint64_t now, struct frect
         e = 1 - (1 - t) * (1 - t) * (1 - t) * (1 - t) * (1 - t);
         break;
     case ANIM_START10_OUT:
+    case ANIM_START11_OUT:
         e = t * t;
+        break;
+    case ANIM_START11_IN:
+        e = 1 - (1 - t) * (1 - t) * (1 - t) * (1 - t);
         break;
     default:
         e = decelerate( t );
@@ -1238,6 +1307,7 @@ static bool animation_frame( struct window_state *ws, uint64_t now, struct frect
     if (ws->anim == ANIM_MINIMIZE) *alpha = 1 - t * t;
     else if (ws->anim == ANIM_RESTORE) *alpha = min( 1.0f, t * 3 );
     else if (ws->anim == ANIM_START10_IN) *alpha = min( 1.0f, t * 2.5f );
+    else if (ws->anim == ANIM_START11_IN) *alpha = min( 1.0f, t * 4 );
     else *alpha = lerp( ws->alpha_from, ws->alpha_to, e );
     TRACE( "%08x at %.2f: %.0f,%.0f-%.0f,%.0f opacity %.2f\n", ws->hwnd, t, rect->left, rect->top, rect->right,
            rect->bottom, *alpha );
@@ -1256,7 +1326,7 @@ static bool fill_draw( struct window_draw *draw, const struct dwm_window *w, str
     draw->mode = layer_mode;
     draw->clip.radius = corner_radius( w, ws );
     draw->decorated = window_decorated( w, draw->clip.radius );
-    draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
+    window_effects( draw, ws );
 
     if (ws && ws->anim && !ws->ghost)
     {
@@ -1342,7 +1412,7 @@ uint32_t scene_windows( struct window_draw *draws, uint32_t max )
         draw->as_image = true;
         draw->clip.radius = corner_radius( &ws->last, ws );
         draw->decorated = window_decorated( &ws->last, draw->clip.radius );
-        draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
+        window_effects( draw, ws );
         set_draw_geometry( draw, frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top,
                                              ws->snapshot_rect.right, ws->snapshot_rect.bottom ), shown );
     }
@@ -1361,7 +1431,7 @@ void scene_static_draw( struct window_draw *draw, const struct dwm_window *w, st
     draw->mode = layer_mode;
     draw->clip.radius = corner_radius( w, ws );
     draw->decorated = window_decorated( w, draw->clip.radius );
-    draw->backdrop = window_backdrop( ws, &draw->blur, &draw->tint );
+    window_effects( draw, ws );
     set_draw_geometry( draw, r, r );
 }
 
@@ -1434,6 +1504,11 @@ uint32_t scene_thumbnails( const struct window_draw *draw, struct thumbnail_draw
         t->dest.right = dest.right * draw->xform.sx + draw->xform.tx;
         t->dest.bottom = dest.bottom * draw->xform.sy + draw->xform.ty;
         t->opacity = thumb->opacity / 255.0f * draw->opacity;
+        {
+            struct window_state *host = window_state( draw->w->hwnd );
+
+            t->radius = host && host->has_attr && (host->attr.corner & 0x100) ? 4 * window_scale( draw->w ) : 0;
+        }
         count++;
     }
     return count;
@@ -1514,10 +1589,14 @@ static void compose(void)
         if (shown_directly( w->hwnd )) continue;
         fill_draw( &draw, w, NULL, 0 );
         draw.ws = ws;
-        draw.backdrop = window_backdrop( ws, &draw.blur, &draw.tint );
+        window_effects( &draw, ws );
         ctx.keyed_mode = draw.backdrop ? layer_mode( &(struct surface){ 0 }, &draw ) : LAYER_OPAQUE;
-        if (draw.backdrop) tint_rect( &(RECT){ w->left, w->top, w->right, w->bottom }, draw.tint );
+        if (draw.backdrop)
+            tint_rect( &(RECT){ w->left, w->top, w->right, draw.caption ? w->top + (int)draw.caption : w->bottom },
+                       draw.tint );
+        keyed_bottom = draw.caption ? w->top + (int)draw.caption : INT_MAX;
         for_each_window_surface( w, cpu_draw_surface, &ctx );
+        keyed_bottom = INT_MAX;
         n = scene_thumbnails( &draw, thumbs, ARRAY_SIZE(thumbs) );
         for (uint32_t k = 0; k < n; k++) cpu_thumbnail( &thumbs[k] );
     }
@@ -3800,6 +3879,10 @@ static NTSTATUS dwm_set_options( void *args )
     vrr_allowed = !!params->vrr;
     vrr_off_count = min( params->vrr_off_count, ARRAY_SIZE(vrr_off) );
     memcpy( vrr_off, params->vrr_off, vrr_off_count * sizeof(*vrr_off) );
+    gpu_set_shadow_style( params->shadow_style );
+    if (shadow_style != params->shadow_style || menu_light != params->menu_light) compose_afresh();
+    menu_light = params->menu_light;
+    shadow_style = params->shadow_style;
     if (monitors_off != !!params->monitors_off)
     {
         monitors_off = !!params->monitors_off;

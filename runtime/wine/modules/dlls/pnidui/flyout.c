@@ -1073,7 +1073,7 @@ static BOOL create_flyout(void)
 {
     WNDCLASSW cls = { .style = CS_DBLCLKS, .lpfnWndProc = flyout_proc, .hInstance = pnidui_instance,
                       .hCursor = LoadCursorW( 0, (LPCWSTR)IDC_ARROW ), .lpszClassName = L"PniduiFlyout" };
-    DWORD transition = ARCTIC_TRANSITION_SLIDE_UP;
+    DWORD transition = ARCTIC_TRANSITION_SLIDE_UP, corner = ARCTIC_FLYOUT_CORNER;
 
     if (flyout) return TRUE;
     RegisterClassW( &cls );
@@ -1081,6 +1081,7 @@ static BOOL create_flyout(void)
                               0, 0, FLYOUT_WIDTH, px( 200 ), NULL, NULL, pnidui_instance, NULL );
     if (!flyout) return FALSE;
     DwmSetWindowAttribute( flyout, DWMWA_ARCTIC_TRANSITION, &transition, sizeof(transition) );
+    DwmSetWindowAttribute( flyout, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner) );
     /* the body text of XAML is 15, Caption 12 */
     font_name = make_font( px( 15 ), FW_NORMAL );
     font_tile = make_font( px( 12 ), FW_NORMAL );

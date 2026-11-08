@@ -1,0 +1,125 @@
+/*
+ * Date and Time of the Control Panel: resources
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "timedate.h"
+
+/* tools/cpl-icons.py: Longhorn's date and time */
+/* @makedep: timedate.ico */
+IDI_TIMEDATE ICON timedate.ico
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                  "Control Panel Home"
+    0xf001                  "See also"
+    IDS_NAME                "Date and Time"
+    IDS_TIP                 "Set the date, time and time zone."
+    IDS_TITLE               "Date, time and time zone"
+    IDS_TIME_GROUP          "Internet time"
+    IDS_AUTO_TIME           "Set the time automatically"
+    IDS_AUTO_TIME_HINT      "At every start and after sleep the clock is set from a time server."
+    IDS_SERVER              "Server:"
+    IDS_SYNC_NOW            "Synchronize now"
+    IDS_SYNCED              "Synchronized with %1 on %2."
+    IDS_NEVER_SYNCED        "Not synchronized yet."
+    IDS_SYNCING             "Synchronizing…"
+    IDS_SYNC_FAILED         "%1 did not answer."
+    IDS_SYNC_OFF            "The time is set by hand."
+    IDS_MANUAL_GROUP        "Date and time by hand"
+    IDS_CHANGE              "Change"
+    IDS_MANUAL_HINT         "Available when the time is not set automatically."
+    IDS_ZONE_GROUP          "Time zone"
+    IDS_AUTO_ZONE           "Set the time zone automatically"
+    IDS_AUTO_ZONE_HINT      "At every start, by the computer's address on the Internet (ip-api.com)."
+    IDS_DST_START           "Daylight saving time begins on %1 at %2: the clock goes an hour forward."
+    IDS_DST_END             "Daylight saving time ends on %1 at %2: the clock goes an hour back."
+    IDS_NO_DST              "This time zone has no daylight saving time."
+    IDS_NOTIFICATIONS       "Notifications"
+    IDS_SYSTEM              "System"
+    IDS_ZONE_FAILED         "The time zone could not be changed."
+    IDS_TIME_SET            "The time was changed."
+    IDS_TIME_FAILED         "The time could not be changed."
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                  "Домашня сторінка панелі керування"
+    0xf001                  "Див. також"
+    IDS_NAME                "Дата й час"
+    IDS_TIP                 "Установлення дати, часу та часового поясу."
+    IDS_TITLE               "Дата, час і часовий пояс"
+    IDS_TIME_GROUP          "Час з інтернету"
+    IDS_AUTO_TIME           "Установлювати час автоматично"
+    IDS_AUTO_TIME_HINT      "Під час кожного запуску й після сну годинник звіряється із сервером часу."
+    IDS_SERVER              "Сервер:"
+    IDS_SYNC_NOW            "Синхронізувати зараз"
+    IDS_SYNCED              "Синхронізовано з %1: %2."
+    IDS_NEVER_SYNCED        "Ще не синхронізовано."
+    IDS_SYNCING             "Синхронізація…"
+    IDS_SYNC_FAILED         "%1 не відповів."
+    IDS_SYNC_OFF            "Час установлюється вручну."
+    IDS_MANUAL_GROUP        "Дата й час вручну"
+    IDS_CHANGE              "Змінити"
+    IDS_MANUAL_HINT         "Доступно, коли час не встановлюється автоматично."
+    IDS_ZONE_GROUP          "Часовий пояс"
+    IDS_AUTO_ZONE           "Установлювати часовий пояс автоматично"
+    IDS_AUTO_ZONE_HINT      "Під час кожного запуску, за адресою комп’ютера в інтернеті (ip-api.com)."
+    IDS_DST_START           "Перехід на літній час: %1, %2 — годинник переведуть на годину вперед."
+    IDS_DST_END             "Перехід на зимовий час: %1, %2 — годинник переведуть на годину назад."
+    IDS_NO_DST              "У цьому часовому поясі немає переходу на літній час."
+    IDS_NOTIFICATIONS       "Сповіщення"
+    IDS_SYSTEM              "Система"
+    IDS_ZONE_FAILED         "Не вдалося змінити часовий пояс."
+    IDS_TIME_SET            "Час змінено."
+    IDS_TIME_FAILED         "Не вдалося змінити час."
+}
+
+LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                  "Домашняя страница панели управления"
+    0xf001                  "См. также"
+    IDS_NAME                "Дата и время"
+    IDS_TIP                 "Установка даты, времени и часового пояса."
+    IDS_TITLE               "Дата, время и часовой пояс"
+    IDS_TIME_GROUP          "Время из интернета"
+    IDS_AUTO_TIME           "Устанавливать время автоматически"
+    IDS_AUTO_TIME_HINT      "При каждом запуске и после сна часы сверяются с сервером времени."
+    IDS_SERVER              "Сервер:"
+    IDS_SYNC_NOW            "Синхронизировать сейчас"
+    IDS_SYNCED              "Синхронизировано с %1: %2."
+    IDS_NEVER_SYNCED        "Ещё не синхронизировано."
+    IDS_SYNCING             "Синхронизация…"
+    IDS_SYNC_FAILED         "%1 не ответил."
+    IDS_SYNC_OFF            "Время устанавливается вручную."
+    IDS_MANUAL_GROUP        "Дата и время вручную"
+    IDS_CHANGE              "Изменить"
+    IDS_MANUAL_HINT         "Доступно, когда время не устанавливается автоматически."
+    IDS_ZONE_GROUP          "Часовой пояс"
+    IDS_AUTO_ZONE           "Устанавливать часовой пояс автоматически"
+    IDS_AUTO_ZONE_HINT      "При каждом запуске, по адресу компьютера в интернете (ip-api.com)."
+    IDS_DST_START           "Переход на летнее время: %1, %2 — часы переведут на час вперёд."
+    IDS_DST_END             "Переход на зимнее время: %1, %2 — часы переведут на час назад."
+    IDS_NO_DST              "В этом часовом поясе нет перехода на летнее время."
+    IDS_NOTIFICATIONS       "Уведомления"
+    IDS_SYSTEM              "Система"
+    IDS_ZONE_FAILED         "Не удалось изменить часовой пояс."
+    IDS_TIME_SET            "Время изменено."
+    IDS_TIME_FAILED         "Не удалось изменить время."
+}

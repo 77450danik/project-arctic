@@ -54,7 +54,12 @@ static COLORREF accent_color(void)
 
 static void draw_switch( HDC hdc, int left, int top, int w, int h, const struct toggle *t, BOOL enabled )
 {
-    COLORREF accent = accent_color(), dark = t->hot ? RGB( 0, 0, 0 ) : RGB( 51, 51, 51 );
+    /* in the programs' dark mode (desk.cpl, Personalization) as Windows 11 draws it there */
+    COLORREF page = GetSysColor( COLOR_WINDOW );
+    BOOL night = GetRValue( page ) + GetGValue( page ) + GetBValue( page ) < 3 * 128;
+    COLORREF accent = accent_color(), dark = night ? (t->hot ? RGB( 255, 255, 255 ) : RGB( 0xd0, 0xd0, 0xd0 ))
+                                                   : (t->hot ? RGB( 0, 0, 0 ) : RGB( 51, 51, 51 ));
+    COLORREF white = night ? RGB( 0, 0, 0 ) : RGB( 255, 255, 255 ), gray = night ? RGB( 0x5c, 0x5c, 0x5c ) : RGB( 204, 204, 204 );
     COLORREF fill, ring, knob;
     float border = h / 10.0f, knob_r = h * 0.25f, knob_x;
     BITMAPINFO bi = { { sizeof(bi.bmiHeader), w, -h, 1, 32, BI_RGB } };
@@ -62,9 +67,9 @@ static void draw_switch( HDC hdc, int left, int top, int w, int h, const struct 
     HBITMAP bitmap;
     HDC mem;
 
-    if (!enabled) { fill = ring = knob = RGB( 204, 204, 204 ); if (t->on) knob = RGB( 255, 255, 255 ); }
-    else if (t->on) { fill = ring = t->pressed ? RGB( 153, 153, 153 ) : accent; knob = RGB( 255, 255, 255 ); }
-    else { fill = RGB( 255, 255, 255 ); ring = knob = t->pressed ? RGB( 153, 153, 153 ) : dark; }
+    if (!enabled) { fill = ring = knob = gray; if (t->on) knob = white; }
+    else if (t->on) { fill = ring = t->pressed ? RGB( 153, 153, 153 ) : accent; knob = white; }
+    else { fill = page; ring = knob = t->pressed ? RGB( 153, 153, 153 ) : dark; }
     knob_x = t->on ? w - h / 2.0f : h / 2.0f;
 
     if (!(bitmap = CreateDIBSection( hdc, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0 ))) return;

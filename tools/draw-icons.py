@@ -106,26 +106,6 @@ def gloss(canvas, box, radius):
     canvas.alpha_composite(hl)
 
 
-def control_panel(n):
-    c = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    box = (n * 0.08, n * 0.12, n * 0.92, n * 0.88)
-    panel, mask = rounded(c.size, box, n * 0.12, vgrad((10, 10), (110, 185, 255, 255), (20, 90, 200, 255)))
-    shadow(c, mask, (int(n * 0.02), int(n * 0.03)), n * 0.03)
-    c.alpha_composite(panel)
-    d = ImageDraw.Draw(c)
-    d.rounded_rectangle(box, n * 0.12, outline=(10, 60, 150, 255), width=max(1, n // 64))
-    knobs = ((0.62, (255, 170, 30)), (0.36, (80, 200, 60)), (0.74, (235, 70, 60)))
-    for i, (pos, col) in enumerate(knobs):
-        y = n * (0.32 + i * 0.19)
-        d.rounded_rectangle((n * 0.2, y - n * 0.025, n * 0.8, y + n * 0.025), n * 0.025, fill=(8, 40, 110, 200))
-        kx = n * (0.2 + 0.6 * pos)
-        r = n * 0.07
-        d.ellipse((kx - r, y - r, kx + r, y + r), fill=col + (255,), outline=(255, 255, 255, 230),
-                  width=max(1, n // 48))
-    gloss(c, box, n * 0.12)
-    return c
-
-
 def desktop(n):
     c = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     box = (n * 0.06, n * 0.14, n * 0.94, n * 0.84)
@@ -240,7 +220,6 @@ os.makedirs(os.path.join(FILES, "dll", "shellext", "zipfldr", "res"), exist_ok=T
 shutil.copyfile(os.path.join(SRC, "ZIP.ico"), os.path.join(FILES, "dll", "shellext", "zipfldr", "res", "zipfldr.ico"))
 
 drawn = {
-    (22, 36, 137, 321, 330): lambda s: render(control_panel, s),        # IDI_SHELL_CONTROL_PANEL*
     (35,): lambda s: render(desktop, s),                                # IDI_SHELL_DESKTOP
     (235,): lambda s: folder_with(s, lambda n: render(page, n)),        # IDI_SHELL_MY_DOCUMENTS
     (238,): lambda s: folder_with(s, lambda n: render(film, n)),        # IDI_SHELL_MY_MOVIES

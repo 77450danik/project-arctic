@@ -35,8 +35,8 @@
 #define CONTENT_PAD    px(10)
 
 /* the task pane of Windows 7: light blue at the top, nearly white below */
-#define NAV_TOP_COLOR     RGB( 0xd6, 0xe3, 0xf3 )
-#define NAV_BOTTOM_COLOR  RGB( 0xf3, 0xf7, 0xfc )
+#define NAV_TOP_COLOR     (cp_dark() ? RGB( 0x2c, 0x2c, 0x2c ) : RGB( 0xd6, 0xe3, 0xf3 ))
+#define NAV_BOTTOM_COLOR  (cp_dark() ? RGB( 0x20, 0x20, 0x20 ) : RGB( 0xf3, 0xf7, 0xfc ))
 
 #define TIMER_PAGE     1
 #define WM_APP_START_PAGE (WM_APP + 40)
@@ -95,7 +95,21 @@ struct view
 
 static HFONT fonts[STYLE_COUNT];
 static HFONT font_link_hot;
-static HBRUSH white_brush;
+
+/* the page's colour, white or the dark mode's */
+static HBRUSH page_brush(void)
+{
+    static HBRUSH brush;
+    static COLORREF color;
+
+    if (!brush || color != COLOR_PAGE)
+    {
+        if (brush) DeleteObject( brush );
+        color = COLOR_PAGE;
+        brush = CreateSolidBrush( color );
+    }
+    return brush;
+}
 
 static inline struct view *impl_from_IShellView( IShellView *iface )
 {
@@ -165,7 +179,6 @@ HFONT view_font( int style )
         fonts[STYLE_GRAY] = make_font( px( 12 ), FW_NORMAL, FALSE );
         fonts[STYLE_BIG] = make_font( px( 26 ), FW_LIGHT, FALSE );
         font_link_hot = make_font( px( 12 ), FW_NORMAL, TRUE );
-        white_brush = CreateSolidBrush( RGB( 255, 255, 255 ) );
     }
     return fonts[style];
 }
@@ -837,7 +850,7 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         if ((bitmap = CreateCompatibleBitmap( hdc, max( client.right, 1 ), max( client.bottom, 1 ) )))
         {
             HGDIOBJ old = SelectObject( mem, bitmap );
-            FillRect( mem, &client, white_brush );
+            FillRect( mem, &client, page_brush() );
             if (view) paint_content( view, mem );
             BitBlt( hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY );
             SelectObject( mem, old );
@@ -847,6 +860,11 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         EndPaint( hwnd, &ps );
         return 0;
     }
+    case WM_THEMECHANGED:
+    case WM_SYSCOLORCHANGE:
+        /* the programs' mode changed (desk.cpl, Personalization) */
+        InvalidateRect( hwnd, NULL, TRUE );
+        break;
     case WM_ERASEBKGND:
         return 1;
     case WM_SIZE:
@@ -942,9 +960,9 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
-        SetBkColor( (HDC)wp, RGB( 255, 255, 255 ) );
+        SetBkColor( (HDC)wp, COLOR_PAGE );
         SetTextColor( (HDC)wp, COLOR_TEXT );
-        return (LRESULT)white_brush;
+        return (LRESULT)page_brush();
     }
     return DefWindowProcW( hwnd, msg, wp, lp );
 }
@@ -997,6 +1015,11 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         EndPaint( hwnd, &ps );
         return 0;
     }
+    case WM_THEMECHANGED:
+    case WM_SYSCOLORCHANGE:
+        /* the programs' mode changed (desk.cpl, Personalization) */
+        InvalidateRect( hwnd, NULL, TRUE );
+        break;
     case WM_ERASEBKGND:
         return 1;
     case WM_MOUSEMOVE:

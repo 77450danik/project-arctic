@@ -115,6 +115,30 @@ if [ "$WINDOWS" = 1 ]; then
             done
         done
         echo "the builtins of Wine: $wine_files files differ"
+        # the fonts of the image: Wine's own came out of its data directory
+        # into C:\Windows\Fonts (ci/wine-fonts.py), and an older C: has none
+        font_files=0
+        for f in "$PFX"/Fonts/*; do
+            [ -f "$f" ] || continue
+            name=${f##*/}
+            cmp -s "$f" "$C/Windows/Fonts/$name" 2>/dev/null && continue
+            changed+=("Fonts/$name")
+            mkdir -p "$U/Windows/Fonts"
+            cp "$f" "$U/Windows/Fonts/$name"
+            font_files=$((font_files + 1))
+        done
+        echo "the fonts: $font_files files differ"
+        # the icon themes (user32's Arctic patch, Personalization's Icons)
+        icon_files=0
+        while IFS= read -r -d '' f; do
+            rel=Resources/Icons/${f#"$ROOT/runtime/icons/"}
+            cmp -s "$f" "$C/Windows/$rel" 2>/dev/null && continue
+            changed+=("$rel")
+            mkdir -p "$(dirname "$U/Windows/$rel")"
+            cp "$f" "$U/Windows/$rel"
+            icon_files=$((icon_files + 1))
+        done < <(find "$ROOT/runtime/icons" -type f -print0 2>/dev/null)
+        echo "the icon themes: $icon_files files differ"
     fi
     echo "C:\\Windows: ${#changed[@]} files differ"
     printf '  %s\n' "${changed[@]}"

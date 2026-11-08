@@ -1,0 +1,194 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Tue, 3 Nov 2026 12:00:00 +0100
+Subject: [PATCH] explorer: The clock opens the notification center and the calendar.
+
+As in Windows 11, a click on the clock opens the notification center over
+the calendar (startui.dll's ArcticClockFlyoutToggle), and another click
+closes them. Every notification the shell shows, a program's balloon or
+toast, goes to the notification center too, where a click on it is the
+program's as on the balloon; with Do not disturb on, it is only there.
+A change of the time or of the time zone (WM_TIMECHANGE) shows on the
+clock at once.
+---
+--- a/base/shell/explorer/trayclock.cpp
++++ b/base/shell/explorer/trayclock.cpp
+@@ -101,6 +101,8 @@
+     LRESULT OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+     LRESULT OnTaskbarSettingsChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+     LRESULT OnLButtonDblClick(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
++    LRESULT OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
++    LRESULT OnTimeChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+     VOID PaintLine(IN HDC hDC, IN OUT RECT *rcClient, IN UINT LineNumber, IN UINT szLinesIndex);
+ 
+ public:
+@@ -144,6 +146,8 @@
+         MESSAGE_HANDLER(TNWM_GETMINIMUMSIZE, OnGetMinimumSize)
+         MESSAGE_HANDLER(TWM_SETTINGSCHANGED, OnTaskbarSettingsChanged)
+         MESSAGE_HANDLER(WM_LBUTTONDBLCLK, OnLButtonDblClick)
++        MESSAGE_HANDLER(WM_LBUTTONUP, OnLButtonUp)
++        MESSAGE_HANDLER(WM_TIMECHANGE, OnTimeChange)
+     END_MSG_MAP()
+ 
+     HRESULT Initialize(IN HWND hWndParent);
+@@ -752,12 +756,32 @@
+     return 0;
+ }
+ 
++/* Arctic: as in Windows 11, a click opens the notification center over the
++ * calendar (startui.dll), and another one closes them. The Date and Time
++ * page opens from the calendar's date, or where startui.dll is missing. */
+ LRESULT CTrayClockWnd::OnLButtonDblClick(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+ {
+-    if (IsWindowVisible())
+-    {
+-        ShellExecuteW(m_hWnd, NULL, L"timedate.cpl", NULL, NULL, SW_NORMAL);
+-    }
++    return TRUE;
++}
++
++/* Arctic: the time or the time zone changed (the Date and Time page): the
++ * clock shows the new time at once, not at the next minute */
++LRESULT CTrayClockWnd::OnTimeChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++{
++    ResetTime();
++    Update();
++    return 0;
++}
++
++LRESULT CTrayClockWnd::OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++{
++    RECT rcClock;
++
++    if (!IsWindowVisible())
++        return TRUE;
++    GetWindowRect(&rcClock);
++    if (!ArcticClockFlyoutToggle(GetAncestor(m_hWnd, GA_ROOT), &rcClock))
++        ShellExecuteW(m_hWnd, NULL, L"control.exe", L"timedate.cpl", NULL, SW_NORMAL);
+     return TRUE;
+ }
+ 
+--- a/base/shell/explorer/util.cpp
++++ b/base/shell/explorer/util.cpp
+@@ -84,6 +84,38 @@
+     return pIsLight && pIsLight();
+ }
+ 
++/* Windows 11's notification center over its calendar (startui.dll): the
++ * clock opens it, and every notification goes there */
++BOOL ArcticClockFlyoutToggle(IN HWND hwndTray, IN const RECT *prcClock)
++{
++    typedef VOID (WINAPI *PFN_TOGGLE)(HWND, const RECT *);
++    PFN_TOGGLE pToggle = (PFN_TOGGLE)ArcticProc(L"startui.dll", "ArcticClockFlyoutToggle");
++
++    if (!pToggle)
++        return FALSE;
++    pToggle(hwndTray, prcClock);
++    return TRUE;
++}
++
++VOID ArcticNotificationAdd(IN LPCWSTR pszApp, IN LPCWSTR pszIcon, IN HICON hIcon, IN LPCWSTR pszTitle,
++                           IN LPCWSTR pszText, IN HWND hwndReply, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lParam)
++{
++    typedef VOID (WINAPI *PFN_ADD)(LPCWSTR, LPCWSTR, HICON, LPCWSTR, LPCWSTR, HWND, UINT, WPARAM, LPARAM);
++    PFN_ADD pAdd = (PFN_ADD)ArcticProc(L"startui.dll", "ArcticNotificationAdd");
++
++    if (pAdd)
++        pAdd(pszApp, pszIcon, hIcon, pszTitle, pszText, hwndReply, uMsg, wParam, lParam);
++}
++
++/* Do not disturb: notifications go to the notification center only */
++BOOL ArcticNotificationsQuiet(VOID)
++{
++    typedef BOOL (WINAPI *PFN_QUIET)(VOID);
++    PFN_QUIET pQuiet = (PFN_QUIET)ArcticProc(L"startui.dll", "ArcticNotificationsQuiet");
++
++    return pQuiet && pQuiet();
++}
++
+ /* the shell's flyouts and toasts draw dark on white */
+ BOOL ArcticShellLight(VOID)
+ {
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -124,6 +124,11 @@
+  * and the shell's flyouts draw dark on white, which dwm.exe keys */
+ BOOL ArcticTaskbarLight(VOID);
+ BOOL ArcticShellLight(VOID);
++/* Arctic: Windows 11's notification center and calendar (startui.dll) */
++BOOL ArcticClockFlyoutToggle(IN HWND hwndTray, IN const RECT *prcClock);
++VOID ArcticNotificationAdd(IN LPCWSTR pszApp, IN LPCWSTR pszIcon, IN HICON hIcon, IN LPCWSTR pszTitle,
++                           IN LPCWSTR pszText, IN HWND hwndReply, IN UINT uMsg, IN WPARAM wParam, IN LPARAM lParam);
++BOOL ArcticNotificationsQuiet(VOID);
+ #define ARCTIC_INK(bLight) ((bLight) ? RGB(0, 0, 0) : RGB(255, 255, 255))
+ HRESULT ArcticSetWindowAttribute(IN HWND hWnd, IN DWORD dwAttribute, IN LPCVOID pvValue, IN DWORD cbValue);
+ VOID ArcticStartTaskSwitcher(VOID);
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -1637,6 +1637,16 @@
+                 m_toolbar->SendNotifyCallback(notifyItem, NIN_BALLOONTIMEOUT);
+             return;
+         }
++        /* Arctic: the notification center keeps it, where a click on it is
++           the program's as on the balloon; with Do not disturb it is only there */
++        ArcticNotificationAdd(info.szApp, info.szSender, notifyItem->hIcon, info.szInfoTitle, info.szInfo,
++                              notifyItem->hWnd, notifyItem->uCallbackMessage, notifyItem->uID, NIN_BALLOONUSERCLICK);
++        if (ArcticNotificationsQuiet())
++        {
++            if (m_current != notifyItem)
++                m_toolbar->SendNotifyCallback(notifyItem, NIN_BALLOONTIMEOUT);
++            return;
++        }
+ 
+         // If m_current == notifyItem, we want to replace the previous balloon even if there is a queue.
+         if (m_current != notifyItem && (m_current != NULL || m_bAppToast || !m_queue.IsEmpty()))
+@@ -1701,6 +1711,15 @@
+     {
+         ::PostMessageW(info.hwndReply, RegisterWindowMessageW(ARCTIC_TOAST_EVENT), info.dwToastId, ARCTIC_TOAST_TIMED_OUT);
+         return;
++    }
++    /* Arctic: the notification center keeps it; a click there activates it as on the toast */
++    ArcticNotificationAdd(info.szApp, info.szIcon[0] ? info.szIcon : info.szSender, NULL, info.szInfoTitle, info.szInfo,
++                          info.hwndReply, RegisterWindowMessageW(ARCTIC_TOAST_EVENT), info.dwToastId,
++                          ARCTIC_TOAST_ACTIVATED);
++    if (ArcticNotificationsQuiet())
++    {
++        ::PostMessageW(info.hwndReply, RegisterWindowMessageW(ARCTIC_TOAST_EVENT), info.dwToastId, ARCTIC_TOAST_TIMED_OUT);
++        return;
+     }
+     if (m_current != NULL || m_bAppToast || !m_queue.IsEmpty())
+         Queue(info);
+--- a/base/shell/explorer/trayntfy.cpp
++++ b/base/shell/explorer/trayntfy.cpp
+@@ -1265,6 +1265,7 @@
+         MESSAGE_HANDLER(WM_CONTEXTMENU, OnCtxMenu)
+         MESSAGE_HANDLER(WM_NCLBUTTONDBLCLK, OnClockMessage)
+         MESSAGE_HANDLER(WM_SETFONT, OnClockMessage)
++        MESSAGE_HANDLER(WM_TIMECHANGE, OnClockMessage)  /* Arctic: the clock at once */
+         MESSAGE_HANDLER(WM_SETTINGCHANGE, OnPagerMessage)
+         MESSAGE_HANDLER(WM_COPYDATA, OnPagerMessage)
+         MESSAGE_HANDLER(TWM_SETTINGSCHANGED, OnTaskbarSettingsChanged)
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -2685,6 +2685,14 @@
+         return TRUE;
+     }
+ 
++    /* Arctic: the time or the zone changed: the clock follows at once */
++    LRESULT OnTimeChange(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (m_TrayNotify)
++            SendMessage(m_TrayNotify, uMsg, wParam, lParam);
++        return 0;
++    }
++
+     LRESULT OnSettingChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
+         if (wParam == SPI_SETNONCLIENTMETRICS)
+@@ -3676,6 +3684,7 @@
+         }
+         MESSAGE_HANDLER(WM_THEMECHANGED, OnThemeChanged)
+         MESSAGE_HANDLER(WM_SETTINGCHANGE, OnSettingChanged)
++        MESSAGE_HANDLER(WM_TIMECHANGE, OnTimeChange)
+         NOTIFY_CODE_HANDLER(RBN_AUTOSIZE, OnRebarAutoSize) // Doesn't quite work ;P
+         MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBackground)
+         MESSAGE_HANDLER(WM_SIZE, OnSize)

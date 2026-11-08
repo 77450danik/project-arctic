@@ -1,0 +1,226 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Tue, 3 Nov 2026 12:00:00 +0100
+Subject: [PATCH] shell32, desk: The desktop shows the system icons checked, and only those.
+
+Desktop Icon Settings and the desktop read HideDesktopIcons with opposite
+defaults: with nothing written, the dialog showed every icon unchecked while
+the desktop showed Network, Internet and Documents. Both now take the same
+ones, This PC and the Recycle Bin shown, Windows' other system icons not,
+and the dialog has Windows 10's choices: Computer, Recycle Bin, Documents,
+Control Panel and Network.
+---
+--- a/dll/win32/shell32/folders/CDesktopFolder.cpp
++++ b/dll/win32/shell32/folders/CDesktopFolder.cpp
+@@ -1070,14 +1070,47 @@
+     return m_IsProgmanHosted == IsHosted;
+ }
+ 
++/* Arctic: whether a system icon stays off the desktop. What Desktop Icon
++ * Settings (desk.cpl) wrote, under HideDesktopIcons as the Start menu's
++ * style has it (1: hidden); with nothing written, This PC and the Recycle
++ * Bin are shown and Windows' other system icons are not. The dialog takes
++ * the same defaults: it shows what the desktop shows. */
++static BOOL SHELL32_DesktopIconHidden(REFCLSID Clsid)
++{
++    static const GUID hiddenByDefault[] =
++    {
++        { 0x208d2c60, 0x3aea, 0x1069, { 0xa2, 0xd7, 0x08, 0x00, 0x2b, 0x30, 0x30, 0x9d } }, /* Network */
++        { 0x871c5380, 0x42a0, 0x1069, { 0xa2, 0xea, 0x08, 0x00, 0x2b, 0x30, 0x30, 0x9d } }, /* Internet */
++        { 0x450d8fba, 0xad25, 0x11d0, { 0x98, 0xa8, 0x08, 0x00, 0x36, 0x1b, 0x11, 0x03 } }, /* Documents */
++        { 0x59031a47, 0x3f72, 0x44a7, { 0x89, 0xc5, 0x55, 0x95, 0xfe, 0x6b, 0x30, 0xee } }, /* the user's files */
++        { 0x21ec2020, 0x3aea, 0x1069, { 0xa2, 0xdd, 0x08, 0x00, 0x2b, 0x30, 0x30, 0x9d } }, /* Control Panel */
++        { 0x5399e694, 0x6ce5, 0x4d6c, { 0x8f, 0xce, 0x1d, 0x88, 0x70, 0xfd, 0xcb, 0xa0 } }, /* ... as Windows 10 names it */
++    };
++    const BOOL NewStart = SHELL_GetSetting(SSF_STARTPANELON, fStartPanelOn);
++    WCHAR path[MAX_PATH], name[CHARS_IN_GUID];
++    BOOL bDefault = FALSE;
++
++    for (UINT i = 0; i < _countof(hiddenByDefault); i++)
++    {
++        if (IsEqualGUID(Clsid, hiddenByDefault[i]))
++            bDefault = TRUE;
++    }
++    wsprintfW(path, L"%s\\%s", REGSTR_PATH_EXPLORER,
++              NewStart ? L"HideDesktopIcons\\NewStartPanel" : L"HideDesktopIcons\\ClassicStartMenu");
++    SHELL32_GUIDToStringW(Clsid, name);
++    return SHRegGetBoolUSValueW(path, name, FALSE, bDefault);
++}
++
+ HRESULT WINAPI CDesktopFolderViewCB::ShouldShow(IShellFolder *psf, PCIDLIST_ABSOLUTE pidlFolder, PCUITEMID_CHILD pidlItem)
+ {
+     const CLSID* pClsid;
+     if (IsProgmanHostedBrowser() && (pClsid = IsRegItem(pidlItem)) != NULL)
+     {
+-        const BOOL NewStart = SHELL_GetSetting(SSF_STARTPANELON, fStartPanelOn);
+-        LPCWSTR SubKey = NewStart ? L"HideDesktopIcons\\NewStartPanel" : L"HideDesktopIcons\\ClassicStartMenu";
+-        return SHELL32_IsShellFolderNamespaceItemHidden(SubKey, *pClsid) ? S_FALSE : S_OK;
++        /* Arctic: what Desktop Icon Settings (desk.cpl) shows checked, and
++           nothing else: by default This PC and the Recycle Bin are there, the
++           network, the user's files, the Control Panel and Internet Explorer
++           are not, as the dialog says (SHELL32_DesktopIconHidden) */
++        return SHELL32_DesktopIconHidden(*pClsid) ? S_FALSE : S_OK;
+     }
+     return S_OK;
+ }
+--- a/dll/cpl/desk/desktop.c
++++ b/dll/cpl/desk/desktop.c
+@@ -30,15 +30,20 @@
+ static const TCHAR szClassicStartMenu[] = TEXT("ClassicStartMenu");
+ static const TCHAR szNewStartPanel[] = TEXT("NewStartPanel");
+ 
++/* Arctic: Windows 10's system icons, and what the desktop shows of them when
++ * nothing was chosen (shell32's SHELL32_DesktopIconHidden): This PC and the
++ * Recycle Bin. The dialog shows what the desktop shows. */
+ struct
+ {
+     LPCTSTR CLSID;
+     UINT Checkbox;
++    BOOL HiddenByDefault;
+ } DesktopIcons[NUM_DESKTOP_ICONS] = {
+-    {TEXT("{450D8FBA-AD25-11D0-98A8-0800361B1103}"), IDC_ICONS_MYDOCS},   /* My Documents */
+-    {TEXT("{208D2C60-3AEA-1069-A2D7-08002B30309D}"), IDC_ICONS_MYNET},    /* My Network Places */
+-    {TEXT("{20D04FE0-3AEA-1069-A2D8-08002B30309D}"), IDC_ICONS_MYCOMP},   /* My Computer */
+-    {TEXT("{871C5380-42A0-1069-A2EA-08002B30309D}"), IDC_ICONS_INTERNET}, /* Internet Browser */
++    {TEXT("{20D04FE0-3AEA-1069-A2D8-08002B30309D}"), IDC_ICONS_MYCOMP, FALSE},  /* This PC */
++    {TEXT("{645FF040-5081-101B-9F08-00AA002F954E}"), IDC_ICONS_RECYCLE, FALSE}, /* Recycle Bin */
++    {TEXT("{450D8FBA-AD25-11D0-98A8-0800361B1103}"), IDC_ICONS_MYDOCS, TRUE},   /* Documents */
++    {TEXT("{21EC2020-3AEA-1069-A2DD-08002B30309D}"), IDC_ICONS_CPANEL, TRUE},   /* Control Panel */
++    {TEXT("{208D2C60-3AEA-1069-A2D7-08002B30309D}"), IDC_ICONS_MYNET, TRUE},    /* Network */
+ };
+ 
+ static const TCHAR szUserClass[] = TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CLSID\\");
+@@ -71,7 +76,8 @@
+ 
+     for (i = 0; i < _countof(pData->optIcons); i++)
+     {
+-        pData->optIcons[i].bHideClassic = SHRegGetBoolUSValue(regPath, DesktopIcons[i].CLSID, FALSE, FALSE);
++        pData->optIcons[i].bHideClassic = SHRegGetBoolUSValue(regPath, DesktopIcons[i].CLSID, FALSE,
++                                                              DesktopIcons[i].HiddenByDefault);
+     }
+ 
+     StringCchCopy(regPath, _countof(regPath), szHideDesktopIcons);
+@@ -79,7 +85,8 @@
+ 
+     for (i = 0; i < _countof(pData->optIcons); i++)
+     {
+-        pData->optIcons[i].bHideNewStart = SHRegGetBoolUSValue(regPath, DesktopIcons[i].CLSID, FALSE, TRUE);
++        pData->optIcons[i].bHideNewStart = SHRegGetBoolUSValue(regPath, DesktopIcons[i].CLSID, FALSE,
++                                                               DesktopIcons[i].HiddenByDefault);
+     }
+ 
+     for (i = 0; i < _countof(IconChange); i++)
+@@ -162,7 +169,7 @@
+     StringCchCopy(regPath, _countof(regPath), szHideDesktopIcons);
+     StringCchCat(regPath, _countof(regPath), bNewStart ? szNewStartPanel : szClassicStartMenu);
+ 
+-    return SHRegGetBoolUSValue(regPath, DesktopIcons[i].CLSID, FALSE, bNewStart);
++    return SHRegGetBoolUSValue(regPath, DesktopIcons[i].CLSID, FALSE, DesktopIcons[i].HiddenByDefault);
+ }
+ 
+ static VOID
+--- a/dll/cpl/desk/desk.h
++++ b/dll/cpl/desk/desk.h
+@@ -85,7 +85,7 @@
+ #define MAX_DESK_PAGES        32
+ #define NUM_SPECTRUM_BITMAPS  3
+ 
+-#define NUM_DESKTOP_ICONS  4  /* DesktopIcons array size */
++#define NUM_DESKTOP_ICONS  5  /* DesktopIcons array size */
+ #define NUM_CHANGE_ICONS   5  /* IconChange array size */
+ 
+ typedef struct
+--- a/dll/cpl/desk/resource.h
++++ b/dll/cpl/desk/resource.h
+@@ -212,6 +212,8 @@
+ #define IDC_ICONS_LISTVIEW   3905
+ #define IDC_ICONS_CHANGEICON 3906
+ #define IDC_ICONS_SETDEFAULT 3907
++#define IDC_ICONS_RECYCLE    3908
++#define IDC_ICONS_CPANEL     3909
+ 
+ /* Advanced General Dialog */
+ #define IDC_FONTSIZE_COMBO   5000
+--- a/dll/cpl/desk/lang/en-US.rc
++++ b/dll/cpl/desk/lang/en-US.rc
+@@ -159,16 +159,17 @@
+ CAPTION "General"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    GROUPBOX "Desktop icons", IDC_STATIC, 6, 4, 212, 40
+-    AUTOCHECKBOX "My &Documents", IDC_ICONS_MYDOCS, 14, 14, 100, 12
+-    AUTOCHECKBOX "My &Network Places", IDC_ICONS_MYNET, 116, 14, 100, 12
+-    AUTOCHECKBOX "&My Computer", IDC_ICONS_MYCOMP, 14, 28, 100, 12
+-    AUTOCHECKBOX "&Internet Browser", IDC_ICONS_INTERNET, 116, 28, 100, 12
++    GROUPBOX "Desktop icons", IDC_STATIC, 6, 4, 212, 54
++    AUTOCHECKBOX "&Computer", IDC_ICONS_MYCOMP, 14, 16, 100, 12
++    AUTOCHECKBOX "&Recycle Bin", IDC_ICONS_RECYCLE, 116, 16, 100, 12
++    AUTOCHECKBOX "&Documents", IDC_ICONS_MYDOCS, 14, 29, 100, 12
++    AUTOCHECKBOX "Control &Panel", IDC_ICONS_CPANEL, 116, 29, 100, 12
++    AUTOCHECKBOX "&Network", IDC_ICONS_MYNET, 14, 42, 100, 12
+     CONTROL "", IDC_ICONS_LISTVIEW, "SysListView32",
+             LVS_ICON | LVS_ALIGNLEFT | LVS_AUTOARRANGE | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP | WS_HSCROLL,
+-            6, 60, 212, 56
+-    PUSHBUTTON "C&hange Icon...", IDC_ICONS_CHANGEICON, 86, 120, 64, 15
+-    PUSHBUTTON "Re&store Default", IDC_ICONS_SETDEFAULT, 154, 120, 64, 15
++            6, 64, 212, 56
++    PUSHBUTTON "C&hange Icon...", IDC_ICONS_CHANGEICON, 86, 124, 64, 15
++    PUSHBUTTON "Re&store Default", IDC_ICONS_SETDEFAULT, 154, 124, 64, 15
+ END
+ 
+ IDD_ADVANCED_GENERAL DIALOGEX 0, 0, 253, 204
+--- a/dll/cpl/desk/lang/uk-UA.rc
++++ b/dll/cpl/desk/lang/uk-UA.rc
+@@ -169,16 +169,17 @@
+ CAPTION "General"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    GROUPBOX "Піктограми робочого столу", IDC_STATIC, 6, 4, 212, 40
+-    AUTOCHECKBOX "Мої &Документи", IDC_ICONS_MYDOCS, 14, 14, 100, 12
+-    AUTOCHECKBOX "Мої &Мережеві Місця", IDC_ICONS_MYNET, 116, 14, 100, 12
+-    AUTOCHECKBOX "М&ій Комп'ютер", IDC_ICONS_MYCOMP, 14, 28, 100, 12
+-    AUTOCHECKBOX "Ін&тернет Браузер", IDC_ICONS_INTERNET, 116, 28, 100, 12
++    GROUPBOX "Значки робочого стола", IDC_STATIC, 6, 4, 212, 54
++    AUTOCHECKBOX "&Комп’ютер", IDC_ICONS_MYCOMP, 14, 16, 100, 12
++    AUTOCHECKBOX "Ко&шик", IDC_ICONS_RECYCLE, 116, 16, 100, 12
++    AUTOCHECKBOX "&Документи", IDC_ICONS_MYDOCS, 14, 29, 100, 12
++    AUTOCHECKBOX "&Панель керування", IDC_ICONS_CPANEL, 116, 29, 100, 12
++    AUTOCHECKBOX "&Мережа", IDC_ICONS_MYNET, 14, 42, 100, 12
+     CONTROL "", IDC_ICONS_LISTVIEW, "SysListView32",
+             LVS_ICON | LVS_ALIGNLEFT | LVS_AUTOARRANGE | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP | WS_HSCROLL,
+-            6, 60, 212, 56
+-    PUSHBUTTON "&Змінити піктограму...", IDC_ICONS_CHANGEICON, 86, 120, 64, 15
+-    PUSHBUTTON "Відновити За Зам&овчуванням", IDC_ICONS_SETDEFAULT, 154, 120, 64, 15
++            6, 64, 212, 56
++    PUSHBUTTON "&Змінити значок...", IDC_ICONS_CHANGEICON, 86, 124, 64, 15
++    PUSHBUTTON "&Відновити стандартний", IDC_ICONS_SETDEFAULT, 154, 124, 64, 15
+ END
+ 
+ IDD_ADVANCED_GENERAL DIALOGEX 0, 0, 253, 204
+--- a/dll/cpl/desk/lang/ru-RU.rc
++++ b/dll/cpl/desk/lang/ru-RU.rc
+@@ -152,16 +152,17 @@
+ CAPTION "Общие"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    GROUPBOX "Значки рабочего стола", IDC_STATIC, 6, 4, 212, 40
+-    AUTOCHECKBOX "Мои &документы", IDC_ICONS_MYDOCS, 14, 14, 100, 12
+-    AUTOCHECKBOX "&Сетевое окружение", IDC_ICONS_MYNET, 116, 14, 100, 12
+-    AUTOCHECKBOX "Мой &компьютер", IDC_ICONS_MYCOMP, 14, 28, 100, 12
+-    AUTOCHECKBOX "&Интернет браузер", IDC_ICONS_INTERNET, 116, 28, 100, 12
++    GROUPBOX "Значки рабочего стола", IDC_STATIC, 6, 4, 212, 54
++    AUTOCHECKBOX "&Компьютер", IDC_ICONS_MYCOMP, 14, 16, 100, 12
++    AUTOCHECKBOX "Корз&ина", IDC_ICONS_RECYCLE, 116, 16, 100, 12
++    AUTOCHECKBOX "&Документы", IDC_ICONS_MYDOCS, 14, 29, 100, 12
++    AUTOCHECKBOX "&Панель управления", IDC_ICONS_CPANEL, 116, 29, 100, 12
++    AUTOCHECKBOX "&Сеть", IDC_ICONS_MYNET, 14, 42, 100, 12
+     CONTROL "", IDC_ICONS_LISTVIEW, "SysListView32",
+             LVS_ICON | LVS_ALIGNLEFT | LVS_AUTOARRANGE | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP | WS_HSCROLL,
+-            6, 60, 212, 56
+-    PUSHBUTTON "С&менить значок...", IDC_ICONS_CHANGEICON, 74, 120, 70, 15
+-    PUSHBUTTON "&Обычный значок", IDC_ICONS_SETDEFAULT, 148, 120, 70, 15
++            6, 64, 212, 56
++    PUSHBUTTON "С&менить значок...", IDC_ICONS_CHANGEICON, 74, 124, 70, 15
++    PUSHBUTTON "&Обычный значок", IDC_ICONS_SETDEFAULT, 148, 124, 70, 15
+ END
+ 
+ IDD_ADVANCED_GENERAL DIALOGEX 0, 0, 253, 204

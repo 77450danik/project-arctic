@@ -146,8 +146,139 @@
 #define IDS_PIN_START10         230
 #define IDS_UNPIN_START10       231
 #define IDS_RESULTS_FILES       232
+#define IDS_NOTIFICATIONS       233
+#define IDS_NO_NOTIFICATIONS    234
+#define IDS_CLEAR_ALL           235
+#define IDS_PERSONALIZE_TITLE   236
+#define IDS_MODE                237
+#define IDS_MODE_LIGHT          238   /* enum mode of personalize.c from here */
+#define IDS_MODE_DARK           239
+#define IDS_MODE_CUSTOM         240
+#define IDS_MODE_WINDOWS        241
+#define IDS_MODE_APPS           242
+#define IDS_CAPTIONS            243
+#define IDS_EFFECT_NONE         244
+#define IDS_RESET               245
+#define IDS_BUTTONS_TITLE       246
+#define IDS_TASK_BUTTONS        247
+#define IDS_TASKBAR_WIN10       248
+#define IDS_TASKBAR_WIN11       249
+#define IDS_ALIGNMENT           250
+#define IDS_ALIGN_LEFT          251
+#define IDS_ALIGN_CENTER        252
+#define IDS_START_BUTTON        253
+#define IDS_START_STANDARD      254
+#define IDS_START_IMAGE         255
+#define IDS_BROWSE              256
+#define IDS_IMAGES              257
+#define IDS_CLOSE_WINDOW        258
+#define IDS_CLOSE_ALL_WINDOWS   259
+#define IDS_CONTROLS_STYLE      260
+#define IDS_WIDGETS_TITLE       261
+#define IDS_WIDGET_QUERY        262
+#define IDS_WIDGET_SHOW         263
+#define IDS_WIDGET_BOTH         264
+#define IDS_WIDGET_ICON         265
+#define IDS_WIDGET_OFF          266
+#define IDS_WIDGET_HOVER        267
+#define IDS_WIDGET_REFRESH      268
+#define IDS_WIDGET_LOCATION     269
+#define IDS_WIDGET_CITY         270
+#define IDS_WIDGET_NOT_FOUND    271
+#define IDS_WIDGET_FORECAST     272
+#define IDS_WIDGET_ASK          273
+#define IDS_WIDGET_FEELS        274
+#define IDS_WIDGET_HUMIDITY     275
+#define IDS_WIDGET_WIND         276
+#define IDS_WIDGET_WIND_MPH     277
+#define IDS_WIDGET_NO_DATA      278
+#define IDS_WX_SUNNY            279
+#define IDS_WX_CLEAR            280
+#define IDS_WX_MOSTLY_CLEAR     281
+#define IDS_WX_PARTLY_CLOUDY    282
+#define IDS_WX_CLOUDY           283
+#define IDS_WX_FOG              284
+#define IDS_WX_DRIZZLE          285
+#define IDS_WX_RAIN             286
+#define IDS_WX_FREEZING         287
+#define IDS_WX_SNOW             288
+#define IDS_WX_SHOWERS          289
+#define IDS_WX_SNOW_SHOWERS     290
+#define IDS_EX_FOLDER           300
+#define IDS_EX_NEW              301
+#define IDS_EX_SORT             302
+#define IDS_EX_VIEW             303
+#define IDS_EX_SORT_NAME        304
+#define IDS_EX_SORT_DATE        305
+#define IDS_EX_SORT_TYPE        306
+#define IDS_EX_SORT_SIZE        307
+#define IDS_EX_LARGE            308
+#define IDS_EX_SMALL            309
+#define IDS_EX_LIST             310
+#define IDS_EX_DETAILS          311
+#define IDS_EX_TILES            312
+#define IDS_EX_SELECT_ALL       313
+#define IDS_EX_SELECT_NONE      314
+#define IDS_EX_INVERT           315
+#define IDS_EX_PROPERTIES       316
+#define IDS_EX_OPTIONS          317
+#define IDS_EX_NEW_WINDOW       318
+#define IDS_EX_SEARCH_IN        319
+#define IDS_EX_COPY             320
+#define IDS_EX_PASTE            321
+#define IDS_EX_CUT              322
+#define IDS_EX_COPY_PATH        323
+#define IDS_EX_PASTE_LINK       324
+#define IDS_EX_MOVE_TO          325
+#define IDS_EX_COPY_TO          326
+#define IDS_EX_DELETE           327
+#define IDS_EX_RENAME           328
+#define IDS_EX_NEW_FOLDER       329
+#define IDS_EX_CLIPBOARD        330
+#define IDS_EX_ORGANIZE         331
+#define IDS_EX_OPEN             332
+#define IDS_EX_SELECT           333
+#define IDS_EX_SHARE_WITH       334
+#define IDS_EX_LAYOUT           335
+#define IDS_EX_CURRENT_VIEW     336
+#define IDS_EX_HOME             337
+#define IDS_EX_SHARE            338
+#define IDS_EX_VIEW_TAB         339
+#define IDS_EX_FILE             340
+#define IDS_DW_TITLE            350
+#define IDS_DW_CLOCK            351
+#define IDS_DW_LANG_SYSTEM      352
+#define IDS_DW_MONITOR          353
+#define IDS_DW_CPU              354
+#define IDS_DW_GPU              355
+#define IDS_DW_RAM              356
+#define IDS_DW_DISK             357
+#define IDS_DW_BATTERY          358
+#define IDS_DW_RESET            359
+#define IDS_DW_OK               360
+#define IDS_DW_CANCEL           361
+#define IDS_DW_SETTINGS         362
+#define IDS_DW_REMOVE           363
+#define IDS_DW_FREE             364
+#define IDS_DW_GB               365
+#define IDS_DW_GHZ              366
+#define IDS_DW_MHZ              367
+#define IDS_DW_CHARGING         368
+#define IDS_DW_PLUGGED          369
+#define IDS_DW_REMAINING        370
+#define IDS_DW_NO_BATTERY       371
+#define IDS_DW_ON_BATTERY       372
+#define IDS_ICONS               373
+#define IDS_ICONS_STANDARD      374
+#define IDS_WX_STORM            291
 
 extern HINSTANCE startui_instance;
+
+/* gadgets.c: the widgets of the desktop */
+void gadgets_start(void);
+/* personalize.c: the icon theme, HKCU\Software\Arctic\Icons (user32's Arctic patch) */
+#define ICONS_CHANGED L"ArcticIcons"   /* WM_SETTINGCHANGE's lparam */
+void WINAPI ArcticDesktopWidgetsDialog( HWND parent );
 
 WCHAR *load_string( UINT id );
 
@@ -183,6 +314,13 @@ void start_look_load_own( int style, struct look *look );
 void start_look_load( int style, struct look *look );
 void start_look_save( int style, BOOL inherit, const struct look *own );
 void taskbar_page_look( struct look *look );
+
+/* personalize.c: the light and the dark mode */
+BOOL system_mode_light(void);
+void personalize_sync(void);
+
+/* widgets.c: the weather on the taskbar and what it opens */
+void widgets_hide(void);
 
 /* the controls of a look in a dialog, their ids from a first one */
 enum
@@ -230,7 +368,7 @@ enum glyph
     GLYPH_CONTROL_PANEL, GLYPH_SETTINGS, GLYPH_UPDATE, GLYPH_RUN, GLYPH_POWER, GLYPH_CHEVRON_RIGHT,
     GLYPH_CHEVRON_LEFT, GLYPH_CHEVRON_DOWN, GLYPH_SEARCH, GLYPH_FOLDER, GLYPH_VIDEO, GLYPH_NETWORK,
     GLYPH_HAMBURGER, GLYPH_CHEVRON_UP, GLYPH_LIST, GLYPH_CHECK, GLYPH_PIN, GLYPH_UNPIN, GLYPH_RESIZE, GLYPH_MORE,
-    GLYPH_SLEEP, GLYPH_SIGN_OUT, GLYPH_LOCK,
+    GLYPH_SLEEP, GLYPH_SIGN_OUT, GLYPH_LOCK, GLYPH_BELL, GLYPH_BELL_OFF, GLYPH_CLOSE,
 };
 
 int px( int n );
@@ -238,6 +376,7 @@ HFONT shell_font( int height, int weight );
 void draw_glyph( HDC hdc, enum glyph glyph, int x, int y, int size, COLORREF color, BYTE alpha );
 void fill_alpha( HDC hdc, const RECT *rect, COLORREF color, BYTE alpha );
 void fill_round_rect( HDC hdc, const RECT *rect, float radius, COLORREF color, BYTE alpha );
+void blend_bits( HDC hdc, int x, int y, int width, int height, const UINT32 *pixels );
 void make_opaque( HDC hdc, const RECT *rect );
 HBITMAP icon_bitmap( HICON icon, int size );
 void draw_icon_bitmap( HDC hdc, HBITMAP bitmap, int x, int y, int size );
@@ -356,6 +495,20 @@ void WINAPI ArcticApplyShellLook( HWND hwnd );
 enum item_action { ACTION_NONE, ACTION_LAUNCHED, ACTION_CHANGED };
 
 void paint_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, COLORREF color, UINT format );
+
+/* A list keeps its place in whole steps, at once; what the eye sees follows,
+ * an offset in pixels that runs out */
+struct smooth_scroll
+{
+    float offset;
+    DWORD last;
+};
+
+void smooth_scroll_add( struct smooth_scroll *s, HWND hwnd, UINT timer, int pixels, int limit );
+BOOL smooth_scroll_step( struct smooth_scroll *s, HWND hwnd, UINT timer );
+void smooth_scroll_stop( struct smooth_scroll *s, HWND hwnd, UINT timer );
+int smooth_scroll_offset( const struct smooth_scroll *s );
+
 void frame_rect( HDC hdc, const RECT *rect, int width, COLORREF color );
 HDC paint_begin( HWND hwnd, PAINTSTRUCT *ps, const struct palette *pal, HBITMAP *bitmap, HGDIOBJ *old );
 void paint_end( HWND hwnd, PAINTSTRUCT *ps, HDC mem, HBITMAP bitmap, HGDIOBJ old );
@@ -379,6 +532,7 @@ struct popup_item
     BOOL checked, disabled;
     const struct popup_item *sub;
     UINT sub_count;
+    HBITMAP icon;                /* instead of the glyph: a program's, premultiplied */
 };
 
 UINT popup_track( HWND owner, POINT pt, UINT align, const struct popup_item *items, UINT count, int popup_style,
@@ -393,6 +547,11 @@ enum item_action item_popup( HWND owner, struct item *item, POINT pt, BOOL remov
 int start_style_load(void);
 void start_style_save( int style );
 void describe_age( const FILETIME *time, WCHAR *text, int size );
+
+/* taskbtn.c: the taskbar's buttons */
+BOOL taskbar_centered(void);
+BOOL taskbar_style11(void);
+extern const GUID wic_factory_clsid, wic_factory_iid, wic_format_pbgra;
 
 /* startpage.c: the page "Меню «Пуск»" of the taskbar's properties */
 HPROPSHEETPAGE WINAPI ArcticStartMenuPage( HWND tray, void (WINAPI *classic_customize)( HWND ) );
@@ -409,6 +568,13 @@ BOOL menu10_visible(void);
 void menu11_toggle( HWND tray, const RECT *button, BOOL click );
 void menu11_hide(void);
 BOOL menu11_visible(void);
+
+/* clock11.c: what the clock opens, Windows 11's notification center over
+ * its calendar */
+void clock_toggle( HWND tray, const RECT *clock, BOOL click );
+void clock_hide(void);
+BOOL clock_visible(void);
+void text_over_opaque( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, COLORREF color, UINT format );
 
 /* avatar.c: the user's picture over the top edge */
 void avatar_show( HWND owner, int center_x, int center_y );

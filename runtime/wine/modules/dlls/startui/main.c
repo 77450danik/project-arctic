@@ -54,6 +54,7 @@ void WINAPI ArcticStartMenuToggle( HWND tray, const RECT *button, BOOL click )
         menu11_hide();
         if (same) return;
     }
+    clock_hide();
     switch (style)
     {
     case STYLE_WIN10: menu10_toggle( tray, button, click ); break;

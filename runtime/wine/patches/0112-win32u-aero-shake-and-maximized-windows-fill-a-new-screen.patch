@@ -1,0 +1,233 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] win32u: Aero Shake, and maximized windows fill a new screen.
+
+A window shaken by its caption minimizes the other windows, which stay
+so until the user brings them back.
+
+As in Windows, a maximized window with a frame takes the work area again
+when the display mode or the work area changes: a game of another
+resolution left programs the size of the old screen, still maximized.
+---
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 02fb048..5eebfdb 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -304,6 +304,9 @@ extern HWND get_hwnd_message_parent(void);
+ extern UINT get_window_dpi_awareness_context( HWND hwnd );
+ extern MINMAXINFO get_min_max_info( HWND hwnd );
+ extern void window_monitor_dpi_changed( HWND hwnd, UINT old_dpi, UINT new_dpi );
++/* Arctic: commands of ShowWindowAsync only win32u gives */
++#define ARCTIC_SW_REMAXIMIZE        0x4001  /* maximized: take the monitor's work area again */
++extern void remaximize_windows(void);
+ extern HWND get_window_relative( HWND hwnd, UINT rel );
+ extern DWORD get_window_thread( HWND hwnd, DWORD *process );
+ extern void arctic_log_minimize( HWND hwnd, const char *how, INT asked, INT done );
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 2d9ce2b..147c206 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -5032,6 +5032,43 @@ static void remaximize_window( HWND hwnd )
+                         info.ptMaxSize.y, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED );
+ }
+ 
++/* Arctic: ... and only if it is somewhere else now */
++static void remaximize_if_moved( HWND hwnd )
++{
++    MINMAXINFO info = get_min_max_info( hwnd );
++    RECT rect;
++
++    get_window_rect( hwnd, &rect, get_thread_dpi() );
++    if (rect.left == info.ptMaxPosition.x && rect.top == info.ptMaxPosition.y &&
++        rect.right - rect.left == info.ptMaxSize.x && rect.bottom - rect.top == info.ptMaxSize.y)
++        return;
++    remaximize_window( hwnd );
++}
++
++/***********************************************************************
++ *              remaximize_windows
++ *
++ * Arctic: the screen or its work area changed, and as in Windows every
++ * window with a frame that is maximized fills what there is now; each in
++ * its own thread, without waiting. A game of another resolution left a
++ * maximized program the size of the old screen, still marked maximized.
++ */
++void remaximize_windows(void)
++{
++    HWND *list = list_window_children( get_desktop_window() );
++
++    if (!list) return;
++    for (int i = 0; list[i]; i++)
++    {
++        DWORD style = get_window_long( list[i], GWL_STYLE );
++
++        if ((style & (WS_VISIBLE | WS_MAXIMIZE | WS_MINIMIZE)) != (WS_VISIBLE | WS_MAXIMIZE)) continue;
++        if ((style & WS_POPUP) && (style & WS_CAPTION) != WS_CAPTION) continue;
++        NtUserShowWindowAsync( list[i], ARCTIC_SW_REMAXIMIZE );
++    }
++    free( list );
++}
++
+ static void send_dpi_changed_to_children( HWND parent, UINT msg )
+ {
+     HWND *list = list_window_children( parent );
+@@ -5237,6 +5274,12 @@ static BOOL show_window( HWND hwnd, INT cmd )
+ 
+     context = set_thread_dpi_awareness_context( get_window_dpi_awareness_context( hwnd ));
+ 
++    if (cmd == ARCTIC_SW_REMAXIMIZE)
++    {
++        if ((style & (WS_MAXIMIZE | WS_MINIMIZE)) == WS_MAXIMIZE) remaximize_if_moved( hwnd );
++        goto done;
++    }
++
+     if ((!(style & (WS_POPUP | WS_CHILD))
+          || ((style & (WS_POPUP | WS_CHILD | WS_CAPTION)) == (WS_POPUP | WS_CAPTION)))
+         && !get_window_relative( hwnd, GW_OWNER )
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 5c93e0e..926da1d 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -4840,6 +4840,7 @@ static void display_mode_changed( BOOL broadcast )
+         /* post clip_fullscreen_window request to the foreground window */
+         NtUserPostMessage( NtUserGetForegroundWindow(), WM_WINE_CLIPCURSOR, SET_CURSOR_FSCLIP, 0 );
+     }
++    remaximize_windows();
+ }
+ 
+ static LONG apply_display_settings( struct source *target, const DEVMODEW *devmode,
+@@ -6861,6 +6862,7 @@ BOOL WINAPI NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT w
+         unlock_display_devices();
+         spi_loaded[spi_idx] = FALSE;
+         ret = TRUE;
++        remaximize_windows();
+         break;
+     }
+     case SPI_GETWORKAREA:
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+index 0ae648c..f3325bd 100644
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -779,6 +779,87 @@ static BOOL restore_to_drag( HWND hwnd, POINT *pt )
+     return FALSE;
+ }
+ 
++/* Aero Shake: a window shaken by its caption minimizes the others, which
++ * stay so until the user brings them back. A shake is three turns within
++ * a second, each stroke quick and longer than a slip of the hand. */
++#define SHAKE_TURNS   3
++#define SHAKE_TIME    1000   /* ms, the turns */
++#define SHAKE_STROKE  600    /* ms, a slower stroke is a drag */
++
++struct shake_axis
++{
++    int origin;              /* where the stroke began */
++    int extreme;             /* how far it has gone */
++    int dir;                 /* -1, 1, 0: none yet */
++    DWORD start;             /* when it began */
++    DWORD turns[SHAKE_TURNS];
++    UINT count;
++};
++
++static BOOL shake_track( struct shake_axis *axis, int pos, DWORD now, int stroke, int jitter )
++{
++    if (!axis->dir)
++    {
++        if (abs( pos - axis->origin ) < jitter) return FALSE;
++        axis->dir = pos > axis->origin ? 1 : -1;
++        axis->extreme = pos;
++        axis->start = now;
++        return FALSE;
++    }
++    if ((pos - axis->extreme) * axis->dir > 0)
++    {
++        axis->extreme = pos;
++        return FALSE;
++    }
++    if ((axis->extreme - pos) * axis->dir < jitter) return FALSE;
++
++    /* it turned back */
++    if (abs( axis->extreme - axis->origin ) < stroke || now - axis->start > SHAKE_STROKE) axis->count = 0;
++    else
++    {
++        if (axis->count == SHAKE_TURNS)
++        {
++            memmove( axis->turns, axis->turns + 1, (SHAKE_TURNS - 1) * sizeof(axis->turns[0]) );
++            axis->count--;
++        }
++        axis->turns[axis->count++] = now;
++    }
++    axis->origin = axis->extreme;
++    axis->extreme = pos;
++    axis->dir = -axis->dir;
++    axis->start = now;
++    if (axis->count < SHAKE_TURNS || now - axis->turns[0] > SHAKE_TIME) return FALSE;
++    axis->count = 0;
++    return TRUE;
++}
++
++/* a program's window with a frame that can go, not what belongs to the
++ * dragged one or what it belongs to */
++static BOOL shake_takes( HWND hwnd, HWND dragged )
++{
++    DWORD style = get_window_long( hwnd, GWL_STYLE ), exstyle = get_window_long( hwnd, GWL_EXSTYLE );
++    HWND owner;
++
++    if ((style & (WS_VISIBLE | WS_MINIMIZE | WS_CHILD)) != WS_VISIBLE) return FALSE;
++    if (!(style & WS_MINIMIZEBOX) || (style & WS_CAPTION) != WS_CAPTION) return FALSE;
++    if (exstyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) return FALSE;
++    for (owner = hwnd; owner; owner = get_window_relative( owner, GW_OWNER )) if (owner == dragged) return FALSE;
++    for (owner = dragged; owner; owner = get_window_relative( owner, GW_OWNER )) if (owner == hwnd) return FALSE;
++    if (get_window_relative( hwnd, GW_OWNER ) && !(exstyle & WS_EX_APPWINDOW)) return FALSE;
++    return TRUE;
++}
++
++static void shake_others( HWND dragged )
++{
++    HWND *list = list_window_children( get_desktop_window() );
++
++    if (!list) return;
++    for (int i = 0; list[i]; i++)
++        if (list[i] != dragged && shake_takes( list[i], dragged ))
++            NtUserShowWindowAsync( list[i], SW_SHOWMINNOACTIVE );
++    free( list );
++}
++
+ /***********************************************************************
+  *           sys_command_size_move
+  *
+@@ -798,6 +879,9 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
+     enum snap snapping = SNAP_NONE;
+     RECT snap_rect;
+     BOOL can_snap;
++    struct shake_axis shake_x = { 0 }, shake_y = { 0 };
++    BOOL shaken = FALSE;
++    int shake_stroke = get_system_metrics( SM_CXDRAG ) * 8, shake_jitter = get_system_metrics( SM_CXDRAG ) * 2;
+     HWND parent;
+     HDC hdc;
+     MSG msg;
+@@ -819,6 +903,8 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
+                (style & WS_CAPTION) == WS_CAPTION;
+ 
+     capture_point = pt;
++    shake_x.origin = pt.x;
++    shake_y.origin = pt.y;
+     NtUserClipCursor( NULL );
+ 
+     TRACE( "hwnd %p command %04x, hittest %d, pos %d,%d\n",
+@@ -936,6 +1022,15 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
+ 
+         pt = msg.pt;
+ 
++        /* shaken by its caption: the other windows go, once a drag */
++        if (!shaken && syscommand == SC_MOVE && hittest == HTCAPTION && !parent && msg.message == WM_MOUSEMOVE &&
++            (shake_track( &shake_x, msg.pt.x, msg.time, shake_stroke, shake_jitter ) ||
++             shake_track( &shake_y, msg.pt.y, msg.time, shake_stroke, shake_jitter )))
++        {
++            shaken = TRUE;
++            shake_others( hwnd );
++        }
++
+         /* dragged to an edge of the screen: where it would snap shows */
+         if (can_snap && hittest == HTCAPTION && msg.message == WM_MOUSEMOVE)
+         {

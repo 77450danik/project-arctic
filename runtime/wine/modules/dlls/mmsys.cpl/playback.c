@@ -247,12 +247,19 @@ static void draw_tick( HDC hdc, int x, int y, int size )
     DeleteObject( white );
 }
 
+/* the programs' dark mode (desk.cpl, Personalization), as the system colours have it */
+static BOOL night_mode(void)
+{
+    COLORREF c = GetSysColor( COLOR_WINDOW );
+    return GetRValue( c ) + GetGValue( c ) + GetBValue( c ) < 3 * 128;
+}
+
 static void draw_meter( HDC hdc, const RECT *row, float peak )
 {
     int bars = 10, bar_h = px( 3 ), gap = px( 1 ), width = px( 10 );
     int lit = peak <= 0 ? 0 : (int)(min( 1.f, sqrtf( peak ) ) * bars + 0.5f);
     int x = row->right - width - px( 12 ), y = row->bottom - px( 8 ) - bar_h;
-    HBRUSH on = CreateSolidBrush( RGB( 0x33, 0xc4, 0x4a ) ), off = CreateSolidBrush( RGB( 0xd0, 0xd0, 0xd0 ) );
+    HBRUSH on = CreateSolidBrush( RGB( 0x33, 0xc4, 0x4a ) ), off = CreateSolidBrush( night_mode() ? RGB( 0x3c, 0x3c, 0x3c ) : RGB( 0xd0, 0xd0, 0xd0 ) );
 
     for (int i = 0; i < bars; i++)
     {
@@ -283,7 +290,8 @@ static void draw_item( HWND dlg, struct page *page, const DRAWITEMSTRUCT *dis )
     if (chosen)
     {
         /* the selection of Windows 7's lists: light blue with a border */
-        HBRUSH fill = CreateSolidBrush( RGB( 0xd9, 0xeb, 0xfc ) ), frame = CreateSolidBrush( RGB( 0x7d, 0xa2, 0xce ) );
+        HBRUSH fill = CreateSolidBrush( night_mode() ? RGB( 0x1d, 0x3b, 0x56 ) : RGB( 0xd9, 0xeb, 0xfc ) ),
+               frame = CreateSolidBrush( night_mode() ? RGB( 0x3d, 0x6a, 0x96 ) : RGB( 0x7d, 0xa2, 0xce ) );
         RECT sel = row;
 
         InflateRect( &sel, -px( 1 ), -px( 1 ) );

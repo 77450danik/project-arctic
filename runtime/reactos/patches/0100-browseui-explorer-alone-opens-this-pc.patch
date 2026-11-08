@@ -1,0 +1,32 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] browseui: explorer.exe alone opens This PC.
+
+It asked for Quick access, which is a part of the tree and no folder a
+window can open, and so nothing opened: not from Run, and not from the
+File Explorer pinned to Start.
+---
+diff --git a/dll/win32/browseui/parsecmdline.cpp b/dll/win32/browseui/parsecmdline.cpp
+index f257673..d4256a7 100644
+--- a/dll/win32/browseui/parsecmdline.cpp
++++ b/dll/win32/browseui/parsecmdline.cpp
+@@ -227,17 +227,10 @@ static LPITEMIDLIST _GetDocumentsPidl()
+  * 2 Quick access (the default). With no Quick access folder, This PC. */
+ static LPITEMIDLIST _GetLaunchToPidl()
+ {
+-    DWORD dwLaunchTo = 2, cb = sizeof(dwLaunchTo);
+     LPITEMIDLIST pidl = NULL;
+ 
+-    SHGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+-                L"LaunchTo", NULL, &dwLaunchTo, &cb);
+-    if (dwLaunchTo != 1)
+-    {
+-        WCHAR szQuickAccess[] = L"::{679f85cb-0220-4080-b29b-5540cc05aab6}";
+-        if (SUCCEEDED(_ParsePathToPidl(szQuickAccess, &pidl)))
+-            return pidl;
+-    }
++    /* Arctic: Quick access is a part of the tree, no folder a window can
++       open: with it, explorer.exe alone opened nothing at all */
+     if (SUCCEEDED(SHGetSpecialFolderLocation(NULL, CSIDL_DRIVES, &pidl)))
+         return pidl;
+     return _GetDocumentsPidl();

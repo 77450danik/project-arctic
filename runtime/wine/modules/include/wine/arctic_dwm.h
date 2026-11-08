@@ -18,7 +18,7 @@
 #define __WINE_ARCTIC_DWM_H
 
 #define ARCTIC_DWM_SECTION     L"Global\\__arctic_dwm"
-#define ARCTIC_DWM_VERSION     2
+#define ARCTIC_DWM_VERSION     3
 #define ARCTIC_DWM_MAX_ENTRIES 512
 
 /* how a window comes and goes, beyond what dwm.exe picks from its style */
@@ -27,10 +27,19 @@
 #define ARCTIC_TRANSITION_FADE     2  /* opacity only */
 #define ARCTIC_TRANSITION_SLIDE_UP 3  /* from below, as the Start menu */
 #define ARCTIC_TRANSITION_START10  4  /* further from below and quicker to slow, as Windows 10's Start menu */
+#define ARCTIC_TRANSITION_START11  5  /* from below, slowing into place, as Windows 11's Start menu */
+#define ARCTIC_TRANSITION_FROM_LEFT 6 /* from the left, slowing into place, as Windows 11's widgets */
+#define ARCTIC_TRANSITION_FROM_RIGHT 7 /* ... from the right */
 
 /* DWMWA_WINDOW_CORNER_PREFERENCE beyond DWMWCP_*: rounded by this many
  * pixels at 100% (Windows 11's Start menu: 8) */
 #define ARCTIC_CORNER_RADIUS(px)   (0x100 | (px))
+/* the taskbar's flyouts (sound, network, battery, notifications and the
+ * calendar), rounded as Windows 11 rounds its quick settings */
+#define ARCTIC_FLYOUT_CORNER       ARCTIC_CORNER_RADIUS(8)
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
 
 /* the private DWMWINDOWATTRIBUTE that sets it */
 #define DWMWA_ARCTIC_TRANSITION    0x1000
@@ -47,6 +56,20 @@
  * white, as in the light theme: a DWORD, TRUE when white shows the backdrop
  * (LAYER_KEYED_LIGHT of dwm.exe), FALSE when black does (the default) */
 #define DWMWA_ARCTIC_LIGHT         0x1004
+/* the private DWMWINDOWATTRIBUTE uxtheme sets on a window whose title bar
+ * it draws over a backdrop (desk.cpl, Personalization): a struct
+ * arctic_caption, height 0 for none. Only those rows are keyed; the rest
+ * of the window stays as it is drawn. */
+#define DWMWA_ARCTIC_CAPTION       0x1005
+
+struct arctic_caption
+{
+    UINT32 height;           /* the window's rows from its top that are its title bar */
+    UINT32 accent;           /* ARCTIC_ACCENT_*: what shows behind them */
+    UINT32 color;            /* 0xAABBGGRR, the tint */
+    UINT32 blur;             /* 1-100, as DWMWA_ARCTIC_BLUR */
+    UINT32 light;            /* drawn dark on white: white shows the backdrop */
+};
 
 struct arctic_accent_policy
 {
@@ -84,6 +107,7 @@ struct arctic_dwm_window
     INT32  minimize_left, minimize_top, minimize_right, minimize_bottom;  /* empty: none */
     UINT32 blur;             /* DWMWA_ARCTIC_BLUR */
     UINT32 light;            /* DWMWA_ARCTIC_LIGHT */
+    struct arctic_caption caption;  /* DWMWA_ARCTIC_CAPTION */
 };
 
 struct arctic_dwm_thumbnail

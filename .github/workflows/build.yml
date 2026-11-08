@@ -189,6 +189,9 @@ jobs:
           name: reactos-shell
           path: out/reactos
 
+      # Direct3D 12: the vkd3d-proton tag with Arctic's patches (widl from the Wine job)
+      - name: Direct3D 12 (vkd3d-proton)
+        run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/build-vkd3d-proton.sh
       # the build's number and date for the About dialog: the container has no git
       - name: Host root filesystem and NT prefix
         run: |

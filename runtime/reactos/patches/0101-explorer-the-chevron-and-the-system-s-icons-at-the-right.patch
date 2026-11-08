@@ -1,0 +1,1076 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] explorer: The chevron, and the system's icons at the right.
+
+As in Windows 10 and 11 a program's icon goes behind a chevron, which
+is always there and whose flyout has the look of the taskbar's style. An
+icon is dragged there and back and among the others; network, sound and
+power stay at the right, in that order.
+---
+diff --git a/base/shell/explorer/syspager.cpp b/base/shell/explorer/syspager.cpp
+index 6b9cb36..b62e5a9 100644
+--- a/base/shell/explorer/syspager.cpp
++++ b/base/shell/explorer/syspager.cpp
+@@ -811,6 +811,11 @@ struct InternalIconData : NOTIFYICONDATA
+     UINT GetVersion() const { return LOWORD(cbSize); }
+     BOOL IsRemoved() const { return HIWORD(cbSize); }
+     void MarkAsRemoved() { cbSize |= 0x80000000; }
++
++    /* Arctic */
++    INT nRank;       /* 1 network, 2 sound, 3 power; 0 a program's */
++    BOOL bOverflow;  /* behind the chevron */
++    INT nOrder;      /* where the user put it among the programs' */
+ };
+ 
+ struct IconWatcherData
+@@ -1184,6 +1189,92 @@ private:
+     void Close(IN OUT InternalIconData * notifyItem, IN UINT uReason);
+ };
+ 
++/* Arctic: where an icon stands. Network, sound and power are the system's:
++ * always on the taskbar, at its right, in that order. A program's icon goes
++ * behind the chevron, as in Windows 10 and 11, until it is dragged out onto
++ * the taskbar; an icon can be dragged there and back and among the others
++ * (HKCU\Software\Arctic\Tray: OnTaskbar and Order, by the program's file). */
++#define ARCTIC_TRAY_KEY     L"Software\\Arctic\\Tray\\OnTaskbar"
++#define ARCTIC_ORDER_KEY    L"Software\\Arctic\\Tray\\Order"
++#define ARCTIC_ORDER_NONE   0x7fffffff
++#define SPM_BEGINDRAG       (WM_USER + 0x122)
++#define SPM_ICONSCHANGED    (WM_USER + 0x120)
++#define SPM_CHEVRONCLICK    (WM_USER + 0x121)
++#define ARCTIC_CHEVRON      ArcticDpiScale(24)
++
++static INT ArcticIconRank(HWND hwnd)
++{
++    WCHAR szClass[32];
++
++    if (!GetClassNameW(hwnd, szClass, _countof(szClass)))
++        return 0;
++    if (!wcscmp(szClass, L"PniduiTray"))
++        return 1;
++    if (!wcscmp(szClass, L"ArcticVolumeTray"))
++        return 2;
++    if (!wcscmp(szClass, L"ArcticBatteryTray"))
++        return 3;
++    return 0;
++}
++
++/* the file of the program an icon belongs to; FALSE for the shell's own */
++static BOOL ArcticIconProgram(HWND hwnd, LPWSTR pszName, DWORD cchName)
++{
++    typedef BOOL (WINAPI *PFN_QUERY)(HANDLE, DWORD, LPWSTR, PDWORD);
++    PFN_QUERY pQuery = (PFN_QUERY)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "QueryFullProcessImageNameW");
++    WCHAR szPath[MAX_PATH];
++    DWORD pid = 0, cch = _countof(szPath);
++    HANDLE hProcess;
++    BOOL ok = FALSE;
++
++    if (!pQuery || !GetWindowThreadProcessId(hwnd, &pid) || pid == GetCurrentProcessId())
++        return FALSE;
++    if ((hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)))
++    {
++        ok = pQuery(hProcess, 0, szPath, &cch);
++        CloseHandle(hProcess);
++    }
++    if (ok)
++        StringCchCopyW(pszName, cchName, PathFindFileNameW(szPath));
++    return ok;
++}
++
++static BOOL ArcticIconOnTaskbar(HWND hwnd)
++{
++    WCHAR szName[MAX_PATH];
++    DWORD dwValue = 0, cb = sizeof(dwValue);
++
++    if (!ArcticIconProgram(hwnd, szName, _countof(szName)))
++        return TRUE;
++    return !RegGetValueW(HKEY_CURRENT_USER, ARCTIC_TRAY_KEY, szName, RRF_RT_REG_DWORD, NULL, &dwValue, &cb) && dwValue;
++}
++
++static INT ArcticIconOrder(HWND hwnd)
++{
++    WCHAR szName[MAX_PATH];
++    DWORD dwValue = 0, cb = sizeof(dwValue);
++
++    if (!ArcticIconProgram(hwnd, szName, _countof(szName)) ||
++        RegGetValueW(HKEY_CURRENT_USER, ARCTIC_ORDER_KEY, szName, RRF_RT_REG_DWORD, NULL, &dwValue, &cb))
++        return ARCTIC_ORDER_NONE;
++    return (INT)dwValue;
++}
++
++static VOID ArcticIconRemember(HWND hwnd, BOOL bOnTaskbar)
++{
++    WCHAR szName[MAX_PATH];
++    DWORD dwValue = bOnTaskbar;
++    HKEY hKey;
++
++    if (!ArcticIconProgram(hwnd, szName, _countof(szName)))
++        return;
++    if (!RegCreateKeyExW(HKEY_CURRENT_USER, ARCTIC_TRAY_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL))
++    {
++        RegSetValueExW(hKey, szName, 0, REG_DWORD, (const BYTE *)&dwValue, sizeof(dwValue));
++        RegCloseKey(hKey);
++    }
++}
++
+ class CNotifyToolbar :
+     public CWindowImplBaseT< CToolbar<InternalIconData>, CControlWinTraits >
+ {
+@@ -1191,6 +1282,11 @@ class CNotifyToolbar :
+     int m_VisibleButtonCount;
+ 
+     CBalloonQueue * m_BalloonQueue;
++    int m_DragFrom;  /* Arctic: the icon the left button went down on, and where */
++    POINT m_ptDrag;
++
++    VOID RenumberButtons();
++    VOID SaveOrder();
+ 
+ public:
+     CNotifyToolbar();
+@@ -1207,6 +1303,13 @@ public:
+     VOID ResizeImagelist();
+     bool SendNotifyCallback(InternalIconData* notifyItem, UINT uMsg);
+     void RefreshToolbarMetrics(BOOL bForceRefresh);
++    int GetOverflow(int *pIndices, int cMax);
++    VOID DrawIcon(int index, HDC hdc, int x, int y);
++    VOID IconMouse(int index, UINT uMsg);
++    VOID SetOverflow(int index, BOOL bOverflow);
++    VOID PlaceIcon(int from, BOOL bOverflow, int before);
++    HICON CopyIcon(int index);
++    int IndexBefore(POINT ptScreen);
+ 
+ private:
+     LRESULT OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+@@ -1226,6 +1329,421 @@ public:
+     void Initialize(HWND hWndParent, CBalloonQueue * queue);
+ };
+ 
++/* Arctic: a chevron pointing up, centred */
++static VOID ArcticDrawChevron(HDC hdc, const RECT *prc, COLORREF ink)
++{
++    enum { SAMPLES = 4 };
++    const int cxArt = ArcticDpiScale(10) + 2, cyArt = ArcticDpiScale(5) + 2;
++    const float half = ArcticDpiScale(115) / 200.0f;
++    const float ax = 1, ay = cyArt - 1.0f, mx = cxArt / 2.0f, my = 1, bx = cxArt - 1.0f;
++    BITMAPINFO bi = {{sizeof(bi.bmiHeader), cxArt, -cyArt, 1, 32, BI_RGB}};
++    BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
++    DWORD *pBits;
++    HBITMAP hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)&pBits, NULL, 0);
++    HDC hdcMem;
++    HGDIOBJ hOld;
++
++    if (!hbm)
++        return;
++    for (int y = 0; y < cyArt; y++)
++    {
++        for (int x = 0; x < cxArt; x++)
++        {
++            int hits = 0;
++
++            for (int j = 0; j < SAMPLES; j++)
++            {
++                for (int i = 0; i < SAMPLES; i++)
++                {
++                    float px = x + (i + 0.5f) / SAMPLES, py = y + (j + 0.5f) / SAMPLES;
++                    float x0 = px < mx ? ax : bx, dx = mx - x0, dy = my - ay;
++                    float t = ((px - x0) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
++                    float ex, ey;
++
++                    t = t < 0 ? 0 : t > 1 ? 1 : t;
++                    ex = x0 + t * dx - px;
++                    ey = ay + t * dy - py;
++                    if (ex * ex + ey * ey <= half * half)
++                        hits++;
++                }
++            }
++            DWORD a = hits * 255 / (SAMPLES * SAMPLES);
++            pBits[y * cxArt + x] = (a << 24) | ((GetRValue(ink) * a / 255) << 16) |
++                                   ((GetGValue(ink) * a / 255) << 8) | (GetBValue(ink) * a / 255);
++        }
++    }
++    hdcMem = CreateCompatibleDC(hdc);
++    hOld = SelectObject(hdcMem, hbm);
++    GdiAlphaBlend(hdc, (prc->left + prc->right - cxArt) / 2, (prc->top + prc->bottom - cyArt) / 2,
++                  cxArt, cyArt, hdcMem, 0, 0, cxArt, cyArt, bf);
++    SelectObject(hdcMem, hOld);
++    DeleteDC(hdcMem);
++    DeleteObject(hbm);
++}
++
++/* Arctic: the chevron left of the icons */
++class CTrayChevron :
++    public CWindowImpl<CTrayChevron, CWindow, CControlWinTraits>
++{
++    BOOL m_bHot, m_bOpen;
++
++public:
++    DECLARE_WND_CLASS_EX(L"ArcticTrayChevron", CS_HREDRAW | CS_VREDRAW, COLOR_3DFACE)
++
++    CTrayChevron() : m_bHot(FALSE), m_bOpen(FALSE) {}
++
++    VOID SetOpen(BOOL bOpen)
++    {
++        m_bOpen = bOpen;
++        Invalidate();
++    }
++
++    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        PAINTSTRUCT ps;
++        HDC hdc = BeginPaint(&ps);
++        BOOL bLight = ArcticTaskbarLight();
++        COLORREF ink = ARCTIC_INK(bLight);
++        RECT rc;
++
++        GetClientRect(&rc);
++        FillRect(hdc, &rc, (HBRUSH)GetStockObject(bLight ? WHITE_BRUSH : BLACK_BRUSH));
++        if (m_bHot || m_bOpen)
++        {
++            if (ArcticTaskbarStyle11())
++                ArcticTaskbarPaintButton(hdc, &rc, ARCTIC_BUTTON_START | (m_bOpen ? ARCTIC_BUTTON_PRESSED : ARCTIC_BUTTON_HOT));
++            else
++                ArcticFillAlpha(hdc, &rc, ink, m_bOpen ? 0x26 : 0x1a);
++        }
++        ArcticDrawChevron(hdc, &rc, ink);
++        EndPaint(&ps);
++        return 0;
++    }
++
++    LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        return 1;
++    }
++
++    LRESULT OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (!m_bHot)
++        {
++            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, m_hWnd, 0 };
++
++            TrackMouseEvent(&tme);
++            m_bHot = TRUE;
++            Invalidate();
++        }
++        return 0;
++    }
++
++    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_bHot = FALSE;
++        Invalidate();
++        return 0;
++    }
++
++    LRESULT OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        GetParent().PostMessage(SPM_CHEVRONCLICK);
++        return 0;
++    }
++
++    BEGIN_MSG_MAP(CTrayChevron)
++        MESSAGE_HANDLER(WM_PAINT, OnPaint)
++        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
++        MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseMove)
++        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
++        MESSAGE_HANDLER(WM_LBUTTONUP, OnLButtonUp)
++    END_MSG_MAP()
++};
++
++/* Arctic: what is behind the chevron: a grid of icons over the shell's look,
++ * against the taskbar and square as Windows 10's, a little off it and
++ * rounded as Windows 11's. An icon dragged out onto the taskbar stays there. */
++class CTrayOverflow :
++    public CWindowImpl<CTrayOverflow, CWindow, CWinTraits<WS_POPUP, WS_EX_TOOLWINDOW | WS_EX_TOPMOST> >
++{
++    enum { MAX_ICONS = 64 };
++
++    CNotifyToolbar *m_pToolbar;
++    CTrayChevron *m_pChevron;
++    HWND m_hwndPager, m_hwndTip;
++    int m_indices[MAX_ICONS];
++    int m_count, m_columns, m_hot, m_pressed;
++    BOOL m_bLight;
++    POINT m_ptPressed;
++    DWORD m_dwClosed;
++
++    static int Cell() { return ArcticDpiScale(40); }
++    static int Pad() { return ArcticTaskbarStyle11() ? ArcticDpiScale(4) : ArcticDpiScale(2); }
++
++    VOID CellRect(int i, RECT *prc)
++    {
++        int x = Pad() + (i % m_columns) * Cell(), y = Pad() + (i / m_columns) * Cell();
++
++        SetRect(prc, x, y, x + Cell(), y + Cell());
++    }
++
++    int HitTest(POINT pt)
++    {
++        for (int i = 0; i < m_count; i++)
++        {
++            RECT rc;
++
++            CellRect(i, &rc);
++            if (PtInRect(&rc, pt))
++                return i;
++        }
++        return -1;
++    }
++
++    /* the icons there are now, and a tip over each */
++    VOID Collect()
++    {
++        TOOLINFOW ti = { sizeof(ti) };
++
++        ti.hwnd = m_hWnd;
++        for (UINT id = 1; id <= MAX_ICONS; id++)
++        {
++            ti.uId = id;
++            ::SendMessageW(m_hwndTip, TTM_DELTOOLW, 0, (LPARAM)&ti);
++        }
++        m_count = m_pToolbar->GetOverflow(m_indices, MAX_ICONS);
++        m_columns = 1;
++        while (m_columns < 5 && m_columns * m_columns < m_count)
++            m_columns++;
++        for (int i = 0; i < m_count; i++)
++        {
++            ZeroMemory(&ti, sizeof(ti));
++            ti.cbSize = sizeof(ti);
++            ti.uFlags = TTF_SUBCLASS;
++            ti.hwnd = m_hWnd;
++            ti.uId = i + 1;
++            CellRect(i, &ti.rect);
++            ti.lpszText = m_pToolbar->GetItemData(m_indices[i])->szTip;
++            ::SendMessageW(m_hwndTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
++        }
++    }
++
++    VOID Place()
++    {
++        BOOL b11 = ArcticTaskbarStyle11();
++        int rows = max(1, (m_count + m_columns - 1) / m_columns);
++        int cx = m_columns * Cell() + 2 * Pad(), cy = rows * Cell() + 2 * Pad();
++        int gap = b11 ? ArcticDpiScale(8) : 0, x, y;
++        RECT rcChevron, rcWork;
++
++        m_pChevron->GetWindowRect(&rcChevron);
++        SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
++        x = (rcChevron.left + rcChevron.right - cx) / 2;
++        x = max((int)rcWork.left, min(x, (int)rcWork.right - cx));
++        y = rcChevron.top > (rcWork.top + rcWork.bottom) / 2 ? rcWork.bottom - cy - gap : rcWork.top + gap;
++        SetWindowPos(HWND_TOPMOST, x, y, cx, cy, SWP_NOACTIVATE);
++    }
++
++public:
++    DECLARE_WND_CLASS_EX(L"ArcticTrayOverflow", CS_DBLCLKS, COLOR_WINDOW)
++
++    CTrayOverflow() : m_pToolbar(NULL), m_pChevron(NULL), m_hwndPager(NULL), m_hwndTip(NULL), m_count(0), m_columns(1),
++                      m_hot(-1), m_pressed(-1), m_bLight(FALSE), m_dwClosed(0)
++    {
++    }
++
++    BOOL IsOpen() { return m_hWnd && IsWindowVisible(); }
++    DWORD ClosedAt() { return m_dwClosed; }
++
++    VOID Open(CNotifyToolbar *pToolbar, CTrayChevron *pChevron, HWND hwndPager)
++    {
++        typedef BOOL (WINAPI *PFN_LOOKEX)(HWND);
++        HMODULE hModule = LoadLibraryW(L"startui.dll");
++        PFN_LOOKEX pLook = hModule ? (PFN_LOOKEX)GetProcAddress(hModule, "ArcticApplyShellLookEx") : NULL;
++        BOOL b11 = ArcticTaskbarStyle11();
++        DWORD dwTransition = b11 ? 2 /* fade */ : ARCTIC_TRANSITION_SLIDE_UP;
++        DWORD dwCorner = b11 ? 0x108 /* rounded by 8 */ : 1 /* DWMWCP_DONOTROUND */;
++
++        m_pToolbar = pToolbar;
++        m_pChevron = pChevron;
++        m_hwndPager = hwndPager;
++        if (!m_hWnd)
++        {
++            if (!Create(NULL))
++                return;
++            m_hwndTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
++                                        0, 0, 0, 0, m_hWnd, NULL, hExplorerInstance, NULL);
++        }
++        m_bLight = pLook ? pLook(m_hWnd) : FALSE;
++        ArcticSetWindowAttribute(m_hWnd, DWMWA_ARCTIC_TRANSITION, &dwTransition, sizeof(dwTransition));
++        ArcticSetWindowAttribute(m_hWnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &dwCorner, sizeof(dwCorner));
++        m_hot = m_pressed = -1;
++        Collect();
++        Place();
++        ShowWindow(SW_SHOW);
++        ::SetForegroundWindow(m_hWnd);
++        Invalidate();
++        m_pChevron->SetOpen(TRUE);
++    }
++
++    VOID Close()
++    {
++        if (!IsOpen())
++            return;
++        ShowWindow(SW_HIDE);
++        m_dwClosed = GetTickCount();
++        m_pChevron->SetOpen(FALSE);
++    }
++
++    /* the icons changed while it is open */
++    VOID Refresh()
++    {
++        if (!IsOpen())
++            return;
++        m_hot = m_pressed = -1;
++        Collect();
++        Place();
++        Invalidate();
++    }
++
++    /* an icon let go here: the toolbar's index of the one it goes before, -1 after them all */
++    int IndexAt(POINT ptScreen)
++    {
++        int hit;
++
++        ScreenToClient(&ptScreen);
++        hit = HitTest(ptScreen);
++        return hit >= 0 ? m_indices[hit] : -1;
++    }
++
++    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        PAINTSTRUCT ps;
++        HDC hdcWnd = BeginPaint(&ps), hdc = CreateCompatibleDC(hdcWnd);
++        BITMAPINFO bi = {{sizeof(bi.bmiHeader), 0, 0, 1, 32, BI_RGB}};
++        void *pvBits;
++        HBITMAP hbm;
++        RECT rc;
++
++        GetClientRect(&rc);
++        bi.bmiHeader.biWidth = rc.right;
++        bi.bmiHeader.biHeight = -rc.bottom;
++        if ((hbm = CreateDIBSection(hdcWnd, &bi, DIB_RGB_COLORS, &pvBits, NULL, 0)))
++        {
++            HGDIOBJ hOld = SelectObject(hdc, hbm);
++            int cxIcon = GetSystemMetrics(SM_CXSMICON), cyIcon = GetSystemMetrics(SM_CYSMICON);
++
++            FillRect(hdc, &rc, (HBRUSH)GetStockObject(m_bLight ? WHITE_BRUSH : BLACK_BRUSH));
++            for (int i = 0; i < m_count; i++)
++            {
++                RECT rcCell;
++
++                CellRect(i, &rcCell);
++                if (i == m_hot || i == m_pressed)
++                {
++                    if (ArcticTaskbarStyle11())
++                        ArcticTaskbarPaintButton(hdc, &rcCell, ARCTIC_BUTTON_START |
++                                                 (i == m_pressed ? ARCTIC_BUTTON_PRESSED : ARCTIC_BUTTON_HOT));
++                    else
++                        ArcticFillAlpha(hdc, &rcCell, ARCTIC_INK(m_bLight), i == m_pressed ? 0x26 : 0x1a);
++                }
++                m_pToolbar->DrawIcon(m_indices[i], hdc, (rcCell.left + rcCell.right - cxIcon) / 2,
++                                     (rcCell.top + rcCell.bottom - cyIcon) / 2);
++            }
++            BitBlt(hdcWnd, 0, 0, rc.right, rc.bottom, hdc, 0, 0, SRCCOPY);
++            SelectObject(hdc, hOld);
++            DeleteObject(hbm);
++        }
++        DeleteDC(hdc);
++        EndPaint(&ps);
++        return 0;
++    }
++
++    LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        return 1;
++    }
++
++    LRESULT OnMouse(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
++        int hit = HitTest(pt);
++
++        switch (uMsg)
++        {
++        case WM_MOUSEMOVE:
++        {
++            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, m_hWnd, 0 };
++
++            TrackMouseEvent(&tme);
++            if (m_pressed >= 0 && (abs(pt.x - m_ptPressed.x) > GetSystemMetrics(SM_CXDRAG) ||
++                                   abs(pt.y - m_ptPressed.y) > GetSystemMetrics(SM_CYDRAG)))
++            {
++                int index = m_indices[m_pressed];
++
++                m_pressed = -1;
++                if (GetCapture() == m_hWnd)
++                    ReleaseCapture();
++                Invalidate();
++                ::SendMessageW(m_hwndPager, SPM_BEGINDRAG, index, 0);
++                return 0;
++            }
++            if (hit != m_hot)
++            {
++                m_hot = hit;
++                Invalidate();
++            }
++            break;
++        }
++        case WM_LBUTTONDOWN:
++            m_pressed = hit;
++            m_ptPressed = pt;
++            SetCapture();
++            Invalidate();
++            break;
++        case WM_LBUTTONUP:
++            m_pressed = -1;
++            if (GetCapture() == m_hWnd)
++                ReleaseCapture();
++            Invalidate();
++            break;
++        }
++        if (hit >= 0)
++            m_pToolbar->IconMouse(m_indices[hit], uMsg);
++        return 0;
++    }
++
++    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_hot = -1;
++        Invalidate();
++        return 0;
++    }
++
++    LRESULT OnActivate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (LOWORD(wParam) == WA_INACTIVE)
++            Close();
++        return 0;
++    }
++
++    LRESULT OnKeyDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if (wParam == VK_ESCAPE)
++            Close();
++        return 0;
++    }
++
++    BEGIN_MSG_MAP(CTrayOverflow)
++        MESSAGE_HANDLER(WM_PAINT, OnPaint)
++        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
++        MESSAGE_RANGE_HANDLER(WM_MOUSEFIRST, WM_MOUSELAST, OnMouse)
++        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
++        MESSAGE_HANDLER(WM_ACTIVATE, OnActivate)
++        MESSAGE_HANDLER(WM_KEYDOWN, OnKeyDown)
++    END_MSG_MAP()
++};
++
+ 
+ static const WCHAR szSysPagerWndClass[] = L"SysPager";
+ 
+@@ -1239,6 +1757,10 @@ class CSysPagerWnd :
+     CNotifyToolbar Toolbar;
+     CTooltips m_Balloons;
+     CBalloonQueue m_BalloonQueue;
++    CTrayChevron m_Chevron;
++    CTrayOverflow m_Overflow;
++    BOOL m_bHorizontal;
++    INT m_cyIcons;   /* how high the rows of icons are */
+ 
+ public:
+     CSysPagerWnd();
+@@ -1261,6 +1783,10 @@ public:
+     LRESULT OnCopyData(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+     LRESULT OnSettingChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+     LRESULT OnGetMinimumSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
++    LRESULT OnIconsChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
++    LRESULT OnChevronClick(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
++    LRESULT OnBeginDrag(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
++    VOID LayoutChildren(SIZE szClient);
+ 
+ public:
+     // *** IOleWindow methods ***
+@@ -1317,6 +1843,9 @@ public:
+         MESSAGE_HANDLER(WM_COPYDATA, OnCopyData)
+         MESSAGE_HANDLER(WM_SETTINGCHANGE, OnSettingChanged)
+         MESSAGE_HANDLER(TNWM_GETMINIMUMSIZE, OnGetMinimumSize)
++        MESSAGE_HANDLER(SPM_ICONSCHANGED, OnIconsChanged)
++        MESSAGE_HANDLER(SPM_CHEVRONCLICK, OnChevronClick)
++        MESSAGE_HANDLER(SPM_BEGINDRAG, OnBeginDrag)
+         NOTIFY_CODE_HANDLER(TTN_POP, OnBalloonPop)
+         NOTIFY_CODE_HANDLER(TBN_GETINFOTIPW, OnGetInfoTip)
+         NOTIFY_CODE_HANDLER(NM_CUSTOMDRAW, OnCustomDraw)
+@@ -1896,7 +2425,8 @@ void CBalloonQueue::Close(IN OUT InternalIconData * notifyItem, IN UINT uReason)
+ CNotifyToolbar::CNotifyToolbar() :
+     m_ImageList(NULL),
+     m_VisibleButtonCount(0),
+-    m_BalloonQueue(NULL)
++    m_BalloonQueue(NULL),
++    m_DragFrom(-1)
+ {
+ }
+ 
+@@ -1983,6 +2513,9 @@ BOOL CNotifyToolbar::AddButton(_In_ CONST NOTIFYICONDATA *iconData)
+ 
+     notifyItem->hWnd = iconData->hWnd;
+     notifyItem->uID = iconData->uID;
++    notifyItem->nRank = ArcticIconRank(iconData->hWnd);
++    notifyItem->bOverflow = !notifyItem->nRank && !ArcticIconOnTaskbar(iconData->hWnd);
++    notifyItem->nOrder = ArcticIconOrder(iconData->hWnd);
+ 
+     tbBtn.fsState = TBSTATE_ENABLED;
+     tbBtn.fsStyle = BTNS_NOPREFIX;
+@@ -2035,7 +2568,7 @@ BOOL CNotifyToolbar::AddButton(_In_ CONST NOTIFYICONDATA *iconData)
+         notifyItem->uTimeout = iconData->uTimeout;
+     }
+ 
+-    if (notifyItem->dwState & NIS_HIDDEN)
++    if ((notifyItem->dwState & NIS_HIDDEN) || notifyItem->bOverflow)
+     {
+         tbBtn.fsState |= TBSTATE_HIDDEN;
+     }
+@@ -2046,7 +2579,19 @@ BOOL CNotifyToolbar::AddButton(_In_ CONST NOTIFYICONDATA *iconData)
+ 
+     /* TODO: support VERSION_4 (NIF_GUID, NIF_REALTIME, NIF_SHOWTIP) */
+ 
+-    CToolbar::AddButton(&tbBtn);
++    /* Arctic: a program's icon goes left of the system's, those in their order */
++    int position, buttons = GetButtonCount();
++
++    for (position = 0; position < buttons; position++)
++    {
++        InternalIconData *other = GetItemData(position);
++
++        if (other->nRank > notifyItem->nRank ||
++            (other->nRank == notifyItem->nRank && other->nOrder > notifyItem->nOrder))
++            break;
++    }
++    InsertButton(position, &tbBtn);
++    RenumberButtons();
+     SetButtonSize(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+ 
+     if (iconData->uFlags & NIF_INFO)
+@@ -2115,7 +2660,12 @@ BOOL CNotifyToolbar::UpdateButton(_In_ CONST NOTIFYICONDATA *iconData)
+             /* from the button's state: an icon shown again stays enabled, not greyed */
+             tbbi.dwMask |= TBIF_STATE;
+             tbbi.fsState = btn.fsState;
+-            if (iconData->dwState & NIS_HIDDEN)
++            /* behind the chevron it is hidden on the taskbar either way */
++            if (notifyItem->bOverflow)
++            {
++                tbbi.fsState |= TBSTATE_HIDDEN;
++            }
++            else if (iconData->dwState & NIS_HIDDEN)
+             {
+                 tbbi.fsState |= TBSTATE_HIDDEN;
+                 m_VisibleButtonCount--;
+@@ -2205,7 +2755,7 @@ BOOL CNotifyToolbar::RemoveButton(_In_ CONST NOTIFYICONDATA *iconData)
+     else
+         notifyItem->MarkAsRemoved();
+ 
+-    if (!(notifyItem->dwState & NIS_HIDDEN))
++    if (!(notifyItem->dwState & NIS_HIDDEN) && !notifyItem->bOverflow)
+     {
+         m_VisibleButtonCount--;
+     }
+@@ -2238,12 +2788,161 @@ BOOL CNotifyToolbar::RemoveButton(_In_ CONST NOTIFYICONDATA *iconData)
+     m_BalloonQueue->RemoveInfo(notifyItem);
+ 
+     DeleteButton(index);
++    RenumberButtons();
+ 
+     delete notifyItem;
+ 
+     return TRUE;
+ }
+ 
++/* Arctic: the toolbar's commands are its indices (CSysPagerWnd::OnCommand) */
++VOID CNotifyToolbar::RenumberButtons()
++{
++    int count = GetButtonCount();
++
++    for (int i = 0; i < count; i++)
++    {
++        TBBUTTONINFO tbbi = { 0 };
++
++        tbbi.cbSize = sizeof(tbbi);
++        tbbi.dwMask = TBIF_BYINDEX | TBIF_COMMAND;
++        tbbi.idCommand = i;
++        SetButtonInfo(i, &tbbi);
++    }
++}
++
++int CNotifyToolbar::GetOverflow(int *pIndices, int cMax)
++{
++    int count = GetButtonCount(), n = 0;
++
++    for (int i = 0; i < count; i++)
++    {
++        InternalIconData *data = GetItemData(i);
++
++        if (!data->bOverflow || (data->dwState & NIS_HIDDEN))
++            continue;
++        if (pIndices && n < cMax)
++            pIndices[n] = i;
++        n++;
++    }
++    return pIndices ? min(n, cMax) : n;
++}
++
++VOID CNotifyToolbar::DrawIcon(int index, HDC hdc, int x, int y)
++{
++    TBBUTTON btn;
++
++    if (GetButton(index, &btn) && btn.iBitmap >= 0)
++        ImageList_Draw(m_ImageList, btn.iBitmap, hdc, x, y, ILD_TRANSPARENT);
++}
++
++/* what a click on the icon in the taskbar sends */
++VOID CNotifyToolbar::IconMouse(int index, UINT uMsg)
++{
++    InternalIconData *data = GetItemData(index);
++    BOOL bNew = ::IsWindow(data->hWnd) && data->GetVersion() >= NOTIFYICON_VERSION;
++    HWND hWnd = data->hWnd;
++    UINT uCallback = data->uCallbackMessage, uID = data->uID;
++
++    SendMouseEvent((WORD)index, uMsg, 0);
++    if (bNew && uMsg == WM_LBUTTONUP)
++        ::SendNotifyMessage(hWnd, uCallback, uID, NIN_SELECT);
++    else if (bNew && uMsg == WM_RBUTTONUP)
++        ::SendNotifyMessage(hWnd, uCallback, uID, WM_CONTEXTMENU);
++}
++
++/* where the user put the programs' icons, for the next time they come */
++VOID CNotifyToolbar::SaveOrder()
++{
++    int count = GetButtonCount(), n = 0;
++    HKEY hKey;
++
++    if (RegCreateKeyExW(HKEY_CURRENT_USER, ARCTIC_ORDER_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL))
++        return;
++    for (int i = 0; i < count; i++)
++    {
++        InternalIconData *data = GetItemData(i);
++        WCHAR szName[MAX_PATH];
++        DWORD dwValue = n;
++
++        if (data->nRank)
++            continue;
++        data->nOrder = n++;
++        if (ArcticIconProgram(data->hWnd, szName, _countof(szName)))
++            RegSetValueExW(hKey, szName, 0, REG_DWORD, (const BYTE *)&dwValue, sizeof(dwValue));
++    }
++    RegCloseKey(hKey);
++}
++
++/* behind the chevron or on the taskbar, before the icon of that index or after all the programs' */
++VOID CNotifyToolbar::PlaceIcon(int from, BOOL bOverflow, int before)
++{
++    int count = GetButtonCount(), to = before;
++
++    SetOverflow(from, bOverflow);
++    if (to < 0)
++    {
++        for (to = 0; to < count && !GetItemData(to)->nRank; to++)
++            ;
++    }
++    if (to > from)
++        to--;
++    if (to != from)
++    {
++        SendMessageW(TB_MOVEBUTTON, from, to);
++        RenumberButtons();
++    }
++    SaveOrder();
++    Invalidate();
++}
++
++HICON CNotifyToolbar::CopyIcon(int index)
++{
++    TBBUTTON btn;
++
++    return GetButton(index, &btn) && btn.iBitmap >= 0 ? ImageList_GetIcon(m_ImageList, btn.iBitmap, ILD_TRANSPARENT) : NULL;
++}
++
++/* let go on the taskbar: the program's icon on it that this goes before, -1 after them all */
++int CNotifyToolbar::IndexBefore(POINT ptScreen)
++{
++    int count = GetButtonCount();
++
++    ScreenToClient(&ptScreen);
++    for (int i = 0; i < count; i++)
++    {
++        InternalIconData *data = GetItemData(i);
++        RECT rc;
++
++        if (data->nRank || data->bOverflow || (data->dwState & NIS_HIDDEN) || !GetItemRect(i, &rc))
++            continue;
++        if (ptScreen.x < (rc.left + rc.right) / 2)
++            return i;
++    }
++    return -1;
++}
++
++VOID CNotifyToolbar::SetOverflow(int index, BOOL bOverflow)
++{
++    InternalIconData *data = GetItemData(index);
++    TBBUTTONINFO tbbi = { 0 };
++    TBBUTTON btn;
++
++    if (data->nRank || data->bOverflow == bOverflow || !GetButton(index, &btn))
++        return;
++    data->bOverflow = bOverflow;
++    tbbi.cbSize = sizeof(tbbi);
++    tbbi.dwMask = TBIF_BYINDEX | TBIF_STATE;
++    if (bOverflow || (data->dwState & NIS_HIDDEN))
++        tbbi.fsState = btn.fsState | TBSTATE_HIDDEN;
++    else
++        tbbi.fsState = btn.fsState & ~TBSTATE_HIDDEN;
++    SetButtonInfo(index, &tbbi);
++    if (!(data->dwState & NIS_HIDDEN))
++        m_VisibleButtonCount += bOverflow ? -1 : 1;
++    ArcticIconRemember(data->hWnd, !bOverflow);
++}
++
+ VOID CNotifyToolbar::ResizeImagelist()
+ {
+     int cx, cy;
+@@ -2411,6 +3110,28 @@ LRESULT CNotifyToolbar::OnMouseEvent(UINT uMsg, WPARAM wParam, LPARAM lParam, BO
+     POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+     INT iBtn = HitTest(&pt);
+ 
++    /* Arctic: a program's icon pressed and moved is being dragged */
++    if (uMsg == WM_LBUTTONDOWN)
++    {
++        m_DragFrom = iBtn;
++        m_ptDrag = pt;
++    }
++    else if (uMsg == WM_LBUTTONUP)
++        m_DragFrom = -1;
++    else if (uMsg == WM_MOUSEMOVE && m_DragFrom >= 0 && (wParam & MK_LBUTTON) &&
++             (abs(pt.x - m_ptDrag.x) > GetSystemMetrics(SM_CXDRAG) ||
++              abs(pt.y - m_ptDrag.y) > GetSystemMetrics(SM_CYDRAG)))
++    {
++        INT iFrom = m_DragFrom;
++
++        m_DragFrom = -1;
++        if (!GetItemData(iFrom)->nRank)
++        {
++            GetParent().SendMessage(SPM_BEGINDRAG, iFrom);
++            return 0;
++        }
++    }
++
+     if (iBtn >= 0)
+     {
+         /* a click takes the icon's tooltip away, as the menu it opens would cover it */
+@@ -2551,7 +3272,7 @@ void CNotifyToolbar::RefreshToolbarMetrics(BOOL bForceRefresh = FALSE)
+  * SysPagerWnd
+  */
+ 
+-CSysPagerWnd::CSysPagerWnd() {}
++CSysPagerWnd::CSysPagerWnd() : m_bHorizontal(TRUE), m_cyIcons(0) {}
+ 
+ CSysPagerWnd::~CSysPagerWnd() {}
+ 
+@@ -2575,6 +3296,7 @@ LRESULT CSysPagerWnd::OnEraseBackground(UINT uMsg, WPARAM wParam, LPARAM lParam,
+ LRESULT CSysPagerWnd::OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+ {
+     Toolbar.Initialize(m_hWnd, &m_BalloonQueue);
++    m_Chevron.Create(m_hWnd, 0, NULL, WS_CHILD | WS_CLIPSIBLINGS);
+     CIconWatcher::Initialize(m_hWnd);
+ 
+     HWND hWndTop = GetAncestor(m_hWnd, GA_ROOT);
+@@ -2617,6 +3339,7 @@ BOOL CSysPagerWnd::NotifyIcon(DWORD dwMessage, _In_ CONST NOTIFYICONDATA *iconDa
+     BOOL ret = FALSE;
+ 
+     int VisibleButtonCount = Toolbar.GetVisibleButtonCount();
++    int OverflowCount = Toolbar.GetOverflow(NULL, 0);
+ 
+     TRACE("NotifyIcon received. Code=%d\n", dwMessage);
+     switch (dwMessage)
+@@ -2663,17 +3386,109 @@ BOOL CSysPagerWnd::NotifyIcon(DWORD dwMessage, _In_ CONST NOTIFYICONDATA *iconDa
+         return FALSE;
+     }
+ 
+-    if (VisibleButtonCount != Toolbar.GetVisibleButtonCount())
++    if (VisibleButtonCount != Toolbar.GetVisibleButtonCount() || OverflowCount != Toolbar.GetOverflow(NULL, 0))
+     {
+         /* Ask the parent to resize */
+         NMHDR nmh = {GetParent(), 0, NTNWM_REALIGN};
+         // FIXME: This causes the desktop icons to flash (InvalidateRect?)
+         GetParent().SendMessage(WM_NOTIFY, 0, (LPARAM) &nmh);
+     }
++    m_Overflow.Refresh();
+ 
+     return ret;
+ }
+ 
++/* Arctic: an icon went behind the chevron or came out */
++LRESULT CSysPagerWnd::OnIconsChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++{
++    NMHDR nmh = {GetParent(), 0, NTNWM_REALIGN};
++
++    GetParent().SendMessage(WM_NOTIFY, 0, (LPARAM) &nmh);
++
++    /* the same width may hold other icons: they are laid out anyway */
++    RECT rc;
++    GetClientRect(&rc);
++    SIZE szClient = { rc.right, rc.bottom };
++    LayoutChildren(szClient);
++    m_Overflow.Refresh();
++    return 0;
++}
++
++/* Arctic: an icon is carried under the pointer until it is let go: behind
++ * the chevron, which opens when the pointer comes to it, or onto the taskbar */
++LRESULT CSysPagerWnd::OnBeginDrag(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++{
++    InternalIconData *data = Toolbar.GetItemData((int)wParam);
++    HWND hwndIcon = data->hWnd;
++    UINT uID = data->uID;
++    HICON hIcon = Toolbar.CopyIcon((int)wParam);
++    BOOL bDropped = FALSE;
++    POINT pt;
++    MSG msg;
++
++    SetCapture();
++    if (hIcon)
++        SetCursor(hIcon);
++    while (GetCapture() == m_hWnd && GetMessageW(&msg, NULL, 0, 0))
++    {
++        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE)
++            break;
++        if (msg.message == WM_LBUTTONUP)
++        {
++            bDropped = TRUE;
++            break;
++        }
++        if (msg.message == WM_MOUSEMOVE)
++        {
++            RECT rcChevron;
++
++            if (hIcon)
++                SetCursor(hIcon);
++            GetCursorPos(&pt);
++            m_Chevron.GetWindowRect(&rcChevron);
++            if (PtInRect(&rcChevron, pt) && !m_Overflow.IsOpen())
++                m_Overflow.Open(&Toolbar, &m_Chevron, m_hWnd);
++            continue;
++        }
++        if (msg.message >= WM_MOUSEFIRST && msg.message <= WM_MOUSELAST)
++            continue;
++        TranslateMessage(&msg);
++        DispatchMessageW(&msg);
++    }
++    if (GetCapture() == m_hWnd)
++        ReleaseCapture();
++    SetCursor(LoadCursorW(NULL, IDC_ARROW));
++    if (hIcon)
++        DestroyIcon(hIcon);
++
++    int index = Toolbar.FindItem(hwndIcon, uID, NULL);
++
++    if (bDropped && index >= 0)
++    {
++        RECT rcFlyout, rcTaskbar;
++
++        GetCursorPos(&pt);
++        ::GetWindowRect(GetAncestor(m_hWnd, GA_ROOT), &rcTaskbar);
++        if (m_Overflow.IsOpen() && m_Overflow.GetWindowRect(&rcFlyout) && PtInRect(&rcFlyout, pt))
++            Toolbar.PlaceIcon(index, TRUE, m_Overflow.IndexAt(pt));
++        else if (PtInRect(&rcTaskbar, pt))
++            Toolbar.PlaceIcon(index, FALSE, Toolbar.IndexBefore(pt));
++        BOOL bUnused = FALSE;
++        OnIconsChanged(0, 0, 0, bUnused);
++    }
++    return 0;
++}
++
++LRESULT CSysPagerWnd::OnChevronClick(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++{
++    /* the click that took the focus away has just closed it */
++    if (m_Overflow.IsOpen())
++        m_Overflow.Close();
++    else if (GetTickCount() - m_Overflow.ClosedAt() > 200)
++        m_Overflow.Open(&Toolbar, &m_Chevron, m_hWnd);
++    return 0;
++}
++
+ void CSysPagerWnd::GetSize(IN BOOL IsHorizontal, IN PSIZE size)
+ {
+     /* Get the ideal height or width */
+@@ -2698,7 +3513,9 @@ void CSysPagerWnd::GetSize(IN BOOL IsHorizontal, IN PSIZE size)
+         cxButton = MulDiv(GetSystemMetrics(SM_CXSMICON), 3, 2);
+     }
+     int VisibleButtonCount = Toolbar.GetVisibleButtonCount();
++    INT chevron = ARCTIC_CHEVRON;
+ 
++    m_bHorizontal = IsHorizontal;
+     if (IsHorizontal)
+     {
+         if (!g_TaskbarSettings.UseCompactTrayIcons())
+@@ -2712,8 +3529,14 @@ void CSysPagerWnd::GetSize(IN BOOL IsHorizontal, IN PSIZE size)
+         columns = max(size->cx / cxButton, 1);
+         rows = (VisibleButtonCount + columns - 1) / columns;
+     }
+-    size->cx = columns * cxButton;
+-    size->cy = rows * cyButton;
++    /* Arctic: with the chevron a row is as high as the taskbar lets it be, for the chevron's highlight */
++    INT cyGiven = size->cy;
++
++    m_cyIcons = rows * cyButton;
++    size->cx = columns * cxButton + (IsHorizontal ? chevron : 0);
++    size->cy = rows * cyButton + (IsHorizontal ? 0 : chevron);
++    if (IsHorizontal && chevron && rows == 1)
++        size->cy = max(size->cy, cyGiven);
+ #endif
+ }
+ 
+@@ -2797,22 +3620,38 @@ LRESULT CSysPagerWnd::OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHan
+     Ret = DefWindowProc(uMsg, wParam, lParam);
+ 
+     if (Toolbar)
+-    {
+-        Toolbar.SetWindowPos(NULL, 0, 0, szClient.cx, szClient.cy, SWP_NOZORDER);
+-        Toolbar.AutoSize();
++        LayoutChildren(szClient);
++    return Ret;
++}
+ 
+-        RECT rc;
+-        Toolbar.GetClientRect(&rc);
++/* Arctic: the chevron first, the icons after it */
++VOID CSysPagerWnd::LayoutChildren(SIZE szClient)
++{
++    INT chevron = ARCTIC_CHEVRON;
++    INT xStart = m_bHorizontal ? chevron : 0, yStart = m_bHorizontal ? 0 : chevron;
++    SIZE szIcons = { szClient.cx - xStart, szClient.cy - yStart };
+ 
+-        SIZE szBar = { rc.right - rc.left, rc.bottom - rc.top };
++    /* the pager is as high as the taskbar for the chevron; the icons keep the
++       height of their rows and are centred in it */
++    INT cyBar = m_bHorizontal && m_cyIcons ? min(szIcons.cy, m_cyIcons) : szIcons.cy;
+ 
+-        INT xOff = (szClient.cx - szBar.cx) / 2;
+-        INT yOff = (szClient.cy - szBar.cy) / 2;
++    Toolbar.SetWindowPos(NULL, 0, 0, szIcons.cx, cyBar, SWP_NOZORDER);
++    Toolbar.AutoSize();
+ 
+-        Toolbar.SetWindowPos(NULL, xOff, yOff, szBar.cx, szBar.cy, SWP_NOZORDER);
+-        Toolbar.RefreshToolbarMetrics();
+-    }
+-    return Ret;
++    RECT rc;
++    Toolbar.GetClientRect(&rc);
++
++    SIZE szBar = { rc.right - rc.left, rc.bottom - rc.top };
++
++    INT xOff = xStart + (szIcons.cx - szBar.cx) / 2;
++    INT yOff = yStart + (szIcons.cy - szBar.cy) / 2;
++
++    Toolbar.SetWindowPos(NULL, xOff, yOff, szBar.cx, szBar.cy, SWP_NOZORDER);
++    Toolbar.RefreshToolbarMetrics();
++
++    m_Chevron.SetWindowPos(NULL, 0, 0, m_bHorizontal ? chevron : szClient.cx,
++                           m_bHorizontal ? szClient.cy : chevron,
++                           SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+ }
+ 
+ LRESULT CSysPagerWnd::OnCtxMenu(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)

@@ -538,7 +538,7 @@ static BOOL create_flyout(void)
     struct arctic_accent_policy policy = { ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND, 0, ACRYLIC_TINT, 0 };
     struct { DWORD attrib; void *data; SIZE_T size; } attr = { 19 /* WCA_ACCENT_POLICY */, &policy, sizeof(policy) };
     WNDCLASSW cls = { 0 };
-    DWORD transition = ARCTIC_TRANSITION_SLIDE_UP;
+    DWORD transition = ARCTIC_TRANSITION_SLIDE_UP, corner = ARCTIC_FLYOUT_CORNER;
 
     if (flyout) return TRUE;
     cls.lpfnWndProc = flyout_proc;
@@ -551,6 +551,7 @@ static BOOL create_flyout(void)
     if (!flyout) return FALSE;
     SetWindowCompositionAttribute( flyout, &attr );
     DwmSetWindowAttribute( flyout, DWMWA_ARCTIC_TRANSITION, &transition, sizeof(transition) );
+    DwmSetWindowAttribute( flyout, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner) );
     font_body = shell_font( px( 15 ), FW_NORMAL );
     font_body_bold = shell_font( px( 15 ), FW_SEMIBOLD );
     font_level = shell_font( px( 24 ), 350 /* SemiLight */ );

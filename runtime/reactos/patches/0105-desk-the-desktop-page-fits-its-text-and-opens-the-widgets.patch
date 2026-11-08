@@ -1,0 +1,83 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] desk: The desktop page fits its text and opens the widgets.
+
+The Ukrainian label of Customize Desktop did not fit in 90 units. Beside
+it, Widgets... opens startui.dll's settings of the widgets of the desktop
+(ArcticDesktopWidgetsDialog).
+---
+diff --git a/dll/cpl/desk/lang/uk-UA.rc b/dll/cpl/desk/lang/uk-UA.rc
+index 10b7dfd..18df01c 100644
+--- a/dll/cpl/desk/lang/uk-UA.rc
++++ b/dll/cpl/desk/lang/uk-UA.rc
+@@ -37,7 +37,8 @@ BEGIN
+     COMBOBOX IDC_PLACEMENT_COMBO, 188, 139, 55, 54, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+     LTEXT "&Колір:", IDC_STATIC, 188, 156, 55, 9
+     PUSHBUTTON " ", IDC_COLOR_BUTTON, 188, 167, 55, 15
+-    PUSHBUTTON "Налаштувати &Робочий стіл...", IDC_DESKTOP_CUSTOM, 8, 194, 90, 15
++    PUSHBUTTON "Налаштувати &Робочий стіл...", IDC_DESKTOP_CUSTOM, 8, 194, 130, 15
++    PUSHBUTTON "&Віджети...", IDC_DESKTOP_WIDGETS, 142, 194, 70, 15
+ END
+ 
+ IDD_SCREENSAVER DIALOGEX 0, 0, 246, 202
+diff --git a/dll/cpl/desk/lang/en-US.rc b/dll/cpl/desk/lang/en-US.rc
+index 9bf9e18..c362d80 100644
+--- a/dll/cpl/desk/lang/en-US.rc
++++ b/dll/cpl/desk/lang/en-US.rc
+@@ -28,6 +28,7 @@ BEGIN
+     LTEXT "&Color:", IDC_STATIC, 188, 156, 55, 9
+     PUSHBUTTON " ", IDC_COLOR_BUTTON, 188, 167, 55, 15
+     PUSHBUTTON "Customize &Desktop...", IDC_DESKTOP_CUSTOM, 8, 194, 90, 15
++    PUSHBUTTON "&Widgets...", IDC_DESKTOP_WIDGETS, 102, 194, 70, 15
+ END
+ 
+ IDD_SCREENSAVER DIALOGEX 0, 0, 246, 202
+diff --git a/dll/cpl/desk/lang/ru-RU.rc b/dll/cpl/desk/lang/ru-RU.rc
+index 27ea433..0be9891 100644
+--- a/dll/cpl/desk/lang/ru-RU.rc
++++ b/dll/cpl/desk/lang/ru-RU.rc
+@@ -28,6 +28,7 @@ BEGIN
+     LTEXT "Ц&вет:", IDC_STATIC, 188, 156, 55, 9
+     PUSHBUTTON " ", IDC_COLOR_BUTTON, 188, 167, 55, 15
+     PUSHBUTTON "&Настройка рабочего стола...", IDC_DESKTOP_CUSTOM, 8, 194, 116, 15
++    PUSHBUTTON "&Виджеты...", IDC_DESKTOP_WIDGETS, 128, 194, 70, 15
+ END
+ 
+ IDD_SCREENSAVER DIALOGEX 0, 0, 246, 202
+diff --git a/dll/cpl/desk/background.c b/dll/cpl/desk/background.c
+index 0a74438..d19039f 100644
+--- a/dll/cpl/desk/background.c
++++ b/dll/cpl/desk/background.c
+@@ -1236,6 +1236,20 @@ BackgroundPageProc(HWND hwndDlg,
+                         if (command == BN_CLICKED)
+                             OnCustomButton(hwndDlg, pData);
+                         break;
++
++                    /* Arctic: the widgets of the desktop, startui.dll's */
++                    case IDC_DESKTOP_WIDGETS:
++                        if (command == BN_CLICKED)
++                        {
++                            HMODULE hStartUi = LoadLibraryW(L"startui.dll");
++                            VOID (WINAPI *pDialog)(HWND) = NULL;
++
++                            if (hStartUi)
++                                pDialog = (VOID (WINAPI *)(HWND))GetProcAddress(hStartUi, "ArcticDesktopWidgetsDialog");
++                            if (pDialog)
++                                pDialog(hwndDlg);
++                        }
++                        break;
+                 }
+             } break;
+ 
+diff --git a/dll/cpl/desk/resource.h b/dll/cpl/desk/resource.h
+index 7d342a0..4da3c38 100644
+--- a/dll/cpl/desk/resource.h
++++ b/dll/cpl/desk/resource.h
+@@ -34,6 +34,7 @@
+ #define IDS_BACKGROUND_COMDLG_FILTER 1006
+ #define IDC_RESOLUTION_PREVIEW       1007
+ #define IDC_DESKTOP_CUSTOM           1008
++#define IDC_DESKTOP_WIDGETS          1095 /* Arctic */
+ 
+ /* Screensaver Page */
+ #define IDC_SCREENS_PREVIEW      1010

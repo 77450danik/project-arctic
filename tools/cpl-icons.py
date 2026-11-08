@@ -114,6 +114,7 @@ TARGETS = {
     M + "dlls/usercpl/users.ico": lh("ap/cs-user-accounts"),
     M + "dlls/systemcpl/system.ico": lh("c/applications-system"),
     M + "dlls/notifications.cpl/notifications.ico": lh("ap/cs-notifications"),
+    M + "dlls/timedate.cpl/timedate.ico": lh("ap/cs-date-time"),
     M + "dlls/joy.cpl/joy.ico": lh("d/input-gaming"),
     M + "dlls/appwiz.cpl/appwiz.ico": lh("ap/system-software-install"),
     M + "dlls/inetcpl.cpl/inetcpl.ico": lh("c/applications-internet"),

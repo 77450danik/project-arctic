@@ -302,7 +302,7 @@ static LRESULT CALLBACK link_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
         GetWindowTextW( hwnd, text, ARRAY_SIZE(text) );
         SelectObject( hdc, ui_font );
         SetBkMode( hdc, TRANSPARENT );
-        SetTextColor( hdc, chevron ? (hot ? RGB(0, 102, 204) : RGB(0, 0, 0)) : (hot ? RGB(0, 102, 204) : RGB(0, 102, 204)) );
+        SetTextColor( hdc, chevron ? (hot ? TM_LINK : TM_TEXT) : TM_LINK );
         rc.left = x;
         DrawTextW( hdc, text, -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX );
         EndPaint( hwnd, &ps );
@@ -512,6 +512,11 @@ static LRESULT CALLBACK main_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
         return 0;
     case WM_DPICHANGED:
         return 0;
+    case WM_SYSCOLORCHANGE:
+    case WM_THEMECHANGED:
+        /* the programs' mode changed (desk.cpl, Personalization): every page draws itself anew */
+        RedrawWindow( hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+        break;
     case WM_CLOSE:
         save_window();
         DestroyWindow( hwnd );

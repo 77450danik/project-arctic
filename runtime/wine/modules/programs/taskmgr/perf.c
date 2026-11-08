@@ -32,6 +32,27 @@ static const struct palette palettes[RES_COUNT] =
     { RGB(17, 125, 187),  RGB(241, 246, 250), RGB(217, 234, 244), RGB(17, 125, 187) },
 };
 
+static COLORREF mix_color( COLORREF a, COLORREF b, int percent )
+{
+    return RGB( (GetRValue( a ) * (100 - percent) + GetRValue( b ) * percent) / 100,
+                (GetGValue( a ) * (100 - percent) + GetGValue( b ) * percent) / 100,
+                (GetBValue( a ) * (100 - percent) + GetBValue( b ) * percent) / 100 );
+}
+
+/* a resource's colours; in the dark mode its line over the dark page */
+static struct palette palette_of( int res )
+{
+    struct palette pal = palettes[res];
+
+    if (tm_dark())
+    {
+        pal.line = pal.border = mix_color( pal.line, RGB(255, 255, 255), 25 );
+        pal.fill = mix_color( TM_PAGE, pal.line, 10 );
+        pal.grid = mix_color( TM_PAGE, pal.line, 30 );
+    }
+    return pal;
+}
+
 #define MAX_ITEMS (4 + MAX_DISKS + MAX_GPUS)
 
 static HWND page;
@@ -276,7 +297,8 @@ static void draw_graph( HDC hdc, const RECT *rc, const struct item *it,
                         double (*get)( const struct item *, const struct sample *, double ),
                         double scale_max, BOOL with_grid, int cpu )
 {
-    const struct palette *pal = &palettes[it->res];
+    struct palette pal_mode = palette_of( it->res );
+    const struct palette *pal = &pal_mode;
     int w = rc->right - rc->left, h = rc->bottom - rc->top;
     POINT pts[HISTORY + 2];
     UINT n = 0;
@@ -284,7 +306,7 @@ static void draw_graph( HDC hdc, const RECT *rc, const struct item *it,
     HGDIOBJ old;
     HRGN clip;
 
-    fill( hdc, rc, RGB(255, 255, 255) );
+    fill( hdc, rc, TM_PAGE );
     if (with_grid)
     {
         HPEN gp = CreatePen( PS_SOLID, 1, pal->grid );
@@ -370,7 +392,7 @@ static void draw_nav( HDC hdc, const RECT *client )
         BOOL sub;
 
         if (rc.bottom < 0 || rc.top > client->bottom) continue;
-        if (same_item( &items[i], &current )) fill( hdc, &rc, RGB(204, 232, 255) );
+        if (same_item( &items[i], &current )) fill( hdc, &rc, TM_SELECTED );
         gr.left = rc.left + scale( 10 );
         gr.top = rc.top + scale( 10 );
         gr.right = gr.left + scale( 70 );
@@ -392,15 +414,15 @@ static void draw_nav( HDC hdc, const RECT *client )
         }
         sub = item_subtitle( &items[i], line, ARRAY_SIZE(line) );
         ty = rc.top + (sub ? scale( 7 ) : scale( 12 ));
-        text_in( hdc, title_font, RGB(0, 0, 0), tx, ty, rc.right - scale( 6 ), name );
+        text_in( hdc, title_font, TM_TEXT, tx, ty, rc.right - scale( 6 ), name );
         ty += text_height( hdc, title_font ) + (sub ? 0 : scale( 6 ));
         if (sub)
         {
-            text_in( hdc, small_font, RGB(102, 102, 102), tx, ty, rc.right - scale( 6 ), line );
+            text_in( hdc, small_font, TM_DIM, tx, ty, rc.right - scale( 6 ), line );
             ty += lh;
         }
         item_summary( &items[i], line, ARRAY_SIZE(line) );
-        text_in( hdc, small_font, RGB(102, 102, 102), tx, ty, rc.right - scale( 6 ), line );
+        text_in( hdc, small_font, TM_DIM, tx, ty, rc.right - scale( 6 ), line );
     }
     SelectClipRgn( hdc, NULL );
     DeleteObject( clip );
@@ -437,15 +459,15 @@ static void draw_stats( HDC hdc, int x, int y, int right, const struct figure *b
     for (UINT i = 0; i < big_count; i++)
     {
         int cx = x + (i % per_row) * col_w, cy = y + (i / per_row) * row_h;
-        text_at( hdc, small_font, RGB(102, 102, 102), cx, cy, load_string( big[i].label ), 0 );
-        text_at( hdc, title_font, RGB(0, 0, 0), cx, cy + lh, big[i].value, 0 );
+        text_at( hdc, small_font, TM_DIM, cx, cy, load_string( big[i].label ), 0 );
+        text_at( hdc, title_font, TM_TEXT, cx, cy + lh, big[i].value, 0 );
     }
     for (UINT i = 0; i < fact_count; i++)
     {
         WCHAR label[128];
         swprintf( label, ARRAY_SIZE(label), L"%s:", load_string( facts[i].label ) );
-        text_at( hdc, small_font, RGB(102, 102, 102), fx, fy + i * (lh + scale( 4 )), label, 0 );
-        text_at( hdc, small_font, RGB(0, 0, 0), fx + value_x, fy + i * (lh + scale( 4 )), facts[i].value, 0 );
+        text_at( hdc, small_font, TM_DIM, fx, fy + i * (lh + scale( 4 )), label, 0 );
+        text_at( hdc, small_font, TM_TEXT, fx + value_x, fy + i * (lh + scale( 4 )), facts[i].value, 0 );
     }
 }
 
@@ -463,9 +485,9 @@ static int draw_second_graph( HDC hdc, int x, int y, int right, UINT label, doub
     WCHAR buf[64];
     RECT g2;
 
-    text_at( hdc, small_font, RGB(102, 102, 102), x, y, load_string( label ), 0 );
+    text_at( hdc, small_font, TM_DIM, x, y, load_string( label ), 0 );
     format_bytes( buf, ARRAY_SIZE(buf), m, bytes_per_s );
-    text_at( hdc, small_font, RGB(102, 102, 102), right, y, buf, DT_RIGHT );
+    text_at( hdc, small_font, TM_DIM, right, y, buf, DT_RIGHT );
     SetRect( &g2, x, y + lh + scale( 2 ), right, y + lh + scale( 2 ) + scale( 60 ) );
     draw_graph( hdc, &g2, &current, get, m, TRUE, -1 );
     return g2.bottom + scale( 14 );
@@ -476,7 +498,8 @@ static void draw_page( HDC hdc, const RECT *client )
     int x = nav_width + scale( 20 ), right = client->right - scale( 20 ), y = scale( 12 );
     int lh = text_height( hdc, small_font ), gh, below, title_right;
     const struct sample *s = data_latest();
-    const struct palette *pal = &palettes[current.res];
+    struct palette pal_mode = palette_of( current.res );
+    const struct palette *pal = &pal_mode;
     const struct disk_info *disk = current.res == RES_DISK ? &sysinfo.disks[current.index] : NULL;
     const struct gpu_info *gpu = current.res == RES_GPU ? &sysinfo.gpus[current.index] : NULL;
     BOOL gpu_memory = gpu && gpu->mem_total > 0;
@@ -484,7 +507,7 @@ static void draw_page( HDC hdc, const RECT *client )
     struct figure big[8], facts[8];
     UINT nb = 0, nf = 0;
     WCHAR buf[128], buf2[64];
-    HPEN sep = CreatePen( PS_SOLID, 1, RGB(229, 229, 229) ), old;
+    HPEN sep = CreatePen( PS_SOLID, 1, TM_LINE ), old;
 
     old = SelectObject( hdc, sep );
     MoveToEx( hdc, nav_width, 0, NULL );
@@ -495,7 +518,7 @@ static void draw_page( HDC hdc, const RECT *client )
     /* the title and, on the right, what it is */
     if (current.res == RES_GPU) lstrcpynW( buf, load_string( IDS_PERF_GPU ), ARRAY_SIZE(buf) );
     else item_name( &current, buf, ARRAY_SIZE(buf) );
-    text_at( hdc, big_font, RGB(0, 0, 0), x, y, buf, 0 );
+    text_at( hdc, big_font, TM_TEXT, x, y, buf, 0 );
     {
         SIZE sz;
         SelectObject( hdc, big_font );
@@ -516,7 +539,7 @@ static void draw_page( HDC hdc, const RECT *client )
         /* on the right of the title, cut where the two would meet */
         RECT rc = { title_right, y + scale( 12 ), right, y + scale( 12 ) + text_height( hdc, title_font ) };
         SelectObject( hdc, title_font );
-        SetTextColor( hdc, RGB(0, 0, 0) );
+        SetTextColor( hdc, TM_TEXT );
         DrawTextW( hdc, buf, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_RIGHT | DT_END_ELLIPSIS );
     }
     y += text_height( hdc, big_font ) + scale( 10 );
@@ -537,8 +560,8 @@ static void draw_page( HDC hdc, const RECT *client )
         format_bits( buf2, ARRAY_SIZE(buf2), net_scale() );
         break;
     }
-    text_at( hdc, small_font, RGB(102, 102, 102), x, y, buf, 0 );
-    text_at( hdc, small_font, RGB(102, 102, 102), right, y, buf2, DT_RIGHT );
+    text_at( hdc, small_font, TM_DIM, x, y, buf, 0 );
+    text_at( hdc, small_font, TM_DIM, right, y, buf2, DT_RIGHT );
     y += lh + scale( 2 );
 
     below = current.res == RES_DISK || current.res == RES_MEMORY || gpu_memory ? 290 : 230;
@@ -579,16 +602,16 @@ static void draw_page( HDC hdc, const RECT *client )
         DeleteObject( dash );
     }
     y = gr.bottom + scale( 2 );
-    text_at( hdc, small_font, RGB(102, 102, 102), x, y, load_string( IDS_PERF_60S ), 0 );
-    text_at( hdc, small_font, RGB(102, 102, 102), right, y, L"0", DT_RIGHT );
+    text_at( hdc, small_font, TM_DIM, x, y, load_string( IDS_PERF_60S ), 0 );
+    text_at( hdc, small_font, TM_DIM, right, y, L"0", DT_RIGHT );
     y += lh + scale( 8 );
 
     if (current.res == RES_MEMORY)
     {
         /* the composition of memory: what is used, and what is left */
         RECT bar = { x, y + lh + scale( 2 ), right, y + lh + scale( 2 ) + scale( 36 ) }, used = bar;
-        text_at( hdc, small_font, RGB(102, 102, 102), x, y, load_string( IDS_PERF_MEM_COMPOSITION ), 0 );
-        fill( hdc, &bar, RGB(255, 255, 255) );
+        text_at( hdc, small_font, TM_DIM, x, y, load_string( IDS_PERF_MEM_COMPOSITION ), 0 );
+        fill( hdc, &bar, TM_PAGE );
         used.right = bar.left + (LONG)((double)(bar.right - bar.left) * (sysinfo.mem_total ? s->mem_used / sysinfo.mem_total : 0));
         fill( hdc, &used, pal->fill );
         if (sysinfo.mem_cached)
@@ -596,7 +619,7 @@ static void draw_page( HDC hdc, const RECT *client )
             RECT cached = used;
             cached.left = used.right;
             cached.right = min( bar.right, cached.left + (LONG)((double)(bar.right - bar.left) * sysinfo.mem_cached / sysinfo.mem_total) );
-            fill( hdc, &cached, RGB(250, 248, 250) );
+            fill( hdc, &cached, tm_dark() ? RGB(0x26, 0x24, 0x26) : RGB(250, 248, 250) );
         }
         frame( hdc, &bar, pal->border );
         if (used.right > bar.left)
@@ -717,7 +740,7 @@ static void paint( HWND hwnd )
     mem = CreateCompatibleDC( hdc );
     bmp = CreateCompatibleBitmap( hdc, max( 1, rc.right ), max( 1, rc.bottom ) );
     oldbmp = SelectObject( mem, bmp );
-    FillRect( mem, &rc, GetStockObject( WHITE_BRUSH ) );
+    FillRect( mem, &rc, GetSysColorBrush( COLOR_WINDOW ) );
     SetBkMode( mem, TRANSPARENT );
     nav_width = scale( 240 );
     check_current();

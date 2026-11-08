@@ -1,0 +1,905 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Sun, 8 Nov 2026 12:00:00 +0200
+Subject: [PATCH] explorer: The buttons of Windows 11, in the middle, and a picture for Start.
+
+The page Buttons of startui.dll chooses the buttons of Windows 10 or 11
+(rounded, with a pill, in a row of 48), left or centre, and a
+picture for the Start button as Classic Shell has it. A right click on a
+button shows the menu of Windows 10 and 11, which needs nothing of the
+window; with Shift, the window's own.
+---
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+index 5d428d9..f440abf 100644
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -124,6 +124,25 @@ VOID ArcticSetAcrylic(IN HWND hWnd, IN DWORD dwTint);
+  * and the shell's flyouts draw dark on white, which dwm.exe keys */
+ BOOL ArcticTaskbarLight(VOID);
+ BOOL ArcticShellLight(VOID);
++/* Arctic: how the task buttons look and where they stand: HKCU\Software\Arctic\Taskbar,
++ * the page Buttons of startui.dll, which also draws those of Windows 11, the
++ * Start button's own picture and what a right click on a button shows */
++BOOL ArcticTaskbarStyle11(VOID);
++BOOL ArcticTaskbarCentered(VOID);
++VOID ArcticTaskbarOptionsReload(VOID);
++/* the weather on the taskbar (startui.dll, widgets.c) */
++HWND ArcticWidgetCreate(IN HWND hwndTray);
++INT ArcticWidgetWidth(VOID);
++#define ARCTIC_BUTTON_HOT       1
++#define ARCTIC_BUTTON_PRESSED   2
++#define ARCTIC_BUTTON_ACTIVE    4
++#define ARCTIC_BUTTON_ATTENTION 8
++#define ARCTIC_BUTTON_START     16
++VOID ArcticTaskbarPaintButton(IN HDC hdc, IN const RECT *prc, IN DWORD dwFlags);
++BOOL ArcticStartButtonImageSize(IN INT cyButton, OUT SIZE *pSize);
++BOOL ArcticStartButtonImagePaint(IN HDC hdc, IN const RECT *prc, IN DWORD dwFlags);
++BOOL ArcticTaskbarJumpList(IN HWND hwndOwner, IN const HWND *phwnd, IN UINT cCount, IN const RECT *prcButton);
++BOOL ArcticTrackTaskbarMenu(IN HMENU hMenu, IN HWND hwndOwner, IN const POINT *ppt, OUT UINT *puCommand);
+ /* Arctic: Windows 11's notification center and calendar (startui.dll) */
+ BOOL ArcticClockFlyoutToggle(IN HWND hwndTray, IN const RECT *prcClock);
+ VOID ArcticNotificationAdd(IN LPCWSTR pszApp, IN LPCWSTR pszIcon, IN HICON hIcon, IN LPCWSTR pszTitle,
+@@ -159,6 +178,8 @@ HRESULT WINAPI _CBandSite_CreateInstance(LPUNKNOWN pUnkOuter, REFIID riid, void
+ #define TWM_OPENSTARTMENU (WM_USER + 260)
+ #define TWM_SETTINGSCHANGED (WM_USER + 300)
+ #define TWM_SETZORDER (WM_USER + 338)
++/* Arctic: how wide the task buttons are together; -1: they are not in one row */
++#define TWM_ARCTICTASKSWIDTH (WM_USER + 340)
+ 
+ extern const GUID IID_IShellDesktopTray;
+ 
+@@ -428,6 +449,8 @@ HRESULT CSysPagerWnd_CreateInstance(HWND hwndParent, REFIID riid, void **ppv);
+  */
+ 
+ #define TSWM_UPDATETASKBARPOS   (WM_USER + 2)
++/* Arctic: where the first task button stands */
++#define TSWM_ARCTICINDENT       (WM_USER + 3)
+ 
+ HRESULT CTaskSwitchWnd_CreateInstance(IN HWND hWndParent, IN OUT ITrayWindow *Tray, REFIID riid, void **ppv);
+ 
+@@ -452,6 +475,13 @@ static inline int ArcticDpiScale(int px)
+     return ::MulDiv(px, s_dpi, 96);
+ }
+ 
++/* Arctic: the height of a row of the taskbar: Windows 10's 40, Windows 11's
++   48, or 30 with small buttons */
++static inline int ArcticRowHeight()
++{
++    return ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 30 : ArcticTaskbarStyle11() ? 48 : 40);
++}
++
+ /* Arctic: the system's DPI the processes started now get (LogPixels, which
+    the scale of the primary monitor sets) */
+ static inline int ArcticNewSystemDpi()
+diff --git a/base/shell/explorer/util.cpp b/base/shell/explorer/util.cpp
+index 9559c58..53b407b 100644
+--- a/base/shell/explorer/util.cpp
++++ b/base/shell/explorer/util.cpp
+@@ -84,6 +84,94 @@ BOOL ArcticTaskbarLight(VOID)
+     return pIsLight && pIsLight();
+ }
+ 
++/* how the task buttons look and where they stand, read once and again when
++ * the page says they changed */
++static DWORD s_dwTaskbarStyle = (DWORD)-1, s_dwTaskbarAlignment;
++
++VOID ArcticTaskbarOptionsReload(VOID)
++{
++    DWORD cb = sizeof(DWORD);
++
++    s_dwTaskbarStyle = s_dwTaskbarAlignment = 0;
++    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Arctic\\Taskbar", L"ButtonStyle", RRF_RT_REG_DWORD, NULL,
++                 &s_dwTaskbarStyle, &cb);
++    cb = sizeof(DWORD);
++    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Arctic\\Taskbar", L"Alignment", RRF_RT_REG_DWORD, NULL,
++                 &s_dwTaskbarAlignment, &cb);
++}
++
++BOOL ArcticTaskbarStyle11(VOID)
++{
++    if (s_dwTaskbarStyle == (DWORD)-1)
++        ArcticTaskbarOptionsReload();
++    return s_dwTaskbarStyle == 1;
++}
++
++BOOL ArcticTaskbarCentered(VOID)
++{
++    if (s_dwTaskbarStyle == (DWORD)-1)
++        ArcticTaskbarOptionsReload();
++    return s_dwTaskbarAlignment == 1;
++}
++
++HWND ArcticWidgetCreate(IN HWND hwndTray)
++{
++    typedef HWND (WINAPI *PFN_CREATE)(HWND);
++    PFN_CREATE pCreate = (PFN_CREATE)ArcticProc(L"startui.dll", "ArcticWidgetCreate");
++
++    return pCreate ? pCreate(hwndTray) : NULL;
++}
++
++INT ArcticWidgetWidth(VOID)
++{
++    typedef INT (WINAPI *PFN_WIDTH)(VOID);
++    PFN_WIDTH pWidth = (PFN_WIDTH)ArcticProc(L"startui.dll", "ArcticWidgetWidth");
++
++    return pWidth ? pWidth() : 0;
++}
++
++VOID ArcticTaskbarPaintButton(IN HDC hdc, IN const RECT *prc, IN DWORD dwFlags)
++{
++    typedef VOID (WINAPI *PFN_PAINT)(HDC, const RECT *, DWORD);
++    PFN_PAINT pPaint = (PFN_PAINT)ArcticProc(L"startui.dll", "ArcticTaskbarPaintButton");
++
++    if (pPaint)
++        pPaint(hdc, prc, dwFlags);
++}
++
++BOOL ArcticStartButtonImageSize(IN INT cyButton, OUT SIZE *pSize)
++{
++    typedef BOOL (WINAPI *PFN_SIZE)(INT, SIZE *);
++    PFN_SIZE pSizeOf = (PFN_SIZE)ArcticProc(L"startui.dll", "ArcticStartButtonImageSize");
++
++    return pSizeOf && pSizeOf(cyButton, pSize);
++}
++
++BOOL ArcticStartButtonImagePaint(IN HDC hdc, IN const RECT *prc, IN DWORD dwFlags)
++{
++    typedef BOOL (WINAPI *PFN_PAINT)(HDC, const RECT *, DWORD);
++    PFN_PAINT pPaint = (PFN_PAINT)ArcticProc(L"startui.dll", "ArcticStartButtonImagePaint");
++
++    return pPaint && pPaint(hdc, prc, dwFlags);
++}
++
++BOOL ArcticTaskbarJumpList(IN HWND hwndOwner, IN const HWND *phwnd, IN UINT cCount, IN const RECT *prcButton)
++{
++    typedef BOOL (WINAPI *PFN_JUMPLIST)(HWND, const HWND *, UINT, const RECT *);
++    PFN_JUMPLIST pJumpList = (PFN_JUMPLIST)ArcticProc(L"startui.dll", "ArcticTaskbarJumpList");
++
++    return pJumpList && pJumpList(hwndOwner, phwnd, cCount, prcButton);
++}
++
++/* the taskbar's own menu, its items as they are, drawn as the taskbar's style has it */
++BOOL ArcticTrackTaskbarMenu(IN HMENU hMenu, IN HWND hwndOwner, IN const POINT *ppt, OUT UINT *puCommand)
++{
++    typedef BOOL (WINAPI *PFN_TRACK)(HMENU, HWND, const POINT *, UINT *);
++    PFN_TRACK pTrack = (PFN_TRACK)ArcticProc(L"startui.dll", "ArcticTrackTaskbarMenu");
++
++    return pTrack && pTrack(hMenu, hwndOwner, ppt, puCommand);
++}
++
+ /* Windows 11's notification center over its calendar (startui.dll): the
+  * clock opens it, and every notification goes there */
+ BOOL ArcticClockFlyoutToggle(IN HWND hwndTray, IN const RECT *prcClock)
+diff --git a/base/shell/explorer/taskband.cpp b/base/shell/explorer/taskband.cpp
+index 94e34d9..87a4c69 100644
+--- a/base/shell/explorer/taskband.cpp
++++ b/base/shell/explorer/taskband.cpp
+@@ -132,7 +132,7 @@ public:
+                 /* Arctic: a row is as high as the buttons of Windows 10 (40,
+                    or 30 with small buttons), whatever the toolbar has yet:
+                    the taskbar takes its height from it */
+-                pdbi->ptMinSize.y = ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 30 : 40);
++                pdbi->ptMinSize.y = ArcticRowHeight();
+                 pdbi->ptIntegral.x = 0;
+                 pdbi->ptIntegral.y = pdbi->ptMinSize.y;
+             }
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+index 0db8e9e..94a413b 100644
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -21,6 +21,7 @@
+ 
+ /* Arctic: the task buttons are to be made anew, once the current message is done */
+ #define TSWM_ARCTIC_REBUILD (WM_APP + 0x3A)
++#define TSWM_ARCTIC_RESIZE  (WM_APP + 0x3B)
+ /* the narrowest a labelled button gets before the windows of a program combine */
+ #define MIN_LABELLED_BUTTON ArcticDpiScale(100)
+ #define TASK_ITEM_ARRAY_ALLOC   64
+@@ -491,6 +492,13 @@ class CTaskSwitchWnd :
+     UINT m_uTaskbarChangedMsg;
+     UINT m_uTaskbarTabMsg;
+ 
++    /* Arctic: the page Buttons changed; how wide the buttons are for the
++       tray, and where the first one stands */
++    UINT m_uTaskbarOptionsMsg;
++    LONG m_GroupWidth;
++    INT m_Indent;
++    DWORD m_dwHeightFixed;
++
+ public:
+     CTaskSwitchWnd() :
+         m_ShellHookMsg(NULL),
+@@ -510,13 +518,17 @@ public:
+         m_bFull(FALSE),
+         m_bRebuilding(FALSE),
+         m_nIconRetries(0),
+-        m_hwndForeground(NULL)
++        m_hwndForeground(NULL),
++        m_GroupWidth(-2),
++        m_Indent(0),
++        m_dwHeightFixed(0)
+     {
+         ZeroMemory(&m_ButtonSize, sizeof(m_ButtonSize));
+         m_uHardErrorMsg = RegisterWindowMessageW(L"HardError");
+         m_uButtonCreatedMsg = RegisterWindowMessageW(L"TaskbarButtonCreated");
+         m_uTaskbarChangedMsg = RegisterWindowMessageW(L"ArcticTaskbarChanged");
+         m_uTaskbarTabMsg = RegisterWindowMessageW(L"ArcticTaskbarTab");
++        m_uTaskbarOptionsMsg = RegisterWindowMessageW(L"ArcticTaskbarOptionsChanged");
+     }
+     virtual ~CTaskSwitchWnd() { }
+ 
+@@ -1685,7 +1697,7 @@ public:
+                 Horizontal = m_Tray->IsHorizontal();
+ 
+                 /* Arctic: buttons as high as in Windows 10, or the whole row */
+-                m_ButtonSize.cy = ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 30 : 40);
++                m_ButtonSize.cy = ArcticRowHeight();
+                 if (Horizontal && m_ButtonSize.cy > rcClient.bottom)
+                     m_ButtonSize.cy = rcClient.bottom;
+ 
+@@ -1736,7 +1748,8 @@ public:
+ 
+                     /* Arctic: a button without a label is as wide as in Windows 10 */
+                     if (g_TaskbarSettings.bHideLabels)
+-                        NewBtnSize = min(NewBtnSize, ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 40 : 48));
++                        NewBtnSize = min(NewBtnSize, ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 40 :
++                                                                    ArcticTaskbarStyle11() ? 44 : 48));
+ 
+                     /* Recalculate how many buttons actually fit into one line */
+                     uiBtnsPerLine = rcClient.right / (NewBtnSize + cxButtonSpacing);
+@@ -1796,6 +1809,80 @@ public:
+         m_TaskBar.EndUpdate();
+         PublishMinimizeRects();
+         CheckFull();
++        ReportGroupWidth();
++    }
++
++    /* Arctic: now and then the buttons were left at another height than the
++       row's, at the top of the taskbar, until a window came or went and
++       they were measured anew: seen when they are drawn, and measured anew */
++    VOID CheckButtonHeight()
++    {
++        RECT rcItem, rcClient;
++        DWORD dwNow = GetTickCount();
++
++        if (!m_ButtonCount || !m_Tray->IsHorizontal() || dwNow - m_dwHeightFixed < 1000 ||
++            !GetClientRect(&rcClient) || !m_TaskBar.SendMessageW(TB_GETITEMRECT, 0, (LPARAM)&rcItem))
++            return;
++        if (rcItem.bottom - rcItem.top != min((LONG)ArcticRowHeight(), rcClient.bottom))
++        {
++            m_dwHeightFixed = dwNow;
++            PostMessageW(TSWM_ARCTIC_RESIZE, 0, 0);
++        }
++    }
++
++    LRESULT OnArcticResize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        UpdateButtonsSize(FALSE);
++        return 0;
++    }
++
++    /* Arctic: a taskbar with its buttons in the middle places them by this */
++    VOID ReportGroupWidth()
++    {
++        LONG cx = 0;
++
++        if (m_ButtonCount > 0)
++        {
++            if (m_Tray->IsHorizontal() && m_ButtonsPerLine >= m_ButtonCount)
++            {
++                TBMETRICS tbm = { 0 };
++                tbm.cbSize = sizeof(tbm);
++                tbm.dwMask = TBMF_BUTTONSPACING;
++                m_TaskBar.GetMetrics(&tbm);
++                cx = m_ButtonCount * (m_ButtonSize.cx + tbm.cxButtonSpacing) - tbm.cxButtonSpacing;
++            }
++            else
++                cx = -1;
++        }
++        if (cx != m_GroupWidth)
++        {
++            m_GroupWidth = cx;
++            ::SendMessageW(m_Tray->GetHWND(), TWM_ARCTICTASKSWIDTH, (WPARAM)cx, 0);
++        }
++    }
++
++    LRESULT OnArcticIndent(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        if ((INT)wParam != m_Indent)
++        {
++            m_Indent = (INT)wParam;
++            m_TaskBar.SendMessageW(TB_SETINDENT, m_Indent, 0);
++            PublishMinimizeRects();
++        }
++        return 0;
++    }
++
++    /* the page Buttons: other buttons, made anew */
++    LRESULT OnArcticTaskbarOptions(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        RECT rc;
++
++        /* the rebar takes the height of the band from the toolbar */
++        GetClientRect(&rc);
++        m_TaskBar.SetWindowPos(NULL, 0, 0, rc.right, ArcticRowHeight(), SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
++        m_bFull = FALSE;
++        RebuildButtons();
++        return 0;
+     }
+ 
+     /* Arctic: where each window goes when it is minimized; dwm.exe animates
+@@ -2252,6 +2339,24 @@ public:
+     VOID HandleTaskItemRightClick(IN OUT PTASK_ITEM TaskItem)
+     {
+         POINT pt;
++
++        /* Arctic: as in Windows 10 and 11, the button's own menu, which needs
++           nothing of the window; with Shift, the menu of the window */
++        if (GetKeyState(VK_SHIFT) >= 0)
++        {
++            HWND ahwnd[10];
++            RECT rc;
++            UINT cWindows = GetButtonWindows(TaskItem, ahwnd, _countof(ahwnd));
++
++            if (cWindows && m_TaskBar.SendMessageW(TB_GETITEMRECT, TaskItem->Index, (LPARAM)&rc))
++            {
++                m_TaskBar.MapWindowPoints(NULL, (LPPOINT)&rc, 2);
++                ArcticTaskbarHover(NULL, NULL, 1);
++                if (ArcticTaskbarJumpList(m_hWnd, ahwnd, cWindows, &rc))
++                    return;
++            }
++        }
++
+         GetCursorPos(&pt);
+ 
+         SetForegroundWindow(TaskItem->hWnd);
+@@ -2356,22 +2461,32 @@ public:
+ 
+         if (dwProgressState & (TBPF_INDETERMINATE | TBPF_NORMAL | TBPF_ERROR | TBPF_PAUSED))
+         {
+-            RECT rcProgress = *prc;
++            RECT rcFull = *prc, rcProgress;
+             COLORREF color = RGB(6, 176, 37);
+ 
++            /* Windows 11: a bar above the pill, inside the button */
++            if (ArcticTaskbarStyle11())
++            {
++                InflateRect(&rcFull, -ArcticDpiScale(6), 0);
++                rcFull.bottom = prc->bottom - (prc->bottom - prc->top - min(prc->bottom - prc->top, ArcticDpiScale(40))) / 2 -
++                                ArcticDpiScale(5);
++                rcFull.top = rcFull.bottom - ArcticDpiScale(3);
++            }
++            rcProgress = rcFull;
++
+             if (dwProgressState & TBPF_ERROR)
+                 color = RGB(218, 38, 38);
+             else if (dwProgressState & TBPF_PAUSED)
+                 color = RGB(222, 180, 0);
+             if (!(dwProgressState & TBPF_INDETERMINATE))
+-                rcProgress.right = rcProgress.left + MulDiv(prc->right - prc->left, (INT)min(dwProgress, (DWORD)10000), 10000);
++                rcProgress.right = rcProgress.left + MulDiv(rcFull.right - rcFull.left, (INT)min(dwProgress, (DWORD)10000), 10000);
+             if (rcProgress.right > rcProgress.left)
+                 ArcticFillAlpha(hdc, &rcProgress, color, (dwProgressState & TBPF_INDETERMINATE) ? 0x40 : 0x80);
+         }
+ 
+         /* a button of several windows looks stacked: the edge of the next one
+            shows on its right */
+-        if (cWindows > 1)
++        if (cWindows > 1 && !ArcticTaskbarStyle11())
+         {
+             RECT rcEdge = { prc->right - 3, prc->top, prc->right - 1, prc->bottom };
+             ArcticFillAlpha(hdc, &rcEdge, RGB(255, 255, 255), 0x30);
+@@ -2403,6 +2518,25 @@ public:
+                active one stays where it is, as in Windows 10 */
+             Ret |= CDRF_NOTIFYPOSTPAINT | TBCDRF_NOOFFSET;
+ 
++            /* Arctic: the buttons of Windows 11 are drawn by startui.dll */
++            if (ArcticTaskbarStyle11())
++            {
++                UINT state = nmtbcd->nmcd.uItemState;
++                DWORD dwFlags = 0;
++
++                if (state & CDIS_SELECTED)
++                    dwFlags |= ARCTIC_BUTTON_PRESSED;
++                if (state & CDIS_HOT)
++                    dwFlags |= ARCTIC_BUTTON_HOT;
++                if (state & CDIS_CHECKED)
++                    dwFlags |= ARCTIC_BUTTON_ACTIVE;
++                if (state & CDIS_MARKED)
++                    dwFlags |= ARCTIC_BUTTON_ATTENTION;
++                ArcticTaskbarPaintButton(nmtbcd->nmcd.hdc, &nmtbcd->nmcd.rc, dwFlags);
++                nmtbcd->clrText = ArcticTaskbarLight() ? RGB(0, 0, 0) : RGB(255, 255, 255);
++                return Ret | TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES;
++            }
++
+             /* Arctic: over a light look the theme's white states would not
+                show: the button as Windows 10's light taskbar has it, darker
+                under the pointer and active, its line along the bottom */
+@@ -2482,6 +2616,7 @@ public:
+             }
+ 
+             case CDDS_PREPAINT:
++                CheckButtonHeight();
+                 Ret = CDRF_NOTIFYITEMDRAW;
+                 break;
+ 
+@@ -2962,7 +3097,10 @@ public:
+         MESSAGE_HANDLER(m_WinMMDevChgMsg, OnWinMMDeviceChange)
+         MESSAGE_HANDLER(m_uTaskbarChangedMsg, OnArcticTaskbarChanged)
+         MESSAGE_HANDLER(m_uTaskbarTabMsg, OnArcticTaskbarTab)
++        MESSAGE_HANDLER(m_uTaskbarOptionsMsg, OnArcticTaskbarOptions)
++        MESSAGE_HANDLER(TSWM_ARCTICINDENT, OnArcticIndent)
+         MESSAGE_HANDLER(TSWM_ARCTIC_REBUILD, OnRebuildButtons)
++        MESSAGE_HANDLER(TSWM_ARCTIC_RESIZE, OnArcticResize)
+         MESSAGE_HANDLER(WM_MOUSEACTIVATE, OnMouseActivate)
+         MESSAGE_HANDLER(WM_KLUDGEMINRECT, OnKludgeItemRect)
+         MESSAGE_HANDLER(WM_COPYDATA, OnCopyData)
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+index 5404f0c..9c02308 100644
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -38,6 +38,9 @@ HRESULT TrayWindowCtxMenuCreator(ITrayWindow * TrayWnd, IN HWND hWndOwner, ICont
+ static const UINT g_uArcticStartMenuClosed = RegisterWindowMessageW(L"ArcticStartMenuClosed");
+ /* ... and the look changed on the page Оформлення */
+ static const UINT g_uArcticShellLookChanged = RegisterWindowMessageW(L"ArcticShellLookChanged");
++/* ... and the page Buttons: the style of the buttons, where they stand, Start's picture */
++static const UINT g_uArcticTaskbarOptions = RegisterWindowMessageW(L"ArcticTaskbarOptionsChanged");
++static const UINT g_uArcticWidgetChanged = RegisterWindowMessageW(L"ArcticWidgetChanged");
+ 
+ static FARPROC ArcticStartUiProc(LPCSTR pszName)
+ {
+@@ -263,8 +266,14 @@ public:
+ 
+         /* Arctic: the Start button of Windows 10 is 48x40, and the taskbar
+            takes its height from it */
+-        Size.cx = ArcticDpiScale(48);
+-        Size.cy = ArcticDpiScale(40) + GetSystemMetrics(SM_CYEDGE);
++        Size.cx = ArcticDpiScale(ArcticTaskbarStyle11() ? 44 : 48);
++        Size.cy = ArcticDpiScale(ArcticTaskbarStyle11() && !g_TaskbarSettings.bSmallIcons ? 48 : 40) +
++                  GetSystemMetrics(SM_CYEDGE);
++
++        /* a picture of its own, as wide as it is at that height */
++        SIZE Image;
++        if (ArcticStartButtonImageSize(ArcticRowHeight(), &Image) && Image.cx > Size.cx)
++            Size.cx = Image.cx;
+ 
+         /* Save the size of the start button */
+         m_Size = Size;
+@@ -347,45 +356,43 @@ public:
+         return 0;
+     }
+ 
+-    /* Arctic: the button's own picture (IDB_START, Arctic's snowflake) in
+-     * black, centred: its coverage is its alpha, or its lightness where it
+-     * has none (it is white, for the dark look) */
+-    VOID DrawLogoInBlack(HDC hdc, const RECT *prc)
++    /* Arctic: the snowflake of the theme's Start button, whose normal state
++     * is the flake over nothing: 20 of 48x40 as on Windows 10's taskbar, 24
++     * on Windows 11's; in black over a light look */
++    VOID DrawLogo(HDC hdc, const RECT *prc, BOOL bBlack)
+     {
+         BITMAPINFO bi = {{sizeof(bi.bmiHeader), 0, 0, 1, 32, BI_RGB}};
+         BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
++        BOOL b11 = ArcticTaskbarStyle11() && !g_TaskbarSettings.bSmallIcons;
++        RECT rcArt = {0, 0, ArcticDpiScale(b11 ? 58 : 48), ArcticDpiScale(b11 ? 48 : 40)};
++        HTHEME hTheme = GetWindowTheme(m_hWnd);
+         DWORD *pBits;
+         HBITMAP hbm;
+-        HDC hdcMem;
+-        HGDIOBJ hOld;
+-        BOOL bAlpha = FALSE;
+-        int cx, cy, i;
+ 
+-        if (!m_ImageList || !ImageList_GetIconSize(m_ImageList, &cx, &cy) || cx <= 0 || cy <= 0)
++        if (!hTheme)
+             return;
+-        bi.bmiHeader.biWidth = cx;
+-        bi.bmiHeader.biHeight = -cy;
++        bi.bmiHeader.biWidth = rcArt.right;
++        bi.bmiHeader.biHeight = -rcArt.bottom;
+         hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, (void **)&pBits, NULL, 0);
+-        if (!hbm)
+-            return;
+-        hdcMem = CreateCompatibleDC(hdc);
+-        hOld = SelectObject(hdcMem, hbm);
+-        ZeroMemory(pBits, cx * cy * sizeof(DWORD));
+-        ImageList_Draw(m_ImageList, 0, hdcMem, 0, 0, ILD_TRANSPARENT);
+-        for (i = 0; i < cx * cy && !bAlpha; i++)
+-            bAlpha = (pBits[i] >> 24) != 0;
+-        for (i = 0; i < cx * cy; i++)
++        if (hbm)
+         {
+-            DWORD p = pBits[i], a;
++            HDC hdcMem = CreateCompatibleDC(hdc);
++            HGDIOBJ hOld = SelectObject(hdcMem, hbm);
+ 
+-            a = bAlpha ? p >> 24 : max(max((p >> 16) & 0xff, (p >> 8) & 0xff), p & 0xff);
+-            pBits[i] = a << 24;  /* black, premultiplied */
++            DrawThemeBackground(hTheme, hdcMem, BP_PUSHBUTTON, PBS_NORMAL, &rcArt, NULL);
++            GdiFlush();
++            if (bBlack)
++            {
++                for (int i = 0; i < rcArt.right * rcArt.bottom; i++)
++                    pBits[i] &= 0xff000000;
++            }
++            GdiAlphaBlend(hdc, (prc->left + prc->right - rcArt.right) / 2,
++                          (prc->top + prc->bottom - rcArt.bottom) / 2,
++                          rcArt.right, rcArt.bottom, hdcMem, 0, 0, rcArt.right, rcArt.bottom, bf);
++            SelectObject(hdcMem, hOld);
++            DeleteDC(hdcMem);
++            DeleteObject(hbm);
+         }
+-        GdiAlphaBlend(hdc, (prc->left + prc->right - cx) / 2, (prc->top + prc->bottom - cy) / 2, cx, cy,
+-                      hdcMem, 0, 0, cx, cy, bf);
+-        SelectObject(hdcMem, hOld);
+-        DeleteDC(hdcMem);
+-        DeleteObject(hbm);
+     }
+ 
+     /* Arctic: over a light look, as Windows 10's light taskbar: on white
+@@ -397,28 +404,52 @@ public:
+         RECT rc;
+         LRESULT state;
+ 
+-        if (!ArcticTaskbarLight())
++        if (!PaintsItself())
+         {
+             bHandled = FALSE;
+             return 0;
+         }
++        BOOL bLight = ArcticTaskbarLight();
++        DWORD dwFlags = ARCTIC_BUTTON_START;
+         HDC hdc = BeginPaint(&ps);
+         GetClientRect(&rc);
+-        FillRect(hdc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
++        FillRect(hdc, &rc, (HBRUSH)GetStockObject(bLight ? WHITE_BRUSH : BLACK_BRUSH));
+         state = SendMessageW(BM_GETSTATE, 0, 0);
+         if (state & BST_PUSHED)
+-            ArcticFillAlpha(hdc, &rc, RGB(0, 0, 0), 0x26);
+-        else if (state & BST_HOT)
+-            ArcticFillAlpha(hdc, &rc, RGB(0, 0, 0), 0x1a);
+-        DrawLogoInBlack(hdc, &rc);
++            dwFlags |= ARCTIC_BUTTON_PRESSED;
++        if (state & BST_HOT)
++            dwFlags |= ARCTIC_BUTTON_HOT;
++        if (!ArcticStartButtonImagePaint(hdc, &rc, dwFlags))
++        {
++            if (ArcticTaskbarStyle11())
++                ArcticTaskbarPaintButton(hdc, &rc, dwFlags);
++            else if (state & BST_PUSHED)
++                ArcticFillAlpha(hdc, &rc, RGB(0, 0, 0), 0x26);
++            else if (state & BST_HOT)
++                ArcticFillAlpha(hdc, &rc, RGB(0, 0, 0), 0x1a);
++            DrawLogo(hdc, &rc, bLight);
++        }
+         EndPaint(&ps);
+         return 0;
+     }
+ 
++    /* Arctic: the theme draws the button of Windows 10 over a dark look;
++       the others are drawn here */
++    BOOL PaintsItself()
++    {
++        RECT rc;
++        SIZE Image;
++
++        if (ArcticTaskbarLight() || ArcticTaskbarStyle11())
++            return TRUE;
++        GetClientRect(&rc);
++        return ArcticStartButtonImageSize(rc.bottom - rc.top, &Image);
++    }
++
+     LRESULT OnMouseHover(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
+     {
+-        /* the button tracks the pointer; the light look is drawn here */
+-        if (ArcticTaskbarLight())
++        /* the button tracks the pointer; what is drawn here shows it */
++        if (PaintsItself())
+             Invalidate();
+         bHandled = FALSE;
+         return 0;
+@@ -443,6 +474,11 @@ class CTrayWindow :
+     public IContextMenu
+ {
+     CStartButton m_StartButton;
++    /* Arctic: how wide the task buttons are together (-1: not in one row),
++       and where Start stands, in the middle with them or at the left */
++    LONG m_TasksWidth;
++    INT m_StartX;
++    HWND m_ArcticWidget;
+     CTrayShowDesktopButton* m_pShowDesktopButton;
+ 
+     CComPtr<IMenuBand>  m_StartMenuBand;
+@@ -499,6 +535,9 @@ public:
+ public:
+     CTrayWindow() :
+         m_StartButton(),
++        m_TasksWidth(-1),
++        m_StartX(0),
++        m_ArcticWidget(NULL),
+         m_pShowDesktopButton(NULL),
+         m_Theme(NULL),
+         m_Font(NULL),
+@@ -675,6 +714,8 @@ public:
+             if (hRunDlg != NULL &&
+                 hRunDlg != m_RunFileDlgOwner)
+             {
++                if (::IsIconic(hRunDlg))
++                    ::ShowWindow(hRunDlg, SW_RESTORE);
+                 SetForegroundWindow(hRunDlg);
+                 return;
+             }
+@@ -731,6 +772,8 @@ public:
+             if (hTrayProp != NULL &&
+                 hTrayProp != m_TrayPropertiesOwner)
+             {
++                if (::IsIconic(hTrayProp))
++                    ::ShowWindow(hTrayProp, SW_RESTORE);
+                 SetForegroundWindow(hTrayProp);
+                 return NULL;
+             }
+@@ -1164,7 +1207,11 @@ public:
+ 
+         TRACE("Before Tracking\n");
+         ::SetForegroundWindow(m_hWnd);
+-        if (hwndExclude)
++        if (ArcticTrackTaskbarMenu(popup, m_hWnd, &pt, &uCommand))
++        {
++            /* Arctic: the same items, drawn as the taskbar's style has it */
++        }
++        else if (hwndExclude)
+         {
+             ::GetWindowRect(hwndExclude, &rc);
+             ZeroMemory(&params, sizeof(params));
+@@ -1922,7 +1969,7 @@ ChangePos:
+             /* Resize and reposition the button */
+             dwp = m_StartButton.DeferWindowPos(dwp,
+                                                NULL,
+-                                               0,
++                                               m_StartX,
+                                                0,
+                                                StartSize.cx,
+                                                StartSize.cy,
+@@ -1978,6 +2025,8 @@ ChangePos:
+         {
+             POINT ptRebar = { 0, 0 };
+             SIZE szRebar;
++            /* Arctic: the weather beside the tray; in the middle's taskbar it is at the left, over nothing */
++            INT cxWidget = Horizontal && m_ArcticWidget && !ArcticTaskbarCentered() ? ArcticWidgetWidth() : 0;
+ 
+             SetWindowStyle(m_Rebar, CCS_VERT, Horizontal ? 0 : CCS_VERT);
+ 
+@@ -1988,7 +2037,7 @@ ChangePos:
+             if (Horizontal)
+             {
+                 ptRebar.x = StartSize.cx + (bGap ? GetSystemMetrics(SM_CXSIZEFRAME) : 0);
+-                szRebar.cx = ptTrayNotify.x - ptRebar.x;
++                szRebar.cx = ptTrayNotify.x - ptRebar.x - cxWidget;
+                 szRebar.cy = rcClient.bottom;
+             }
+             else
+@@ -2016,13 +2065,151 @@ ChangePos:
+             /* Update the task switch window configuration */
+             SendMessage(m_TaskSwitch, TSWM_UPDATETASKBARPOS, 0, 0);
+         }
++        ArcticPlaceGroup();
++    }
++
++    /* Arctic: Start and the task buttons, together in the middle of the
++       taskbar or at its left: Start is moved over the rebar, and the buttons
++       are indented to stand right after it */
++    VOID ArcticPlaceGroup()
++    {
++        RECT rcClient, rcTray, rcTasks;
++        SIZE StartSize = m_StartButton.GetSize();
++        INT x = 0;
++
++        if (!m_StartButton.m_hWnd || !m_TaskSwitch || !GetClientRect(&rcClient))
++            return;
++        if (ArcticTaskbarCentered() && IsPosHorizontal() && m_TasksWidth >= 0)
++        {
++            LONG total = StartSize.cx + m_TasksWidth;
++            LONG limit = rcClient.right;
++
++            if (m_TrayNotify && ::GetWindowRect(m_TrayNotify, &rcTray))
++            {
++                ::MapWindowPoints(NULL, m_hWnd, (LPPOINT)&rcTray, 2);
++                limit = rcTray.left;
++            }
++            x = (rcClient.right - total) / 2;
++            x = min(x, (INT)(limit - total));
++            x = max(x, 0);
++        }
++        if (x != m_StartX)
++        {
++            m_StartX = x;
++            m_StartButton.SetWindowPos(HWND_TOP, x, 0, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
++        }
++        else if (x)
++            m_StartButton.SetWindowPos(HWND_TOP, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
++        if (::GetWindowRect(m_TaskSwitch, &rcTasks))
++        {
++            ::MapWindowPoints(NULL, m_hWnd, (LPPOINT)&rcTasks, 2);
++            SendMessage(m_TaskSwitch, TSWM_ARCTICINDENT, max(0, (INT)(x + StartSize.cx - rcTasks.left)), 0);
++        }
++        ArcticPlaceWidget(x);
++    }
++
++    /* Arctic: the weather stands at the far left of a centred taskbar, while
++       it fits before Start, and otherwise next to the tray */
++    VOID ArcticPlaceWidget(INT xGroup)
++    {
++        RECT rcClient, rcTray;
++        INT cx, x;
++
++        if (!m_ArcticWidget || !GetClientRect(&rcClient))
++            return;
++        cx = IsPosHorizontal() ? ArcticWidgetWidth() : 0;
++        if (cx && ArcticTaskbarCentered())
++        {
++            x = 0;
++            if (cx > xGroup)
++                cx = 0;
++        }
++        else if (cx && m_TrayNotify && ::GetWindowRect(m_TrayNotify, &rcTray))
++        {
++            ::MapWindowPoints(NULL, m_hWnd, (LPPOINT)&rcTray, 2);
++            x = rcTray.left - cx;
++        }
++        else
++        {
++            x = 0;
++            cx = 0;
++        }
++        if (!cx)
++        {
++            ::ShowWindow(m_ArcticWidget, SW_HIDE);
++            return;
++        }
++        ::SetWindowPos(m_ArcticWidget, HWND_TOP, x, 0, cx, rcClient.bottom, SWP_NOACTIVATE | SWP_SHOWWINDOW);
++        ::InvalidateRect(m_ArcticWidget, NULL, FALSE);
++    }
++
++    /* the text of the weather changed, and with it how wide it is */
++    LRESULT OnArcticWidgetChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        AlignControls(NULL);
++        return 0;
++    }
++
++    /* Arctic: the task buttons fill the height of the rebar: the band of a
++       running taskbar kept the old height, and the buttons stayed at its top */
++    VOID ArcticFitTaskBand()
++    {
++        RECT rcRebar, rcTasks;
++
++        if (!IsPosHorizontal() || !::GetClientRect(m_Rebar, &rcRebar) || !::GetWindowRect(m_TaskSwitch, &rcTasks))
++            return;
++        ::MapWindowPoints(NULL, m_Rebar, (LPPOINT)&rcTasks, 2);
++        ::SetWindowPos(m_TaskSwitch, NULL, rcTasks.left, 0, rcTasks.right - rcTasks.left, rcRebar.bottom,
++                       SWP_NOZORDER | SWP_NOACTIVATE);
++        ::InvalidateRect(m_TaskSwitch, NULL, TRUE);
++    }
++
++    LRESULT OnArcticTasksWidth(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        m_TasksWidth = (LONG)wParam;
++        ArcticPlaceGroup();
++        return 0;
++    }
++
++    /* the page Buttons: another height, another Start, buttons elsewhere */
++    LRESULT OnArcticTaskbarOptions(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        BOOL bWas11 = ArcticTaskbarStyle11(), bNewRow;
++
++        ArcticTaskbarOptionsReload();
++
++        /* another style is another height of the row: one row of it */
++        bNewRow = ArcticTaskbarStyle11() != bWas11;
++        if (bNewRow)
++        {
++            RECT rcWindow, rcClient;
++
++            ::SendMessageW(m_TaskSwitch, uMsg, wParam, lParam);
++            if (GetWindowRect(&rcWindow) && GetClientRect(&rcClient))
++            {
++                LONG cy = GetMinimumRowHeight() + (rcWindow.bottom - rcWindow.top) - (rcClient.bottom - rcClient.top);
++
++                if (m_Position == ABE_BOTTOM)
++                    m_TrayRects[ABE_BOTTOM].top = m_TrayRects[ABE_BOTTOM].bottom - cy;
++                else if (m_Position == ABE_TOP)
++                    m_TrayRects[ABE_TOP].bottom = m_TrayRects[ABE_TOP].top + cy;
++            }
++        }
++        m_StartButton.UpdateSize();
++        if (bNewRow)
++            CheckTrayWndPosition();
++        AlignControls(NULL);
++        if (bNewRow)
++            ArcticFitTaskBand();
++        m_StartButton.Invalidate();
++        return 0;
+     }
+ 
+     /* Arctic: the height of a row of the taskbar in Windows 10: 40, or 30
+        with small buttons */
+     LONG GetMinimumRowHeight()
+     {
+-        return ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 30 : 40);
++        return ArcticRowHeight();
+     }
+ 
+     void FitToRebar(PRECT pRect)
+@@ -2633,6 +2820,9 @@ ChangePos:
+ 
+         UpdateFonts();
+ 
++        /* Arctic: the weather; AlignControls places it */
++        m_ArcticWidget = ArcticWidgetCreate(m_hWnd);
++
+         InitShellServices(&m_ShellServices);
+ 
+         if (IsAutoHideState())
+@@ -3090,6 +3280,10 @@ ChangePos:
+         if (!ppt || !prcStartBtn || !pwi)
+             return FALSE;
+ 
++        /* Arctic: in the middle, Start has no corner of the screen */
++        if (m_StartX > 0 && !PtInRect(prcStartBtn, *ppt))
++            return FALSE;
++
+         switch (m_Position)
+         {
+             case ABE_TOP:
+@@ -3408,6 +3602,11 @@ HandleTrayContextMenu:
+         if (hwnd == info->hwndDesktop || hwnd == info->hTrayWnd || hwnd == info->hwndProgman)
+             return TRUE; // Ignore special windows
+ 
++        /* Arctic: an owned window goes with its owner; minimized by itself it
++           has no button on the taskbar to come back by */
++        if (::GetWindow(hwnd, GW_OWNER) && !(::GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_APPWINDOW))
++            return TRUE;
++
+         if (!info->bShowDesktop)
+         {
+             if (!::IsWindowEnabled(hwnd) || IsDialog(hwnd))
+@@ -3761,6 +3960,9 @@ HandleTrayContextMenu:
+         MESSAGE_HANDLER(TWM_SETTINGSCHANGED, OnTaskbarSettingsChanged)
+         MESSAGE_HANDLER(TWM_OPENSTARTMENU, OnOpenStartMenu)
+         MESSAGE_HANDLER(g_uArcticStartMenuClosed, OnArcticStartMenuClosed)
++        MESSAGE_HANDLER(g_uArcticTaskbarOptions, OnArcticTaskbarOptions)
++        MESSAGE_HANDLER(g_uArcticWidgetChanged, OnArcticWidgetChanged)
++        MESSAGE_HANDLER(TWM_ARCTICTASKSWIDTH, OnArcticTasksWidth)
+         MESSAGE_HANDLER(g_uArcticShellLookChanged, OnArcticShellLookChanged)
+         MESSAGE_HANDLER(TWM_DOEXITWINDOWS, OnDoExitWindows)
+         MESSAGE_HANDLER(TWM_GETTASKSWITCH, OnGetTaskSwitch)
+diff --git a/base/shell/explorer/trayprop.cpp b/base/shell/explorer/trayprop.cpp
+index 8eb610a..dd08c6e 100644
+--- a/base/shell/explorer/trayprop.cpp
++++ b/base/shell/explorer/trayprop.cpp
+@@ -399,6 +399,8 @@ PropSheetProc(HWND hwndDlg, UINT uMsg, LPARAM lParam)
+         {
+             hIcon = LoadIconW(hExplorerInstance, MAKEINTRESOURCEW(IDI_STARTMENU));
+             SendMessageW(hwndDlg, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
++            /* Arctic: a window of its own, on the taskbar and in Alt+Tab, as in Windows */
++            SetWindowLongPtrW(hwndDlg, GWL_EXSTYLE, GetWindowLongPtrW(hwndDlg, GWL_EXSTYLE) | WS_EX_APPWINDOW);
+             break;
+         }
+     }
+@@ -428,6 +430,16 @@ DisplayTrayProperties(IN HWND hwndOwner, IN HWND hwndTaskbar)
+         if (hLookPage)
+             hpsp.Add(hLookPage);
+     }
++    /* Arctic: the buttons of Windows 10 or 11, in the middle or not, and the Start button's picture */
++    {
++        typedef HPROPSHEETPAGE (WINAPI *PFN_BUTTONSPAGE)(HWND);
++        HMODULE hStartUi = LoadLibraryW(L"startui.dll");
++        PFN_BUTTONSPAGE pButtonsPage = hStartUi ? (PFN_BUTTONSPAGE)GetProcAddress(hStartUi, "ArcticTaskbarButtonsPage") : NULL;
++        HPROPSHEETPAGE hButtonsPage = pButtonsPage ? pButtonsPage(hwndTaskbar) : NULL;
++
++        if (hButtonsPage)
++            hpsp.Add(hButtonsPage);
++    }
+     /* Arctic: the Start menu's page of startui.dll: the standard menu, those
+      * of Windows 10 and 11, or the classic one, and their looks */
+     {

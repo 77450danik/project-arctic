@@ -25,6 +25,7 @@ if [ ! -f "$OUT/kernel/vmlinuz" ]; then
     rm -rf /tmp/kernel-from-iso
 fi
 
+bash "$ROOT/tools/wsl/build-vkd3d-proton.sh"
 bash "$ROOT/ci/build-rootfs.sh"
 bash "$ROOT/ci/make-windows-img.sh"
 bash "$ROOT/ci/build-image.sh"

@@ -285,4 +285,18 @@ void compact_resize( int w, int h );
 void compact_end_task(void);
 BOOL compact_can_end(void);
 
+/* the programs' dark mode (desk.cpl, Personalization), as the system
+ * colours have it: the pages draw dark where windows are */
+static inline BOOL tm_dark(void)
+{
+    COLORREF c = GetSysColor( COLOR_WINDOW );
+    return GetRValue( c ) + GetGValue( c ) + GetBValue( c ) < 3 * 128;
+}
+#define TM_TEXT  GetSysColor( COLOR_WINDOWTEXT )
+#define TM_PAGE  GetSysColor( COLOR_WINDOW )
+#define TM_DIM   (tm_dark() ? RGB(0xa0, 0xa0, 0xa0) : RGB(102, 102, 102))
+#define TM_LINE  (tm_dark() ? RGB(0x3c, 0x3c, 0x3c) : RGB(229, 229, 229))
+#define TM_LINK  (tm_dark() ? RGB(0x99, 0xd6, 0xff) : RGB(0, 102, 204))
+#define TM_SELECTED (tm_dark() ? RGB(0x41, 0x41, 0x41) : RGB(204, 232, 255))
+
 #endif

@@ -65,6 +65,7 @@
 #define PRESSED_ALPHA   0x0c
 
 #define TIMER_CARET     1
+#define TIMER_SMOOTH    2
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
@@ -120,13 +121,14 @@ static struct recommended recs[MAX_RECOMMENDED];
 static int rec_count;
 static struct row *rows;
 static int row_count, row_capacity, scroll;
+static struct smooth_scroll smooth;
 static WCHAR letters[64];
 static int letter_count;
 
 static struct target targets[MAX_TARGETS];
 static int target_count;
 static struct target hot, pressed, focus;
-static BOOL focus_shown, caret_on, in_popup;
+static BOOL focus_shown, caret_on, in_popup, search_active;
 
 /**********************************************************************
  *          What it shows
@@ -529,7 +531,17 @@ static void paint_search( HDC hdc )
             fill_alpha( hdc, &caret, pal.ink, 255 );
         }
     }
-    else paint_text( hdc, load_string( IDS_SEARCH_WIN11 ), &text, font_item, pal.dim, DT_LEFT );
+    else
+    {
+        paint_text( hdc, load_string( IDS_SEARCH_WIN11 ), &text, font_item, pal.dim, DT_LEFT );
+        if (search_active && caret_on)
+        {
+            RECT caret;
+
+            SetRect( &caret, text.left, box->rect.top + px( 8 ), text.left + 1, box->rect.bottom - px( 8 ) );
+            fill_alpha( hdc, &caret, pal.ink, 255 );
+        }
+    }
     /* over a light look the box is opaque, and so is the text on it */
     if (pal.light)
     {
@@ -607,16 +619,26 @@ static void paint_recommended( HDC hdc, int top )
 static void paint_rows( HDC hdc )
 {
     RECT area = list_area( mode == MODE_ALL ), text;
-    int y = area.top;
+    int offset = smooth_scroll_offset( &smooth ), y = area.top + offset, first = scroll;
 
-    for (int i = scroll; i < row_count; i++)
+    /* while the list goes by, the rows above and under its place show too */
+    while (offset && first > 0 && y > area.top) y -= row_height( &rows[--first] );
+    SaveDC( hdc );
+    IntersectClipRect( hdc, area.left, area.top, area.right, area.bottom );
+    for (int i = first; i < row_count; i++)
     {
         struct row *row = &rows[i];
         int h = row_height( row );
         struct target t = { row->kind == ROW_LETTER ? K_LETTER : K_ROW, i };
         const struct target *found = find_target( t );
+        RECT lit;
 
-        if (y + h > area.bottom) break;
+        if (offset ? y >= area.bottom : y + h > area.bottom) break;
+        if (found)
+        {
+            lit = found->rect;
+            OffsetRect( &lit, 0, y - lit.top );
+        }
         if (row->kind == ROW_HEADER)
         {
             SetRect( &text, area.left + px( 16 ), y, area.right, y + h );
@@ -625,7 +647,7 @@ static void paint_rows( HDC hdc )
         else if (row->kind == ROW_LETTER)
         {
             WCHAR letter[2] = { row->letter, 0 };
-            if (found) highlight( hdc, t, &found->rect, (float)px( 4 ) );
+            if (found) highlight( hdc, t, &lit, (float)px( 4 ) );
             SetRect( &text, area.left + px( 24 ), y, area.right, y + h );
             paint_text( hdc, letter, &text, font_title, pal.text, DT_LEFT );
         }
@@ -634,7 +656,7 @@ static void paint_rows( HDC hdc )
             struct item *item = row->item;
             int x = area.left + px( 24 ) + (mode == MODE_ALL ? item->depth * px( 24 ) : 0);
 
-            if (found) highlight( hdc, t, &found->rect, (float)px( 4 ) );
+            if (found) highlight( hdc, t, &lit, (float)px( 4 ) );
             if (item->kind == ITEM_FOLDER)
             {
                 fill_round_rect( hdc, &(RECT){ x, y + (h - SMALL_ICON) / 2, x + SMALL_ICON, y + (h + SMALL_ICON) / 2 },
@@ -649,6 +671,7 @@ static void paint_rows( HDC hdc )
         }
         y += h;
     }
+    RestoreDC( hdc, -1 );
     if (mode == MODE_SEARCH && !row_count)
     {
         SetRect( &text, area.left + px( 24 ), area.top, area.right, area.top + ROW_HEIGHT );
@@ -659,7 +682,8 @@ static void paint_rows( HDC hdc )
     {
         int span = area.bottom - area.top, shown = visible_rows( &area );
         int thumb = max( px( 24 ), span * shown / row_count ), max_scroll = max( 1, row_count - shown );
-        int top = area.top + (span - thumb) * min( scroll, max_scroll ) / max_scroll;
+        int range = max_scroll * ROW_HEIGHT;
+        int top = area.top + (span - thumb) * max( 0, min( min( scroll, max_scroll ) * ROW_HEIGHT - offset, range ) ) / range;
         RECT bar;
 
         SetRect( &bar, area.right - px( 4 ), top, area.right - px( 2 ), top + thumb );
@@ -943,6 +967,12 @@ static void scroll_by( int delta )
         }
         delta = max( 0, min( scroll + delta, max_scroll ) );
         if (delta == scroll) return;
+        {
+            int moved = 0;
+
+            for (int i = min( scroll, delta ); i < max( scroll, delta ); i++) moved += row_height( &rows[i] );
+            smooth_scroll_add( &smooth, menu, TIMER_SMOOTH, delta > scroll ? moved : -moved, area.bottom - area.top );
+        }
         scroll = delta;
     }
     else return;
@@ -1063,6 +1093,8 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case WM_LBUTTONDOWN:
         pressed = hit_test( pt );
         focus_shown = FALSE;
+        search_active = pressed.kind == K_SEARCH;
+        if (search_active) caret_on = TRUE;
         InvalidateRect( hwnd, NULL, FALSE );
         return 0;
 
@@ -1096,12 +1128,28 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
 
     case WM_TIMER:
-        if (wparam == TIMER_CARET && search[0])
+        if (wparam == TIMER_SMOOTH)
+        {
+            smooth_scroll_step( &smooth, hwnd, TIMER_SMOOTH );
+            InvalidateRect( hwnd, NULL, FALSE );
+            return 0;
+        }
+        if (wparam == TIMER_CARET && (search[0] || search_active))
         {
             caret_on = !caret_on;
             InvalidateRect( hwnd, &targets[0].rect, FALSE );
         }
         return 0;
+
+    case WM_SETCURSOR:
+        GetCursorPos( &pt );
+        ScreenToClient( hwnd, &pt );
+        if (hit_test( pt ).kind == K_SEARCH)
+        {
+            SetCursor( LoadCursorW( NULL, (const WCHAR *)IDC_IBEAM ) );
+            return TRUE;
+        }
+        break;
 
     case WM_ACTIVATE:
         if (LOWORD( wparam ) == WA_INACTIVE && !in_popup) menu11_hide();
@@ -1123,7 +1171,7 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 static BOOL create_menu(void)
 {
     /* Windows 11 rounds its Start menu by 8 */
-    DWORD transition = ARCTIC_TRANSITION_SLIDE_UP, corner = ARCTIC_CORNER_RADIUS( 8 );
+    DWORD transition = ARCTIC_TRANSITION_START11, corner = ARCTIC_CORNER_RADIUS( 8 );
     DWORD size = ARRAY_SIZE(user_name);
     WNDCLASSW cls = { 0 };
 
@@ -1160,6 +1208,7 @@ void menu11_hide(void)
 {
     if (!menu11_visible()) return;
     KillTimer( menu, TIMER_CARET );
+    smooth_scroll_stop( &smooth, menu, TIMER_SMOOTH );
     ShowWindow( menu, SW_HIDE );
     hidden_at = GetTickCount();
     free_recommended();
@@ -1175,6 +1224,8 @@ static void place(void)
     GetMonitorInfoW( MonitorFromRect( &button, MONITOR_DEFAULTTONEAREST ), &info );
     height = min( menu_height(), (int)(info.rcWork.bottom - info.rcWork.top) - 2 * MARGIN );
     x = max( (int)info.rcWork.left + MARGIN, min( (int)button.left, (int)info.rcWork.right - WIDTH - MARGIN ) );
+    /* a taskbar in the middle has its menu in the middle, as Windows 11's */
+    if (taskbar_centered()) x = (info.rcWork.left + info.rcWork.right - WIDTH) / 2;
     if ((button.top + button.bottom) / 2 > (info.rcWork.top + info.rcWork.bottom) / 2)
         y = info.rcWork.bottom - height - MARGIN;
     else
@@ -1214,5 +1265,6 @@ void menu11_toggle( HWND tray_window, const RECT *button_rect, BOOL click )
     ShowWindow( menu, SW_SHOW );
     SetForegroundWindow( menu );
     SetFocus( menu );
+    search_active = FALSE;
     SetTimer( menu, TIMER_CARET, 530, NULL );
 }

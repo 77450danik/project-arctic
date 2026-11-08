@@ -1,0 +1,19 @@
+# 2026-10-30: a verb every file has (an editor's "Open with" in
+# HKCU\Software\Classes\*\shell) is not the default of a shortcut, so a
+# shortcut opens its program; This PC shows the Control Panel's own icon
+sleep 8
+key win-r
+sleep 2
+type reg add "HKCU\Software\Classes\*\shell\ArcticTest" /ve /d "Open with Test" /f
+key ret
+sleep 3
+key win-r
+sleep 2
+type cmd /c copy "%ProgramData%\Microsoft\Windows\Start Menu\Programs\*.lnk" "%USERPROFILE%\Desktop"
+key ret
+sleep 4
+move 700 420
+click left
+key f5
+sleep 3
+shot s1-desktop

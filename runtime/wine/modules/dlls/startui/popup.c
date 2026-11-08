@@ -130,7 +130,9 @@ static void paint( HWND hwnd )
             if (style == POPUP_WIN11) fill_round_rect( hdc, &rect, (float)px( 4 ), pal.ink, 0x14 );
             else fill_alpha( hdc, &rect, pal.ink, 0x1a );
         }
-        if (item->checked)
+        if (item->icon)
+            draw_icon_bitmap( hdc, item->icon, GLYPH_LEFT, mid - GLYPH_SIZE / 2, GLYPH_SIZE );
+        else if (item->checked)
             draw_glyph( hdc, GLYPH_CHECK, GLYPH_LEFT, mid - GLYPH_SIZE / 2, GLYPH_SIZE, color, 255 );
         else if (item->glyph != GLYPH_NONE)
             draw_glyph( hdc, item->glyph, GLYPH_LEFT, mid - GLYPH_SIZE / 2, GLYPH_SIZE, color, 255 );
@@ -388,7 +390,7 @@ static const struct popup_item *copy_items( const struct popup_item *items, UINT
 UINT popup_track( HWND owner, POINT pt, UINT align, const struct popup_item *items, UINT count, int popup_style,
                   const struct look *look )
 {
-    static BOOL registered;
+    static BOOL registered, tracking;
     HWND first;
     MSG msg;
 
@@ -416,6 +418,9 @@ UINT popup_track( HWND owner, POINT pt, UINT align, const struct popup_item *ite
         return cmd;
     }
 
+    /* one at a time: a second would take over the windows of the first */
+    if (tracking) return 0;
+
     if (!registered)
     {
         WNDCLASSW cls = { 0 };
@@ -442,13 +447,25 @@ UINT popup_track( HWND owner, POINT pt, UINT align, const struct popup_item *ite
     SetForegroundWindow( first );
     SetFocus( first );
 
+    tracking = TRUE;
     while (!done && GetMessageW( &msg, NULL, 0, 0 ))
     {
+        BOOL mine = level_of( msg.hwnd ) >= 0;
+
+        /* as a menu of USER's: a click elsewhere in this thread closes it and
+         * still does what it does there (the taskbar takes no activation, so
+         * WM_ACTIVATE never says), and nothing else follows the pointer */
+        if (!mine && (msg.message == WM_LBUTTONDOWN || msg.message == WM_RBUTTONDOWN ||
+                      msg.message == WM_MBUTTONDOWN || msg.message == WM_NCLBUTTONDOWN ||
+                      msg.message == WM_NCRBUTTONDOWN || msg.message == WM_NCMBUTTONDOWN))
+            done = TRUE;
+        if (!mine && (msg.message == WM_MOUSEMOVE || msg.message == WM_NCMOUSEMOVE)) continue;
         /* the keys of the menus go to the popup */
-        if (msg.message == WM_KEYDOWN && level_of( msg.hwnd ) < 0) msg.hwnd = first;
+        if (msg.message == WM_KEYDOWN && !mine) msg.hwnd = first;
         TranslateMessage( &msg );
         DispatchMessageW( &msg );
     }
+    tracking = FALSE;
     close_after( -1 );
     if (IsWindow( owner )) SetForegroundWindow( owner );
     return result;

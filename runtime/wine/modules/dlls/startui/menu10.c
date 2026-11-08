@@ -66,6 +66,7 @@
 
 #define TIMER_CARET     1
 #define TIMER_ANIM      2
+#define TIMER_SMOOTH    3
 
 #define RAIL_MS         200
 #define INTRO_MS        420
@@ -127,6 +128,7 @@ static int pin_col[MAX_PINS], pin_row[MAX_PINS];   /* on the grid of units */
 static int pin_count, tile_scroll, unit_rows;
 static struct row *rows;
 static int row_count, row_capacity, scroll;
+static struct smooth_scroll smooth;
 static WCHAR letters[64];
 static int letter_count;
 
@@ -495,11 +497,17 @@ static void highlight( HDC hdc, struct target t, const RECT *rect )
 static void paint_rows( HDC hdc )
 {
     RECT area = list_area(), text;
-    int y = area.top + intro_offset( 40, px( 48 ) );
+    int offset = smooth_scroll_offset( &smooth ), y = area.top + intro_offset( 40, px( 48 ) ) + offset, first = scroll;
 
+    /* while the list goes by, the rows above and under its place show too */
+    while (offset && first > 0 && y > area.top)
+    {
+        first--;
+        y -= ROW;
+    }
     SaveDC( hdc );
     IntersectClipRect( hdc, area.left, area.top, area.right, area.bottom );
-    for (int i = scroll; i < row_count && y + ROW <= area.bottom + px( 48 ); i++, y += ROW)
+    for (int i = first; i < row_count && (offset ? y < area.bottom : y + ROW <= area.bottom + px( 48 )); i++, y += ROW)
     {
         struct row *row = &rows[i];
         struct target t = { row->kind == ROW_LETTER ? K_LETTER : K_ROW, i };
@@ -556,7 +564,8 @@ static void paint_rows( HDC hdc )
     {
         int span = area.bottom - area.top, shown = visible_rows( &area );
         int thumb = max( px( 24 ), span * shown / row_count ), max_scroll = max( 1, row_count - shown );
-        int top = area.top + (span - thumb) * min( scroll, max_scroll ) / max_scroll;
+        int range = max_scroll * ROW;
+        int top = area.top + (span - thumb) * max( 0, min( min( scroll, max_scroll ) * ROW - offset, range ) ) / range;
         RECT bar;
 
         SetRect( &bar, area.right - px( 4 ), top, area.right - px( 2 ), top + thumb );
@@ -921,6 +930,7 @@ static void scroll_list( int rows_by )
     int new_scroll = max( 0, min( scroll + rows_by, max_scroll ) );
 
     if (new_scroll == scroll) return;
+    smooth_scroll_add( &smooth, menu, TIMER_SMOOTH, (new_scroll - scroll) * ROW, area.bottom - area.top );
     scroll = new_scroll;
     refresh();
 }
@@ -1096,6 +1106,12 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
 
     case WM_TIMER:
+        if (wparam == TIMER_SMOOTH)
+        {
+            smooth_scroll_step( &smooth, hwnd, TIMER_SMOOTH );
+            InvalidateRect( hwnd, NULL, FALSE );
+            return 0;
+        }
         if (wparam == TIMER_ANIM)
         {
             on_anim_timer();
@@ -1167,6 +1183,7 @@ void menu10_hide(void)
     if (!menu10_visible()) return;
     KillTimer( menu, TIMER_CARET );
     KillTimer( menu, TIMER_ANIM );
+    smooth_scroll_stop( &smooth, menu, TIMER_SMOOTH );
     intro_start = 0;
     ShowWindow( menu, SW_HIDE );
     hidden_at = GetTickCount();

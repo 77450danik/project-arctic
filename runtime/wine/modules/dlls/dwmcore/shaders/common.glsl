@@ -13,4 +13,5 @@ layout(push_constant) uniform Push
     float mode;      /* texture: 0 opaque, 1 premultiplied, 2 keyed; acrylic: the grain; blur: the offset */
     float pad;
     vec2  half_px;   /* blur: half a texel of the source */
+    vec2  key;       /* texture: keyed above the row key.y alone when key.x is 1 (a title bar over a backdrop) */
 } pc;

@@ -12,8 +12,8 @@
 #   maker, and the devices are named as Windows names them ("HID-compliant
 #   device", "XINPUT compatible HID device");
 # - the voice of speech: Arctic Default Voice;
-# - kernelbase's Software\Wine\Time Zones goes, msdaps' WINEDB*PRX ProgIDs
-#   are DB*PRX.
+# - kernelbase's Software\Wine\Time Zones is Software\Arctic\Runtime\Time
+#   Zones, msdaps' WINEDB*PRX ProgIDs are DB*PRX.
 #
 # Names a program never shows stay (winebus.sys, the WINEBUS bus, the
 # WinePlugPlay group, IWine* interfaces): the drivers and the 32/64-bit
@@ -118,10 +118,15 @@ for my $po (glob 'po/*.po') {
     });
 }
 
-# kernelbase registers Software\Wine\Time Zones\TZ Mapping, a table of Unix
-# zone names nothing reads: it goes
+# kernelbase registers Software\Wine\Time Zones\TZ Mapping, the table of
+# Unix zone names (Europe/Kyiv) and the Windows zones they are. ntdll looks
+# the host's zone up there to name the system's zone (its WCHAR array went
+# to Arctic\Runtime above), and the Date and Time page goes the other way
+# with it: the table moves there too. Without it ntdll took the first zone
+# whose rules matched: Warsaw was "Central Europe" (Belgrade, Prague).
 edit('dlls/kernelbase/kernelbase.rgs', sub {
-    s{^([ \t]*)NoRemove Wine\r?\n\1\{\r?\n.*?^\1\}\r?\n}{}ms or die "kernelbase.rgs: no Wine key\n";
+    s|^([ \t]*)NoRemove Wine\r?\n\1\{\r?\n(.*?)^\1\}\r?\n|${1}NoRemove Arctic\n${1}\{\n${1}    NoRemove Runtime\n${1}    \{\n${2}${1}    \}\n${1}\}\n|ms
+        or die "kernelbase.rgs: no Wine key\n";
 });
 # msdaps' row and rowset proxies: their ProgIDs, which no code looks up
 edit('dlls/msdaps/row_server.idl', sub { s{"WINEDB(ROW|RST)PRX\.}{"DB$1PRX.}g or die "row_server.idl: no ProgIDs\n" });

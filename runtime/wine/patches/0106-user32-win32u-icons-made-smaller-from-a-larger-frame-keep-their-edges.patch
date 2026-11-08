@@ -1,0 +1,134 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Tue, 3 Nov 2026 12:00:00 +0100
+Subject: [PATCH] user32, win32u: Icons made smaller from a larger frame keep their edges.
+
+The desktop's icons at 125 % are 60 pixels, a size no icon file has. The
+frame nearest to it was taken, which could be the smaller one (48 made
+larger, blurred), and a frame made smaller was resampled with a tent as
+wide as the scale: 64 drawn at 60 spread every edge over three pixels. As
+Windows does, the smallest frame larger than the size is taken, the
+largest when there is none, and a frame made smaller is averaged over the
+area each pixel covers of it, which keeps its edges. Frames made larger
+are resampled as before.
+---
+--- a/dlls/user32/cursoricon.c
++++ b/dlls/user32/cursoricon.c
+@@ -446,7 +446,7 @@
+ static int CURSORICON_FindBestIcon( LPCVOID dir, DWORD size, fnGetCIEntry get_entry,
+                                     int width, int height, int depth, UINT loadflags )
+ {
+-    int i, cx, cy, bits, bestEntry = -1;
++    int i, cx, cy, bits, bestEntry = -1, best_cx = 0, best_cy = 0;
+     UINT iTotalDiff, iXDiff=0, iYDiff=0, iColorDiff;
+     UINT iTempXDiff, iTempYDiff, iTempColorDiff;
+ 
+@@ -479,12 +479,46 @@
+         }
+     }
+ 
++    /* Arctic: with no frame of the size, the smallest larger one, made
++     * smaller, as Windows takes it: the nearest could be smaller, and a frame
++     * made larger (48 at 60 pixels, the desktop's icons at 125 %) is blurred.
++     * None larger: the largest. */
++    if (iTotalDiff)
++    {
++        int largest_cx = 0, largest_cy = 0;
++
++        for ( i = 0; get_entry( dir, size, i, &cx, &cy, &bits ); i++ )
++        {
++            if (cx >= width && cy >= height && (!best_cx || cx + cy < best_cx + best_cy))
++            {
++                best_cx = cx;
++                best_cy = cy;
++            }
++            if (cx + cy > largest_cx + largest_cy)
++            {
++                largest_cx = cx;
++                largest_cy = cy;
++            }
++        }
++        if (!best_cx)
++        {
++            best_cx = largest_cx;
++            best_cy = largest_cy;
++        }
++        if (best_cx)
++        {
++            iXDiff = abs(width - best_cx);
++            iYDiff = abs(height - best_cy);
++            iTotalDiff = iXDiff + iYDiff;
++        }
++    }
++
+     /* Find Best Colors for Best Fit */
+     for ( i = 0; get_entry( dir, size, i, &cx, &cy, &bits ); i++ )
+     {
+         TRACE("entry %d: %d x %d, %d bpp\n", i, cx, cy, bits);
+ 
+-        if(abs(width - cx) == iXDiff && abs(height - cy) == iYDiff)
++        if(best_cx ? cx == best_cx && cy == best_cy : abs(width - cx) == iXDiff && abs(height - cy) == iYDiff)
+         {
+             iTempColorDiff = abs(depth - bits);
+             if(iColorDiff > iTempColorDiff)
+@@ -774,6 +808,29 @@
+ {
+     float scale = (float)dst_len / src_len, support = scale < 1 ? 1 / scale : 1;
+ 
++    /* Smaller: each pixel is what it covers of the frame, every source pixel
++     * by how much of it lies under it. A tent as wide as the scale blurred a
++     * frame a little larger than the size (64 loaded at 60) over three
++     * pixels; the area keeps its edges. */
++    if (scale < 1)
++    {
++        for (int i = 0; i < dst_len; i++)
++        {
++            float lo = i / scale, hi = (i + 1) / scale, sum[4] = { 0 }, total = 0;
++
++            for (int j = (int)lo; j < src_len && j < hi; j++)
++            {
++                float w = min( hi, j + 1.0f ) - max( lo, (float)j );
++
++                if (w <= 0) continue;
++                for (int c = 0; c < 4; c++) sum[c] += src[j * src_step * 4 + c] * w;
++                total += w;
++            }
++            for (int c = 0; c < 4; c++) dst[i * dst_step * 4 + c] = total > 0 ? sum[c] / total : 0;
++        }
++        return;
++    }
++
+     for (int i = 0; i < dst_len; i++)
+     {
+         float center = (i + 0.5f) / scale, sum[4] = { 0 }, total = 0;
+--- a/dlls/win32u/cursoricon.c
++++ b/dlls/win32u/cursoricon.c
+@@ -854,6 +854,29 @@
+ {
+     float scale = (float)dst_len / src_len, support = scale < 1 ? 1 / scale : 1;
+ 
++    /* Smaller: each pixel is what it covers of the frame, every source pixel
++     * by how much of it lies under it. A tent as wide as the scale blurred a
++     * frame a little larger than the size (64 drawn at 60) over three
++     * pixels; the area keeps its edges. */
++    if (scale < 1)
++    {
++        for (int i = 0; i < dst_len; i++)
++        {
++            float lo = i / scale, hi = (i + 1) / scale, sum[4] = { 0 }, total = 0;
++
++            for (int j = (int)lo; j < src_len && j < hi; j++)
++            {
++                float w = min( hi, j + 1.0f ) - max( lo, (float)j );
++
++                if (w <= 0) continue;
++                for (int c = 0; c < 4; c++) sum[c] += src[j * src_step * 4 + c] * w;
++                total += w;
++            }
++            for (int c = 0; c < 4; c++) dst[i * dst_step * 4 + c] = total > 0 ? sum[c] / total : 0;
++        }
++        return;
++    }
++
+     for (int i = 0; i < dst_len; i++)
+     {
+         float center = (i + 0.5f) / scale, sum[4] = { 0 }, total = 0;

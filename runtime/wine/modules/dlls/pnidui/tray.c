@@ -14,6 +14,7 @@
 
 #include <stdarg.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "winsock2.h"
 #include "ws2ipdef.h"
@@ -268,19 +269,47 @@ static void paint_monitor( struct canvas *c )
     paint_rect( c, 2.6f, 3.0f, 13.4f, 6.2f, 0, color( 0xffffff, 0.45f ), color( 0xffffff, 0.08f ) );
 }
 
-/* five bars rising to the right; those the signal reaches are lit */
-static void paint_bars( struct canvas *c, UINT bars )
+static BOOL taskbar_light(void)
 {
-    for (UINT i = 0; i < 5; i++)
-    {
-        float x = 0.8f + i * 3.0f, top = 11.8f - i * 2.5f;
-        BOOL lit = i < bars;
+    HMODULE module = LoadLibraryW( L"startui.dll" );
+    BOOL (WINAPI *is_light)(void) = module ? (void *)GetProcAddress( module, "ArcticTaskbarIsLight" ) : NULL;
 
-        paint_rect( c, x, top, x + 2.6f, 15.0f, 0.5f, color( 0x1f2328, lit ? 1 : 0.45f ),
-                    color( 0x1f2328, lit ? 1 : 0.45f ) );
-        if (lit) paint_rect( c, x + 0.5f, top + 0.5f, x + 2.1f, 14.5f, 0.3f, color( 0xffffff, 1 ), color( 0x9fb3c8, 1 ) );
-        else paint_rect( c, x + 0.5f, top + 0.5f, x + 2.1f, 14.5f, 0.3f, color( 0xffffff, 0.35f ), color( 0xffffff, 0.2f ) );
+    return is_light && is_light();
+}
+
+/* a quarter of a circle over (cx, cy), with round ends */
+static void paint_arc( struct canvas *c, float cx, float cy, float radius, float width, struct rgba s )
+{
+    int n = c->size * SUPERSAMPLE;
+    float end = radius * 0.7071f, r2 = width * width / 4;
+
+    for (int j = 0; j < n; j++)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            float x = (i + 0.5f) / c->scale, y = (j + 0.5f) / c->scale;
+            float dx = x - cx, dy = y - cy, d = sqrtf( dx * dx + dy * dy );
+            float ey = y - (cy - end), left = x - (cx - end), right = x - (cx + end);
+
+            if ((fabsf( d - radius ) <= width / 2 && dy < 0 && fabsf( dx ) <= -dy) ||
+                left * left + ey * ey <= r2 || right * right + ey * ey <= r2)
+                blend_sample( c, j * n + i, s );
+        }
     }
+}
+
+/* Windows 11's Wi-Fi: a dot and three arcs in the taskbar's ink, those the
+ * signal does not reach faint */
+static void paint_wifi( struct canvas *c, UINT bars )
+{
+    static const float radii[3] = { 4.0f, 7.4f, 10.8f };
+    const float cx = 8, cy = 13.3f;
+    UINT32 ink = taskbar_light() ? 0x000000 : 0xffffff;
+    UINT arcs = bars >= 4 ? 3 : bars == 3 ? 2 : bars == 2 ? 1 : 0;
+    struct rgba dot = color( ink, bars ? 1 : 0.3f );
+
+    paint_circle( c, cx, cy, 1.4f, dot, dot );
+    for (UINT i = 0; i < 3; i++) paint_arc( c, cx, cy, radii[i], 1.6f, color( ink, i < arcs ? 1 : 0.3f ) );
 }
 
 /* the badge in the corner: a red disc with a white cross (no connection)
@@ -325,7 +354,7 @@ static HICON make_icon( enum icon_kind kind, UINT bars, BOOL cross, BOOL star )
         return NULL;
     }
 
-    if (kind == ICON_WIRELESS) paint_bars( &canvas, bars );
+    if (kind == ICON_WIRELESS) paint_wifi( &canvas, bars );
     else paint_monitor( &canvas );
     if (cross || star) paint_badge( &canvas, cross );
 
@@ -378,6 +407,8 @@ static void update_icon(void)
                              .uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE, .uCallbackMessage = WM_TRAY_ICON };
     struct state state = { 0 };
     static int last_key = -1;
+    static BOOL last_light;
+    BOOL light = taskbar_light();
     int key;
 
     read_wired( &state );
@@ -411,10 +442,10 @@ static void update_icon(void)
         lstrcpynW( data.szTip, load_string( IDS_NOT_CONNECTED ), ARRAY_SIZE(data.szTip) );
     }
 
-    if (key != last_key || !current_icon)
+    if (key != last_key || !current_icon || light != last_light)
     {
         /* a wired network has the pictures of Windows 7 (the two screens);
-         * Wi-Fi has its bars */
+         * Wi-Fi is Windows 11's, in the ink of the taskbar */
         HICON icon = key >= 100 && key < 200 ? make_icon( ICON_WIRELESS, key - 100, FALSE, FALSE ) :
                      key == 200 ? load_icon( IDI_NETWORK_OK ) :
                      key == 250 ? load_icon( IDI_NETWORK_WARNING ) :
@@ -423,6 +454,7 @@ static void update_icon(void)
         if (current_icon) DestroyIcon( current_icon );
         current_icon = icon;
         last_key = key;
+        last_light = light;
     }
     else if (!wcscmp( data.szTip, current_tip )) return;
 

@@ -368,6 +368,9 @@ void view_back( struct view *view );
 void view_set_timer( struct view *view, UINT ms );
 HWND view_window( struct view *view );
 HFONT view_font( int style );
+/* the programs' dark mode, and the page's colour in the mode */
+BOOL view_dark(void);
+COLORREF view_page_color(void);
 int view_content_width( struct view *view );
 
 /* what a page keeps between its builds */
