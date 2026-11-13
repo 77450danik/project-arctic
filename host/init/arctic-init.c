@@ -47,7 +47,9 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/swap.h>
+#include <sys/xattr.h>
 #include <sys/sysinfo.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -59,6 +61,7 @@
 #include "gate.h"
 #include "hang.h"
 #include "hiberfil.h"
+#include "lxss-binds.h"
 #include "stop.h"
 #include "tuning.h"
 
@@ -69,6 +72,9 @@
 #define NVIDIA_CACHE C_DRIVE "/Users/User/AppData/Local/NVIDIA" /* the drivers' shaders, see nt_env */
 #define MESA_CACHE C_DRIVE "/Users/User/AppData/Local/Mesa"
 #define HARDWARE_SETTLED "/run/arctic/hardware-settled" /* udevadm settle and the sound are done */
+/* the sound card Bluetooth headphones play from: a loopback whose capture
+ * side winebth.sys reads and sends on (docs/bluetooth.md) */
+#define BLUETOOTH_CARD_ID "Bluetooth"
 #define HOST_STATE REG_DIR "/Host" /* what the host itself keeps, on a C: that keeps what is written */
 #define LOG_DIR C_DRIVE "/Windows/Logs/Arctic"
 #define WAYLAND_SOCKET "arctic-0" /* served by dwmcore.dll */
@@ -1251,6 +1257,200 @@ static void start_memory_compression(void)
         say("memory compression: up to %llu MB on %s", strtoull(size, NULL, 10) >> 20, path);
 }
 
+/* The paging file, as Windows has it: C:\pagefile.sys, its size the system's
+ * unless Virtual Memory says otherwise (sysdm.cpl writes PagingFiles in
+ * Session Manager\Memory Management; the hive is read here in text, as
+ * wineserver keeps it). A swap file the ntfs driver maps to its extents, used
+ * once the compressed memory above it is full. Only on an internal disk: a
+ * stick is too slow for it, a session in memory keeps nothing. docs/install.md */
+#define PAGEFILE C_DRIVE "/pagefile.sys"
+#define PAGEFILE_MIB (1ull << 20)
+#define PAGEFILE_GIB (1ull << 30)
+
+enum pagefile_mode { PAGEFILE_NONE, PAGEFILE_SYSTEM, PAGEFILE_CUSTOM };
+
+static int pagefile_active;
+
+/* the value's strings one after another, an empty one at the end, from any
+ * of the forms a hive has: "a", str(7):"a\0b\0", hex(7):61,00,... Returns
+ * whether the value is there at all. */
+static int read_paging_files(char *out, size_t size)
+{
+    FILE *f = fopen(REG_DIR "/system.reg", "re");
+    char line[1024];
+    int in_key = 0, found = 0;
+    size_t n = 0;
+
+    memset(out, 0, size);
+    while (f && fgets(line, sizeof(line), f)) {
+        const char *p = line + 14;
+
+        if (line[0] == '[') {
+            if (in_key)
+                break;
+            in_key = strstr(line, "\\\\Session Manager\\\\Memory Management]") != NULL;
+            continue;
+        }
+        if (!in_key || strncmp(line, "\"PagingFiles\"=", 14))
+            continue;
+        found = 1;
+        if (!strncmp(p, "hex(7):", 7)) {
+            unsigned byte;
+            int high = 0;
+
+            for (p += 7;;) {
+                for (; sscanf(p, "%2x", &byte) == 1; high = !high) {
+                    if (!high && n < size - 2) /* UTF-16: paths in ASCII */
+                        out[n++] = (char)byte;
+                    p += 2;
+                    if (*p == ',')
+                        p++;
+                }
+                if (*p != '\\' || !fgets(line, sizeof(line), f))
+                    break;
+                p = line + strspn(line, " ");
+            }
+        } else {
+            if (!strncmp(p, "str(7):", 7))
+                p += 7;
+            if (*p == '"')
+                for (p++; *p && *p != '"' && n < size - 2; p++) {
+                    if (*p == '\\' && p[1]) {
+                        p++;
+                        out[n++] = *p == '0' ? 0 : *p;
+                    } else {
+                        out[n++] = *p;
+                    }
+                }
+        }
+        break;
+    }
+    if (f)
+        fclose(f);
+    return found;
+}
+
+/* What the hive asks of C:. "?:\pagefile.sys" is Windows' automatic; no value
+ * and the 27-77 MB Wine's setup left in the hive mean the same here. */
+static int paging_file_wanted(uint64_t *maximum)
+{
+    char value[2048];
+
+    if (!read_paging_files(value, sizeof(value)))
+        return PAGEFILE_SYSTEM;
+    for (const char *e = value; *e; e += strlen(e) + 1) {
+        const char *sizes = strchr(e, ' ');
+        unsigned initial = 0, most = 0;
+
+        if ((e[0] == '?' && e[1] == ':') || strstr(e, "pagefile.sys 27 77"))
+            return PAGEFILE_SYSTEM;
+        if ((e[0] != 'C' && e[0] != 'c') || e[1] != ':')
+            continue;
+        if (sizes)
+            sscanf(sizes, " %u %u", &initial, &most);
+        if (!initial && !most)
+            return PAGEFILE_SYSTEM;
+        *maximum = (uint64_t)most * PAGEFILE_MIB;
+        return PAGEFILE_CUSTOM;
+    }
+    return PAGEFILE_NONE;
+}
+
+static void start_paging_file(void)
+{
+    unsigned char page[4096] = {0};
+    uint64_t maximum = 0, want, room, total, have = 0, memory;
+    struct statvfs vfs;
+    struct sysinfo si;
+    struct stat st;
+    uint32_t version = 1, last, attributes = 0x26; /* hidden, system, archive */
+    int mode, fd, exists;
+
+    if (!c_installed)
+        return;
+    mode = paging_file_wanted(&maximum);
+    exists = !stat(PAGEFILE, &st) && S_ISREG(st.st_mode);
+    if (mode == PAGEFILE_NONE) {
+        if (exists)
+            unlink(PAGEFILE);
+        say("paging file: none, as set");
+        return;
+    }
+    if (statvfs(C_DRIVE, &vfs)) {
+        say("paging file: statvfs: %s", strerror(errno));
+        return;
+    }
+    if (exists)
+        have = (uint64_t)st.st_blocks * 512;
+    total = (uint64_t)vfs.f_blocks * vfs.f_frsize;
+    room = (uint64_t)vfs.f_bavail * vfs.f_frsize + have; /* the old one's place is free for the new */
+    room = room > PAGEFILE_GIB ? room - PAGEFILE_GIB : 0; /* a gigabyte stays, as Windows leaves */
+    sysinfo(&si);
+    memory = (uint64_t)si.totalram * si.mem_unit;
+    if (mode == PAGEFILE_SYSTEM) {
+        /* Windows' system-managed start: an eighth of the memory, 32 GB at
+         * most, and no more than an eighth of the volume */
+        want = memory / 8 < 32 * PAGEFILE_GIB ? memory / 8 : 32 * PAGEFILE_GIB;
+        if (want > total / 8)
+            want = total / 8;
+    } else {
+        /* the file cannot grow while it is in use: it has its maximum at once */
+        want = maximum;
+    }
+    if (want > room)
+        want = room;
+    want &= ~(PAGEFILE_MIB - 1);
+    if (want < 16 * PAGEFILE_MIB) {
+        if (exists)
+            unlink(PAGEFILE);
+        say("paging file: no room on C: (%llu MB)", (unsigned long long)(room >> 20));
+        return;
+    }
+
+    if (exists && ((uint64_t)st.st_size != want || have < want))
+        unlink(PAGEFILE);
+    if ((fd = open(PAGEFILE, O_RDWR | O_CREAT | O_CLOEXEC, 0600)) < 0) {
+        say("paging file: %s", strerror(errno));
+        return;
+    }
+    /* a swap signature, as mkswap writes it (see start_memory_compression) */
+    last = (uint32_t)(want / sizeof(page) - 1);
+    memcpy(page + 1024, &version, 4);
+    memcpy(page + 1028, &last, 4);
+    memcpy(page + sizeof(page) - 10, "SWAPSPACE2", 10);
+    if (fallocate(fd, 0, 0, (off_t)want) || pwrite(fd, page, sizeof(page), 0) != (ssize_t)sizeof(page) || fsync(fd)) {
+        say("paging file: %llu MB: %s", (unsigned long long)(want >> 20), strerror(errno));
+        close(fd);
+        unlink(PAGEFILE);
+        return;
+    }
+    /* hidden and system as Windows sees it on this volume, and as the
+     * programs here do (Wine keeps them in this attribute) */
+    if (fsetxattr(fd, "system.ntfs_attrib", &attributes, sizeof(attributes), 0))
+        say("paging file: its attributes: %s", strerror(errno));
+    fsetxattr(fd, "user.DOSATTRIB", "0x6", 3, 0);
+    close(fd);
+    if (swapon(PAGEFILE, 0)) {
+        say("paging file: swapon: %s", strerror(errno));
+        unlink(PAGEFILE);
+        return;
+    }
+    pagefile_active = 1;
+    say("paging file: C:\\pagefile.sys, %llu MB%s", (unsigned long long)(want >> 20),
+        mode == PAGEFILE_SYSTEM ? ", the system's size" : "");
+}
+
+/* before C: goes read-only: a swap file keeps it writable */
+static void stop_paging_file(void)
+{
+    if (!pagefile_active)
+        return;
+    if (swapoff(PAGEFILE))
+        say("paging file: swapoff: %s", strerror(errno));
+    else
+        pagefile_active = 0;
+}
+
 /* Memory combining, as Windows 8 and later do it: the kernel's KSM finds
  * pages that are the same in different processes and keeps one copy. Here
  * it is what keeps a browser from running out of memory: every Chromium
@@ -1397,6 +1597,7 @@ static void power_off(int restart)
     if (wineserver_pid)
         say("wineserver did not end in %.0f s", wait_s);
     kill_all_but(screen, SIGKILL);
+    stop_paging_file();
     sync();
     save_logs();
     if (medium_writable > 0)
@@ -1599,6 +1800,11 @@ static int sound_card_rank(int card, int *device)
     DIR *dir;
     struct dirent *e;
 
+    /* the loopback the Bluetooth driver plays headphones from is never the default */
+    snprintf(path, sizeof(path), "/proc/asound/card%d/id", card);
+    read_line(path, line, sizeof(line));
+    if (!strcmp(line, BLUETOOTH_CARD_ID))
+        return 0;
     snprintf(path, sizeof(path), "/proc/asound/card%d", card);
     if (!(dir = opendir(path)))
         return 0;
@@ -2071,6 +2277,8 @@ static void prepare_nt(void)
     make_dir(PREFIX "/xdg", 0700, 1);
     make_dir(PREFIX "/dosdevices", 0755, 1);
     make_dir(EJECT_DIR, 0755, 1);
+    make_dir("/run/arctic/hold", 0755, 1); /* mountmgr.sys: volumes a program has locked */
+    make_dir("/run/arctic/disks", 0755, 0); /* arctic-volume: the USB disks programs may write */
     make_dir(POWER_DIR, 0755, 1);
     make_dir(TIME_DIR, 0755, 1);
     if (symlink(C_DRIVE, PREFIX "/dosdevices/c:") && errno != EEXIST)
@@ -2573,7 +2781,7 @@ static void eject_disk(const char *disk)
 
     sync();
     for (; done < n; done++)
-        if (umount2(mounts[done], 0))
+        if (release_lxss_binds(parts[done], 0) || umount2(mounts[done], 0))
             break;
     if (done < n) {
         int error = errno;
@@ -3713,6 +3921,17 @@ int main(void)
     struct rlimit files = {524288, 524288};
     if (setrlimit(RLIMIT_NOFILE, &files))
         say("open files limit: %s", strerror(errno));
+    /* Thread priorities as NT gives them: wineserver maps a thread's NT
+     * priority to a nice value only when it may go below 0 (RLIMIT_NICE above
+     * 20), else every thread of every program runs at one level. With one
+     * level Chrome's shader compiler (3 CPUs) shared the CPU evenly with its
+     * frame and audio threads (ABOVE_NORMAL, TIME_CRITICAL): a WebGPU game
+     * ran at 20 fps with 200-500 ms stops where Windows stays smooth. 40
+     * allows -20, wineserver keeps -20 for itself and gives programs -19..19,
+     * the NT range below the realtime class, as Windows lets any program. */
+    struct rlimit nice_range = {40, 40};
+    if (setrlimit(RLIMIT_NICE, &nice_range))
+        say("nice limit: %s", strerror(errno));
     /* Every stretch of memory a program commits, frees or protects apart from
      * its neighbours is a mapping of its own under Wine: Chrome's YouTube tab
      * passed the kernel's 65530 in 20 minutes and its next 40 KB failed
@@ -3739,6 +3958,7 @@ int main(void)
     set_clock();
     sync_time();
     start_memory_compression();
+    start_paging_file();
     start_memory_combining();
 
     /* C:\Windows\System32\config\Host\drm-debug (a drm.debug mask, e.g.
@@ -3775,7 +3995,13 @@ int main(void)
      * 3.7 s of udevadm settle on the MSI laptop. The NT world starts beside
      * it, the session waits only for the GPUs with monitors (wait_for_display). */
     if (!fork()) {
+        /* Bluetooth headphones: the Windows side's A2DP plays what programs
+         * send to this card's first substream, its hands-free gives the second
+         * what the headset's microphone hears (the last index, out of the way) */
+        char *aloop[] = {"/usr/bin/modprobe", "snd-aloop", "index=31", "id=" BLUETOOTH_CARD_ID, "pcm_substreams=2",
+                         NULL};
         run(settle, 0, hostlog, 90);
+        run(aloop, 0, hostlog, 10);
         grant_power_knobs();
         setup_sound();
         close(open(HARDWARE_SETTLED, O_WRONLY | O_CREAT | O_CLOEXEC, 0644));
@@ -3810,6 +4036,17 @@ int main(void)
     char *smbd[] = {"/usr/bin/arctic-smbd", NULL};
     if (!access(smbd[0], X_OK))
         smbd_pid = spawn(smbd, 0, hostlog);
+
+    /* what programs of Windows that write USB disks need root for (docs/disks.md) */
+    char *disk[] = {"/usr/bin/arctic-disk", NULL};
+    if (!access(disk[0], X_OK))
+        spawn(disk, 0, hostlog);
+
+    /* the handles of the Bluetooth controllers that the Windows side's
+     * driver (winebth.sys) needs root for (docs/bluetooth.md) */
+    char *bt[] = {"/usr/bin/arctic-bt", NULL};
+    if (!access(bt[0], X_OK))
+        spawn(bt, 0, hostlog);
 
     /* A Wine newer than what C:'s registry was made with (an update) makes
      * wineboot bring it up to date: Windows' "getting ready" after updates.

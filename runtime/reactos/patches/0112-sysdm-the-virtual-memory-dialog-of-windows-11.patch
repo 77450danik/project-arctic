@@ -1,0 +1,887 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Mon, 9 Nov 2026 19:00:00 +0200
+Subject: [PATCH] sysdm: the Virtual Memory dialog of Windows 11.
+
+Advanced system settings, Performance, Advanced, Change: "Automatically
+manage paging file size for all drives" on top, which writes
+"?:\pagefile.sys" to PagingFiles as Windows does; Custom size, System managed
+size and No paging file under it; the total on the Advanced page. The value
+may be missing or a REG_SZ and an entry is found wherever it is in the list.
+Only the system's drive is listed: the host keeps the paging file there
+(host/init/arctic-init.c), and removes one that is no longer wanted itself.
+What is chosen counts without Set too. The words are Windows' in English,
+Ukrainian and Russian.
+---
+diff --git a/dll/cpl/sysdm/lang/en-US.rc b/dll/cpl/sysdm/lang/en-US.rc
+index b869cca..fa69210 100644
+--- a/dll/cpl/sysdm/lang/en-US.rc
++++ b/dll/cpl/sysdm/lang/en-US.rc
+@@ -225,36 +225,37 @@ BEGIN
+     PUSHBUTTON "Cancel", IDCANCEL, 195, 258, 50, 15
+ END
+ 
+-IDD_VIRTMEM DIALOGEX 6, 6, 223, 248
++IDD_VIRTMEM DIALOGEX 6, 6, 229, 258
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CONTEXTHELP | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+ CAPTION "Virtual Memory"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LTEXT "Drive  [Volume Label]", IDC_STATIC, 12, 5, 96, 9
+-    LTEXT "Paging File Size (MB)", IDC_STATIC, 115, 5, 96, 9
+-    LISTBOX IDC_PAGEFILELIST, 10, 16, 204, 52, LBS_NOTIFY | LBS_USETABSTOPS
+-    GROUPBOX "Paging file size for selected drive", IDC_DRIVEGROUP, 10, 70, 204, 104
+-    LTEXT "Drive:", IDC_STATIC, 20, 80, 20, 8
+-    LTEXT "%s", IDC_DRIVE, 88, 80, 100, 9
+-    LTEXT "Space available:", IDC_STATIC, 20, 92, 56, 9
+-    LTEXT "%s", IDC_SPACEAVAIL, 88, 92, 104, 9
+-    LTEXT "&Initial size (MB):", -1, 22, 118, 75, 9
+-    LTEXT "Ma&ximum size (MB):", -1, 22, 131, 75, 9
+-    AUTORADIOBUTTON "&Custom size", IDC_CUSTOM, 20, 105, 54, 9, WS_GROUP
+-    AUTORADIOBUTTON "S&ystem managed size", IDC_SYSMANSIZE, 20, 145, 88, 9
+-    AUTORADIOBUTTON "&No paging file", IDC_NOPAGEFILE, 20, 158, 78, 9
+-    EDITTEXT IDC_INITIALSIZE, 100, 114, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
+-    EDITTEXT IDC_MAXSIZE, 100, 129, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
+-    PUSHBUTTON "Set", IDC_SET, 158, 154, 50, 15
+-    GROUPBOX "Total paging file size for all drives", IDC_TOTALGROUP, 10, 177, 204, 46
+-    LTEXT "Minimum allowed:", IDC_STATIC, 18, 188, 58, 9
+-    LTEXT "%s", IDC_MINIMUM, 88, 188, 100, 9
+-    LTEXT "Recommended:", IDC_STATIC, 18, 199, 52, 9
+-    LTEXT "%s", IDC_RECOMMENDED, 88, 199, 100, 9
+-    LTEXT "Currently allocated:", IDC_STATIC, 18, 210, 66, 9
+-    LTEXT "%s", IDC_CURRENT, 88, 210, 100, 9
+-    DEFPUSHBUTTON "OK", IDOK, 114, 230, 48, 15
+-    PUSHBUTTON "Cancel", IDCANCEL, 168, 230, 48, 15
++    AUTOCHECKBOX "&Automatically manage paging file size for all drives", IDC_AUTOMANAGE, 10, 6, 209, 10
++    GROUPBOX "Paging file size for each drive", IDC_DRIVEGROUP, 10, 20, 209, 156
++    LTEXT "Drive  [Volume Label]", IDC_STATIC, 18, 31, 96, 9
++    LTEXT "Paging File Size (MB)", IDC_STATIC, 122, 31, 90, 9
++    LISTBOX IDC_PAGEFILELIST, 18, 41, 193, 38, LBS_NOTIFY | LBS_USETABSTOPS
++    LTEXT "Selected drive:", IDC_STATIC, 18, 84, 90, 9
++    LTEXT "%s", IDC_DRIVE, 112, 84, 100, 9
++    LTEXT "Space available:", IDC_STATIC, 18, 95, 90, 9
++    LTEXT "%s", IDC_SPACEAVAIL, 112, 95, 100, 9
++    LTEXT "&Initial size (MB):", -1, 30, 121, 104, 9
++    LTEXT "Ma&ximum size (MB):", -1, 30, 136, 104, 9
++    AUTORADIOBUTTON "&Custom size:", IDC_CUSTOM, 18, 108, 120, 9, WS_GROUP
++    AUTORADIOBUTTON "S&ystem managed size", IDC_SYSMANSIZE, 18, 149, 140, 9
++    AUTORADIOBUTTON "&No paging file", IDC_NOPAGEFILE, 18, 161, 140, 9
++    EDITTEXT IDC_INITIALSIZE, 136, 119, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
++    EDITTEXT IDC_MAXSIZE, 136, 134, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
++    PUSHBUTTON "&Set", IDC_SET, 161, 155, 50, 15
++    GROUPBOX "Total paging file size for all drives", IDC_TOTALGROUP, 10, 180, 209, 50
++    LTEXT "Minimum allowed:", IDC_STATIC, 18, 192, 92, 9
++    LTEXT "%s", IDC_MINIMUM, 112, 192, 100, 9
++    LTEXT "Recommended:", IDC_STATIC, 18, 203, 92, 9
++    LTEXT "%s", IDC_RECOMMENDED, 112, 203, 100, 9
++    LTEXT "Currently allocated:", IDC_STATIC, 18, 214, 92, 9
++    LTEXT "%s", IDC_CURRENT, 112, 214, 100, 9
++    DEFPUSHBUTTON "OK", IDOK, 115, 236, 50, 15
++    PUSHBUTTON "Cancel", IDCANCEL, 169, 236, 50, 15
+ END
+ 
+ IDD_ENVIRONMENT_VARIABLES DIALOGEX 6, 18, 252, 245
+@@ -342,7 +343,9 @@ BEGIN
+    AUTORADIOBUTTON "&Programs", IDC_CPUCLIENT, 14, 36, 75, 12
+    AUTORADIOBUTTON "Background &services", IDC_CPUSERVER, 96, 36, 85, 12
+    GROUPBOX "Virtual memory", IDC_STATIC, 7, 60, 213, 57
+-   LTEXT "A paging file is an area on the hard disk that ReactOS uses as if it were RAM.", IDC_STATIC, 14, 74, 199, 16
++   LTEXT "A paging file is an area on the hard disk that the system uses as if it were RAM.", IDC_STATIC, 14, 74, 199, 16
++   LTEXT "Total paging file size for all drives:", IDC_STATIC, 14, 92, 112, 18
++   LTEXT "", IDC_PAGEFILETOTAL, 128, 92, 34, 9
+    PUSHBUTTON "&Change...", IDC_CHANGESWAP, 163, 97, 50, 14
+ END
+ 
+@@ -381,7 +384,7 @@ BEGIN
+     IDS_MESSAGEBOXTITLE "System control panel applet"
+     IDS_WARNINITIALSIZE "Enter a numeric value for the paging file initial size."
+     IDS_WARNMAXIMUMSIZE "Enter a numeric value for the paging file maximum size."
+-    IDS_WARNINITIALRANGE "The initial paging file size must be between 2 MB and %lu MB on the selected drive."
++    IDS_WARNINITIALRANGE "The initial paging file size must be between 16 MB and %lu MB on the selected drive."
+     IDS_WARNMAXIMUMRANGE "The maximum paging file size must be larger than or equal to its initial size, and less than %lu MB on the selected drive."
+     IDS_PAGEFILE_MB "%lu MB"
+     IDS_PAGEFILE_NONE "None"
+diff --git a/dll/cpl/sysdm/lang/ru-RU.rc b/dll/cpl/sysdm/lang/ru-RU.rc
+index db7812e..2d36ae5 100644
+--- a/dll/cpl/sysdm/lang/ru-RU.rc
++++ b/dll/cpl/sysdm/lang/ru-RU.rc
+@@ -225,36 +225,37 @@ BEGIN
+     PUSHBUTTON "Отмена", IDCANCEL, 195, 258, 50, 15
+ END
+ 
+-IDD_VIRTMEM DIALOGEX 6, 6, 223, 248
++IDD_VIRTMEM DIALOGEX 6, 6, 229, 258
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CONTEXTHELP | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+ CAPTION "Виртуальная память"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LTEXT "Диск [метка тома]", IDC_STATIC, 12, 5, 96, 9
+-    LTEXT "Файл подкачки (МБ)", IDC_STATIC, 115, 5, 96, 9
+-    LISTBOX IDC_PAGEFILELIST, 10, 16, 204, 52, LBS_NOTIFY | LBS_USETABSTOPS
+-    GROUPBOX "Размер файла подкачки для выбранного диска", IDC_DRIVEGROUP, 10, 70, 204, 104
+-    LTEXT "Диск:", IDC_STATIC, 20, 80, 20, 8
+-    LTEXT "%s", IDC_DRIVE, 110, 80, 100, 9
+-    LTEXT "Доступное пространство:", IDC_STATIC, 20, 92, 92, 9
+-    LTEXT "%s", IDC_SPACEAVAIL, 110, 92, 100, 9
+-    LTEXT "Исходный размер (МБ):", -1, 22, 118, 80, 9
+-    LTEXT "Максимальный размер (МБ):", -1, 22, 131, 98, 9
+-    AUTORADIOBUTTON "&Другой размер", IDC_CUSTOM, 20, 105, 65, 9, WS_GROUP
+-    AUTORADIOBUTTON "Размер по выбору системы", IDC_SYSMANSIZE, 20, 145, 105, 9
+-    AUTORADIOBUTTON "Без файла подкачки", IDC_NOPAGEFILE, 20, 158, 85, 9
+-    EDITTEXT IDC_INITIALSIZE, 120, 114, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
+-    EDITTEXT IDC_MAXSIZE, 120, 129, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
+-    PUSHBUTTON "Установить", IDC_SET, 158, 154, 50, 15
+-    GROUPBOX "Общий объем файла подкачки на всех дисках", IDC_TOTALGROUP, 10, 177, 204, 46
+-    LTEXT "Минимальный размер:", IDC_STATIC, 18, 188, 78, 9
+-    LTEXT "%s", IDC_MINIMUM, 98, 188, 108, 9
+-    LTEXT "Рекомендуемый:", IDC_STATIC, 18, 199, 78, 9
+-    LTEXT "%s", IDC_RECOMMENDED, 98, 199, 108, 9
+-    LTEXT "Текущий размер:", IDC_STATIC, 18, 210, 78, 9
+-    LTEXT "%s", IDC_CURRENT, 98, 210, 108, 9
+-    DEFPUSHBUTTON "ОК", IDOK, 114, 230, 48, 15
+-    PUSHBUTTON "Отмена", IDCANCEL, 168, 230, 48, 15
++    AUTOCHECKBOX "&Автоматически выбирать размер файла подкачки", IDC_AUTOMANAGE, 10, 6, 209, 10
++    GROUPBOX "Размер файла подкачки для каждого диска", IDC_DRIVEGROUP, 10, 20, 209, 156
++    LTEXT "Диск [метка тома]", IDC_STATIC, 18, 31, 96, 9
++    LTEXT "Файл подкачки (МБ)", IDC_STATIC, 122, 31, 90, 9
++    LISTBOX IDC_PAGEFILELIST, 18, 41, 193, 38, LBS_NOTIFY | LBS_USETABSTOPS
++    LTEXT "Выбранный диск:", IDC_STATIC, 18, 84, 90, 9
++    LTEXT "%s", IDC_DRIVE, 112, 84, 100, 9
++    LTEXT "Доступно:", IDC_STATIC, 18, 95, 90, 9
++    LTEXT "%s", IDC_SPACEAVAIL, 112, 95, 100, 9
++    LTEXT "&Исходный размер (МБ):", -1, 30, 121, 104, 9
++    LTEXT "&Максимальный размер (МБ):", -1, 30, 136, 104, 9
++    AUTORADIOBUTTON "&Указать размер:", IDC_CUSTOM, 18, 108, 120, 9, WS_GROUP
++    AUTORADIOBUTTON "&Размер по выбору системы", IDC_SYSMANSIZE, 18, 149, 140, 9
++    AUTORADIOBUTTON "&Без файла подкачки", IDC_NOPAGEFILE, 18, 161, 140, 9
++    EDITTEXT IDC_INITIALSIZE, 136, 119, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
++    EDITTEXT IDC_MAXSIZE, 136, 134, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
++    PUSHBUTTON "&Задать", IDC_SET, 161, 155, 50, 15
++    GROUPBOX "Общий размер файла подкачки на всех дисках", IDC_TOTALGROUP, 10, 180, 209, 50
++    LTEXT "Минимальный размер:", IDC_STATIC, 18, 192, 92, 9
++    LTEXT "%s", IDC_MINIMUM, 112, 192, 100, 9
++    LTEXT "Рекомендуется:", IDC_STATIC, 18, 203, 92, 9
++    LTEXT "%s", IDC_RECOMMENDED, 112, 203, 100, 9
++    LTEXT "Текущий размер:", IDC_STATIC, 18, 214, 92, 9
++    LTEXT "%s", IDC_CURRENT, 112, 214, 100, 9
++    DEFPUSHBUTTON "ОК", IDOK, 115, 236, 50, 15
++    PUSHBUTTON "Отмена", IDCANCEL, 169, 236, 50, 15
+ END
+ 
+ IDD_ENVIRONMENT_VARIABLES DIALOGEX 6, 18, 252, 245
+@@ -343,6 +344,8 @@ BEGIN
+    AUTORADIOBUTTON "&Служб, работающих в фоновом режиме", IDC_CPUSERVER, 59, 36, 150, 14
+    GROUPBOX "Виртуальная память", IDC_STATIC, 7, 60, 213, 57
+    LTEXT "Файл подкачки - это область на жёстком диске, используемая для хранения страниц виртуальной памяти.", IDC_STATIC, 14, 74, 199, 16
++   LTEXT "Общий размер файла подкачки на всех дисках:", IDC_STATIC, 14, 92, 112, 18
++   LTEXT "", IDC_PAGEFILETOTAL, 128, 92, 34, 9
+    PUSHBUTTON "&Изменить...", IDC_CHANGESWAP, 163, 97, 50, 14
+ END
+ 
+@@ -380,8 +383,8 @@ BEGIN
+     IDS_MESSAGEBOXTITLE "Панель управления системы"
+     IDS_WARNINITIALSIZE "Введите числовое значение исходного размера файла подкачки."
+     IDS_WARNMAXIMUMSIZE "Введите числовое значение для параметра максимальный размер файла подкачки."
+-    IDS_WARNINITIALRANGE "Исходный размер файла подкачки должен быть в диапазоне между 2 МБ и %lu МБ на выбранном диске."
+-    IDS_WARNMAXIMUMRANGE "Максимальный размер файла подкачки должен быть больше или равен своему исходному размеру, и при этом меньше %lu МБ на выбранном диске."
++    IDS_WARNINITIALRANGE "Исходный размер файла подкачки должен быть от 16 до %lu МБ на выбранном диске."
++    IDS_WARNMAXIMUMRANGE "Максимальный размер файла подкачки должен быть не меньше исходного и не больше %lu МБ на выбранном диске."
+     IDS_PAGEFILE_MB "%lu МБ"
+     IDS_PAGEFILE_NONE "Нет"
+     IDS_PAGEFILE_SYSTEM "По выбору системы"
+diff --git a/dll/cpl/sysdm/lang/uk-UA.rc b/dll/cpl/sysdm/lang/uk-UA.rc
+index 84434a2..31feafc 100644
+--- a/dll/cpl/sysdm/lang/uk-UA.rc
++++ b/dll/cpl/sysdm/lang/uk-UA.rc
+@@ -233,36 +233,37 @@ BEGIN
+     PUSHBUTTON "Скасувати", IDCANCEL, 195, 258, 50, 15
+ END
+ 
+-IDD_VIRTMEM DIALOGEX 6, 6, 223, 248
++IDD_VIRTMEM DIALOGEX 6, 6, 229, 258
+ STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CONTEXTHELP | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+ CAPTION "Віртуальна пам'ять"
+ FONT 8, "MS Shell Dlg"
+ BEGIN
+-    LTEXT "Диск [мітка тому]", IDC_STATIC, 12, 5, 96, 9
+-    LTEXT "Файл довантаження (МБ)", IDC_STATIC, 115, 5, 96, 9
+-    LISTBOX IDC_PAGEFILELIST, 10, 16, 204, 52, LBS_NOTIFY | LBS_USETABSTOPS
+-    GROUPBOX "Розмір файлу довантаження для вибраного диска", IDC_DRIVEGROUP, 10, 70, 204, 104
+-    LTEXT "Диск:", IDC_STATIC, 20, 80, 20, 8
+-    LTEXT "%s", IDC_DRIVE, 88, 80, 100, 9
+-    LTEXT "Доступно:", IDC_STATIC, 20, 92, 56, 9
+-    LTEXT "%s", IDC_SPACEAVAIL, 88, 92, 104, 9
+-    LTEXT "&Вихідний розмір (МБ):", -1, 22, 118, 75, 9
+-    LTEXT "&Максимальний розмір (МБ):", -1, 22, 131, 92, 9
+-    AUTORADIOBUTTON "&Особливий розмір", IDC_CUSTOM, 20, 105, 79, 9, WS_GROUP
+-    AUTORADIOBUTTON "&Розмір, установлюваний системою", IDC_SYSMANSIZE, 20, 145, 143, 9
+-    AUTORADIOBUTTON "&Без файлу довантаження", IDC_NOPAGEFILE, 20, 158, 103,9
+-    EDITTEXT IDC_INITIALSIZE, 115, 114, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
+-    EDITTEXT IDC_MAXSIZE, 115, 129, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
+-    PUSHBUTTON "Установити", IDC_SET, 158, 154, 50, 15
+-    GROUPBOX "Загальний розмір файлу довантаження для всіх дисків", IDC_TOTALGROUP, 10, 177, 204, 46
+-    LTEXT "Мінімальний розмір:", IDC_STATIC, 18, 188, 88, 9
+-    LTEXT "%s", IDC_MINIMUM, 93, 188, 100, 9
+-    LTEXT "Рекомендовано:", IDC_STATIC, 18, 199, 55, 9
+-    LTEXT "%s", IDC_RECOMMENDED, 93, 199, 100, 9
+-    LTEXT "Поточний розмір:", IDC_STATIC, 18, 210, 66, 9
+-    LTEXT "%s", IDC_CURRENT, 93, 210, 100, 9
+-    DEFPUSHBUTTON "OK", IDOK, 114, 230, 48, 15
+-    PUSHBUTTON "Скасувати", IDCANCEL, 168, 230, 48, 15
++    AUTOCHECKBOX "&Автоматично вибирати розмір файлу підкачки", IDC_AUTOMANAGE, 10, 6, 209, 10
++    GROUPBOX "Розмір файлу підкачки для кожного диска", IDC_DRIVEGROUP, 10, 20, 209, 156
++    LTEXT "Диск [мітка тому]", IDC_STATIC, 18, 31, 96, 9
++    LTEXT "Файл підкачки (МБ)", IDC_STATIC, 122, 31, 90, 9
++    LISTBOX IDC_PAGEFILELIST, 18, 41, 193, 38, LBS_NOTIFY | LBS_USETABSTOPS
++    LTEXT "Вибраний диск:", IDC_STATIC, 18, 84, 90, 9
++    LTEXT "%s", IDC_DRIVE, 112, 84, 100, 9
++    LTEXT "Доступно:", IDC_STATIC, 18, 95, 90, 9
++    LTEXT "%s", IDC_SPACEAVAIL, 112, 95, 100, 9
++    LTEXT "&Вихідний розмір (МБ):", -1, 30, 121, 104, 9
++    LTEXT "&Максимальний розмір (МБ):", -1, 30, 136, 104, 9
++    AUTORADIOBUTTON "&Указати розмір:", IDC_CUSTOM, 18, 108, 120, 9, WS_GROUP
++    AUTORADIOBUTTON "&Розмір за вибором системи", IDC_SYSMANSIZE, 18, 149, 140, 9
++    AUTORADIOBUTTON "&Без файлу підкачки", IDC_NOPAGEFILE, 18, 161, 140, 9
++    EDITTEXT IDC_INITIALSIZE, 136, 119, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
++    EDITTEXT IDC_MAXSIZE, 136, 134, 44, 13, NOT WS_BORDER, WS_EX_CLIENTEDGE
++    PUSHBUTTON "&Задати", IDC_SET, 161, 155, 50, 15
++    GROUPBOX "Загальний розмір файлу підкачки на всіх дисках", IDC_TOTALGROUP, 10, 180, 209, 50
++    LTEXT "Мінімальний дозволений:", IDC_STATIC, 18, 192, 92, 9
++    LTEXT "%s", IDC_MINIMUM, 112, 192, 100, 9
++    LTEXT "Рекомендовано:", IDC_STATIC, 18, 203, 92, 9
++    LTEXT "%s", IDC_RECOMMENDED, 112, 203, 100, 9
++    LTEXT "Поточний розмір:", IDC_STATIC, 18, 214, 92, 9
++    LTEXT "%s", IDC_CURRENT, 112, 214, 100, 9
++    DEFPUSHBUTTON "OK", IDOK, 115, 236, 50, 15
++    PUSHBUTTON "Скасувати", IDCANCEL, 169, 236, 50, 15
+ END
+ 
+ IDD_ENVIRONMENT_VARIABLES DIALOGEX 6, 18, 252, 245
+@@ -341,17 +342,19 @@ BEGIN
+ END
+ 
+ IDD_ADVANCEDPERF DIALOGEX 6, 18, 227, 128
+-CAPTION "Advanced"
++CAPTION "Додатково"
+ FONT 8, "MS Shell Dlg"
+ STYLE DS_SHELLFONT | DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+ BEGIN
+-   GROUPBOX "CPU scheduling", IDC_STATIC, 7, 8, 213, 46
+-   LTEXT "Adjust for best performance of:", IDC_STATIC, 14, 23, 199, 8
+-   AUTORADIOBUTTON "&Programs", IDC_CPUCLIENT, 14, 36, 75, 12
+-   AUTORADIOBUTTON "Background &services", IDC_CPUSERVER, 96, 36, 85, 12
+-   GROUPBOX "Virtual memory", IDC_STATIC, 7, 60, 213, 57
+-   LTEXT "A paging file is an area on the hard disk that ReactOS uses as if it were RAM.", IDC_STATIC, 14, 74, 199, 16
+-   PUSHBUTTON "&Change...", IDC_CHANGESWAP, 163, 97, 50, 14
++   GROUPBOX "Розподіл часу процесора", IDC_STATIC, 7, 8, 213, 46
++   LTEXT "Оптимізувати роботу:", IDC_STATIC, 14, 23, 199, 8
++   AUTORADIOBUTTON "&Програм", IDC_CPUCLIENT, 14, 36, 75, 12
++   AUTORADIOBUTTON "&Фонових служб", IDC_CPUSERVER, 96, 36, 85, 12
++   GROUPBOX "Віртуальна пам'ять", IDC_STATIC, 7, 60, 213, 57
++   LTEXT "Файл підкачки — це область на жорсткому диску, яку система використовує як оперативну пам'ять.", IDC_STATIC, 14, 74, 199, 16
++   LTEXT "Загальний розмір файлу підкачки на всіх дисках:", IDC_STATIC, 14, 92, 112, 18
++   LTEXT "", IDC_PAGEFILETOTAL, 128, 92, 34, 9
++   PUSHBUTTON "&Змінити...", IDC_CHANGESWAP, 163, 97, 50, 14
+ END
+ 
+ STRINGTABLE
+@@ -359,7 +362,7 @@ BEGIN
+     IDS_CPLSYSTEMNAME "Система"
+     IDS_SYSTEMPROPERTIES "Властивості системи"
+     IDS_CPLSYSTEMDESCRIPTION "Перегляд відомостей про систему комп'ютера та зміна параметрів обладнання, швидкодії, автоматичних оновлень."
+-    IDS_PERFORMANCEOPTIONS "Performance Options"
++    IDS_PERFORMANCEOPTIONS "Параметри швидкодії"
+     IDS_MEGABYTE "Мб ОЗП"
+     IDS_GIGABYTE "Гб ОЗП"
+     IDS_TERABYTE "Тб ОЗП"
+@@ -387,10 +390,10 @@ BEGIN
+     IDS_USERPROFILE_ACCOUNT_DELETED "Видалений профіль"
+     IDS_USERPROFILE_TYPE_TEXT "When %s logs onto this computer, should the operating system use the roaming profile or just the locally cached copy of the roaming profile."
+     IDS_MESSAGEBOXTITLE "Елемент панелі керування"
+-    IDS_WARNINITIALSIZE "Введіть числове значення для початкового розміру файлу довантаження."
+-    IDS_WARNMAXIMUMSIZE "Введіть числове значення для максимального розміру файлу довантаження."
+-    IDS_WARNINITIALRANGE "The initial paging file size must be between 2 MB and %lu MB on the selected drive."
+-    IDS_WARNMAXIMUMRANGE "The maximum paging file size must be larger than or equal to its initial size, and less than %lu MB on the selected drive."
++    IDS_WARNINITIALSIZE "Введіть числове значення для початкового розміру файлу підкачки."
++    IDS_WARNMAXIMUMSIZE "Введіть числове значення для максимального розміру файлу підкачки."
++    IDS_WARNINITIALRANGE "Вихідний розмір файлу підкачки має бути від 16 до %lu МБ на вибраному диску."
++    IDS_WARNMAXIMUMRANGE "Максимальний розмір файлу підкачки має бути не меншим за вихідний і не більшим за %lu МБ на вибраному диску."
+     IDS_PAGEFILE_MB "%lu МБ"
+     IDS_PAGEFILE_NONE "Немає"
+     IDS_PAGEFILE_SYSTEM "За вибором системи"
+diff --git a/dll/cpl/sysdm/performance.c b/dll/cpl/sysdm/performance.c
+index 127a08f..cacae1a 100644
+--- a/dll/cpl/sysdm/performance.c
++++ b/dll/cpl/sysdm/performance.c
+@@ -111,6 +111,28 @@ VisualEffectsDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+     return FALSE;
+ }
+ 
++/* Arctic: "Total paging file size for all drives", as Windows' page has it */
++static VOID
++ShowPagingFileTotal(HWND hDlg)
++{
++    WCHAR szWindows[MAX_PATH] = L"C:", szPath[16], szFormat[32], szText[64];
++    WIN32_FILE_ATTRIBUTE_DATA Data;
++    ULARGE_INTEGER Size = {0};
++
++    GetSystemWindowsDirectoryW(szWindows, _countof(szWindows));
++    wsprintfW(szPath, L"%c:\\pagefile.sys", szWindows[0]);
++    if (GetFileAttributesExW(szPath, GetFileExInfoStandard, &Data))
++    {
++        Size.LowPart = Data.nFileSizeLow;
++        Size.HighPart = Data.nFileSizeHigh;
++    }
++    if (LoadStringW(hApplet, IDS_PAGEFILE_MB, szFormat, _countof(szFormat)))
++    {
++        wsprintfW(szText, szFormat, (ULONG)(Size.QuadPart / (1024 * 1024)));
++        SetDlgItemTextW(hDlg, IDC_PAGEFILETOTAL, szText);
++    }
++}
++
+ static INT_PTR CALLBACK
+ AdvancedDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+ {
+@@ -120,6 +142,7 @@ AdvancedDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+             // TODO: Not implemented yet
+             EnableWindow(GetDlgItem(hDlg, IDC_CPUCLIENT), FALSE);
+             EnableWindow(GetDlgItem(hDlg, IDC_CPUSERVER), FALSE);
++            ShowPagingFileTotal(hDlg);
+             return TRUE;
+ 
+         case WM_COMMAND:
+diff --git a/dll/cpl/sysdm/resource.h b/dll/cpl/sysdm/resource.h
+index 1b922c4..fc1c433 100644
+--- a/dll/cpl/sysdm/resource.h
++++ b/dll/cpl/sysdm/resource.h
+@@ -181,6 +181,8 @@
+ #define IDC_MINIMUM      912
+ #define IDC_RECOMMENDED  913
+ #define IDC_CURRENT      914
++#define IDC_AUTOMANAGE   915
++#define IDC_PAGEFILETOTAL 916
+ 
+ /* Startup and recovery */
+ #define IDD_STARTUPRECOVERY  1000
+diff --git a/dll/cpl/sysdm/virtmem.c b/dll/cpl/sysdm/virtmem.c
+index ac78983..c9b7d96 100644
+--- a/dll/cpl/sysdm/virtmem.c
++++ b/dll/cpl/sysdm/virtmem.c
+@@ -24,8 +24,8 @@
+ /* Values adapted from smss/pagefile.c, converted in megabytes and rounded-down.
+  * Compare to the more "accurate" values from SMSS (and NTOS) in bytes. */
+ 
+-/* Minimum pagefile size: 2 MB, instead of 256 pages (1 MB) */
+-#define MINIMUM_PAGEFILE_SIZE           2
++/* Arctic: the 16 MB Windows' dialog allows */
++#define MINIMUM_PAGEFILE_SIZE           16
+ 
+ /* Maximum pagefile sizes for different architectures */
+ #define MAXIMUM_PAGEFILE_SIZE32         (4UL * 1024 - 1)
+@@ -80,6 +80,8 @@ typedef struct _VIRTMEM
+     LPTSTR szPagingFiles;
+     UINT   Count;
+     BOOL   bModified;
++    BOOL   bAutomatic;     /* Arctic: the system chooses for every drive */
++    BOOL   bOldAutomatic;
+     PAGEFILE PageFile[26];
+ } VIRTMEM, *PVIRTMEM;
+ 
+@@ -109,15 +111,12 @@ ReadPageFileSettings(PVIRTMEM pVirtMem)
+     DWORD dwType;
+     DWORD dwDataSize;
+ 
+-    if (RegCreateKeyEx(HKEY_LOCAL_MACHINE,
+-                       lpKey,
+-                       0,
+-                       NULL,
+-                       REG_OPTION_NON_VOLATILE,
+-                       KEY_QUERY_VALUE,
+-                       NULL,
+-                       &hkey,
+-                       NULL) == ERROR_SUCCESS)
++    /* Arctic: no value is no error: the system chooses */
++    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE,
++                     lpKey,
++                     0,
++                     KEY_QUERY_VALUE,
++                     &hkey) == ERROR_SUCCESS)
+     {
+         if (RegQueryValueEx(hkey,
+                             _T("PagingFiles"),
+@@ -126,9 +125,10 @@ ReadPageFileSettings(PVIRTMEM pVirtMem)
+                             NULL,
+                             &dwDataSize) == ERROR_SUCCESS)
+         {
++            /* Arctic: room for the end of a REG_MULTI_SZ, if it is a REG_SZ */
+             pVirtMem->szPagingFiles = (LPTSTR)HeapAlloc(GetProcessHeap(),
+                                                         HEAP_ZERO_MEMORY,
+-                                                        dwDataSize);
++                                                        dwDataSize + 2 * sizeof(TCHAR));
+             if (pVirtMem->szPagingFiles != NULL)
+             {
+                 if (RegQueryValueEx(hkey,
+@@ -144,9 +144,6 @@ ReadPageFileSettings(PVIRTMEM pVirtMem)
+         }
+     }
+ 
+-    if (!bRet)
+-        ShowLastWin32Error(pVirtMem->hSelf);
+-
+     if (hkey != NULL)
+         RegCloseKey(hkey);
+ 
+@@ -154,6 +151,30 @@ ReadPageFileSettings(PVIRTMEM pVirtMem)
+ }
+ 
+ 
++/* Arctic: "?:\\pagefile.sys" is what Windows writes for "Automatically manage
++ * paging file size for all drives"; no value at all, or the 27-77 MB Wine's
++ * setup leaves, is the same to the host (host/init/arctic-init.c) */
++static BOOL
++IsPageFileAutomatic(LPCTSTR pszPagingFiles)
++{
++    LPCTSTR p;
++
++    if (pszPagingFiles == NULL)
++        return TRUE;
++
++    for (p = pszPagingFiles; *p != _T('\0'); p += lstrlen(p) + 1)
++    {
++        if ((p[0] == _T('?') && p[1] == _T(':')) ||
++            _tcsstr(p, _T("pagefile.sys 27 77")) != NULL)
++        {
++            return TRUE;
++        }
++    }
++
++    return FALSE;
++}
++
++
+ static VOID
+ GetPageFileSizes(LPTSTR lpPageFiles,
+                  LPINT lpInitialSize,
+@@ -202,6 +223,12 @@ ParseMemSettings(PVIRTMEM pVirtMem)
+     INT Len;
+     UINT PgCnt = 0;
+     PPAGEFILE PageFile;
++    TCHAR szWindows[MAX_PATH] = _T("C:");
++    LPCTSTR pEntry;
++
++    /* Arctic: the host keeps the paging file on the system's drive: the
++     * others are other systems' disks, or come and go */
++    GetSystemWindowsDirectory(szWindows, _countof(szWindows));
+ 
+     DriveLen = GetLogicalDriveStrings(_countof(szDrives) - 1,
+                                       szDrives);
+@@ -216,17 +243,38 @@ ParseMemSettings(PVIRTMEM pVirtMem)
+         /* Copy the 'X:' portion */
+         lstrcpyn(szDrive, DrivePtr, _countof(szDrive));
+ 
+-        if (GetDriveType(DrivePtr) == DRIVE_FIXED)
++        if (DrivePtr[0] == _totupper(szWindows[0]))
+         {
+             MinSize = -1;
+             MaxSize = -1;
+ 
+-            /* Does drive match the one in the registry ? */
+-            if (_tcsnicmp(pVirtMem->szPagingFiles, szDrive, 2) == 0)
++            if (pVirtMem->bAutomatic)
++            {
++                MinSize = 0;
++                MaxSize = 0;
++            }
++            else if (pVirtMem->szPagingFiles != NULL)
+             {
+-                GetPageFileSizes(pVirtMem->szPagingFiles,
+-                                 &MinSize,
+-                                 &MaxSize);
++                /* Does drive match one in the registry ? */
++                for (pEntry = pVirtMem->szPagingFiles;
++                     *pEntry != _T('\0');
++                     pEntry += lstrlen(pEntry) + 1)
++                {
++                    if (_tcsnicmp(pEntry, szDrive, 2) == 0)
++                    {
++                        GetPageFileSizes((LPTSTR)pEntry,
++                                         &MinSize,
++                                         &MaxSize);
++
++                        /* no sizes after the name: the system's */
++                        if (MinSize == -1)
++                        {
++                            MinSize = 0;
++                            MaxSize = 0;
++                        }
++                        break;
++                    }
++                }
+             }
+ 
+             PageFile = &pVirtMem->PageFile[PgCnt];
+@@ -278,7 +326,14 @@ WritePageFileSettings(PVIRTMEM pVirtMem)
+     UINT i, nPos = 0;
+     PPAGEFILE PageFile;
+ 
+-    for (i = 0; i < pVirtMem->Count; ++i)
++    if (pVirtMem->bAutomatic)
++    {
++        lstrcpy(szPagingFiles, _T("?:\\pagefile.sys"));
++        nPos = (UINT)lstrlen(szPagingFiles) + 1;
++        szPagingFiles[nPos++] = _T('\0');
++    }
++
++    for (i = 0; !pVirtMem->bAutomatic && i < pVirtMem->Count; ++i)
+     {
+         PageFile = &pVirtMem->PageFile[i];
+ 
+@@ -304,6 +359,13 @@ WritePageFileSettings(PVIRTMEM pVirtMem)
+         }
+     }
+ 
++    /* Arctic: no paging file is an empty list, not an empty value */
++    if (nPos == 0)
++    {
++        szPagingFiles[0] = _T('\0');
++        nPos = 1;
++    }
++
+     if (RegCreateKeyEx(HKEY_LOCAL_MACHINE,
+                        lpKey,
+                        0,
+@@ -327,22 +389,7 @@ WritePageFileSettings(PVIRTMEM pVirtMem)
+         RegCloseKey(hk);
+     }
+ 
+-    if (bErr == FALSE)
+-    {
+-        /* Delete obsolete paging files on the next boot */
+-        for (i = 0; i < _countof(pVirtMem->PageFile); i++)
+-        {
+-            if (pVirtMem->PageFile[i].OldMinSize != -1 &&
+-                pVirtMem->PageFile[i].NewMinSize == -1)
+-            {
+-                _stprintf(szText,
+-                          _T("%s\\pagefile.sys"),
+-                          pVirtMem->PageFile[i].szDrive);
+-
+-                MoveFileEx(szText, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+-            }
+-        }
+-    }
++    /* Arctic: the host removes a file that is no longer wanted when it starts */
+ 
+     if (bErr)
+         ShowLastWin32Error(pVirtMem->hSelf);
+@@ -388,6 +435,20 @@ OnCustom(PVIRTMEM pVirtMem)
+ 
+ static BOOL OnSelChange(PVIRTMEM pVirtMem);
+ 
++/* Arctic: a drive without a label has no brackets, as in Windows */
++static VOID
++FormatPagefileEntry(PPAGEFILE PageFile, LPCTSTR pszSize, LPTSTR pszText)
++{
++    if (PageFile->pszVolume != NULL && PageFile->pszVolume[0] != _T('\0'))
++    {
++        _stprintf(pszText, _T("%s  [%s]\t%s"), PageFile->szDrive, PageFile->pszVolume, pszSize);
++    }
++    else
++    {
++        _stprintf(pszText, _T("%s\t%s"), PageFile->szDrive, pszSize);
++    }
++}
++
+ static VOID
+ InitPagefileList(PVIRTMEM pVirtMem)
+ {
+@@ -426,11 +487,7 @@ InitPagefileList(PVIRTMEM pVirtMem)
+                           PageFile->NewMaxSize);
+             }
+ 
+-            _stprintf(szDisplayString,
+-                      _T("%s  [%s]\t%s"),
+-                      PageFile->szDrive,
+-                      PageFile->pszVolume ? PageFile->pszVolume : _T(""),
+-                      szSize);
++            FormatPagefileEntry(PageFile, szSize, szDisplayString);
+ 
+             Index = SendMessage(pVirtMem->hListBox, LB_ADDSTRING, (WPARAM)0, (LPARAM)szDisplayString);
+             SendMessage(pVirtMem->hListBox, LB_SETITEMDATA, Index, i);
+@@ -476,11 +533,7 @@ UpdatePagefileEntry(PVIRTMEM pVirtMem,
+                   PageFile->NewMaxSize);
+     }
+ 
+-    _stprintf(szDisplayString,
+-              _T("%s  [%s]\t%s"),
+-              PageFile->szDrive,
+-              PageFile->pszVolume ? PageFile->pszVolume : _T(""),
+-              szSize);
++    FormatPagefileEntry(PageFile, szSize, szDisplayString);
+ 
+     SendMessage(pVirtMem->hListBox, LB_DELETESTRING, (WPARAM)ListIndex, 0);
+     SendMessage(pVirtMem->hListBox, LB_INSERTSTRING, (WPARAM)ListIndex, (LPARAM)szDisplayString);
+@@ -488,7 +541,7 @@ UpdatePagefileEntry(PVIRTMEM pVirtMem,
+ }
+ 
+ 
+-static VOID
++static BOOL
+ OnSet(PVIRTMEM pVirtMem)
+ {
+     INT Index;
+@@ -530,7 +583,7 @@ OnSet(PVIRTMEM pVirtMem)
+                                    MB_ICONWARNING | MB_OK,
+                                    IDS_MESSAGEBOXTITLE,
+                                    IDS_WARNINITIALSIZE);
+-                return;
++                return FALSE;
+             }
+ 
+             MaxSize = GetDlgItemInt(pVirtMem->hSelf,
+@@ -544,7 +597,7 @@ OnSet(PVIRTMEM pVirtMem)
+                                    MB_ICONWARNING | MB_OK,
+                                    IDS_MESSAGEBOXTITLE,
+                                    IDS_WARNMAXIMUMSIZE);
+-                return;
++                return FALSE;
+             }
+ 
+             maxPageFileSize = GetMaxPageFileSize(PageFile);
+@@ -559,7 +612,7 @@ OnSet(PVIRTMEM pVirtMem)
+                                    IDS_MESSAGEBOXTITLE,
+                                    IDS_WARNINITIALRANGE,
+                                    maxPageFileSize);
+-                return;
++                return FALSE;
+             }
+ 
+             /* Check the valid range of the maximum size */
+@@ -572,7 +625,7 @@ OnSet(PVIRTMEM pVirtMem)
+                                    IDS_MESSAGEBOXTITLE,
+                                    IDS_WARNMAXIMUMRANGE,
+                                    maxPageFileSize);
+-                return;
++                return FALSE;
+             }
+ 
+             // TODO: Check how much disk space would remain after
+@@ -608,6 +661,47 @@ OnSet(PVIRTMEM pVirtMem)
+ 
+         UpdatePagefileEntry(pVirtMem, Index, DriveIndex);
+     }
++
++    return TRUE;
++}
++
++
++/* Arctic: CheckDlgButton alone left the radio button of before checked too */
++static VOID
++CheckSizeRadio(PVIRTMEM pVirtMem, UINT idChecked)
++{
++    static const UINT Radios[] = { IDC_CUSTOM, IDC_SYSMANSIZE, IDC_NOPAGEFILE };
++    UINT i;
++
++    for (i = 0; i < _countof(Radios); i++)
++    {
++        CheckDlgButton(pVirtMem->hSelf,
++                       Radios[i],
++                       Radios[i] == idChecked ? BST_CHECKED : BST_UNCHECKED);
++    }
++}
++
++
++/* Arctic: the size of the file there now, in MB */
++static UINT
++GetPageFileMb(LPCTSTR pszDrive)
++{
++    TCHAR szPath[MAX_PATH];
++    WIN32_FIND_DATA fdata = {0};
++    ULARGE_INTEGER pfSize = {0};
++    HANDLE hFind;
++
++    _stprintf(szPath, _T("%s\\pagefile.sys"), pszDrive);
++
++    hFind = FindFirstFile(szPath, &fdata);
++    if (hFind == INVALID_HANDLE_VALUE)
++        return 0;
++
++    pfSize.LowPart = fdata.nFileSizeLow;
++    pfSize.HighPart = fdata.nFileSizeHigh;
++    FindClose(hFind);
++
++    return (UINT)(pfSize.QuadPart / MEGABYTE);
+ }
+ 
+ 
+@@ -658,6 +752,9 @@ OnSelChange(PVIRTMEM pVirtMem)
+             PageFile->FreeSize = (UINT)(FreeDiskSpace.QuadPart / MEGABYTE);
+             _stprintf(szBuffer, szMegabytes, PageFile->FreeSize);
+             SetDlgItemText(pVirtMem->hSelf, IDC_SPACEAVAIL, szBuffer);
++
++            /* Arctic: the place of the file there now is free for a new one */
++            PageFile->FreeSize += GetPageFileMb(PageFile->szDrive);
+         }
+ 
+         if (PageFile->NewMinSize == -1 &&
+@@ -665,14 +762,14 @@ OnSelChange(PVIRTMEM pVirtMem)
+         {
+             /* No pagefile */
+             OnNoPagingFile(pVirtMem);
+-            CheckDlgButton(pVirtMem->hSelf, IDC_NOPAGEFILE, BST_CHECKED);
++            CheckSizeRadio(pVirtMem, IDC_NOPAGEFILE);
+         }
+         else if (PageFile->NewMinSize == 0 &&
+                  PageFile->NewMaxSize == 0)
+         {
+             /* System managed size */
+             OnSysManSize(pVirtMem);
+-            CheckDlgButton(pVirtMem->hSelf, IDC_SYSMANSIZE, BST_CHECKED);
++            CheckSizeRadio(pVirtMem, IDC_SYSMANSIZE);
+         }
+         else
+         {
+@@ -691,9 +788,7 @@ OnSelChange(PVIRTMEM pVirtMem)
+                           PageFile->NewMaxSize,
+                           FALSE);
+ 
+-            CheckDlgButton(pVirtMem->hSelf,
+-                           IDC_CUSTOM,
+-                           BST_CHECKED);
++            CheckSizeRadio(pVirtMem, IDC_CUSTOM);
+         }
+ 
+         /* Set minimum pagefile size */
+@@ -749,9 +844,90 @@ OnSelChange(PVIRTMEM pVirtMem)
+ }
+ 
+ 
++/* Arctic: "Automatically manage paging file size for all drives": checked,
++ * the rest is only shown */
++static VOID
++UpdateAutomaticControls(PVIRTMEM pVirtMem)
++{
++    static const UINT Controls[] =
++    {
++        IDC_PAGEFILELIST, IDC_CUSTOM, IDC_SYSMANSIZE, IDC_NOPAGEFILE, IDC_SET
++    };
++    UINT i;
++
++    for (i = 0; i < _countof(Controls); i++)
++        EnableWindow(GetDlgItem(pVirtMem->hSelf, Controls[i]), !pVirtMem->bAutomatic);
++
++    OnSelChange(pVirtMem);
++
++    if (pVirtMem->bAutomatic)
++    {
++        EnableWindow(GetDlgItem(pVirtMem->hSelf, IDC_INITIALSIZE), FALSE);
++        EnableWindow(GetDlgItem(pVirtMem->hSelf, IDC_MAXSIZE), FALSE);
++    }
++}
++
++
+ static VOID
++OnAutomatic(PVIRTMEM pVirtMem)
++{
++    INT Index, Count;
++    UINT DriveIndex;
++
++    pVirtMem->bAutomatic = (IsDlgButtonChecked(pVirtMem->hSelf,
++                                               IDC_AUTOMANAGE) == BST_CHECKED);
++
++    if (pVirtMem->bAutomatic)
++    {
++        Count = (INT)SendMessage(pVirtMem->hListBox, LB_GETCOUNT, 0, 0);
++        for (Index = 0; Index < Count; Index++)
++        {
++            DriveIndex = (UINT)SendMessage(pVirtMem->hListBox, LB_GETITEMDATA, Index, 0);
++            pVirtMem->PageFile[DriveIndex].NewMinSize = 0;
++            pVirtMem->PageFile[DriveIndex].NewMaxSize = 0;
++            UpdatePagefileEntry(pVirtMem, Index, DriveIndex);
++            SendMessage(pVirtMem->hListBox, LB_SETITEMDATA, Index, DriveIndex);
++        }
++        SendMessage(pVirtMem->hListBox, LB_SETCURSEL, 0, 0);
++    }
++
++    UpdateAutomaticControls(pVirtMem);
++}
++
++
++static BOOL
++IsVirtMemModified(PVIRTMEM pVirtMem)
++{
++    UINT i;
++
++    if (pVirtMem->bAutomatic != pVirtMem->bOldAutomatic)
++        return TRUE;
++
++    if (pVirtMem->bAutomatic)
++        return FALSE;
++
++    for (i = 0; i < pVirtMem->Count; i++)
++    {
++        if (pVirtMem->PageFile[i].OldMinSize != pVirtMem->PageFile[i].NewMinSize ||
++            pVirtMem->PageFile[i].OldMaxSize != pVirtMem->PageFile[i].NewMaxSize)
++        {
++            return TRUE;
++        }
++    }
++
++    return FALSE;
++}
++
++
++static BOOL
+ OnVirtMemDialogOk(PVIRTMEM pVirtMem)
+ {
++    /* Arctic: what is chosen counts without Set too; a wrong size stops here */
++    if (!pVirtMem->bAutomatic && !OnSet(pVirtMem))
++        return FALSE;
++
++    pVirtMem->bModified = IsVirtMemModified(pVirtMem);
++
+     if (pVirtMem->bModified != FALSE)
+     {
+         ResourceMessageBox(hApplet,
+@@ -762,6 +938,8 @@ OnVirtMemDialogOk(PVIRTMEM pVirtMem)
+ 
+         WritePageFileSettings(pVirtMem);
+     }
++
++    return TRUE;
+ }
+ 
+ 
+@@ -792,10 +970,18 @@ OnInitVirtMemDialog(HWND hwnd, PVIRTMEM pVirtMem)
+     /* Load the pagefile systems from the reg */
+     ReadPageFileSettings(pVirtMem);
+ 
++    pVirtMem->bAutomatic = IsPageFileAutomatic(pVirtMem->szPagingFiles);
++    pVirtMem->bOldAutomatic = pVirtMem->bAutomatic;
++    CheckDlgButton(hwnd,
++                   IDC_AUTOMANAGE,
++                   pVirtMem->bAutomatic ? BST_CHECKED : BST_UNCHECKED);
++
+     /* Parse our settings and set up dialog */
+     ParseMemSettings(pVirtMem);
+ 
+     InitPagefileList(pVirtMem);
++
++    UpdateAutomaticControls(pVirtMem);
+ }
+ 
+ 
+@@ -858,8 +1044,12 @@ VirtMemDlgProc(HWND hwndDlg,
+                     return TRUE;
+ 
+                 case IDOK:
+-                    OnVirtMemDialogOk(pVirtMem);
+-                    EndDialog(hwndDlg, pVirtMem->bModified);
++                    if (OnVirtMemDialogOk(pVirtMem))
++                        EndDialog(hwndDlg, pVirtMem->bModified);
++                    return TRUE;
++
++                case IDC_AUTOMANAGE:
++                    OnAutomatic(pVirtMem);
+                     return TRUE;
+ 
+                 case IDC_NOPAGEFILE:

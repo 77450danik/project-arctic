@@ -1,0 +1,15 @@
+# The stock Rufus asks for elevation and lists the stick.
+#   tools/wsl/make-rufus-test-disks.sh RUFUS.EXE IMAGE.ISO
+#   vm-test.py --disk out/test-local/rufus-apps.img --script tests/vm/r2-rufus-format.txt --keep
+# What to see: r2-consent - the UAC window naming rufus.exe, with no password
+# box; r2-started - Rufus with "OLD (E:) [2 GB]" or so under "Пристрій".
+sleep 8
+plug target rufus-stick.img
+sleep 10
+shot r2-plugged
+key win-r
+sleep 3
+type D:\rufus.exe
+key ret
+sleep 10
+shot r2-consent

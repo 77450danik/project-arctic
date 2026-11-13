@@ -1,0 +1,50 @@
+# The stock Rufus writes an ISO to the stick with its defaults (FAT32,
+# MBR, ISO mode), all by mouse, as a person would.
+#   tools/wsl/make-rufus-test-disks.sh RUFUS.EXE IMAGE.ISO
+#   vm-test.py --disk out/test-local/rufus-apps.img --script tests/vm/r3-rufus-write.txt --keep
+# Then boot out/test-local/rufus-stick.img on its own: Alpine's menu.
+# Positions are those of Rufus centred on a 1280x800 screen.
+sleep 8
+plug target rufus-stick.img
+sleep 10
+key win-r
+sleep 3
+type D:\rufus.exe
+key ret
+sleep 8
+shot r3-consent
+# UAC: Так
+move 748 414
+click
+sleep 25
+shot r3-started
+# DBX update offered: Ні
+move 891 431
+click
+sleep 2
+# ВИБРАТИ, then the ISO
+move 927 211
+click
+sleep 6
+type D:\image.iso
+sleep 1
+key ret
+sleep 12
+shot r3-iso
+# ПОЧАТИ
+move 798 569
+click
+sleep 6
+shot r3-hybrid
+# ISO mode: OK
+move 832 498
+click
+sleep 6
+shot r3-warning
+# all data destroyed: OK
+move 791 376
+click
+sleep 60
+shot r3-writing
+sleep 60
+shot r3-done

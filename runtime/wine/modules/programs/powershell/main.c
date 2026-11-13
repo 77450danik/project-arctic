@@ -7,9 +7,21 @@
  * same arguments, in the same console and with the same standard handles,
  * and gives back its exit code (docs/linux-gate.md, stage 7).
  *
- * The one difference of the command lines: Windows PowerShell takes its
- * first argument that is not a parameter as a command, PowerShell 7 as a
- * script file. "powershell Get-Date" stays a command here.
+ * The command lines differ in two ways, and both are Windows PowerShell's
+ * here:
+ *
+ * - Windows PowerShell reads its arguments as CommandLineToArgvW does, where
+ *   two quotes inside quotes give a quote and close them; pwsh reads them as
+ *   the C runtime does, where they only give a quote. Scripts count on the
+ *   first: cmd's  -Command $p='x'; """ & { ... } $p """" | iex  is the
+ *   string " & { ... } $p " piped to iex in Windows PowerShell and a string
+ *   with no end in pwsh, which then quits saying nothing. So the arguments
+ *   are read here as Windows PowerShell reads them, and the command's text
+ *   reaches pwsh joined with spaces as one argument, the way Windows
+ *   PowerShell joins it.
+ * - Windows PowerShell takes its first argument that is not a parameter as a
+ *   command, PowerShell 7 as a script file. "powershell Get-Date" stays a
+ *   command here.
  *
  * Copyright 2026 Project Arctic
  *
@@ -20,6 +32,7 @@
  */
 
 #include <windows.h>
+#include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
@@ -107,19 +120,44 @@ static BOOL find_pwsh( WCHAR *path, DWORD size )
     return SearchPathW( NULL, L"pwsh.exe", NULL, size, path, NULL ) != 0;
 }
 
-int __cdecl wmain( int argc, WCHAR *argv[] )
+/* the arguments from "first" on joined with spaces: the text of -Command as
+ * Windows PowerShell makes it */
+static WCHAR *join_args( WCHAR **argv, int argc, int first )
 {
-    WCHAR pwsh[MAX_PATH], *line = NULL;
+    size_t size = 1;
+    WCHAR *text;
+    int i;
+
+    for (i = first; i < argc; i++) size += wcslen( argv[i] ) + 1;
+    text = malloc( size * sizeof(WCHAR) );
+    text[0] = 0;
+    for (i = first; i < argc; i++)
+    {
+        if (i > first) wcscat( text, L" " );
+        wcscat( text, argv[i] );
+    }
+    return text;
+}
+
+int __cdecl wmain( int crt_argc, WCHAR *crt_argv[] )
+{
+    WCHAR pwsh[MAX_PATH], *line = NULL, **argv;
     size_t len = 0, size = 0;
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi;
     DWORD code = 1;
-    int i;
+    int argc, i;
 
     if (!find_pwsh( pwsh, ARRAY_SIZE(pwsh) ))
     {
         fwprintf( stderr, L"powershell.exe: PowerShell 7 is not installed (C:\\Program Files\\PowerShell\\7\\pwsh.exe).\n" );
         return 1;
+    }
+    /* Windows PowerShell's reading of its command line, not the C runtime's */
+    if (!(argv = CommandLineToArgvW( GetCommandLineW(), &argc )))
+    {
+        argv = crt_argv;
+        argc = crt_argc;
     }
     append_arg( &line, &len, &size, pwsh );
 
@@ -129,10 +167,15 @@ int __cdecl wmain( int argc, WCHAR *argv[] )
         BOOL value = FALSE;
         size_t k;
 
-        if (!name)
+        if (!name || (is_param( name, L"command", 1 ) && i + 1 < argc && wcscmp( argv[i + 1], L"-" )))
         {
-            /* the command, and everything after it is its text */
+            /* the command: everything after it is its text */
+            WCHAR *text = join_args( argv, argc, name ? i + 1 : i );
+
             append_arg( &line, &len, &size, L"-Command" );
+            append_arg( &line, &len, &size, text );
+            free( text );
+            i = argc;
             break;
         }
         if (is_param( name, L"command", 1 ) || is_param( name, L"file", 1 ) ||

@@ -1,0 +1,29 @@
+# Part two of l4-a: the start after the power cut, the hard disk away.
+# Expected:
+#   l4-b-stick  the USB stick does not take the hard disk's letter, which stays
+#               in MountedDevices as GPT
+#   l4-b-back   the hard disk back on the letter it had in l4-a
+sleep 12
+key win-r
+sleep 15
+key esc
+sleep 3
+plug a stick-a.img SERIALAAAA01
+sleep 12
+key win-r
+sleep 6
+type cmd /k for %i in (D E F) do @if exist %i:\letters.exe %i:\letters.exe
+key ret
+sleep 25
+shot l4-b-stick
+type exit
+key ret
+sleep 2
+plugfixed f fixed.img SERIALFFFF04
+sleep 12
+key win-r
+sleep 6
+type cmd /k for %i in (D E F) do @if exist %i:\letters.exe %i:\letters.exe
+key ret
+sleep 15
+shot l4-b-back

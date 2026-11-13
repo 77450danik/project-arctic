@@ -17,7 +17,23 @@ fi
 
 # The container's NoExtract rules drop the locale sources we need
 sed '/^NoExtract/d' /etc/pacman.conf > /tmp/pacman.conf
-rm -rf "$RFS" "$OUT/prefix" "$OUT/initrd"
+# A pacstrap killed half way leaves the API filesystems (/dev, /proc, /sys
+# with efivars) mounted in $RFS. In Arctic's WSL they are the running system's
+# own: rm -rf through them erased /dev/null and the firmware's boot entries
+# (2026-11-12). Unmount whatever is left, refuse to go on while anything is
+# still mounted, and never let rm cross into another filesystem.
+if [ -d "$RFS" ]; then
+    # nothing mounted is grep's exit 1: not a failure under pipefail
+    { findmnt -rn -o TARGET | grep -F "$RFS/" || true; } | sort -r | while read -r m; do
+        umount -l "$m" || true
+    done
+    if findmnt -rn -o TARGET | grep -qF "$RFS/"; then
+        echo "build-rootfs: still mounted under $RFS, not deleting it:" >&2
+        findmnt -rn -o TARGET | grep -F "$RFS/" >&2
+        exit 1
+    fi
+fi
+rm -rf --one-file-system "$RFS" "$OUT/prefix" "$OUT/initrd"
 mkdir -p "$RFS"
 # shellcheck disable=SC2046
 pacstrap -C /tmp/pacman.conf -c -G -M "$RFS" $(grep -v '^[[:space:]]*#' "$ROOT/host/rootfs/packages.txt")
@@ -69,7 +85,11 @@ INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop,hiberfil,tuning}.c)
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}" \
     "$ROOT/host/init/gate.c" "$ROOT/host/init/hang.c" -lcrypt
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
+# What a program of Windows that writes a USB disk needs root for (docs/disks.md)
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-disk" "$ROOT/host/init/arctic-disk.c"
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-gpu" "$ROOT/host/init/arctic-gpu.c"
+# The handles of the Bluetooth controllers that winebth.sys needs root for (docs/bluetooth.md)
+gcc -O2 -Wall -o "$RFS/usr/bin/arctic-bt" "$ROOT/host/init/arctic-bt.c"
 # WSL in Arctic: the distributions of D:\WSL, for wsl.exe and bash.exe (docs/updates.md).
 # gate.c: the Linux gate's password (docs/linux-gate.md), shared with arctic-init
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-lxss" "$ROOT/host/init/arctic-lxss.c" "$ROOT/host/init/gate.c" -lcrypt
@@ -150,7 +170,9 @@ cp "$ROOT/WALLPAPER.jpg" "$PFX/drive_c/windows/Web/Wallpaper/Arctic/img0.jpg"
 # Parts of ReactOS (ci/build-reactos.sh), when they are built
 REACTOS=${REACTOS_OUT:-$ROOT/out/reactos}
 if [ -d "$REACTOS/Windows" ]; then
-    cp -a "$REACTOS/Windows/System32/." "$PFX/drive_c/windows/system32/"
+    # Paint is Arctic's own (Wine module mspaint): an out/reactos built
+    # before that still has ReactOS's, which must not take its place
+    tar -C "$REACTOS/Windows/System32" --exclude=./mspaint.exe -cf - . | tar -C "$PFX/drive_c/windows/system32" -xf -
     find "$REACTOS/Windows" -maxdepth 1 -type f -exec cp -a {} "$PFX/drive_c/windows/" \;
     # There is one explorer.exe, in C:\Windows, as in Windows: Wine's own
     # never runs, so it is not in the image at all. Same for the Display
@@ -176,6 +198,9 @@ if [ -d "$REACTOS/Windows" ]; then
     cp "$ROOT/runtime/fonts/Inter-OFL.txt" "$PFX/drive_c/windows/Licenses/Inter.txt"
     # the desktop clock's lines (startui gadgets.c)
     cp "$ROOT/runtime/fonts/Quicksand-OFL.txt" "$PFX/drive_c/windows/Licenses/Quicksand.txt"
+    # Calibri's and Cambria's measures for Word's documents (wordpad.reg)
+    cp "$ROOT/runtime/fonts/Carlito-OFL.txt" "$PFX/drive_c/windows/Licenses/Carlito.txt"
+    cp "$ROOT/runtime/fonts/Caladea-OFL.txt" "$PFX/drive_c/windows/Licenses/Caladea.txt"
     # Arial, Times New Roman and Courier New, made from Liberation: Chromium
     # draws no text without them (ci/windows-fonts.py)
     python3 "$ROOT/ci/windows-fonts.py" /usr/share/fonts/liberation "$PFX/drive_c/windows/Fonts"
@@ -240,12 +265,14 @@ cp -r "$ROOT/runtime/powershell/Appx" "$PFX/drive_c/windows/system32/WindowsPowe
 # the Snipping Tool in Start, as in Windows 11 (Win+Shift+S starts it too)
 python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Ножиці.lnk" \
     'C:\windows\system32\snippingtool.exe'
-# Paint, ReactOS's, as Windows has it in Start; pictures open in the viewer
-# of shimgvw.dll and "Edit" opens them here (filetypes.reg)
-if [ -e "$PFX/drive_c/windows/system32/mspaint.exe" ]; then
-    python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Paint.lnk" \
-        'C:\windows\system32\mspaint.exe'
-fi
+# Arctic WordPad, the word processor of Word's documents (docs/wordpad.md)
+python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Arctic WordPad.lnk"     'C:\Program Files\Windows NT\Accessories\wordpad.exe'
+# Paint and Photos as Windows 11 has them (docs/paint-photos.md): pictures
+# open in Photos, "Edit" opens them in Paint (photos.reg)
+python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Paint.lnk" \
+    'C:\windows\system32\mspaint.exe'
+python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Фотографії.lnk" \
+    'C:\windows\system32\photos.exe'
 # Internet Explorer on our own engine (docs/browser.md): a plain Windows
 # program, built as it would be for any Windows and put where Windows keeps
 # it. Wine's iexplore is a frame around a Gecko this image has not got, so

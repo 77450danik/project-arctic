@@ -1,0 +1,125 @@
+# Drive letters as Windows gives them (docs/disks.md). D: is the tools disk.
+#   tools/wsl/make-letter-test-disks.sh
+#   vm-test.py --tcg --disk out/test-local/tools.img --script tests/vm/l1-letters.txt
+# Each picture is letters.exe in a console. Expected:
+#   l1-a        the first stick on E:, one letter
+#   l1-b        the other stick on E: too: nothing is kept for the first
+#   l1-a-again  the first stick on E: after going in and out again: no climbing
+#   l1-both     E: and F:
+#   l1-raw      a stick with nothing formatted has a letter, E:
+#   l1-fixed    a USB hard disk on E:, kept in MountedDevices as GPT
+#   l1-away     the hard disk gone: a stick takes F:, E: stays the hard disk's
+#   l1-back     the hard disk back on E:, the stick still on F:
+sleep 8
+# the first Run box of a start is slow to take keys
+key win-r
+sleep 15
+key esc
+sleep 3
+plug a stick-a.img SERIALAAAA01
+sleep 10
+key win-r
+sleep 3
+type cmd /k D:\letters.exe
+key ret
+sleep 25
+shot l1-a
+type exit
+key ret
+sleep 1
+unplug a
+sleep 6
+plug b stick-b.img SERIALBBBB02
+sleep 10
+key win-r
+sleep 3
+type cmd /k D:\letters.exe
+key ret
+sleep 6
+shot l1-b
+type exit
+key ret
+sleep 1
+unplug b
+sleep 6
+plug a stick-a.img SERIALAAAA01
+sleep 8
+unplug a
+sleep 6
+plug a stick-a.img SERIALAAAA01
+sleep 8
+unplug a
+sleep 6
+plug a stick-a.img SERIALAAAA01
+sleep 10
+key win-r
+sleep 3
+type cmd /k D:\letters.exe
+key ret
+sleep 6
+shot l1-a-again
+type exit
+key ret
+sleep 1
+plug b stick-b.img SERIALBBBB02
+sleep 10
+key win-r
+sleep 3
+type cmd /k D:\letters.exe
+key ret
+sleep 6
+shot l1-both
+type exit
+key ret
+sleep 1
+unplug a
+sleep 4
+unplug b
+sleep 6
+plug r stick-raw.img SERIALRRRR03
+sleep 10
+key win-r
+sleep 3
+type cmd /k D:\letters.exe
+key ret
+sleep 6
+shot l1-raw
+type exit
+key ret
+sleep 1
+unplug r
+sleep 6
+plugfixed f fixed.img SERIALFFFF04
+sleep 10
+key win-r
+sleep 3
+type cmd /k D:\letters.exe
+key ret
+sleep 6
+shot l1-fixed
+type exit
+key ret
+sleep 1
+unplug f
+sleep 6
+plug a stick-a.img SERIALAAAA01
+sleep 10
+key win-r
+sleep 3
+type cmd /k D:\letters.exe
+key ret
+sleep 6
+shot l1-away
+type exit
+key ret
+sleep 1
+plugfixed f fixed.img SERIALFFFF04
+sleep 10
+key win-r
+sleep 3
+type cmd /k D:\letters.exe
+key ret
+sleep 6
+shot l1-back
+type exit
+key ret

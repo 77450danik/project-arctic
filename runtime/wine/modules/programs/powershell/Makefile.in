@@ -1,0 +1,6 @@
+MODULE    = powershell.exe
+IMPORTS   = shell32
+EXTRADLLFLAGS = -mconsole -municode
+
+SOURCES = \
+	main.c

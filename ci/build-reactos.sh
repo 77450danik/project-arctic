@@ -3,7 +3,7 @@
 # shell32, browseui, shdocvw, shlwapi, comctl32, uxtheme, compressed folders,
 # Safely Remove Hardware and the volume in the notification area, Network Connections), the Display
 # control panel (desk.cpl), the Device Manager (devmgr.dll), the volume control (sndvol32.exe),
-# Paint (mspaint.exe) and the picture viewer (shimgvw.dll), the Mizu theme and
+# the picture viewer of rundll32 (shimgvw.dll), the Mizu theme and
 # the keyboard layouts. They are built with
 # ReactOS's own toolchain (RosBE), the way ReactOS's CI builds them, and go
 # to C: as native Windows binaries. Output: out/reactos, laid out as on C:.
@@ -25,7 +25,8 @@ SHELL_EXTENSIONS="zipfldr stobject netshell"
 # the Sound panel is Arctic's own, Windows 7's (runtime/wine/modules/dlls/mmsys.cpl);
 # System Properties (sysdm.cpl) with the Computer Name page of netid.dll
 CONTROL_PANELS="desk sysdm"
-APPLICATIONS="sndvol32 msconfig mspaint"
+# Paint is Arctic's own now, as Windows 11 has it (runtime/wine/modules/programs/mspaint)
+APPLICATIONS="sndvol32 msconfig"
 # the About dialog's banner (ShellAbout), drawn by tools/make-brand.py
 BRANDING="rosbrand"
 TARGETS="explorer $SHELL_DLLS $SHELL_EXTENSIONS $CONTROL_PANELS $APPLICATIONS $BRANDING mizu.msstyles $KEYBOARDS"

@@ -1,0 +1,13 @@
+# The stock Rufus starts, elevated, and lists the USB stick.
+#   tools/wsl/make-rufus-test-disks.sh RUFUS.EXE IMAGE.ISO
+#   vm-test.py --disk out/test-local/rufus-apps.img --script tests/vm/r1-rufus-start.txt
+sleep 8
+plug target rufus-stick.img
+sleep 8
+shot r1-plugged
+key win-r
+sleep 3
+type D:\rufus.exe
+key ret
+sleep 8
+shot r1-consent

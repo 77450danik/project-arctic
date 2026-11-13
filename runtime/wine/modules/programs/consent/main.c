@@ -45,6 +45,7 @@ static struct
     WCHAR command[1024];   /* what it wants to run, under "Показати подробиці" */
     BOOL  password_needed;
     BOOL  settings;        /* the request is the gate's own settings */
+    BOOL  is_program;      /* a program whose manifest needs the administrator */
     BOOL  details;         /* "Показати подробиці" is open */
     BOOL  waiting;         /* an answer is with the service */
     int   pause_left;      /* seconds the Yes button stays disabled */
@@ -139,6 +140,7 @@ static BOOL take_prompt( void )
     if (count < 4) return FALSE;
     consent.password_needed = field[1][0] == '1';
     consent.settings = count > 4 && !strcmp( field[4], "settings" );
+    consent.is_program = count > 4 && !strcmp( field[4], "program" );
 
     wide = to_wide( field[2] );
     wcscpy_s( consent.source, ARRAY_SIZE(consent.source), wide );
@@ -146,13 +148,14 @@ static BOOL take_prompt( void )
     wide = to_wide( field[3] );
     wcscpy_s( consent.path, ARRAY_SIZE(consent.path), wide );
     free( wide );
-    if (count > 4)
+    if (count > 4 && !consent.is_program)
     {
         wide = to_wide( field[4] );
         wcscpy_s( consent.command, ARRAY_SIZE(consent.command), wide );
         free( wide );
     }
-    wcscpy_s( consent.program, ARRAY_SIZE(consent.program),
+    /* a program whose manifest needs the administrator is named by itself */
+    wcscpy_s( consent.program, ARRAY_SIZE(consent.program), consent.is_program ? consent.source :
               load( consent.settings ? IDS_PROGRAM_SETTINGS : IDS_PROGRAM_WSL ) );
     return TRUE;
 }
@@ -337,7 +340,7 @@ static void fill( HWND dialog )
     SetDlgItemTextW( dialog, IDC_PROGRAM_LABEL, load( IDS_PROGRAM ) );
     SetDlgItemTextW( dialog, IDC_PROGRAM, consent.program );
     SetDlgItemTextW( dialog, IDC_PUBLISHER_LABEL, load( IDS_PUBLISHER ) );
-    SetDlgItemTextW( dialog, IDC_PUBLISHER, load( IDS_PUBLISHER_NAME ) );
+    SetDlgItemTextW( dialog, IDC_PUBLISHER, load( consent.is_program ? IDS_PUBLISHER_UNKNOWN : IDS_PUBLISHER_NAME ) );
     SetDlgItemTextW( dialog, IDC_REQUESTER_LABEL, load( IDS_REQUESTER ) );
     SetDlgItemTextW( dialog, IDC_REQUESTER, consent.source );
     SetDlgItemTextW( dialog, IDC_LOCATION_LABEL, load( IDS_LOCATION ) );

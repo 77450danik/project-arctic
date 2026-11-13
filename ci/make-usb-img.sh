@@ -33,7 +33,15 @@ fi
 
 [ -f "$ISO/arctic/host.sqfs" ] || { echo "run ci/build-image.sh first"; exit 1; }
 [ -f "$OUT/windows.img" ] || { echo "run ci/make-windows-img.sh first"; exit 1; }
-rm -rf "$WORK" "$IMG"
+# A run stopped half way leaves C: mounted in $WORK. In Arctic's WSL a build
+# acts on the live system (build-rootfs.sh): unmount what is left, refuse
+# while anything is still mounted, and never let rm cross a filesystem.
+{ findmnt -rn -o TARGET | grep -F "$WORK/" || true; } | sort -r | while read -r m; do umount -l "$m" || true; done
+if findmnt -rn -o TARGET | grep -qF "$WORK/"; then
+    echo "make-usb-img: still mounted under $WORK, not deleting it" >&2
+    exit 1
+fi
+rm -rf --one-file-system "$WORK" "$IMG"
 mkdir -p "$WORK/esp/EFI/Arctic" "$WORK/esp/boot/limine"
 
 # The same disk signature in every build ("ARCT"): the boot entry of a newer
@@ -112,7 +120,7 @@ dd if="$WORK/esp.img" of="$IMG" bs=1M seek=1 conv=notrunc,sparse status=none
 dd if="$WORK/c.img" of="$IMG" bs=1M seek=$((1 + ESP_MB)) conv=notrunc,sparse status=none
 limine bios-install "$IMG"
 [ "$(od -An -tx4 -j 440 -N 4 "$IMG" | tr -d ' \n')" = "$SIG" ] || { echo "the disk signature changed"; exit 1; }
-rm -rf "$WORK"
+rm -rf --one-file-system "$WORK"
 
 echo "C: is PARTUUID=$PARTUUID, $((size / 1048576)) MB"
 ls -l "$IMG"

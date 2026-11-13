@@ -8,6 +8,9 @@
 #   Python                  C:\Program Files\Python314      (python.org's NuGet build:
 #                                                            the full CPython with pip,
 #                                                            no bootstrapper to run)
+#   curl                    C:\Windows\System32\curl.exe   (Windows 10 and 11 have it
+#                                                            there, scripts call it;
+#                                                            curl.se's static build)
 # userinit puts their folders on the system PATH (programs/userinit), as their
 # installers would. Each download is checked against its SHA-256.
 #
@@ -35,6 +38,9 @@ PYTHON_VERSION=3.14.8
 PYTHON_URL=https://api.nuget.org/v3-flatcontainer/python/$PYTHON_VERSION/python.$PYTHON_VERSION.nupkg
 PYTHON_SHA256=ce85f674d9a63029f709cbff7a3da1c6bc5bfcfaefdd9999f98fa0290470c454
 PYTHON_DIR=Python$(echo "$PYTHON_VERSION" | cut -d. -f1,2 | tr -d .)
+CURL_VERSION=8.23.0_9
+CURL_URL=https://curl.se/windows/dl-$CURL_VERSION/curl-$CURL_VERSION-win64-mingw.zip
+CURL_SHA256=89cb71930f4242d884e8e349463455932ab1d089b20f4f99318261a3cbff9167
 
 fetch() { # url sha256 -> path of the checked file
     local file="$DL/$(basename "$1")"
@@ -60,8 +66,13 @@ PY_TMP=$(mktemp -d)
 7z x -y -o"$PY_TMP" "$(fetch "$PYTHON_URL" "$PYTHON_SHA256")" 'tools/*' >/dev/null
 cp -a "$PY_TMP/tools/." "$PF/$PYTHON_DIR/"
 rm -rf "$PY_TMP"
+CURL_TMP=$(mktemp -d)
+7z x -y -o"$CURL_TMP" "$(fetch "$CURL_URL" "$CURL_SHA256")" "curl-$CURL_VERSION-win64-mingw/bin/curl.exe" >/dev/null
+mkdir -p "$PFX/drive_c/windows/system32"
+cp "$CURL_TMP/curl-$CURL_VERSION-win64-mingw/bin/curl.exe" "$PFX/drive_c/windows/system32/"
+rm -rf "$CURL_TMP"
 ls -l "$PF/PowerShell/7/pwsh.exe" "$PF/Git/cmd/git.exe" "$PF/Git/bin/bash.exe" "$PF/GitHub CLI/gh.exe" \
-    "$PF/$PYTHON_DIR/python.exe"
+    "$PF/$PYTHON_DIR/python.exe" "$PFX/drive_c/windows/system32/curl.exe"
 
 # Start, as their installers leave it
 programs="$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs"
@@ -71,4 +82,4 @@ python3 "$ROOT/ci/mklnk.py" "$programs/PowerShell/PowerShell 7 (x64).lnk" 'C:\Pr
 python3 "$ROOT/ci/mklnk.py" "$programs/Git/Git Bash.lnk" 'C:\Program Files\Git\git-bash.exe' --cd-to-home
 python3 "$ROOT/ci/mklnk.py" "$programs/Git/Git CMD.lnk" 'C:\Program Files\Git\git-cmd.exe' --cd-to-home
 python3 "$ROOT/ci/mklnk.py" "$programs/$python_menu/$python_menu (64-bit).lnk" "C:\\Program Files\\$PYTHON_DIR\\python.exe"
-echo "PowerShell $PWSH_VERSION, Git for Windows $GIT_VERSION, GitHub CLI $GH_VERSION, Python $PYTHON_VERSION"
+echo "PowerShell $PWSH_VERSION, Git for Windows $GIT_VERSION, GitHub CLI $GH_VERSION, Python $PYTHON_VERSION, curl $CURL_VERSION"

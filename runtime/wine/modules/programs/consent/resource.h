@@ -14,6 +14,7 @@
 #define IDS_PROGRAM_SETTINGS  5
 #define IDS_PUBLISHER         6
 #define IDS_PUBLISHER_NAME    7
+#define IDS_PUBLISHER_UNKNOWN 40
 #define IDS_REQUESTER         8
 #define IDS_LOCATION          9
 #define IDS_COMMAND           10

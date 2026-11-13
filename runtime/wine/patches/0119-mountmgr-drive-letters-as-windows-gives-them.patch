@@ -1,0 +1,746 @@
+Subject: mountmgr.sys: Drive letters as Windows gives them, in MountedDevices.
+
+Patch 0102 kept a letter for every volume it had ever seen, and a volume was
+its MBR signature: a program writing a stick (Rufus writes a new signature each
+time) made a new disk of it, and the letters climbed towards Z:.
+
+MountedDevices now is what it is in Windows, a value for each letter holding the
+volume that owns it, kept from one start to the next: a partition by "DMIO:ID:"
+and its GPT GUID or by its MBR signature and offset, a USB stick by its USBSTOR
+device, as Windows 10 has them. A volume comes back to the letter it owns if
+that is free, else the first free one from D:. A stick owns none when it is
+gone unless it was given one on purpose. A fixed disk's letter stays its own
+while it is away and no other volume takes it, which is more than Windows does:
+that is 0102's reason, a stick that came first took D: and moved every disk.
+
+A volume has one letter: IOCTL_MOUNTMGR_CREATE_POINT refuses a second, and
+while the volume is being mounted for it the letter asked for is the one it
+gets (Rufus's stick had N: from the mount and G: from Rufus). A partition of a
+type Windows knows has its letter with no file system on it yet.
+---
+diff --git a/dlls/mountmgr.sys/arctic.c b/dlls/mountmgr.sys/arctic.c
+index 5d32a6e..32acc04 100644
+--- a/dlls/mountmgr.sys/arctic.c
++++ b/dlls/mountmgr.sys/arctic.c
+@@ -122,6 +122,7 @@ static void add_volume_record( const char *name )
+ {
+     char path[PATH_MAX], line[1024];
+     char device[256] = "", mount[256] = "", type[32] = "", label[256] = "", uuid[64] = "", partuuid[64] = "";
++    BOOL raw_letter = FALSE;
+     enum device_type device_type;
+     GUID guid, *guid_ptr = NULL;
+     FILE *f;
+@@ -145,6 +146,7 @@ static void add_volume_record( const char *name )
+         else if (!strcmp( line, "label" )) snprintf( label, sizeof(label), "%s", value );
+         else if (!strcmp( line, "uuid" )) snprintf( uuid, sizeof(uuid), "%s", value );
+         else if (!strcmp( line, "partuuid" )) snprintf( partuuid, sizeof(partuuid), "%s", value );
++        else if (!strcmp( line, "rawletter" )) raw_letter = !strcmp( value, "1" );
+     }
+     fclose( f );
+     if (!device[0]) return;
+@@ -158,8 +160,9 @@ static void add_volume_record( const char *name )
+ 
+     TRACE( "%s: %s on %s, %s, label %s\n", debugstr_a(name), debugstr_a(device), debugstr_a(mount),
+            type, debugstr_a(label) );
+-    /* a volume with nothing mounted (a partition just made) has no letter */
+-    queue_device_op( mount[0] ? ADD_DOS_DEVICE : ADD_VOLUME, name, device, mount[0] ? mount : NULL, device_type,
++    /* a partition of a type Windows knows has its letter with no file system
++     * on it yet, as there; the others, with nothing mounted, have none */
++    queue_device_op( mount[0] || raw_letter ? ADD_DOS_DEVICE : ADD_VOLUME, name, device, mount[0] ? mount : NULL, device_type,
+                      guid_ptr, NULL, label[0] ? label : NULL, NULL );
+ }
+ 
+diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
+index 385aa10..aaf396d 100644
+--- a/dlls/mountmgr.sys/device.c
++++ b/dlls/mountmgr.sys/device.c
+@@ -104,6 +104,7 @@ struct volume
+     WCHAR                 label[256];  /* volume label */
+     DWORD                 serial;      /* volume serial number */
+     enum fs_type          fs_type;     /* file system type */
++    int                   wanted;      /* letter + 1 a program is giving it, while it is being mounted */
+ };
+ 
+ struct dos_drive
+@@ -112,9 +113,12 @@ struct dos_drive
+     struct volume        *volume;      /* volume for this drive */
+     int                   drive;       /* drive letter (0 = A: etc.) */
+     struct mount_point   *mount;       /* DosDevices mount point */
++    BOOL                  kept;        /* the letter stays the volume's when the volume goes */
+ };
+ 
+ static void arctic_setup_volume( struct volume *volume );
++static unsigned int arctic_unique_id( const char *udi, const GUID *guid, enum device_type type,
++                                      BYTE *id, unsigned int size );
+ 
+ static struct list drives_list = LIST_INIT(drives_list);
+ static struct list volumes_list = LIST_INIT(volumes_list);
+@@ -838,6 +842,7 @@ static NTSTATUS create_dos_device( struct volume *volume, const char *udi, int l
+     if (!(drive = malloc( sizeof(*drive) ))) return STATUS_NO_MEMORY;
+     drive->drive = letter;
+     drive->mount = NULL;
++    drive->kept = FALSE;
+ 
+     if (volume)
+     {
+@@ -858,10 +863,14 @@ static NTSTATUS create_dos_device( struct volume *volume, const char *udi, int l
+ }
+ 
+ /* delete the disk device for a given drive */
+-static void delete_dos_device( struct dos_drive *drive )
++static void delete_dos_device( struct dos_drive *drive, BOOL keep_letter )
+ {
+     list_remove( &drive->entry );
+-    if (drive->mount) delete_mount_point( drive->mount );
++    if (drive->mount)
++    {
++        if (keep_letter) detach_mount_point( drive->mount );
++        else delete_mount_point( drive->mount );
++    }
+     release_volume( drive->volume );
+     free( drive );
+ }
+@@ -999,6 +1008,7 @@ static NTSTATUS set_volume_info( struct volume *volume, struct dos_drive *drive,
+ {
+     void *id = NULL;
+     unsigned int id_len = 0;
++    BYTE unique[MAX_UNIQUE_ID];
+     struct disk_device *disk_device = volume->device;
+     NTSTATUS status;
+ 
+@@ -1067,7 +1077,8 @@ static NTSTATUS set_volume_info( struct volume *volume, struct dos_drive *drive,
+     if (drive && !drive->mount)
+         drive->mount = add_dosdev_mount_point( disk_device->dev_obj, &disk_device->name, drive->drive );
+ 
+-    if (volume->unix_mount)
++    if ((id_len = arctic_unique_id( volume->udi, &volume->guid, type, unique, sizeof(unique) ))) id = unique;
++    else if (volume->unix_mount)
+     {
+         id = volume->unix_mount;
+         id_len = strlen( volume->unix_mount ) + 1;
+@@ -1297,130 +1308,46 @@ NTSTATUS remove_volume( const char *udi )
+ }
+ 
+ 
+-/* Arctic: a volume keeps its letter from one start to the next, as Windows
+- * keeps it in MountedDevices. The host names disks (sdb2) in the order it
+- * finds them, which changes from start to start, so the volume is known by
+- * the GUID of its partition here (arctic.c makes one for an MBR partition).
+- * As in Windows, a letter stays the volume's while the volume is away: a
+- * stick that came before the disks took D: and moved every disk one letter
+- * on, for good, since each then kept its new letter. */
+-static const WCHAR drive_letters_keyW[] = L"System\\Arctic\\DriveLetters";
+-
+-static int drive_letter_of( const WCHAR *value, DWORD size )
+-{
+-    if (size < sizeof(WCHAR)) return -1;
+-    if (value[0] >= 'a' && value[0] <= 'z') return value[0] - 'a';
+-    if (value[0] >= 'A' && value[0] <= 'Z') return value[0] - 'A';
+-    return -1;
+-}
+-
+-static void drive_letter_name( const GUID *guid, WCHAR *name, unsigned int size )
+-{
+-    swprintf( name, size, L"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", (unsigned int)guid->Data1,
+-              guid->Data2, guid->Data3, guid->Data4[0], guid->Data4[1], guid->Data4[2], guid->Data4[3],
+-              guid->Data4[4], guid->Data4[5], guid->Data4[6], guid->Data4[7] );
+-}
+-
+-/* the letter the volume had, unless another volume has it by now */
+-static int remembered_drive_letter( const GUID *guid, const char *udi )
++/* Arctic: drive letters as Windows' mount manager gives them, in
++ * MountedDevices, a value for each letter with the volume that owns it:
++ *
++ * - a volume comes back to the letter it owns if that is free; a volume with
++ *   no letter gets the first free one from D:; it has one letter at most;
++ * - a USB stick owns none when it is gone, unless it was given one on purpose,
++ *   so that sticks do not climb the alphabet;
++ * - a fixed disk's letter is its own while it is away, and no other volume
++ *   takes it. This one is more than Windows does: a stick that came before
++ *   the disks took D: and moved every disk one letter on, for good. */
++
++/* the letter this volume owns if it is free; *reserved gets those of the
++ * fixed disks and the ones volumes have now */
++static int owned_drive_letter( const BYTE *id, unsigned int id_len, unsigned int *reserved )
+ {
+     struct dos_drive *drive;
+-    WCHAR name[40], value[4];
+-    DWORD size = sizeof(value) - sizeof(WCHAR), type;
+-    HKEY key;
+-    int letter = -1;
+-
+-    if (!guid) return -1;
+-    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, KEY_QUERY_VALUE, &key )) return -1;
+-    drive_letter_name( guid, name, ARRAY_SIZE(name) );
+-    if (!RegQueryValueExW( key, name, NULL, &type, (BYTE *)value, &size ) && type == REG_SZ)
+-        letter = drive_letter_of( value, size );
+-    RegCloseKey( key );
+-    /* A: and B: are floppies, C: is the system's own */
+-    if (letter < 3) return -1;
++    int letter = kept_drive_letter( id, id_len, reserved );
+ 
++    /* A: and B: are floppies, C: is the system's own */
++    if (letter < 3) letter = -1;
+     LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
+     {
+-        if (udi && drive->volume->udi && !strcmp( udi, drive->volume->udi )) return -1;
+-        if (drive->drive == letter) return -1;
++        if (drive->drive == letter) letter = -1;
++        *reserved |= 1u << drive->drive;
+     }
+     return letter;
+ }
+ 
+-/* the letters kept for the other volumes, there now or not */
+-static unsigned int reserved_drive_letters( const GUID *guid )
+-{
+-    WCHAR own[40] = L"", name[40], value[4];
+-    DWORD index, name_len, size, type;
+-    unsigned int reserved = 0;
+-    HKEY key;
+-    LONG ret;
+-    int letter;
+-
+-    if (guid) drive_letter_name( guid, own, ARRAY_SIZE(own) );
+-    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, KEY_QUERY_VALUE, &key )) return 0;
+-    for (index = 0;; index++)
+-    {
+-        name_len = ARRAY_SIZE(name);
+-        size = sizeof(value) - sizeof(WCHAR);
+-        if ((ret = RegEnumValueW( key, index, name, &name_len, NULL, &type, (BYTE *)value, &size )) ==
+-            ERROR_NO_MORE_ITEMS)
+-            break;
+-        if (ret || type != REG_SZ || !wcsicmp( name, own )) continue;
+-        if ((letter = drive_letter_of( value, size )) >= 3) reserved |= 1u << letter;
+-    }
+-    RegCloseKey( key );
+-    return reserved;
+-}
+-
+ /* a letter for a volume that has none: the first one from D: that no volume
+- * uses and none keeps, as Windows gives it; -1 leaves it to the old way */
+-static int free_drive_letter( enum device_type type, unsigned int reserved )
++ * uses and no fixed disk owns; -1 leaves it to the old way */
++static int free_drive_letter( enum device_type type, unsigned int used )
+ {
+-    struct dos_drive *drive;
+-    unsigned int used = reserved;
+     int letter;
+ 
+     if (type == DEVICE_FLOPPY) return -1;
+-    LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry ) used |= 1u << drive->drive;
+     for (letter = 3; letter < 26; letter++)
+         if (!(used & (1u << letter))) return letter;
+     return -1;
+ }
+ 
+-static BOOL has_drive( const char *udi )
+-{
+-    struct dos_drive *drive;
+-
+-    if (!udi) return FALSE;
+-    LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
+-        if (drive->volume->udi && !strcmp( udi, drive->volume->udi )) return TRUE;
+-    return FALSE;
+-}
+-
+-static void remember_drive_letter( const GUID *guid, int letter )
+-{
+-    WCHAR name[40], value[] = L"A:", old[4] = {0};
+-    DWORD size = sizeof(old) - sizeof(WCHAR), type;
+-    HKEY key;
+-
+-    if (!guid || RegCreateKeyExW( HKEY_LOCAL_MACHINE, drive_letters_keyW, 0, NULL, 0,
+-                                  KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, &key, NULL ))
+-        return;
+-    value[0] += letter;
+-    drive_letter_name( guid, name, ARRAY_SIZE(name) );
+-    /* written only when it changes, and on the disk at once: the registry is
+-     * otherwise saved every half minute, and a power cut in between gave the
+-     * letter to another volume at the next start */
+-    if (RegQueryValueExW( key, name, NULL, &type, (BYTE *)old, &size ) || type != REG_SZ ||
+-        drive_letter_of( old, size ) != letter)
+-    {
+-        RegSetValueExW( key, name, 0, REG_SZ, (const BYTE *)value, sizeof(value) );
+-        RegFlushKey( key );
+-    }
+-    RegCloseKey( key );
+-}
+-
+ /* create a new dos drive */
+ NTSTATUS add_dos_device( int letter, const char *udi, const char *unix_device,
+                          const char *mount_point, enum device_type type, const GUID *guid,
+@@ -1432,7 +1359,10 @@ NTSTATUS add_dos_device( int letter, const char *udi, const char *unix_device,
+     struct volume *volume;
+     int notify = -1;
+     char dosdev[] = "a::";
+-    const GUID *partition = guid; /* what the host named the volume by, if anything */
++    BYTE unique[MAX_UNIQUE_ID];
++    unsigned int unique_len = 0;
++    /* a fixed disk's letter is its own, and so is one a program gave it */
++    BOOL keep = udi && (type == DEVICE_HARDDISK_VOL || letter != -1);
+ 
+     EnterCriticalSection( &device_section );
+     volume = NULL;
+@@ -1450,8 +1380,29 @@ NTSTATUS add_dos_device( int letter, const char *udi, const char *unix_device,
+     }
+     if (!volume) volume = find_matching_volume( udi, unix_device, mount_point, type );
+ 
+-    if (letter == -1) letter = remembered_drive_letter( partition, udi );
+-    if (letter == -1 && !has_drive( udi )) letter = free_drive_letter( type, reserved_drive_letters( partition ) );
++    if (udi) unique_len = arctic_unique_id( udi, guid, type, unique, sizeof(unique) );
++    if (udi && letter == -1)
++    {
++        unsigned int used;
++
++        /* one volume, one letter: a file system that came comes to the letter
++         * the volume has */
++        LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
++            if (drive->volume->udi && !strcmp( udi, drive->volume->udi ))
++            {
++                letter = drive->drive;
++                goto found;
++            }
++        if (volume && volume->wanted)  /* being mounted for a program that chose its letter */
++        {
++            letter = volume->wanted - 1;
++            keep = TRUE;
++        }
++        else if ((letter = owned_drive_letter( unique, unique_len, &used )) != -1)
++            keep = TRUE;
++        else
++            letter = free_drive_letter( type, used );
++    }
+     if (letter == -1)  /* auto-assign a letter */
+     {
+         struct add_drive_params params = { unix_device, type, &letter };
+@@ -1460,7 +1411,7 @@ NTSTATUS add_dos_device( int letter, const char *udi, const char *unix_device,
+         LIST_FOR_EACH_ENTRY_SAFE( drive, next, &drives_list, struct dos_drive, entry )
+         {
+             if (drive->volume->udi && !strcmp( udi, drive->volume->udi )) goto found;
+-            if (drive->drive == letter) delete_dos_device( drive );
++            if (drive->drive == letter) delete_dos_device( drive, FALSE );
+         }
+     }
+     else  /* simply reset the device symlink */
+@@ -1480,7 +1431,7 @@ NTSTATUS add_dos_device( int letter, const char *udi, const char *unix_device,
+             if (!unix_device || !drive->volume->device->unix_device ||
+                 strcmp( unix_device, drive->volume->device->unix_device ))
+                 MOUNTMGR_CALL( set_dosdev_symlink, &params );
+-            delete_dos_device( drive );
++            delete_dos_device( drive, FALSE );
+         }
+     }
+ 
+@@ -1499,7 +1450,9 @@ found:
+         MOUNTMGR_CALL( set_dosdev_symlink, &params );
+     }
+     set_volume_info( volume, drive, unix_device, mount_point, type, guid, label, NULL );
+-    remember_drive_letter( partition, drive->drive );
++    drive->kept |= keep;
++    if (udi) forget_other_letters( unique, unique_len, drive->drive );
++    if (drive->kept) flush_mount_points();
+ 
+     TRACE( "added device %c: udi %s for %s on %s type %u\n",
+            'a' + drive->drive, debugstr_a(udi), debugstr_a(unix_device),
+@@ -1539,6 +1492,7 @@ NTSTATUS remove_dos_device( int letter, const char *udi )
+     struct dos_drive *drive;
+     char dosdev[] = "a:";
+     int notify = -1;
++    BOOL keep_letter = FALSE;
+ 
+     EnterCriticalSection( &device_section );
+     LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
+@@ -1549,6 +1503,7 @@ NTSTATUS remove_dos_device( int letter, const char *udi )
+         {
+             if (!drive->volume->udi) continue;
+             if (strcmp( udi, drive->volume->udi )) continue;
++            keep_letter = drive->kept;  /* the volume went away, nobody took its letter from it */
+             set_volume_udi( drive->volume, NULL );
+         }
+         else if (drive->drive != letter) continue;
+@@ -1567,7 +1522,7 @@ NTSTATUS remove_dos_device( int letter, const char *udi )
+ 
+         if (udi && drive->volume->unix_mount) notify = drive->drive;
+ 
+-        delete_dos_device( drive );
++        delete_dos_device( drive, keep_letter );
+         status = STATUS_SUCCESS;
+         break;
+     }
+@@ -1978,6 +1933,13 @@ static NTSTATUS WINAPI disk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+         status = STATUS_BAD_DEVICE_TYPE;
+         goto done;
+     }
++    /* a partition with no file system on it: what Windows says of a RAW volume */
++    if (volume->udi && !volume->unix_mount && volume->fs_type == FS_UNKNOWN &&
++        (info_class == FileFsVolumeInformation || info_class == FileFsAttributeInformation))
++    {
++        status = STATUS_UNRECOGNIZED_VOLUME;
++        goto done;
++    }
+ 
+     switch(info_class)
+     {
+@@ -2950,6 +2912,44 @@ static void arctic_setup_volume( struct volume *volume )
+         RtlFreeUnicodeString( &dev->dos_part );
+ }
+ 
++/* What Windows knows a volume by in MountedDevices (MOUNTDEV_QUERY_UNIQUE_ID):
++ * a USB stick by its device, whatever is written on it, so that a new partition
++ * table leaves it the same stick; a partition of another disk by its partition
++ * table's GUID, or signature and offset. 0 for a volume with neither: Wine's
++ * own id, the mount point, stands for it. */
++static unsigned int arctic_unique_id( const char *udi, const GUID *guid, enum device_type type,
++                                      BYTE *id, unsigned int size )
++{
++    struct arctic_volume_info info;
++    struct arctic_volume_info_params params = { udi, &info };
++    struct arctic_disk *disk;
++
++    if (!udi || type == DEVICE_CDROM || type == DEVICE_DVD || MOUNTMGR_CALL( arctic_volume_info, &params ))
++        return 0;
++    if (info.removable && (disk = find_arctic_disk( info.disk )))
++    {
++        WCHAR *out = (WCHAR *)id, *p;
++        int len = swprintf( out, size / sizeof(WCHAR), L"_??_%s#" DISK_INTERFACE_GUID, disk->instance );
++
++        for (p = out; *p; p++) if (*p == '\\') *p = '#';
++        /* the first partition is the stick's own, the others are known by where they lie */
++        if (info.partnum > 1)
++            len += swprintf( out + len, size / sizeof(WCHAR) - len, L"#%08X%08X",
++                             (unsigned int)(info.offset >> 32), (unsigned int)info.offset );
++        return len * sizeof(WCHAR);
++    }
++    if (!guid || guid_empty( guid ) || size < 24) return 0;
++    if (!guid->Data2 && !guid->Data3 && !memcmp( guid->Data4, "MBR", 3 ))
++    {
++        memcpy( id, &guid->Data1, sizeof(guid->Data1) );
++        memcpy( id + 4, &info.offset, 8 );
++        return 12;
++    }
++    memcpy( id, "DMIO:ID:", 8 );
++    memcpy( id + 8, guid, sizeof(*guid) );
++    return 24;
++}
++
+ static void id_part( WCHAR *out, const char *in, int size )
+ {
+     int i;
+@@ -3190,14 +3190,26 @@ static int letter_of_link( const WCHAR *link, USHORT len )
+     return c >= 'A' && c <= 'Z' ? c - 'A' : -1;
+ }
+ 
++/* the letter a volume has, -1 for none */
++static int volume_letter( struct volume *volume )
++{
++    struct dos_drive *drive;
++
++    LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
++        if (drive->volume == volume) return drive->drive;
++    return -1;
++}
++
+ /* SetVolumeMountPoint: a drive letter for a volume of a USB disk */
+ NTSTATUS create_mount_point( void *buff, SIZE_T size )
+ {
+     const MOUNTMGR_CREATE_POINT_INPUT *input = buff;
+     struct arctic_volume_info info;
++    struct dos_drive *drive;
+     struct volume *volume;
++    NTSTATUS status;
+     char udi[64];
+-    int letter;
++    int letter, current;
+ 
+     if (size < sizeof(*input) || input->SymbolicLinkNameOffset + input->SymbolicLinkNameLength > size ||
+         input->DeviceNameOffset + input->DeviceNameLength > size)
+@@ -3215,6 +3227,22 @@ NTSTATUS create_mount_point( void *buff, SIZE_T size )
+         return volume ? STATUS_ACCESS_DENIED : STATUS_OBJECT_NAME_NOT_FOUND;
+     }
+     lstrcpynA( udi, volume->udi, sizeof(udi) );
++    /* a volume has one letter; the same one again changes nothing */
++    if ((current = volume_letter( volume )) != -1)
++    {
++        LeaveCriticalSection( &device_section );
++        return current == letter ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
++    }
++    LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
++        if (drive->drive == letter)
++        {
++            LeaveCriticalSection( &device_section );
++            /* Windows says the folder of the letter is not empty */
++            return STATUS_DIRECTORY_NOT_EMPTY;
++        }
++    /* mounting it brings it a letter of its own unless it is told which */
++    grab_volume( volume );
++    volume->wanted = letter + 1;
+     LeaveCriticalSection( &device_section );
+ 
+     /* no one has mounted it since it was formatted */
+@@ -3225,23 +3253,18 @@ NTSTATUS create_mount_point( void *buff, SIZE_T size )
+     }
+ 
+     EnterCriticalSection( &device_section );
+-    {
+-        struct dos_drive *drive;
++    current = volume_letter( volume );
++    LeaveCriticalSection( &device_section );
+ 
+-        LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
+-            if (drive->drive == letter)
+-            {
+-                BOOL same = drive->volume == volume;
++    status = current == letter ? STATUS_SUCCESS :
++             add_dos_device( letter, udi, volume->device->unix_device, info.mount[0] ? info.mount : NULL,
++                             volume->device->type, &volume->guid, NULL, NULL );
+ 
+-                LeaveCriticalSection( &device_section );
+-                /* Windows says the folder of the letter is not empty */
+-                return same ? STATUS_SUCCESS : STATUS_DIRECTORY_NOT_EMPTY;
+-            }
+-    }
++    EnterCriticalSection( &device_section );
++    volume->wanted = 0;
++    release_volume( volume );
+     LeaveCriticalSection( &device_section );
+-
+-    return add_dos_device( letter, udi, volume->device->unix_device, info.mount[0] ? info.mount : NULL,
+-                           volume->device->type, &volume->guid, NULL, NULL );
++    return status;
+ }
+ 
+ /* DeleteVolumeMountPoint: the letter goes, the volume stays */
+diff --git a/dlls/mountmgr.sys/mountmgr.c b/dlls/mountmgr.sys/mountmgr.c
+index 7ca10a0..32bf3a6 100644
+--- a/dlls/mountmgr.sys/mountmgr.c
++++ b/dlls/mountmgr.sys/mountmgr.c
+@@ -43,19 +43,161 @@ struct mount_point
+ 
+ static struct list mount_points_list = LIST_INIT(mount_points_list);
+ static HKEY mount_key;
++static BOOL mount_key_changed;
+ 
+ void set_mount_point_id( struct mount_point *mount, const void *id, unsigned int id_len )
+ {
++    BYTE old[MAX_UNIQUE_ID];
++    DWORD size = sizeof(old), type;
++
+     free( mount->id );
+     mount->id_len = max( MIN_ID_LEN, id_len );
+     if ((mount->id = calloc( mount->id_len, 1 )))
+     {
+         memcpy( mount->id, id, id_len );
+-        RegSetValueExW( mount_key, mount->link.Buffer, 0, REG_BINARY, mount->id, mount->id_len );
++        if (RegQueryValueExW( mount_key, mount->link.Buffer, NULL, &type, old, &size ) || type != REG_BINARY ||
++            size != mount->id_len || memcmp( old, mount->id, size ))
++        {
++            RegSetValueExW( mount_key, mount->link.Buffer, 0, REG_BINARY, mount->id, mount->id_len );
++            mount_key_changed = TRUE;
++        }
+     }
+     else mount->id_len = 0;
+ }
+ 
++/* A letter that stays goes on the disk at once: the registry is otherwise saved
++ * every half minute, and a power cut in between would lose it. A stick's
++ * automatic letter is not worth writing the hive for. */
++void flush_mount_points(void)
++{
++    if (!mount_key_changed) return;
++    mount_key_changed = FALSE;
++    RegFlushKey( mount_key );
++}
++
++/* the letter of a value of MountedDevices, -1 for any other value */
++static int letter_of_value( const WCHAR *name )
++{
++    static const WCHAR prefix[] = L"\\DosDevices\\";
++    int n = ARRAY_SIZE(prefix) - 1;
++
++    if (wcsnicmp( name, prefix, n ) || name[n + 1] != ':' || name[n + 2]) return -1;
++    if (name[n] >= 'a' && name[n] <= 'z') return name[n] - 'a';
++    if (name[n] >= 'A' && name[n] <= 'Z') return name[n] - 'A';
++    return -1;
++}
++
++/* a partition of a disk that stays in the PC: "DMIO:ID:" and its GPT GUID, or
++ * its MBR signature and offset. A USB stick's is the name of its device. */
++static BOOL is_fixed_disk_id( const BYTE *id, unsigned int len )
++{
++    return (len == 24 && !memcmp( id, "DMIO:ID:", 8 )) || len == 12;
++}
++
++/* What MountedDevices says of the letters: the one this volume owns, or -1,
++ * and in *reserved those of the fixed disks other than this one, there now or
++ * not. As in Windows a letter has one owner, the value of that letter. */
++int kept_drive_letter( const void *id, unsigned int id_len, unsigned int *reserved )
++{
++    WCHAR name[64];
++    BYTE data[MAX_UNIQUE_ID];
++    DWORD index, name_len, size, type;
++    int letter, found = -1;
++    LONG ret;
++
++    *reserved = 0;
++    for (index = 0;; index++)
++    {
++        name_len = ARRAY_SIZE(name);
++        size = sizeof(data);
++        ret = RegEnumValueW( mount_key, index, name, &name_len, NULL, &type, data, &size );
++        if (ret == ERROR_NO_MORE_ITEMS) break;
++        if (ret || type != REG_BINARY || (letter = letter_of_value( name )) < 0) continue;
++        if (id_len && size == id_len && !memcmp( data, id, id_len ))
++        {
++            if (found == -1) found = letter;
++        }
++        else if (is_fixed_disk_id( data, size )) *reserved |= 1u << letter;
++    }
++    return found;
++}
++
++/* a volume has one letter: the others it had in the registry go */
++void forget_other_letters( const void *id, unsigned int id_len, int keep )
++{
++    WCHAR name[64], link[] = L"\\DosDevices\\A:";
++    BYTE data[MAX_UNIQUE_ID];
++    DWORD index, name_len, size, type;
++    unsigned int others = 0;
++    int letter;
++    LONG ret;
++
++    if (!id_len) return;
++    for (index = 0;; index++)
++    {
++        name_len = ARRAY_SIZE(name);
++        size = sizeof(data);
++        ret = RegEnumValueW( mount_key, index, name, &name_len, NULL, &type, data, &size );
++        if (ret == ERROR_NO_MORE_ITEMS) break;
++        if (ret || type != REG_BINARY || (letter = letter_of_value( name )) < 0 || letter == keep) continue;
++        if (size == id_len && !memcmp( data, id, id_len )) others |= 1u << letter;
++    }
++    if (!others) return;
++    for (letter = 0; letter < 26; letter++)
++    {
++        if (!(others & (1u << letter))) continue;
++        link[12] = 'A' + letter;
++        RegDeleteValueW( mount_key, link );
++    }
++    RegFlushKey( mount_key );
++}
++
++/* The letters kept before MountedDevices kept them. That key is left as it is:
++ * going back to the previous update reads it. Only the GPT partitions come
++ * over: the others there are sticks, which keep no letter any more. */
++static void import_old_drive_letters(void)
++{
++    WCHAR name[64], value[4], link[] = L"\\DosDevices\\A:";
++    UNICODE_STRING string;
++    BYTE id[24], old[MAX_UNIQUE_ID];
++    DWORD index, name_len, size, type;
++    unsigned int reserved;
++    BOOL changed = FALSE;
++    GUID guid;
++    HKEY key;
++    LONG ret;
++    int letter;
++
++    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, L"System\\Arctic\\DriveLetters", 0, KEY_QUERY_VALUE, &key )) return;
++    for (index = 0;; index++)
++    {
++        name_len = ARRAY_SIZE(name);
++        size = sizeof(value) - sizeof(WCHAR);
++        ret = RegEnumValueW( key, index, name, &name_len, NULL, &type, (BYTE *)value, &size );
++        if (ret == ERROR_NO_MORE_ITEMS) break;
++        if (ret || type != REG_SZ || size < sizeof(WCHAR)) continue;
++        RtlInitUnicodeString( &string, name );
++        if (RtlGUIDFromString( &string, &guid )) continue;
++        /* what arctic.c made up for an MBR partition or a disk with no table:
++         * a generated GUID always has a version in Data3 */
++        if (!guid.Data3) continue;
++        letter = towupper( value[0] ) - 'A';
++        if (letter < 3 || letter > 25) continue;
++
++        memcpy( id, "DMIO:ID:", 8 );
++        memcpy( id + 8, &guid, sizeof(guid) );
++        /* already here, with this letter or one chosen since */
++        if (kept_drive_letter( id, sizeof(id), &reserved ) != -1) continue;
++        link[12] = 'A' + letter;
++        size = sizeof(old);
++        if (!RegQueryValueExW( mount_key, link, NULL, &type, old, &size )) continue;
++        RegSetValueExW( mount_key, link, 0, REG_BINARY, id, sizeof(id) );
++        changed = TRUE;
++    }
++    RegCloseKey( key );
++    if (changed) RegFlushKey( mount_key );
++}
++
+ static struct mount_point *add_mount_point( DEVICE_OBJECT *device, UNICODE_STRING *device_name,
+                                             const WCHAR *link )
+ {
+@@ -107,17 +249,25 @@ struct mount_point *add_volume_mount_point( DEVICE_OBJECT *device, UNICODE_STRIN
+     return add_mount_point( device, device_name, link );
+ }
+ 
+-/* delete the mount point symlinks when a device goes away */
+-void delete_mount_point( struct mount_point *mount )
++/* the volume goes and the registry keeps what it says of it: a letter that
++ * stays the volume's while it is away */
++void detach_mount_point( struct mount_point *mount )
+ {
+-    TRACE( "deleting %s\n", debugstr_w(mount->link.Buffer) );
++    TRACE( "detaching %s\n", debugstr_w(mount->link.Buffer) );
+     list_remove( &mount->entry );
+-    RegDeleteValueW( mount_key, mount->link.Buffer );
+     IoDeleteSymbolicLink( &mount->link );
+     free( mount->id );
+     free( mount );
+ }
+ 
++/* delete the mount point symlinks when a device goes away */
++void delete_mount_point( struct mount_point *mount )
++{
++    TRACE( "deleting %s\n", debugstr_w(mount->link.Buffer) );
++    RegDeleteValueW( mount_key, mount->link.Buffer );
++    detach_mount_point( mount );
++}
++
+ /* check if a given mount point matches the requested specs */
+ static BOOL matching_mount_point( const struct mount_point *mount, const MOUNTMGR_MOUNT_POINT *spec )
+ {
+@@ -645,8 +795,10 @@ NTSTATUS WINAPI DriverEntry( DRIVER_OBJECT *driver, UNICODE_STRING *path )
+         return status;
+     }
+ 
++    /* kept from one start to the next, as Windows keeps it */
+     RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"System\\MountedDevices", 0, NULL,
+-                     REG_OPTION_VOLATILE, KEY_ALL_ACCESS, NULL, &mount_key, NULL );
++                     REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, NULL, &mount_key, NULL );
++    import_old_drive_letters();
+ 
+     if (!RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\Scsi", 0, NULL, REG_OPTION_VOLATILE,
+                           KEY_ALL_ACCESS, NULL, &devicemap_key, NULL ))
+diff --git a/dlls/mountmgr.sys/mountmgr.h b/dlls/mountmgr.sys/mountmgr.h
+index 64ac779..6c1c683 100644
+--- a/dlls/mountmgr.sys/mountmgr.h
++++ b/dlls/mountmgr.sys/mountmgr.h
+@@ -100,6 +100,8 @@ extern NTSTATUS query_unix_drive( void *buff, SIZE_T insize, SIZE_T outsize,
+ 
+ /* mount point functions */
+ 
++#define MAX_UNIQUE_ID 1024  /* the longest unique ID of a volume, a USB stick's device name */
++
+ struct mount_point;
+ 
+ extern struct mount_point *add_dosdev_mount_point( DEVICE_OBJECT *device, UNICODE_STRING *device_name,
+@@ -107,6 +109,10 @@ extern struct mount_point *add_dosdev_mount_point( DEVICE_OBJECT *device, UNICOD
+ extern struct mount_point *add_volume_mount_point( DEVICE_OBJECT *device, UNICODE_STRING *device_name,
+                                                    const GUID *guid );
+ extern void delete_mount_point( struct mount_point *mount );
++extern void detach_mount_point( struct mount_point *mount );
++extern void flush_mount_points(void);
++extern int kept_drive_letter( const void *id, unsigned int id_len, unsigned int *reserved );
++extern void forget_other_letters( const void *id, unsigned int id_len, int keep );
+ extern void arctic_add_disk( const char *name );
+ extern void arctic_remove_disk( const char *name );
+ extern NTSTATUS create_mount_point( void *buff, SIZE_T size );

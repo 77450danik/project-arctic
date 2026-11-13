@@ -1,0 +1,76 @@
+# The stock Rufus writes a stick and the stick has one letter (docs/disks.md).
+# As r3-rufus-write.txt, with letters.exe copied onto the same disk as rufus.exe
+# (two disks come up in any order on a first start). The pauses are for the
+# emulated processor (--tcg), where a dialog comes up after seconds.
+#   mcopy -i out/test-local/rufus-apps.img@@1M out/tests/letters.exe ::letters.exe
+#   vm-test.py --tcg --disk out/test-local/rufus-apps.img --script tests/vm/l3-rufus-one-letter.txt
+# Expected: l3-before and l3-after show the stick on the same one letter (E:).
+sleep 8
+# the first Run box of a start is slow to take keys
+key win-r
+sleep 20
+key esc
+sleep 5
+plug target rufus-stick.img SERIALRUFUS005
+sleep 15
+key win-r
+sleep 15
+type cmd /k D:\letters.exe
+sleep 2
+key ret
+sleep 30
+shot l3-before
+type exit
+key ret
+sleep 8
+key win-r
+sleep 15
+type D:\rufus.exe
+sleep 2
+key ret
+sleep 20
+shot l3-consent
+# UAC: Так
+move 748 414
+click
+# the DBX update is offered once its check ends, between 45 s and 90 s here
+sleep 120
+shot l3-started
+# Ні (nothing is under it when the offer does not come)
+move 891 435
+click
+sleep 8
+# ВИБРАТИ, then the ISO
+move 927 214
+click
+sleep 30
+shot l3-dialog
+type D:\image.iso
+sleep 2
+key ret
+sleep 60
+shot l3-iso
+# ПОЧАТИ
+move 798 569
+click
+sleep 10
+shot l3-hybrid
+# ISO mode: OK
+move 832 498
+click
+sleep 10
+shot l3-warning
+# all data destroyed: OK (the long name of the stick makes the box taller than in r3)
+move 791 391
+click
+sleep 150
+shot l3-writing
+sleep 150
+shot l3-done
+key win-r
+sleep 15
+type cmd /k D:\letters.exe
+sleep 2
+key ret
+sleep 30
+shot l3-after

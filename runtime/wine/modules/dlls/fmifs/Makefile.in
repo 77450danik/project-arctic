@@ -1,0 +1,9 @@
+MODULE    = fmifs.dll
+
+VER_FILEDESCRIPTION_STR = "FM IFS Utility DLL"
+
+SOURCES = \
+	fmifs.c \
+	format_exfat.c \
+	format_fat.c \
+	format_ntfs.c

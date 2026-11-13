@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 9 Nov 2026 14:00:00 +0300
+Subject: [PATCH] NUL is not a disk: Electron programs start again.
+
+0116 sent every FD_TYPE_DEVICE past the code for character devices, as if it
+were a disk with a driver: NUL, mailslots and the named pipe device too. NUL
+has a unix file and no driver, so asking it for its volume information failed
+with STATUS_FILE_DELETED and GetFileType said FILE_TYPE_UNKNOWN. Node opens
+NUL for the standard handles a program started without a console lacks, and
+stops with _exit(134) if it cannot: no window, no message, no dump.
+
+A device with both a unix file and a driver is now FD_TYPE_DISK, and only that
+goes the new way. Everything else is what it was before 0116.
+
+---
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1709,6 +1709,7 @@
+     FD_TYPE_SERIAL,   /* serial port */
+     FD_TYPE_CHAR,     /* unspecified char device */
+     FD_TYPE_DEVICE,   /* Windows device file */
++    FD_TYPE_DISK,     /* device file with a unix file for its data and a driver for the rest */
+     FD_TYPE_NB_TYPES
+ };
+ 
+--- a/server/device.c
++++ b/server/device.c
+@@ -583,7 +583,10 @@
+ 
+ static enum server_fd_type device_file_get_fd_type( struct fd *fd )
+ {
+-    return FD_TYPE_DEVICE;
++    struct device_file *file = get_fd_user( fd );
++
++    /* NUL has a unix file and no driver; only a disk has both */
++    return file->device->unix_path && file->device->manager ? FD_TYPE_DISK : FD_TYPE_DEVICE;
+ }
+ 
+ static void device_file_get_volume_info( struct fd *fd, struct async *async, unsigned int info_class )
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -6118,7 +6118,7 @@
+         return server_read_file( handle, event, apc, apc_user, io, buffer, length, offset, key );
+ 
+     /* a disk whose driver answers requests, while its data goes straight to the fd */
+-    if (type == FD_TYPE_DEVICE) type = FD_TYPE_FILE;
++    if (type == FD_TYPE_DISK) type = FD_TYPE_FILE;
+ 
+     async_read = !(options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT));
+ 
+@@ -6317,7 +6317,7 @@
+     if (status) return status;
+ 
+     /* a disk whose driver answers requests, while its data goes straight to the fd */
+-    if (type == FD_TYPE_DEVICE) type = FD_TYPE_FILE;
++    if (type == FD_TYPE_DISK) type = FD_TYPE_FILE;
+ 
+     if ((type != FD_TYPE_FILE) ||
+         (options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)) ||
+@@ -6416,7 +6416,7 @@
+         return server_write_file( handle, event, apc, apc_user, io, buffer, length, offset, key );
+ 
+     /* a disk whose driver answers requests, while its data goes straight to the fd */
+-    if (type == FD_TYPE_DEVICE) type = FD_TYPE_FILE;
++    if (type == FD_TYPE_DISK) type = FD_TYPE_FILE;
+ 
+     if (type == FD_TYPE_FILE)
+     {
+@@ -6624,7 +6624,7 @@
+     if (status) return status;
+ 
+     /* a disk whose driver answers requests, while its data goes straight to the fd */
+-    if (type == FD_TYPE_DEVICE) type = FD_TYPE_FILE;
++    if (type == FD_TYPE_DISK) type = FD_TYPE_FILE;
+ 
+     if ((type != FD_TYPE_FILE) ||
+         (options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)) ||
+@@ -6710,7 +6710,7 @@
+         if (!server_get_unix_fd( handle, 0, &fd, &needs_close, &type, NULL ))
+         {
+             if (needs_close) close( fd );
+-            if (type == FD_TYPE_DEVICE)
++            if (type == FD_TYPE_DISK)
+                 return server_ioctl_file( handle, event, apc, apc_context, io, code,
+                                           in_buffer, in_size, out_buffer, out_size );
+         }
+@@ -6808,7 +6808,7 @@
+     if (needs_close) close( fd );
+ 
+     /* a volume is locked and dismounted by the driver it belongs to */
+-    if (status == STATUS_BAD_DEVICE_TYPE || type == FD_TYPE_DEVICE)
++    if (status == STATUS_BAD_DEVICE_TYPE || type == FD_TYPE_DISK)
+     {
+         switch (code)
+         {
+@@ -6932,7 +6932,7 @@
+     if (ret == STATUS_ACCESS_DENIED)
+         ret = server_get_unix_fd( handle, FILE_APPEND_DATA, &fd, &needs_close, &type, NULL );
+ 
+-    if (!ret && type == FD_TYPE_DEVICE)
++    if (!ret && type == FD_TYPE_DISK)
+     {
+         /* a disk: what its driver cached is on it, slow stick or not */
+         if (fsync(fd)) ret = errno_to_status( errno );
+@@ -7497,7 +7497,7 @@
+ 
+     status = server_get_unix_fd( handle, 0, &fd, &needs_close, &type, NULL );
+     /* a volume with an fd for its data still has its driver to answer this */
+-    if (!status && type == FD_TYPE_DEVICE)
++    if (!status && type == FD_TYPE_DISK)
+     {
+         if (needs_close) close( fd );
+         status = STATUS_BAD_DEVICE_TYPE;

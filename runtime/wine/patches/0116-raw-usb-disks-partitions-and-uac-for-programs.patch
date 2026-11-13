@@ -1,0 +1,2522 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 9 Nov 2026 12:00:00 +0300
+Subject: [PATCH] USB disks for programs that write to them directly, and UAC for what asks for it.
+
+Programs that write disks (Rufus first) now find what Windows has for them
+(docs/disks.md): a USB disk the host does not use is a device of the setup
+API and \\.\PhysicalDriveN, its partitions are volumes even with no file
+system, the disk answers the partition table's requests, and volumes can be
+locked, dismounted and given letters. A device can have a unix file
+(wine_IoSetDeviceUnixPath): reads and writes go straight to it, requests stay
+with the driver. Opening one to read or write it takes an elevated token.
+
+A program whose manifest needs the administrator now asks through the
+Application Information service before it is raised, as UAC does.
+
+---
+--- a/dlls/cfgmgr32/cfgmgr32.c	2026-11-09 09:56:46.832221500 +0100
++++ b/dlls/cfgmgr32/cfgmgr32.c	2026-11-09 12:33:53.958992000 +0100
+@@ -2077,7 +2077,8 @@
+ CONFIGRET WINAPI CM_Get_Child_Ex( DEVINST *child, DEVINST node, ULONG flags, HMACHINE machine )
+ {
+     FIXME( "child %p, node %#lx, flags %#lx, machine %p stub!\n", child, node, flags, machine );
+-    return CR_SUCCESS;
++    if (child) *child = 0;
++    return CR_NO_SUCH_DEVNODE;
+ }
+ 
+ /***********************************************************************
+--- a/dlls/kernel32/volume.c	2026-11-09 09:56:46.842221600 +0100
++++ b/dlls/kernel32/volume.c	2026-11-09 12:33:53.956992000 +0100
+@@ -34,6 +34,7 @@
+ #include "winioctl.h"
+ #include "ddk/wdm.h"
+ #include "ddk/ntifs.h"
++#include "ddk/mountmgr.h"
+ #include "kernel_private.h"
+ #include "wine/debug.h"
+ 
+@@ -309,8 +310,10 @@
+  */
+ BOOL WINAPI DeleteVolumeMountPointA(LPCSTR mountpoint)
+ {
+-    FIXME("(%s), stub!\n", debugstr_a(mountpoint));
+-    return FALSE;
++    WCHAR *mountpointW;
++
++    if (!(mountpointW = FILE_name_AtoW( mountpoint, FALSE ))) return FALSE;
++    return DeleteVolumeMountPointW( mountpointW );
+ }
+ 
+ /***********************************************************************
+@@ -330,6 +333,46 @@
+     return ret;
+ }
+ 
++/* a drive letter is the mount manager's to give: "E:\\" for "\\\\?\\Volume{...}\\" */
++static BOOL set_drive_letter( const WCHAR *link, const WCHAR *target )
++{
++    struct
++    {
++        MOUNTMGR_CREATE_POINT_INPUT input;
++        WCHAR names[80];
++    } request;
++    WCHAR *device;
++    DWORD size, link_len, device_len;
++    HANDLE mgr;
++    BOOL ret;
++
++    if (wcsncmp( target, L"\\\\?\\Volume{", 11 ) || wcslen( target ) > 60)
++    {
++        SetLastError( ERROR_INVALID_NAME );
++        return FALSE;
++    }
++    memset( &request, 0, sizeof(request) );
++    swprintf( request.names, ARRAY_SIZE(request.names), L"\\DosDevices\\%c:", link[0] );
++    link_len = lstrlenW( request.names );
++    device = request.names + link_len + 1;
++    lstrcpyW( device, L"\\??\\" );
++    lstrcatW( device, target + 4 );
++    device_len = lstrlenW( device );
++    if (device_len && device[device_len - 1] == '\\') device[--device_len] = 0;
++
++    request.input.SymbolicLinkNameOffset = offsetof( typeof(request), names );
++    request.input.SymbolicLinkNameLength = link_len * sizeof(WCHAR);
++    request.input.DeviceNameOffset = request.input.SymbolicLinkNameOffset + (link_len + 1) * sizeof(WCHAR);
++    request.input.DeviceNameLength = device_len * sizeof(WCHAR);
++
++    mgr = CreateFileW( MOUNTMGR_DOS_DEVICE_NAME, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
++                       NULL, OPEN_EXISTING, 0, 0 );
++    if (mgr == INVALID_HANDLE_VALUE) return FALSE;
++    ret = DeviceIoControl( mgr, IOCTL_MOUNTMGR_CREATE_POINT, &request, sizeof(request), NULL, 0, &size, NULL );
++    CloseHandle( mgr );
++    return ret;
++}
++
+ /***********************************************************************
+  *           SetVolumeMountPointW (KERNEL32.@)
+  */
+@@ -345,6 +388,8 @@
+ 
+     TRACE( "link %s, target %s\n", debugstr_w(link), debugstr_w(target) );
+ 
++    if (link[0] && link[1] == ':' && link[2] == '\\' && !link[3]) return set_drive_letter( link, target );
++
+     status = RtlDosPathNameToNtPathName_U_WithStatus( link, &nt_link, NULL, NULL );
+     if (status) return set_ntstatus( status );
+ 
+--- a/dlls/kernelbase/volume.c	2026-11-09 09:56:46.838221600 +0100
++++ b/dlls/kernelbase/volume.c	2026-11-09 12:33:53.955992000 +0100
+@@ -578,9 +578,14 @@
+     {
+         switch (info.DeviceType)
+         {
++        /* the root of a volume named by its GUID is opened on the volume's
++         * own device, which says what kind of device it is */
++        case FILE_DEVICE_CD_ROM:
++        case FILE_DEVICE_DVD:
+         case FILE_DEVICE_CD_ROM_FILE_SYSTEM:  ret = DRIVE_CDROM; break;
+         case FILE_DEVICE_VIRTUAL_DISK:        ret = DRIVE_RAMDISK; break;
+         case FILE_DEVICE_NETWORK_FILE_SYSTEM: ret = DRIVE_REMOTE; break;
++        case FILE_DEVICE_DISK:
+         case FILE_DEVICE_DISK_FILE_SYSTEM:
+             if (info.Characteristics & FILE_REMOTE_DEVICE) ret = DRIVE_REMOTE;
+             else if (info.Characteristics & FILE_REMOVABLE_MEDIA) ret = DRIVE_REMOVABLE;
+@@ -1143,8 +1148,36 @@
+  */
+ BOOL WINAPI /* DECLSPEC_HOTPATCH */ DeleteVolumeMountPointW( LPCWSTR mountpoint )
+ {
+-    FIXME("(%s), stub!\n", debugstr_w(mountpoint));
+-    return FALSE;
++    struct
++    {
++        MOUNTMGR_MOUNT_POINT input;
++        WCHAR link[16];
++    } request;
++    BYTE output[512];
++    HANDLE mgr;
++    DWORD size;
++    BOOL ret;
++
++    TRACE( "(%s)\n", debugstr_w(mountpoint) );
++
++    if (!mountpoint || !mountpoint[0] || mountpoint[1] != ':' || mountpoint[2] != '\\' || mountpoint[3])
++    {
++        FIXME( "(%s): only drive letters\n", debugstr_w(mountpoint) );
++        SetLastError( ERROR_NOT_A_REPARSE_POINT );
++        return FALSE;
++    }
++
++    memset( &request, 0, sizeof(request) );
++    swprintf( request.link, ARRAY_SIZE(request.link), L"\\DosDevices\\%c:", mountpoint[0] );
++    request.input.SymbolicLinkNameOffset = offsetof( typeof(request), link );
++    request.input.SymbolicLinkNameLength = lstrlenW( request.link ) * sizeof(WCHAR);
++
++    mgr = CreateFileW( MOUNTMGR_DOS_DEVICE_NAME, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
++                       NULL, OPEN_EXISTING, 0, 0 );
++    if (mgr == INVALID_HANDLE_VALUE) return FALSE;
++    ret = DeviceIoControl( mgr, IOCTL_MOUNTMGR_DELETE_POINTS, &request, sizeof(request), output, sizeof(output), &size, NULL );
++    CloseHandle( mgr );
++    return ret;
+ }
+ 
+ 
+--- a/dlls/mountmgr.sys/arctic.c	2026-11-09 09:56:46.803221500 +0100
++++ b/dlls/mountmgr.sys/arctic.c	2026-11-09 12:33:53.962992000 +0100
+@@ -38,6 +38,9 @@
+ #include <time.h>
+ #include <unistd.h>
+ #include <sys/stat.h>
++#include <sys/socket.h>
++#include <sys/time.h>
++#include <sys/un.h>
+ #ifdef __linux__
+ #include <sys/inotify.h>
+ #include <sys/sysmacros.h>
+@@ -49,6 +52,9 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(mountmgr);
+ 
+ #define VOLUMES_DIR "/run/arctic/volumes"
++#define DISKS_DIR "/run/arctic/disks"
++#define HOLD_DIR "/run/arctic/hold"
++#define DISK_SOCKET "/run/arctic/disk.sock" /* arctic-disk, which is root */
+ #define EJECT_DIR "/run/arctic/eject" /* served by arctic-init, which is root */
+ 
+ #ifdef __linux__
+@@ -141,7 +147,7 @@
+         else if (!strcmp( line, "partuuid" )) snprintf( partuuid, sizeof(partuuid), "%s", value );
+     }
+     fclose( f );
+-    if (!device[0] || !mount[0]) return;
++    if (!device[0]) return;
+ 
+     if (!strcmp( type, "cdrom" )) device_type = DEVICE_CDROM;
+     else if (!strcmp( type, "removable" )) device_type = DEVICE_HARDDISK; /* DRIVE_REMOVABLE */
+@@ -152,8 +158,9 @@
+ 
+     TRACE( "%s: %s on %s, %s, label %s\n", debugstr_a(name), debugstr_a(device), debugstr_a(mount),
+            type, debugstr_a(label) );
+-    queue_device_op( ADD_DOS_DEVICE, name, device, mount, device_type, guid_ptr, NULL,
+-                     label[0] ? label : NULL, NULL );
++    /* a volume with nothing mounted (a partition just made) has no letter */
++    queue_device_op( mount[0] ? ADD_DOS_DEVICE : ADD_VOLUME, name, device, mount[0] ? mount : NULL, device_type,
++                     guid_ptr, NULL, label[0] ? label : NULL, NULL );
+ }
+ 
+ static void remove_volume_record( const char *name )
+@@ -167,9 +174,17 @@
+     char buffer[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+     struct dirent *de;
+     DIR *dir;
+-    int fd;
++    int fd, disks;
+ 
+     if ((fd = inotify_init1( IN_CLOEXEC )) == -1) return;
++    disks = inotify_add_watch( fd, DISKS_DIR, IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE );
++    if ((dir = opendir( DISKS_DIR )))
++    {
++        while ((de = readdir( dir )))
++            if (de->d_name[0] != '.')
++                queue_device_op( ADD_DISK, de->d_name, NULL, NULL, DEVICE_UNKNOWN, NULL, NULL, NULL, NULL );
++        closedir( dir );
++    }
+     /* records are written under a dot name and renamed when whole */
+     if (inotify_add_watch( fd, VOLUMES_DIR, IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE ) == -1)
+     {
+@@ -201,6 +216,12 @@
+             struct inotify_event *event = (struct inotify_event *)p;
+ 
+             if (!event->len || event->name[0] == '.') continue;
++            if (event->wd == disks)
++            {
++                queue_device_op( (event->mask & IN_MOVED_TO) ? ADD_DISK : REMOVE_DISK, event->name, NULL, NULL,
++                                 DEVICE_UNKNOWN, NULL, NULL, NULL, NULL );
++                continue;
++            }
+             if (event->mask & IN_MOVED_TO) add_volume_record( event->name );
+             else if (event->mask & (IN_MOVED_FROM | IN_DELETE)) remove_volume_record( event->name );
+         }
+@@ -230,18 +251,7 @@
+     return found;
+ }
+ 
+-/* every disk keeps the number it got first, as a PhysicalDrive number does */
+-static ULONG disk_number( const char *disk )
+-{
+-    static char disks[64][32];
+-    static unsigned int count;
+-    unsigned int i;
+-
+-    for (i = 0; i < count; i++) if (!strcmp( disks[i], disk )) return i + 1;
+-    if (count == ARRAY_SIZE(disks)) return 0;
+-    snprintf( disks[count], sizeof(disks[count]), "%s", disk );
+-    return ++count;
+-}
++static ULONG disk_rank( const char *disk );
+ 
+ NTSTATUS arctic_volume_info( void *args )
+ {
+@@ -254,7 +264,12 @@
+     read_record( params->udi, "product", info->product, sizeof(info->product) );
+     info->usb = read_record( params->udi, "usb", value, sizeof(value) ) && !strcmp( value, "1" );
+     info->removable = read_record( params->udi, "type", value, sizeof(value) ) && !strcmp( value, "removable" );
+-    info->disk_number = disk_number( info->disk );
++    info->disk_number = disk_rank( info->disk );
++    info->managed = read_record( params->udi, "managed", value, sizeof(value) ) && !strcmp( value, "1" );
++    if (read_record( params->udi, "offset", value, sizeof(value) )) info->offset = strtoull( value, NULL, 10 );
++    if (read_record( params->udi, "length", value, sizeof(value) )) info->length = strtoull( value, NULL, 10 );
++    if (read_record( params->udi, "partnum", value, sizeof(value) )) info->partnum = strtoul( value, NULL, 10 );
++    read_record( params->udi, "mount", info->mount, sizeof(info->mount) );
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -437,7 +452,6 @@
+         if (!disk_of_path( "c:", system_disk, sizeof(system_disk) )) system_disk[0] = 0;
+     }
+     if (!strcmp( disk, system_disk )) return 0;
+-    if (!system_disk[0]) rank = 0;
+     if (!(dir = opendir( "/sys/block" ))) return rank;
+     while ((de = readdir( dir )))
+     {
+@@ -497,12 +511,144 @@
+     return STATUS_SUCCESS;
+ }
+ 
++/* a record of /run/arctic/disks */
++NTSTATUS arctic_disk_record( void *args )
++{
++    const struct arctic_disk_record_params *params = args;
++    struct arctic_disk_record *rec = params->record;
++    char path[PATH_MAX], line[256];
++    FILE *f;
++
++    memset( rec, 0, sizeof(*rec) );
++    if (strchr( params->name, '/' ) || strlen( params->name ) >= sizeof(rec->name)) return STATUS_INVALID_PARAMETER;
++    snprintf( path, sizeof(path), DISKS_DIR "/%s", params->name );
++    if (!(f = fopen( path, "r" ))) return STATUS_NOT_FOUND;
++    strcpy( rec->name, params->name );
++    while (fgets( line, sizeof(line), f ))
++    {
++        char *value = strchr( line, '=' );
++
++        if (!value) continue;
++        *value++ = 0;
++        value[strcspn( value, "\n" )] = 0;
++        if (!strcmp( line, "vendor" )) snprintf( rec->vendor, sizeof(rec->vendor), "%s", value );
++        else if (!strcmp( line, "model" )) snprintf( rec->model, sizeof(rec->model), "%s", value );
++        else if (!strcmp( line, "rev" )) snprintf( rec->rev, sizeof(rec->rev), "%s", value );
++        else if (!strcmp( line, "serial" )) snprintf( rec->serial, sizeof(rec->serial), "%s", value );
++        else if (!strcmp( line, "sector" )) rec->sector = strtoul( value, NULL, 10 );
++        else if (!strcmp( line, "sectors" )) rec->sectors = strtoull( value, NULL, 10 );
++        else if (!strcmp( line, "removable" )) rec->removable = !strcmp( value, "1" );
++    }
++    fclose( f );
++    if (!rec->sector) rec->sector = 512;
++    /* sysfs counts the size in 512-byte units whatever the disk's sectors */
++    rec->sectors = rec->sectors * 512 / rec->sector;
++    rec->number = disk_rank( rec->name );
++    return STATUS_SUCCESS;
++}
++
++/* the sectors of the partition tables */
++NTSTATUS arctic_disk_io( void *args )
++{
++    const struct arctic_disk_io_params *params = args;
++    char path[64];
++    ssize_t done;
++    int fd;
++
++    if (strchr( params->name, '/' ) || strlen( params->name ) > 32) return STATUS_INVALID_PARAMETER;
++    snprintf( path, sizeof(path), "/dev/%s", params->name );
++    if ((fd = open( path, (params->write ? O_WRONLY | O_DSYNC : O_RDONLY) | O_CLOEXEC )) == -1)
++        return errno_to_status( errno );
++    if (params->write) done = pwrite( fd, params->buffer, params->size, params->offset );
++    else done = pread( fd, params->buffer, params->size, params->offset );
++    if (done == -1)
++    {
++        NTSTATUS status = errno_to_status( errno );
++
++        close( fd );
++        return status;
++    }
++    close( fd );
++    return done == params->size ? STATUS_SUCCESS : STATUS_END_OF_FILE;
++}
++
++NTSTATUS arctic_disk_command( void *args )
++{
++    const struct arctic_disk_command_params *params = args;
++    struct sockaddr_un addr = { .sun_family = AF_UNIX, .sun_path = DISK_SOCKET };
++    struct timeval limit = { 30, 0 };
++    char line[128], answer[16];
++    ssize_t len;
++    int fd;
++
++    if ((fd = socket( AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0 )) == -1) return errno_to_status( errno );
++    setsockopt( fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit) );
++    if (connect( fd, (struct sockaddr *)&addr, sizeof(addr) ))
++    {
++        WARN( "%s: %s\n", DISK_SOCKET, strerror(errno) );
++        close( fd );
++        return STATUS_DEVICE_NOT_READY;
++    }
++    len = snprintf( line, sizeof(line), "%s %s\n", params->command, params->name );
++    if (write( fd, line, len ) != len || (len = read( fd, answer, sizeof(answer) - 1 )) <= 0)
++    {
++        close( fd );
++        return STATUS_IO_TIMEOUT;
++    }
++    close( fd );
++    answer[len] = 0;
++    TRACE( "%s: %s\n", line, answer );
++    if (!strcmp( answer, "ok" )) return STATUS_SUCCESS;
++    if (!strcmp( answer, "busy" )) return STATUS_DEVICE_BUSY;
++    if (!strcmp( answer, "none" )) return STATUS_UNRECOGNIZED_VOLUME;
++    return STATUS_UNSUCCESSFUL;
++}
++
++/* arctic-volume mounts nothing that has a file here: a program has it locked */
++NTSTATUS arctic_hold( void *args )
++{
++    const struct arctic_hold_params *params = args;
++    char path[PATH_MAX];
++    int fd;
++
++    if (strchr( params->name, '/' )) return STATUS_INVALID_PARAMETER;
++    snprintf( path, sizeof(path), HOLD_DIR "/%s", params->name );
++    if (!params->hold)
++    {
++        unlink( path );
++        return STATUS_SUCCESS;
++    }
++    if ((fd = open( path, O_WRONLY | O_CREAT | O_CLOEXEC, 0644 )) == -1) return errno_to_status( errno );
++    close( fd );
++    return STATUS_SUCCESS;
++}
++
+ #else
+ 
+ void run_arctic_loop(void)
+ {
+ }
+ 
++NTSTATUS arctic_disk_record( void *args )
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++NTSTATUS arctic_disk_io( void *args )
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++NTSTATUS arctic_disk_command( void *args )
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++NTSTATUS arctic_hold( void *args )
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
+ NTSTATUS arctic_volume_info( void *args )
+ {
+     return STATUS_NOT_FOUND;
+--- a/dlls/mountmgr.sys/device.c	2026-11-09 09:56:46.808221500 +0100
++++ b/dlls/mountmgr.sys/device.c	2026-11-09 12:33:53.969992000 +0100
+@@ -87,6 +87,9 @@
+     char                 *unix_device; /* unix device path */
+     char                 *disk_serial; /* disk serial number */
+     struct volume        *volume;      /* associated volume */
++    struct arctic_disk   *arctic;      /* a USB disk programs may write to */
++    BOOL                  raw;         /* reads and writes go straight to unix_device */
++    UNICODE_STRING        dos_part;    /* \\??\\HarddiskNPartitionM */
+ };
+ 
+ struct volume
+@@ -111,6 +114,8 @@
+     struct mount_point   *mount;       /* DosDevices mount point */
+ };
+ 
++static void arctic_setup_volume( struct volume *volume );
++
+ static struct list drives_list = LIST_INIT(drives_list);
+ static struct list volumes_list = LIST_INIT(volumes_list);
+ 
+@@ -609,7 +614,8 @@
+ 
+ 
+ /* create the disk device for a given volume */
+-static NTSTATUS create_disk_device( enum device_type type, struct disk_device **device_ret, struct volume *volume )
++static NTSTATUS create_disk_device( enum device_type type, struct disk_device **device_ret, struct volume *volume,
++                                    const char *udi )
+ {
+     UINT i, first = 0;
+     NTSTATUS status = 0;
+@@ -657,6 +663,15 @@
+         break;
+     }
+ 
++    /* a volume of a removable disk is a volume too: PhysicalDriveN is the disk's */
++    if (udi && type == DEVICE_HARDDISK)
++    {
++        format = L"\\Device\\HarddiskVolume%u";
++        link_format = NULL;
++        first = 1;
++        characteristics |= FILE_REMOVABLE_MEDIA;
++    }
++
+     name.MaximumLength = (lstrlenW(format) + 10) * sizeof(WCHAR);
+     name.Buffer = RtlAllocateHeap( GetProcessHeap(), 0, name.MaximumLength );
+     for (i = first; i < 32; i++)
+@@ -675,6 +690,9 @@
+         device->unix_device    = NULL;
+         device->symlink.Buffer = NULL;
+         device->volume         = volume;
++        device->arctic         = NULL;
++        device->raw            = FALSE;
++        device->dos_part.Buffer = NULL;
+ 
+         if (link_format)
+         {
+@@ -737,6 +755,11 @@
+         IoDeleteSymbolicLink( &device->symlink );
+         RtlFreeUnicodeString( &device->symlink );
+     }
++    if (device->dos_part.Buffer)
++    {
++        IoDeleteSymbolicLink( &device->dos_part );
++        RtlFreeUnicodeString( &device->dos_part );
++    }
+     free( device->unix_device );
+     free( device->disk_serial );
+     RtlFreeUnicodeString( &device->name );
+@@ -794,7 +817,7 @@
+     if (!(volume = calloc( 1, sizeof(*volume) )))
+         return STATUS_NO_MEMORY;
+ 
+-    if (!(status = create_disk_device( type, &volume->device, volume )))
++    if (!(status = create_disk_device( type, &volume->device, volume, udi )))
+     {
+         if (udi) set_volume_udi( volume, udi );
+         list_add_tail( &volumes_list, &volume->entry );
+@@ -818,7 +841,7 @@
+ 
+     if (volume)
+     {
+-        if (udi) set_volume_udi( volume, udi );
++        if (udi && !volume->udi) set_volume_udi( volume, udi );
+         drive->volume = grab_volume( volume );
+         status = STATUS_SUCCESS;
+     }
+@@ -981,7 +1004,7 @@
+ 
+     if (type != disk_device->type)
+     {
+-        if ((status = create_disk_device( type, &disk_device, volume ))) return status;
++        if ((status = create_disk_device( type, &disk_device, volume, volume->udi ))) return status;
+         if (volume->mount)
+         {
+             delete_mount_point( volume->mount );
+@@ -1021,7 +1044,7 @@
+         get_filesystem_serial( volume );
+     }
+     /* labels come from the host in UTF-8 */
+-    if (label && label[0] && !volume->label[0])
++    if (label && label[0] && (!volume->label[0] || volume->udi))
+         MultiByteToWideChar( CP_UTF8, 0, label, -1, volume->label, ARRAY_SIZE(volume->label) );
+ 
+     TRACE("fs_type %#x, label %s, serial %08lx\n", volume->fs_type, debugstr_w(volume->label), volume->serial);
+@@ -1052,6 +1075,7 @@
+     if (volume->mount) set_mount_point_id( volume->mount, id, id_len );
+     if (drive && drive->mount) set_mount_point_id( drive->mount, id, id_len );
+ 
++    arctic_setup_volume( volume );
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -1411,7 +1435,20 @@
+     const GUID *partition = guid; /* what the host named the volume by, if anything */
+ 
+     EnterCriticalSection( &device_section );
+-    volume = find_matching_volume( udi, unix_device, mount_point, type );
++    volume = NULL;
++    if (udi)
++    {
++        struct volume *known;
++
++        /* a volume that had no file system mounted until now */
++        LIST_FOR_EACH_ENTRY( known, &volumes_list, struct volume, entry )
++            if (known->udi && !strcmp( udi, known->udi ))
++            {
++                volume = grab_volume( known );
++                break;
++            }
++    }
++    if (!volume) volume = find_matching_volume( udi, unix_device, mount_point, type );
+ 
+     if (letter == -1) letter = remembered_drive_letter( partition, udi );
+     if (letter == -1 && !has_drive( udi )) letter = free_drive_letter( type, reserved_drive_letters( partition ) );
+@@ -1455,7 +1492,8 @@
+     set_drive_info( drive, letter, volume );
+     dosdev[0] = 'a' + drive->drive;
+     dosdev[2] = 0;
+-    if (!mount_point || !volume->unix_mount || strcmp( mount_point, volume->unix_mount ))
++    /* Always: a letter taken away (DeleteVolumeMountPoint) lost its link while
++     * the volume kept its mount, and given back it needs the link again */
+     {
+         struct set_dosdev_symlink_params params = { dosdev, mount_point };
+         MOUNTMGR_CALL( set_dosdev_symlink, &params );
+@@ -1918,6 +1956,22 @@
+     TRACE( "volume query %x length %lu\n", info_class, length );
+ 
+     EnterCriticalSection( &device_section );
++    if (info_class == FileFsDeviceInformation)
++    {
++        FILE_FS_DEVICE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
++
++        if (length < sizeof(*info))
++        {
++            status = STATUS_BUFFER_TOO_SMALL;
++            goto done;
++        }
++        info->DeviceType = (dev->type == DEVICE_CDROM || dev->type == DEVICE_DVD) ? FILE_DEVICE_CD_ROM_FILE_SYSTEM
++                                                                                  : FILE_DEVICE_DISK_FILE_SYSTEM;
++        info->Characteristics = dev->dev_obj->Characteristics;
++        io->Information = sizeof(*info);
++        status = STATUS_SUCCESS;
++        goto done;
++    }
+     volume = dev->volume;
+     if (!volume)
+     {
+@@ -2093,6 +2147,1142 @@
+     return status;
+ }
+ 
++/* The USB disks of the Arctic host (docs/disks.md). arctic-volume hands the
++ * NT world only the USB disks nothing of the host's is on, and describes them
++ * in /run/arctic/disks: each becomes \Device\HarddiskN\DR0, PhysicalDriveN and
++ * a device of the setup API, as USBSTOR would make it. Reads and writes go
++ * straight to the block device (wine_IoSetDeviceUnixPath); what is asked of
++ * the disk comes here. */
++
++NTSTATUS CDECL wine_IoSetDeviceUnixPath( DEVICE_OBJECT *device, const char *path );
++
++#define ARCTIC_HANDLE_HOLDS  1  /* this handle locked or dismounted its volume */
++#define ARCTIC_HANDLE_WRITER 2  /* this handle may write the disk directly */
++
++#define DISK_INTERFACE_GUID L"{53f56307-b6bf-11d0-94f2-00a0c91efb8b}"
++#define ENUM_KEY     L"System\\CurrentControlSet\\Enum\\"
++#define CLASSES_KEY  L"System\\CurrentControlSet\\Control\\DeviceClasses\\" DISK_INTERFACE_GUID L"\\"
++
++struct arctic_disk
++{
++    struct list                entry;
++    struct arctic_disk_record  rec;
++    struct disk_device        *device;
++    HANDLE                     dir;
++    UNICODE_STRING             part0;       /* \Device\HarddiskN\Partition0 */
++    UNICODE_STRING             iface;       /* \??\USBSTOR#...#{guid} */
++    WCHAR                      instance[256];
++    WCHAR                      iface_key[400];
++    DWORD                      table_crc;   /* of the sectors the kernel last read the table from */
++};
++
++static struct list arctic_disks = LIST_INIT(arctic_disks);
++
++#include "pshpack1.h"
++struct mbr_entry
++{
++    BYTE  boot;
++    BYTE  chs_first[3];
++    BYTE  type;
++    BYTE  chs_last[3];
++    DWORD first;
++    DWORD count;
++};
++
++struct gpt_header
++{
++    char      signature[8];
++    DWORD     revision;
++    DWORD     header_size;
++    DWORD     header_crc;
++    DWORD     reserved;
++    ULONGLONG my_lba;
++    ULONGLONG alternate_lba;
++    ULONGLONG first_usable;
++    ULONGLONG last_usable;
++    GUID      disk_guid;
++    ULONGLONG entries_lba;
++    DWORD     entries_count;
++    DWORD     entry_size;
++    DWORD     entries_crc;
++};
++
++struct gpt_entry
++{
++    GUID      type;
++    GUID      id;
++    ULONGLONG first;
++    ULONGLONG last;
++    ULONGLONG attributes;
++    WCHAR     name[36];
++};
++#include "poppack.h"
++
++#define GPT_ENTRIES 128
++
++static BOOL guid_empty( const GUID *guid )
++{
++    static const GUID zero;
++
++    return !memcmp( guid, &zero, sizeof(zero) );
++}
++
++static struct arctic_disk *find_arctic_disk( const char *name )
++{
++    struct arctic_disk *disk;
++
++    LIST_FOR_EACH_ENTRY( disk, &arctic_disks, struct arctic_disk, entry )
++        if (!strcmp( disk->rec.name, name )) return disk;
++    return NULL;
++}
++
++static NTSTATUS arctic_read( struct arctic_disk *disk, ULONGLONG offset, void *buffer, ULONG size )
++{
++    struct arctic_disk_io_params params = { disk->rec.name, offset, buffer, size, FALSE };
++
++    return MOUNTMGR_CALL( arctic_disk_io, &params );
++}
++
++static NTSTATUS arctic_write( struct arctic_disk *disk, ULONGLONG offset, const void *buffer, ULONG size )
++{
++    struct arctic_disk_io_params params = { disk->rec.name, offset, (void *)buffer, size, TRUE };
++
++    return MOUNTMGR_CALL( arctic_disk_io, &params );
++}
++
++static NTSTATUS arctic_command( const char *command, const char *name )
++{
++    struct arctic_disk_command_params params = { command, name };
++
++    return MOUNTMGR_CALL( arctic_disk_command, &params );
++}
++
++static void arctic_set_hold( const char *name, BOOL hold )
++{
++    struct arctic_hold_params params = { name, hold };
++
++    MOUNTMGR_CALL( arctic_hold, &params );
++}
++
++/* what follows waits for the disk and must not keep the driver's other requests waiting */
++struct arctic_later
++{
++    char command[16];
++    char name[32];
++    int  tries;
++};
++
++static DWORD WINAPI arctic_later_thread( void *arg )
++{
++    struct arctic_later *later = arg;
++    int i;
++
++    for (i = 0; i < later->tries; i++)
++    {
++        if (arctic_command( later->command, later->name ) != STATUS_DEVICE_BUSY) break;
++        Sleep( 300 );
++    }
++    free( later );
++    return 0;
++}
++
++static void arctic_command_later( const char *command, const char *name, int tries )
++{
++    struct arctic_later *later = malloc( sizeof(*later) );
++    HANDLE thread;
++
++    if (!later) return;
++    strcpy( later->command, command );
++    strcpy( later->name, name );
++    later->tries = tries;
++    if ((thread = CreateThread( NULL, 0, arctic_later_thread, later, 0, NULL ))) CloseHandle( thread );
++    else free( later );
++}
++
++/* What a partition table says about where the partitions are: the type, start
++ * and size of the four MBR entries and GPT's header (whose CRC covers its
++ * entries). Boot code and the active flag are not part of it: a program that
++ * writes its MBR leaves the volumes as they are, as on Windows. */
++static DWORD arctic_table_crc( struct arctic_disk *disk )
++{
++    ULONG size = disk->rec.sector * 2, i;
++    BYTE *buf = malloc( size );
++    DWORD crc = 0;
++
++    if (buf && !arctic_read( disk, 0, buf, size ))
++    {
++        BYTE *entry = buf + 0x1be;
++
++        for (i = 0; i < 4; i++, entry += 16)
++        {
++            crc = RtlComputeCrc32( crc, entry + 4, 1 );   /* type */
++            crc = RtlComputeCrc32( crc, entry + 8, 8 );   /* first sector, count */
++        }
++        crc = RtlComputeCrc32( crc, buf + 510, 2 );
++        crc = RtlComputeCrc32( crc, buf + disk->rec.sector, 92 );
++    }
++    free( buf );
++    return crc;
++}
++
++/* the kernel reads the disk's partition table again, once the partitions in use are free */
++static void arctic_rescan( struct arctic_disk *disk )
++{
++    disk->table_crc = arctic_table_crc( disk );
++    if (arctic_command( "rescan", disk->rec.name ) == STATUS_DEVICE_BUSY)
++        arctic_command_later( "rescan", disk->rec.name, 30 );
++}
++
++static BOOL arctic_recognized( BYTE type )
++{
++    switch (type)
++    {
++    case 0x01: case 0x04: case 0x06: case 0x07: case 0x0b: case 0x0c: case 0x0e: case 0x11: case 0x14: case 0x16: case 0x1b: case 0x1c: case 0x1e:
++        return TRUE;
++    }
++    return FALSE;
++}
++
++static ULONG layout_size( ULONG count )
++{
++    return FIELD_OFFSET( DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry[count] );
++}
++
++static NTSTATUS arctic_read_layout( struct arctic_disk *disk, DRIVE_LAYOUT_INFORMATION_EX *layout, ULONG max, ULONG *used )
++{
++    ULONG sector = disk->rec.sector, count = 0, i;
++    struct gpt_header *header;
++    struct mbr_entry *mbr;
++    BYTE *buf = NULL, *table = NULL;
++    NTSTATUS status;
++
++    if (max < layout_size( 0 )) return STATUS_BUFFER_TOO_SMALL;
++    if (!(buf = malloc( sector * 2 ))) return STATUS_NO_MEMORY;
++    if ((status = arctic_read( disk, 0, buf, sector * 2 ))) goto done;
++    memset( layout, 0, layout_size( 0 ) );
++    mbr = (struct mbr_entry *)(buf + 0x1be);
++
++    if (buf[510] != 0x55 || buf[511] != 0xaa)
++    {
++        layout->PartitionStyle = PARTITION_STYLE_RAW;
++    }
++    else if (mbr[0].type == 0xee && !memcmp( buf + sector, "EFI PART", 8 ))
++    {
++        struct gpt_entry *entry;
++        ULONG table_size, n = 0;
++
++        header = (struct gpt_header *)(buf + sector);
++        table_size = header->entries_count * header->entry_size;
++        if (header->entry_size < sizeof(*entry) || table_size > 0x100000)
++        {
++            status = STATUS_DISK_CORRUPT_ERROR;
++            goto done;
++        }
++        table_size = (table_size + sector - 1) / sector * sector;
++        if (!(table = malloc( table_size )))
++        {
++            status = STATUS_NO_MEMORY;
++            goto done;
++        }
++        if ((status = arctic_read( disk, header->entries_lba * sector, table, table_size ))) goto done;
++        for (i = 0; i < header->entries_count; i++)
++        {
++            entry = (struct gpt_entry *)(table + i * header->entry_size);
++            if (!guid_empty( &entry->type )) count++;
++        }
++        if (max < layout_size( count ))
++        {
++            *used = layout_size( count );
++            status = STATUS_BUFFER_TOO_SMALL;
++            goto done;
++        }
++        layout->PartitionStyle = PARTITION_STYLE_GPT;
++        layout->Gpt.DiskId = header->disk_guid;
++        layout->Gpt.StartingUsableOffset.QuadPart = header->first_usable * sector;
++        layout->Gpt.UsableLength.QuadPart = (header->last_usable - header->first_usable + 1) * sector;
++        layout->Gpt.MaxPartitionCount = header->entries_count;
++        for (i = 0; i < header->entries_count; i++)
++        {
++            PARTITION_INFORMATION_EX *info = &layout->PartitionEntry[n];
++
++            entry = (struct gpt_entry *)(table + i * header->entry_size);
++            if (guid_empty( &entry->type )) continue;
++            memset( info, 0, sizeof(*info) );
++            info->PartitionStyle = PARTITION_STYLE_GPT;
++            info->StartingOffset.QuadPart = entry->first * sector;
++            info->PartitionLength.QuadPart = (entry->last - entry->first + 1) * sector;
++            info->PartitionNumber = ++n;
++            info->Gpt.PartitionType = entry->type;
++            info->Gpt.PartitionId = entry->id;
++            info->Gpt.Attributes = entry->attributes;
++            memcpy( info->Gpt.Name, entry->name, sizeof(info->Gpt.Name) );
++        }
++    }
++    else
++    {
++        ULONG number = 0;
++
++        count = 4;
++        if (max < layout_size( count ))
++        {
++            *used = layout_size( count );
++            status = STATUS_BUFFER_TOO_SMALL;
++            goto done;
++        }
++        layout->PartitionStyle = PARTITION_STYLE_MBR;
++        layout->Mbr.Signature = *(DWORD *)(buf + 0x1b8);
++        for (i = 0; i < 4; i++)
++        {
++            PARTITION_INFORMATION_EX *info = &layout->PartitionEntry[i];
++
++            memset( info, 0, sizeof(*info) );
++            info->PartitionStyle = PARTITION_STYLE_MBR;
++            if (!mbr[i].type || !mbr[i].count) continue;
++            info->StartingOffset.QuadPart = (ULONGLONG)mbr[i].first * sector;
++            info->PartitionLength.QuadPart = (ULONGLONG)mbr[i].count * sector;
++            info->PartitionNumber = ++number;
++            info->Mbr.PartitionType = mbr[i].type;
++            info->Mbr.BootIndicator = mbr[i].boot == 0x80;
++            info->Mbr.RecognizedPartition = arctic_recognized( mbr[i].type );
++            info->Mbr.HiddenSectors = mbr[i].first;
++        }
++    }
++    layout->PartitionCount = count;
++    *used = layout_size( count );
++
++done:
++    free( table );
++    free( buf );
++    return status;
++}
++
++static void chs_of( ULONGLONG lba, BYTE *chs )
++{
++    ULONG cylinder = lba / (255 * 63);
++
++    if (cylinder >= 1024)
++    {
++        chs[0] = 0xfe;
++        chs[1] = 0xff;
++        chs[2] = 0xff;
++        return;
++    }
++    chs[0] = (lba / 63) % 255;
++    chs[1] = ((lba % 63) + 1) | ((cylinder >> 2) & 0xc0);
++    chs[2] = cylinder & 0xff;
++}
++
++/* the first sector with its boot code kept and a new table */
++static NTSTATUS write_mbr( struct arctic_disk *disk, DWORD signature, const struct mbr_entry *entries )
++{
++    ULONG sector = disk->rec.sector;
++    BYTE *buf = malloc( sector );
++    NTSTATUS status;
++
++    if (!buf) return STATUS_NO_MEMORY;
++    if (!(status = arctic_read( disk, 0, buf, sector )))
++    {
++        *(DWORD *)(buf + 0x1b8) = signature;
++        buf[0x1bc] = buf[0x1bd] = 0;
++        memcpy( buf + 0x1be, entries, 4 * sizeof(*entries) );
++        buf[510] = 0x55;
++        buf[511] = 0xaa;
++        status = arctic_write( disk, 0, buf, sector );
++    }
++    free( buf );
++    return status;
++}
++
++/* the protective MBR, the header and table at the start and again at the end */
++static NTSTATUS write_gpt( struct arctic_disk *disk, const GUID *disk_guid, ULONGLONG first_usable, ULONGLONG last_usable,
++                           const struct gpt_entry *entries )
++{
++    ULONG sector = disk->rec.sector, table_sectors = (GPT_ENTRIES * sizeof(struct gpt_entry) + sector - 1) / sector;
++    ULONGLONG last_lba = disk->rec.sectors - 1;
++    struct mbr_entry protect[4];
++    struct gpt_header *header;
++    NTSTATUS status;
++    BYTE *buf;
++
++    memset( protect, 0, sizeof(protect) );
++    protect[0].type = 0xee;
++    protect[0].chs_first[1] = 2;
++    memset( protect[0].chs_last, 0xff, 3 );
++    protect[0].first = 1;
++    protect[0].count = min( last_lba, 0xffffffffull );
++    if ((status = write_mbr( disk, 0, protect ))) return status;
++
++    if (!(buf = calloc( sector, table_sectors + 1 ))) return STATUS_NO_MEMORY;
++    memcpy( buf + sector, entries, GPT_ENTRIES * sizeof(*entries) );
++    header = (struct gpt_header *)buf;
++    memcpy( header->signature, "EFI PART", 8 );
++    header->revision = 0x00010000;
++    header->header_size = sizeof(*header);
++    header->first_usable = first_usable;
++    header->last_usable = last_usable;
++    header->disk_guid = *disk_guid;
++    header->entries_count = GPT_ENTRIES;
++    header->entry_size = sizeof(struct gpt_entry);
++    header->entries_crc = RtlComputeCrc32( 0, buf + sector, GPT_ENTRIES * sizeof(*entries) );
++
++    /* the copy at the end first: a table with no backup is what a disk cut short looks like */
++    header->my_lba = last_lba;
++    header->alternate_lba = 1;
++    header->entries_lba = last_lba - table_sectors;
++    header->header_crc = 0;
++    header->header_crc = RtlComputeCrc32( 0, buf, sizeof(*header) );
++    if (!(status = arctic_write( disk, header->entries_lba * sector, buf + sector, table_sectors * sector )) &&
++        !(status = arctic_write( disk, last_lba * sector, buf, sector )))
++    {
++        header->my_lba = 1;
++        header->alternate_lba = last_lba;
++        header->entries_lba = 2;
++        header->header_crc = 0;
++        header->header_crc = RtlComputeCrc32( 0, buf, sizeof(*header) );
++        if (!(status = arctic_write( disk, 2 * (ULONGLONG)sector, buf + sector, table_sectors * sector )))
++            status = arctic_write( disk, sector, buf, sector );
++    }
++    free( buf );
++    return status;
++}
++
++static NTSTATUS arctic_write_layout( struct arctic_disk *disk, const DRIVE_LAYOUT_INFORMATION_EX *layout, ULONG size )
++{
++    ULONG sector = disk->rec.sector, i;
++
++    if (size < layout_size( 0 ) || size < layout_size( layout->PartitionCount )) return STATUS_INVALID_PARAMETER;
++
++    if (layout->PartitionStyle == PARTITION_STYLE_MBR)
++    {
++        struct mbr_entry entries[4];
++
++        memset( entries, 0, sizeof(entries) );
++        for (i = 0; i < layout->PartitionCount && i < 4; i++)
++        {
++            const PARTITION_INFORMATION_EX *info = &layout->PartitionEntry[i];
++            ULONGLONG first = info->StartingOffset.QuadPart / sector, count = info->PartitionLength.QuadPart / sector;
++
++            if (!count || !info->Mbr.PartitionType) continue;
++            entries[i].boot = info->Mbr.BootIndicator ? 0x80 : 0;
++            entries[i].type = info->Mbr.PartitionType;
++            entries[i].first = first;
++            entries[i].count = count;
++            chs_of( first, entries[i].chs_first );
++            chs_of( first + count - 1, entries[i].chs_last );
++        }
++        return write_mbr( disk, layout->Mbr.Signature, entries );
++    }
++    if (layout->PartitionStyle == PARTITION_STYLE_GPT)
++    {
++        ULONG table_sectors = (GPT_ENTRIES * sizeof(struct gpt_entry) + sector - 1) / sector, n = 0;
++        ULONGLONG first_usable = 2 + table_sectors, last_usable = disk->rec.sectors - 2 - table_sectors;
++        struct gpt_entry *entries = calloc( GPT_ENTRIES, sizeof(*entries) );
++        NTSTATUS status;
++
++        if (!entries) return STATUS_NO_MEMORY;
++        if (layout->Gpt.StartingUsableOffset.QuadPart) first_usable = layout->Gpt.StartingUsableOffset.QuadPart / sector;
++        if (layout->Gpt.UsableLength.QuadPart)
++            last_usable = first_usable + layout->Gpt.UsableLength.QuadPart / sector - 1;
++        for (i = 0; i < layout->PartitionCount && n < GPT_ENTRIES; i++)
++        {
++            const PARTITION_INFORMATION_EX *info = &layout->PartitionEntry[i];
++
++            if (!info->PartitionLength.QuadPart) continue;
++            entries[n].type = info->Gpt.PartitionType;
++            entries[n].id = info->Gpt.PartitionId;
++            entries[n].first = info->StartingOffset.QuadPart / sector;
++            entries[n].last = entries[n].first + info->PartitionLength.QuadPart / sector - 1;
++            entries[n].attributes = info->Gpt.Attributes;
++            memcpy( entries[n].name, info->Gpt.Name, sizeof(entries[n].name) );
++            n++;
++        }
++        status = write_gpt( disk, &layout->Gpt.DiskId, first_usable, last_usable, entries );
++        free( entries );
++        return status;
++    }
++    return STATUS_INVALID_PARAMETER;
++}
++
++static NTSTATUS arctic_create_disk( struct arctic_disk *disk, const CREATE_DISK *create, ULONG size )
++{
++    ULONG sector = disk->rec.sector;
++
++    if (size < sizeof(*create)) return STATUS_INVALID_PARAMETER;
++    switch (create->PartitionStyle)
++    {
++    case PARTITION_STYLE_MBR:
++    {
++        struct mbr_entry entries[4];
++
++        memset( entries, 0, sizeof(entries) );
++        return write_mbr( disk, create->Mbr.Signature, entries );
++    }
++    case PARTITION_STYLE_GPT:
++    {
++        ULONG table_sectors = (GPT_ENTRIES * sizeof(struct gpt_entry) + sector - 1) / sector;
++        struct gpt_entry *entries = calloc( GPT_ENTRIES, sizeof(*entries) );
++        NTSTATUS status;
++
++        if (!entries) return STATUS_NO_MEMORY;
++        status = write_gpt( disk, &create->Gpt.DiskId, 2 + table_sectors, disk->rec.sectors - 2 - table_sectors, entries );
++        free( entries );
++        return status;
++    }
++    case PARTITION_STYLE_RAW:
++    {
++        /* no table at all: the first sector's signature goes, and GPT's headers */
++        BYTE *buf = calloc( 1, sector * 2 );
++        NTSTATUS status;
++
++        if (!buf) return STATUS_NO_MEMORY;
++        status = arctic_write( disk, 0, buf, sector * 2 );
++        if (!status) status = arctic_write( disk, (disk->rec.sectors - 1) * sector, buf, sector );
++        free( buf );
++        return status;
++    }
++    }
++    return STATUS_INVALID_PARAMETER;
++}
++
++static NTSTATUS output( IRP *irp, const void *data, ULONG size )
++{
++    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
++
++    if (irpsp->Parameters.DeviceIoControl.OutputBufferLength < size) return STATUS_BUFFER_TOO_SMALL;
++    memcpy( irp->AssociatedIrp.SystemBuffer, data, size );
++    irp->IoStatus.Information = size;
++    return STATUS_SUCCESS;
++}
++
++static void fill_geometry( struct arctic_disk *disk, DISK_GEOMETRY *geometry )
++{
++    geometry->BytesPerSector = disk->rec.sector;
++    geometry->SectorsPerTrack = 63;
++    geometry->TracksPerCylinder = 255;
++    geometry->Cylinders.QuadPart = disk->rec.sectors / (255 * 63);
++    geometry->MediaType = disk->rec.removable ? RemovableMedia : FixedMedia;
++}
++
++static NTSTATUS disk_property( struct arctic_disk *disk, IRP *irp )
++{
++    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
++    STORAGE_PROPERTY_QUERY *query = irp->AssociatedIrp.SystemBuffer;
++    ULONG outsize = irpsp->Parameters.DeviceIoControl.OutputBufferLength;
++    STORAGE_DEVICE_DESCRIPTOR *descriptor;
++    ULONG len = sizeof(*descriptor) + strlen( disk->rec.vendor ) + strlen( disk->rec.model ) + strlen( disk->rec.rev ) +
++                strlen( disk->rec.serial ) + 4;
++    char *p;
++
++    if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(STORAGE_PROPERTY_QUERY))
++        return STATUS_INVALID_PARAMETER;
++    if (query->PropertyId != StorageDeviceProperty) return STATUS_NOT_SUPPORTED;
++    if (query->QueryType == PropertyExistsQuery) return STATUS_SUCCESS;
++    if (query->QueryType != PropertyStandardQuery) return STATUS_NOT_SUPPORTED;
++    if (outsize < sizeof(STORAGE_DESCRIPTOR_HEADER)) return STATUS_INVALID_PARAMETER;
++
++    descriptor = irp->AssociatedIrp.SystemBuffer;
++    if (outsize < len)
++    {
++        memset( descriptor, 0, sizeof(STORAGE_DESCRIPTOR_HEADER) );
++        descriptor->Version = sizeof(STORAGE_DEVICE_DESCRIPTOR);
++        descriptor->Size = len;
++        irp->IoStatus.Information = sizeof(STORAGE_DESCRIPTOR_HEADER);
++        return STATUS_SUCCESS;
++    }
++    memset( descriptor, 0, len );
++    descriptor->Version = sizeof(STORAGE_DEVICE_DESCRIPTOR);
++    descriptor->Size = len;
++    descriptor->DeviceType = 0; /* direct access */
++    descriptor->RemovableMedia = disk->rec.removable;
++    descriptor->BusType = BusTypeUsb;
++    p = (char *)(descriptor + 1);
++    descriptor->VendorIdOffset = p - (char *)descriptor;
++    strcpy( p, disk->rec.vendor );
++    p += strlen( p ) + 1;
++    descriptor->ProductIdOffset = p - (char *)descriptor;
++    strcpy( p, disk->rec.model );
++    p += strlen( p ) + 1;
++    descriptor->ProductRevisionOffset = p - (char *)descriptor;
++    strcpy( p, disk->rec.rev );
++    p += strlen( p ) + 1;
++    descriptor->SerialNumberOffset = p - (char *)descriptor;
++    strcpy( p, disk->rec.serial );
++    irp->IoStatus.Information = len;
++    return STATUS_SUCCESS;
++}
++
++/* the requests of a USB disk and of its volumes; returns FALSE for others */
++static BOOL arctic_ioctl( struct disk_device *dev, IRP *irp, NTSTATUS *status )
++{
++    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
++    ULONG code = irpsp->Parameters.DeviceIoControl.IoControlCode;
++    ULONG insize = irpsp->Parameters.DeviceIoControl.InputBufferLength;
++    ULONG outsize = irpsp->Parameters.DeviceIoControl.OutputBufferLength;
++    void *buffer = irp->AssociatedIrp.SystemBuffer;
++    struct arctic_volume_info vol;
++    struct arctic_disk *disk = dev->arctic;
++    BOOL is_volume = FALSE;
++
++    if (!disk)
++    {
++        if (!get_arctic_info( dev, &vol ) || !vol.managed || !(disk = find_arctic_disk( vol.disk ))) return FALSE;
++        is_volume = TRUE;
++    }
++
++    switch (code)
++    {
++    case IOCTL_DISK_GET_DRIVE_GEOMETRY:
++    {
++        DISK_GEOMETRY geometry;
++
++        fill_geometry( disk, &geometry );
++        *status = output( irp, &geometry, sizeof(geometry) );
++        return TRUE;
++    }
++    case IOCTL_DISK_GET_DRIVE_GEOMETRY_EX:
++    {
++        DISK_GEOMETRY_EX info;
++
++        memset( &info, 0, sizeof(info) );
++        fill_geometry( disk, &info.Geometry );
++        info.DiskSize.QuadPart = is_volume ? vol.length : disk->rec.sectors * disk->rec.sector;
++        *status = output( irp, &info, sizeof(info) );
++        return TRUE;
++    }
++    case IOCTL_DISK_GET_LENGTH_INFO:
++    {
++        GET_LENGTH_INFORMATION info;
++
++        info.Length.QuadPart = is_volume ? vol.length : disk->rec.sectors * disk->rec.sector;
++        *status = output( irp, &info, sizeof(info) );
++        return TRUE;
++    }
++    case IOCTL_DISK_GET_PARTITION_INFO:
++    {
++        PARTITION_INFORMATION info;
++
++        memset( &info, 0, sizeof(info) );
++        info.StartingOffset.QuadPart = is_volume ? vol.offset : 0;
++        info.PartitionLength.QuadPart = is_volume ? vol.length : disk->rec.sectors * disk->rec.sector;
++        info.PartitionNumber = is_volume ? vol.partnum : 0;
++        info.HiddenSectors = info.StartingOffset.QuadPart / disk->rec.sector;
++        info.RecognizedPartition = TRUE;
++        *status = output( irp, &info, sizeof(info) );
++        return TRUE;
++    }
++    case IOCTL_DISK_GET_PARTITION_INFO_EX:
++    {
++        PARTITION_INFORMATION_EX info;
++
++        memset( &info, 0, sizeof(info) );
++        info.PartitionStyle = PARTITION_STYLE_MBR;
++        info.StartingOffset.QuadPart = is_volume ? vol.offset : 0;
++        info.PartitionLength.QuadPart = is_volume ? vol.length : disk->rec.sectors * disk->rec.sector;
++        info.PartitionNumber = is_volume ? vol.partnum : 0;
++        info.Mbr.RecognizedPartition = TRUE;
++        info.Mbr.HiddenSectors = info.StartingOffset.QuadPart / disk->rec.sector;
++        *status = output( irp, &info, sizeof(info) );
++        return TRUE;
++    }
++    case IOCTL_DISK_IS_WRITABLE:
++    case IOCTL_DISK_CHECK_VERIFY:
++    case IOCTL_STORAGE_CHECK_VERIFY:
++    case IOCTL_STORAGE_CHECK_VERIFY2:
++    case IOCTL_DISK_MEDIA_REMOVAL:
++    case IOCTL_STORAGE_MEDIA_REMOVAL:
++        irp->IoStatus.Information = 0;
++        *status = STATUS_SUCCESS;
++        return TRUE;
++
++    case IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS:
++    {
++        VOLUME_DISK_EXTENTS extents;
++
++        if (!is_volume) return FALSE;
++        memset( &extents, 0, sizeof(extents) );
++        extents.NumberOfDiskExtents = 1;
++        extents.Extents[0].DiskNumber = disk->rec.number;
++        extents.Extents[0].StartingOffset.QuadPart = vol.offset;
++        extents.Extents[0].ExtentLength.QuadPart = vol.length;
++        *status = output( irp, &extents, sizeof(extents) );
++        return TRUE;
++    }
++    case IOCTL_STORAGE_GET_DEVICE_NUMBER:
++    {
++        STORAGE_DEVICE_NUMBER number;
++
++        number.DeviceType = FILE_DEVICE_DISK;
++        number.DeviceNumber = disk->rec.number;
++        number.PartitionNumber = is_volume ? vol.partnum : 0;
++        *status = output( irp, &number, sizeof(number) );
++        return TRUE;
++    }
++    case IOCTL_STORAGE_QUERY_PROPERTY:
++        if (is_volume) return FALSE;
++        *status = disk_property( disk, irp );
++        return TRUE;
++
++    case IOCTL_DISK_GET_DRIVE_LAYOUT_EX:
++    {
++        ULONG used = 0;
++
++        if (is_volume) return FALSE;
++        *status = arctic_read_layout( disk, buffer, outsize, &used );
++        irp->IoStatus.Information = *status ? 0 : used;
++        return TRUE;
++    }
++    case IOCTL_DISK_SET_DRIVE_LAYOUT_EX:
++        if (is_volume) return FALSE;
++        if (!(*status = arctic_write_layout( disk, buffer, insize ))) arctic_rescan( disk );
++        return TRUE;
++
++    case IOCTL_DISK_CREATE_DISK:
++        if (is_volume) return FALSE;
++        if (!(*status = arctic_create_disk( disk, buffer, insize ))) arctic_rescan( disk );
++        return TRUE;
++
++    case IOCTL_DISK_DELETE_DRIVE_LAYOUT:
++    {
++        CREATE_DISK raw;
++
++        if (is_volume) return FALSE;
++        memset( &raw, 0, sizeof(raw) );
++        raw.PartitionStyle = PARTITION_STYLE_RAW;
++        if (!(*status = arctic_create_disk( disk, &raw, sizeof(raw) ))) arctic_rescan( disk );
++        return TRUE;
++    }
++    case IOCTL_DISK_UPDATE_PROPERTIES:
++        /* as partmgr does it: partitions that did not change keep their
++         * volumes (Rufus asks after writing its MBR, then installs Syslinux
++         * through the volume's letter) */
++        if (arctic_table_crc( disk ) != disk->table_crc) arctic_rescan( disk );
++        *status = STATUS_SUCCESS;
++        return TRUE;
++
++    case FSCTL_ALLOW_EXTENDED_DASD_IO:
++    case FSCTL_IS_VOLUME_MOUNTED:
++        *status = STATUS_SUCCESS;
++        return TRUE;
++
++    case FSCTL_LOCK_VOLUME:
++    case FSCTL_DISMOUNT_VOLUME:
++    {
++        ULONG_PTR *flags = (ULONG_PTR *)&irpsp->FileObject->FsContext;
++
++        if (is_volume)
++        {
++            /* As Windows: a lock is refused while files are open on the
++             * volume; a dismount takes the file system away regardless */
++            arctic_set_hold( dev->volume->udi, TRUE );
++            *status = arctic_command( code == FSCTL_LOCK_VOLUME ? "lock" : "dismount", dev->volume->udi );
++            if (*status == STATUS_DEVICE_BUSY) *status = STATUS_ACCESS_DENIED;
++            if (*status) arctic_set_hold( dev->volume->udi, FALSE );
++            else *flags |= ARCTIC_HANDLE_HOLDS;
++        }
++        else *status = STATUS_SUCCESS;
++        return TRUE;
++    }
++    case FSCTL_UNLOCK_VOLUME:
++    {
++        ULONG_PTR *flags = (ULONG_PTR *)&irpsp->FileObject->FsContext;
++
++        if (is_volume && (*flags & ARCTIC_HANDLE_HOLDS))
++        {
++            *flags &= ~ARCTIC_HANDLE_HOLDS;
++            arctic_set_hold( dev->volume->udi, FALSE );
++            arctic_command_later( "mount", dev->volume->udi, 1 );
++        }
++        *status = STATUS_SUCCESS;
++        return TRUE;
++    }
++    }
++    return FALSE;
++}
++
++/* who opens a USB disk to write it may change its table with no request at all */
++static void arctic_open( struct disk_device *dev, IRP *irp )
++{
++    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
++
++    if (dev->arctic && irpsp->Parameters.Create.SecurityContext &&
++        (irpsp->Parameters.Create.SecurityContext->DesiredAccess & (FILE_WRITE_DATA | GENERIC_WRITE)))
++        irpsp->FileObject->FsContext = (void *)(ULONG_PTR)ARCTIC_HANDLE_WRITER;
++}
++
++/* the handle that locked a volume is gone: the file system comes back */
++static void arctic_close( struct disk_device *dev, IRP *irp )
++{
++    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
++
++    if (dev->arctic && ((ULONG_PTR)irpsp->FileObject->FsContext & ARCTIC_HANDLE_WRITER))
++    {
++        DWORD crc = arctic_table_crc( dev->arctic );
++
++        if (crc != dev->arctic->table_crc)
++        {
++            dev->arctic->table_crc = crc;
++            arctic_command_later( "rescan", dev->arctic->rec.name, 30 );
++        }
++        return;
++    }
++    if (!((ULONG_PTR)irpsp->FileObject->FsContext & ARCTIC_HANDLE_HOLDS) || !dev->volume || !dev->volume->udi) return;
++    arctic_set_hold( dev->volume->udi, FALSE );
++    arctic_command_later( "mount", dev->volume->udi, 1 );
++}
++
++/* a volume of a USB disk: reads and writes go to its partition, and it has
++ * the name Windows gives a partition */
++static void arctic_setup_volume( struct volume *volume )
++{
++    struct disk_device *dev = volume->device;
++    struct arctic_volume_info info;
++    WCHAR link[64];
++
++    if (!get_arctic_info( dev, &info ) || !info.managed) return;
++    if (!dev->raw)
++    {
++        dev->raw = TRUE;
++        wine_IoSetDeviceUnixPath( dev->dev_obj, dev->unix_device );
++    }
++    if (dev->dos_part.Buffer || !info.partnum) return;
++    swprintf( link, ARRAY_SIZE(link), L"\\??\\Harddisk%uPartition%u", info.disk_number, info.partnum );
++    if (RtlCreateUnicodeString( &dev->dos_part, link ) && IoCreateSymbolicLink( &dev->dos_part, &dev->name ))
++        RtlFreeUnicodeString( &dev->dos_part );
++}
++
++static void id_part( WCHAR *out, const char *in, int size )
++{
++    int i;
++
++    for (i = 0; in[i] && i < size - 1; i++)
++        out[i] = (in[i] <= ' ' || in[i] == '\\' || in[i] == '/' || in[i] == ',' || in[i] == '#') ? '_' : (BYTE)in[i];
++    out[i] = 0;
++}
++
++static HKEY create_volatile_key( const WCHAR *path )
++{
++    const WCHAR *leaf = wcsrchr( path, '\\' );
++    WCHAR parent[512];
++    HKEY root, key = NULL;
++
++    lstrcpynW( parent, path, leaf - path + 1 );
++    if (RegCreateKeyExW( HKEY_LOCAL_MACHINE, parent, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &root, NULL )) return NULL;
++    RegCreateKeyExW( root, leaf + 1, 0, NULL, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, NULL, &key, NULL );
++    RegCloseKey( root );
++    return key;
++}
++
++static void set_string( HKEY key, const WCHAR *name, const WCHAR *value )
++{
++    RegSetValueExW( key, name, 0, REG_SZ, (const BYTE *)value, (lstrlenW( value ) + 1) * sizeof(WCHAR) );
++}
++
++/* what USBSTOR leaves in the registry for a disk: the setup API lists it from there */
++static void register_arctic_disk( struct arctic_disk *disk )
++{
++    WCHAR vendor[64], model[64], rev[16], serial[128], path[512], hardware[512], name[256], *p;
++    static const WCHAR compatible[] = L"USBSTOR\\Disk\0USBSTOR\\RAW\0GenDisk\0";
++    HKEY key, sub;
++
++    id_part( vendor, disk->rec.vendor, ARRAY_SIZE(vendor) );
++    id_part( model, disk->rec.model, ARRAY_SIZE(model) );
++    id_part( rev, disk->rec.rev, ARRAY_SIZE(rev) );
++    id_part( serial, disk->rec.serial[0] ? disk->rec.serial : disk->rec.name, ARRAY_SIZE(serial) );
++    swprintf( disk->instance, ARRAY_SIZE(disk->instance), L"USBSTOR\\Disk&Ven_%s&Prod_%s&Rev_%s\\%s&0", vendor, model, rev, serial );
++
++    swprintf( path, ARRAY_SIZE(path), ENUM_KEY L"%s", disk->instance );
++    if ((key = create_volatile_key( path )))
++    {
++        DWORD capabilities = disk->rec.removable ? 0x14 : 0x10, config = 0;
++        int len;
++
++        swprintf( name, ARRAY_SIZE(name), L"%S %S USB Device", disk->rec.vendor, disk->rec.model );
++        set_string( key, L"FriendlyName", name );
++        set_string( key, L"DeviceDesc", L"Disk drive" );
++        set_string( key, L"Mfg", L"(Standard disk drives)" );
++        set_string( key, L"Class", L"DiskDrive" );
++        set_string( key, L"ClassGUID", L"{4d36e967-e325-11ce-bfc1-08002be10318}" );
++        set_string( key, L"Service", L"disk" );
++        RegSetValueExW( key, L"Capabilities", 0, REG_DWORD, (const BYTE *)&capabilities, sizeof(capabilities) );
++        RegSetValueExW( key, L"ConfigFlags", 0, REG_DWORD, (const BYTE *)&config, sizeof(config) );
++        len = swprintf( hardware, ARRAY_SIZE(hardware), L"USBSTOR\\Disk%s%s%s", vendor, model, rev ) + 1;
++        len += swprintf( hardware + len, ARRAY_SIZE(hardware) - len, L"USBSTOR\\Disk%s%s", vendor, model ) + 1;
++        len += swprintf( hardware + len, ARRAY_SIZE(hardware) - len, L"USBSTOR\\Disk%s", vendor ) + 1;
++        len += swprintf( hardware + len, ARRAY_SIZE(hardware) - len, L"GenDisk" ) + 1;
++        hardware[len++] = 0;
++        RegSetValueExW( key, L"HardwareID", 0, REG_MULTI_SZ, (const BYTE *)hardware, len * sizeof(WCHAR) );
++        RegSetValueExW( key, L"CompatibleIDs", 0, REG_MULTI_SZ, (const BYTE *)compatible, sizeof(compatible) );
++        RegCloseKey( key );
++    }
++
++    /* the interface: ##?#USBSTOR#Disk&...#{guid}\#\Control */
++    swprintf( name, ARRAY_SIZE(name), L"%s", disk->instance );
++    for (p = name; *p; p++) if (*p == '\\') *p = '#';
++    swprintf( disk->iface_key, ARRAY_SIZE(disk->iface_key), CLASSES_KEY L"##?#%s#" DISK_INTERFACE_GUID, name );
++    if ((key = create_volatile_key( disk->iface_key )))
++    {
++        WCHAR link[320];
++
++        set_string( key, L"DeviceInstance", disk->instance );
++        swprintf( link, ARRAY_SIZE(link), L"\\\\?\\%s#" DISK_INTERFACE_GUID, name );
++        if (!RegCreateKeyExW( key, L"#", 0, NULL, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, NULL, &sub, NULL ))
++        {
++            HKEY control;
++            DWORD linked = 1;
++
++            set_string( sub, L"SymbolicLink", link );
++            if (!RegCreateKeyExW( sub, L"Control", 0, NULL, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, NULL, &control, NULL ))
++            {
++                RegSetValueExW( control, L"Linked", 0, REG_DWORD, (const BYTE *)&linked, sizeof(linked) );
++                RegCloseKey( control );
++            }
++            RegCloseKey( sub );
++        }
++        RegCloseKey( key );
++
++        swprintf( link, ARRAY_SIZE(link), L"\\??\\%s#" DISK_INTERFACE_GUID, name );
++        if (RtlCreateUnicodeString( &disk->iface, link ) && IoCreateSymbolicLink( &disk->iface, &disk->device->name ))
++            RtlFreeUnicodeString( &disk->iface );
++    }
++}
++
++static void unregister_arctic_disk( struct arctic_disk *disk )
++{
++    WCHAR path[512];
++
++    if (disk->iface.Buffer)
++    {
++        IoDeleteSymbolicLink( &disk->iface );
++        RtlFreeUnicodeString( &disk->iface );
++    }
++    RegDeleteTreeW( HKEY_LOCAL_MACHINE, disk->iface_key );
++    swprintf( path, ARRAY_SIZE(path), ENUM_KEY L"%s", disk->instance );
++    RegDeleteTreeW( HKEY_LOCAL_MACHINE, path );
++}
++
++void arctic_add_disk( const char *name )
++{
++    struct arctic_disk_record rec;
++    struct arctic_disk_record_params params = { name, &rec };
++    struct arctic_disk *disk;
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING dir_name, dev_name;
++    DEVICE_OBJECT *dev_obj;
++    struct disk_device *dev;
++    WCHAR path[64];
++
++    if (MOUNTMGR_CALL( arctic_disk_record, &params )) return;
++
++    EnterCriticalSection( &device_section );
++    if ((disk = find_arctic_disk( name )))
++    {
++        disk->rec = rec; /* a medium changed its size */
++        goto done;
++    }
++    if (!(disk = calloc( 1, sizeof(*disk) ))) goto done;
++    disk->rec = rec;
++
++    swprintf( path, ARRAY_SIZE(path), L"\\Device\\Harddisk%u", rec.number );
++    RtlInitUnicodeString( &dir_name, path );
++    InitializeObjectAttributes( &attr, &dir_name, OBJ_CASE_INSENSITIVE | OBJ_OPENIF, 0, NULL );
++    if (NtCreateDirectoryObject( &disk->dir, DIRECTORY_ALL_ACCESS, &attr ))
++    {
++        WARN( "no directory %s\n", debugstr_w(path) );
++        free( disk );
++        goto done;
++    }
++
++    swprintf( path, ARRAY_SIZE(path), L"\\Device\\Harddisk%u\\DR0", rec.number );
++    if (!RtlCreateUnicodeString( &dev_name, path ) ||
++        IoCreateDevice( disk_driver, sizeof(*dev), &dev_name, FILE_DEVICE_DISK,
++                        FILE_DEVICE_IS_MOUNTED | (rec.removable ? FILE_REMOVABLE_MEDIA : 0), FALSE, &dev_obj ))
++    {
++        WARN( "no device %s\n", debugstr_w(path) );
++        NtClose( disk->dir );
++        free( disk );
++        goto done;
++    }
++
++    dev = dev_obj->DeviceExtension;
++    memset( dev, 0, sizeof(*dev) );
++    dev->dev_obj = dev_obj;
++    dev->name = dev_name;
++    dev->type = DEVICE_HARDDISK;
++    dev->arctic = disk;
++    dev->raw = TRUE;
++    dev->devnum.DeviceType = FILE_DEVICE_DISK;
++    dev->devnum.DeviceNumber = rec.number;
++    disk->device = dev;
++    {
++        char unix_path[64];
++
++        snprintf( unix_path, sizeof(unix_path), "/dev/%s", name );
++        dev->unix_device = strdup( unix_path );
++        wine_IoSetDeviceUnixPath( dev_obj, unix_path );
++    }
++
++    swprintf( path, ARRAY_SIZE(path), L"\\??\\PhysicalDrive%u", rec.number );
++    if (RtlCreateUnicodeString( &dev->symlink, path ) && IoCreateSymbolicLink( &dev->symlink, &dev->name ))
++        RtlFreeUnicodeString( &dev->symlink );
++    swprintf( path, ARRAY_SIZE(path), L"\\Device\\Harddisk%u\\Partition0", rec.number );
++    if (RtlCreateUnicodeString( &disk->part0, path ) && IoCreateSymbolicLink( &disk->part0, &dev->name ))
++        RtlFreeUnicodeString( &disk->part0 );
++
++    register_arctic_disk( disk );
++    disk->table_crc = arctic_table_crc( disk );
++    list_add_tail( &arctic_disks, &disk->entry );
++    TRACE( "%s is disk %u\n", debugstr_a(name), rec.number );
++
++done:
++    LeaveCriticalSection( &device_section );
++}
++
++void arctic_remove_disk( const char *name )
++{
++    struct arctic_disk *disk;
++
++    EnterCriticalSection( &device_section );
++    if ((disk = find_arctic_disk( name )))
++    {
++        list_remove( &disk->entry );
++        unregister_arctic_disk( disk );
++        if (disk->part0.Buffer)
++        {
++            IoDeleteSymbolicLink( &disk->part0 );
++            RtlFreeUnicodeString( &disk->part0 );
++        }
++        disk->device->arctic = NULL;
++        delete_disk_device( disk->device );
++        NtClose( disk->dir );
++        free( disk );
++    }
++    LeaveCriticalSection( &device_section );
++}
++
++static struct volume *find_volume_by_device_name( const WCHAR *name, USHORT len )
++{
++    WCHAR guid_link[64];
++    struct volume *volume;
++
++    LIST_FOR_EACH_ENTRY( volume, &volumes_list, struct volume, entry )
++    {
++        const GUID *guid = &volume->guid;
++
++        if (volume->device->name.Length == len && !wcsnicmp( name, volume->device->name.Buffer, len / sizeof(WCHAR) ))
++            return volume;
++        swprintf( guid_link, ARRAY_SIZE(guid_link), L"\\??\\Volume{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
++                  guid->Data1, guid->Data2, guid->Data3, guid->Data4[0], guid->Data4[1], guid->Data4[2], guid->Data4[3],
++                  guid->Data4[4], guid->Data4[5], guid->Data4[6], guid->Data4[7] );
++        if (lstrlenW( guid_link ) * sizeof(WCHAR) == len && !wcsnicmp( name, guid_link, len / sizeof(WCHAR) ))
++            return volume;
++    }
++    return NULL;
++}
++
++static int letter_of_link( const WCHAR *link, USHORT len )
++{
++    static const WCHAR prefix[] = L"\\DosDevices\\";
++    int n = ARRAY_SIZE(prefix) - 1;
++    WCHAR c;
++
++    if (len != (n + 2) * sizeof(WCHAR) || wcsnicmp( link, prefix, n ) || link[n + 1] != ':') return -1;
++    c = towupper( link[n] );
++    return c >= 'A' && c <= 'Z' ? c - 'A' : -1;
++}
++
++/* SetVolumeMountPoint: a drive letter for a volume of a USB disk */
++NTSTATUS create_mount_point( void *buff, SIZE_T size )
++{
++    const MOUNTMGR_CREATE_POINT_INPUT *input = buff;
++    struct arctic_volume_info info;
++    struct volume *volume;
++    char udi[64];
++    int letter;
++
++    if (size < sizeof(*input) || input->SymbolicLinkNameOffset + input->SymbolicLinkNameLength > size ||
++        input->DeviceNameOffset + input->DeviceNameLength > size)
++        return STATUS_INVALID_PARAMETER;
++    if ((letter = letter_of_link( (const WCHAR *)((const char *)buff + input->SymbolicLinkNameOffset ),
++                                  input->SymbolicLinkNameLength )) < 0)
++        return STATUS_NOT_SUPPORTED;
++
++    EnterCriticalSection( &device_section );
++    volume = find_volume_by_device_name( (const WCHAR *)((const char *)buff + input->DeviceNameOffset),
++                                         input->DeviceNameLength );
++    if (!volume || !volume->udi || !get_arctic_info( volume->device, &info ) || !info.managed)
++    {
++        LeaveCriticalSection( &device_section );
++        return volume ? STATUS_ACCESS_DENIED : STATUS_OBJECT_NAME_NOT_FOUND;
++    }
++    lstrcpynA( udi, volume->udi, sizeof(udi) );
++    LeaveCriticalSection( &device_section );
++
++    /* no one has mounted it since it was formatted */
++    if (!info.mount[0])
++    {
++        arctic_command( "mount", udi );
++        get_arctic_info( volume->device, &info );
++    }
++
++    EnterCriticalSection( &device_section );
++    {
++        struct dos_drive *drive;
++
++        LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
++            if (drive->drive == letter)
++            {
++                BOOL same = drive->volume == volume;
++
++                LeaveCriticalSection( &device_section );
++                /* Windows says the folder of the letter is not empty */
++                return same ? STATUS_SUCCESS : STATUS_DIRECTORY_NOT_EMPTY;
++            }
++    }
++    LeaveCriticalSection( &device_section );
++
++    return add_dos_device( letter, udi, volume->device->unix_device, info.mount[0] ? info.mount : NULL,
++                           volume->device->type, &volume->guid, NULL, NULL );
++}
++
++/* DeleteVolumeMountPoint: the letter goes, the volume stays */
++NTSTATUS delete_mount_points( void *buff, SIZE_T insize, SIZE_T outsize, IO_STATUS_BLOCK *iosb )
++{
++    const MOUNTMGR_MOUNT_POINT *input = buff;
++    MOUNTMGR_MOUNT_POINTS *output = buff;
++    struct dos_drive *drive;
++    struct arctic_volume_info info;
++    BOOL managed = FALSE, found = FALSE;
++    int letter;
++
++    if (insize < sizeof(*input) || !input->SymbolicLinkNameOffset ||
++        input->SymbolicLinkNameOffset + input->SymbolicLinkNameLength > insize)
++        return STATUS_INVALID_PARAMETER;
++    letter = letter_of_link( (const WCHAR *)((const char *)buff + input->SymbolicLinkNameOffset ),
++                             input->SymbolicLinkNameLength );
++    if (letter < 0) return STATUS_NOT_SUPPORTED;
++
++    EnterCriticalSection( &device_section );
++    LIST_FOR_EACH_ENTRY( drive, &drives_list, struct dos_drive, entry )
++        if (drive->drive == letter)
++        {
++            found = TRUE;
++            managed = get_arctic_info( drive->volume->device, &info ) && info.managed;
++            break;
++        }
++    LeaveCriticalSection( &device_section );
++    if (!found) return STATUS_OBJECT_NAME_NOT_FOUND;
++    /* the letters of the system's own disks are not a program's to take */
++    if (!managed) return STATUS_ACCESS_DENIED;
++    remove_dos_device( letter, NULL );
++    if (outsize >= sizeof(*output))
++    {
++        memset( output, 0, sizeof(*output) );
++        output->Size = sizeof(*output);
++        iosb->Information = sizeof(*output);
++    }
++    return STATUS_SUCCESS;
++}
++
+ static NTSTATUS WINAPI disk_ioctl( DEVICE_OBJECT *device, IRP *irp )
+ {
+     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
+@@ -2106,8 +3296,22 @@
+ 
+     EnterCriticalSection( &device_section );
+ 
++    if (arctic_ioctl( dev, irp, &status ))
++    {
++        irp->IoStatus.Status = status;
++        LeaveCriticalSection( &device_section );
++        IoCompleteRequest( irp, IO_NO_INCREMENT );
++        return status;
++    }
++
+     switch(irpsp->Parameters.DeviceIoControl.IoControlCode)
+     {
++    case FSCTL_LOCK_VOLUME:
++    case FSCTL_UNLOCK_VOLUME:
++    case FSCTL_DISMOUNT_VOLUME:
++    case FSCTL_IS_VOLUME_MOUNTED:
++        status = STATUS_SUCCESS;
++        break;
+     case IOCTL_DISK_GET_DRIVE_GEOMETRY:
+     {
+         DISK_GEOMETRY info;
+@@ -2312,7 +3516,10 @@
+             stack->FileObject->FsContext = params.cdrom;
+     }
+     else
++    {
++        arctic_open( dev, irp );
+         status = STATUS_SUCCESS;
++    }
+ 
+     irp->IoStatus.Status = status;
+     IoCompleteRequest( irp, IO_NO_INCREMENT );
+@@ -2325,6 +3532,10 @@
+     struct disk_device *dev = device->DeviceExtension;
+     NTSTATUS status;
+ 
++    EnterCriticalSection( &device_section );
++    if (dev->type != DEVICE_CDROM && dev->type != DEVICE_DVD) arctic_close( dev, irp );
++    LeaveCriticalSection( &device_section );
++
+     if (dev->type == DEVICE_CDROM || dev->type == DEVICE_DVD)
+         status = MOUNTMGR_CALL( cdrom_close, stack->FileObject->FsContext );
+     else
+@@ -2347,7 +3558,7 @@
+     driver->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION] = disk_query_volume;
+ 
+     /* create a harddisk0 device that isn't assigned to any drive */
+-    create_disk_device( DEVICE_HARDDISK, &device, NULL );
++    create_disk_device( DEVICE_HARDDISK, &device, NULL, NULL );
+ 
+     create_drive_devices();
+ 
+--- a/dlls/mountmgr.sys/mountmgr.c	2026-11-09 09:56:46.812221500 +0100
++++ b/dlls/mountmgr.sys/mountmgr.c	2026-11-09 12:33:53.965992000 +0100
+@@ -402,15 +402,27 @@
+                         info.type, info.guid, info.label, info.scsi_info );
+         break;
+     case ADD_VOLUME:
+-        add_volume( info.udi, info.device, info.mount_point, DEVICE_HARDDISK_VOL,
++        add_volume( info.udi, info.device, info.mount_point,
++                    info.type == DEVICE_HARDDISK ? DEVICE_HARDDISK : DEVICE_HARDDISK_VOL,
+                     info.guid, info.serial, info.label, info.scsi_info );
+         break;
+     case REMOVE_DEVICE:
+-        if (!remove_dos_device( -1, info.udi )) remove_volume( info.udi );
++        /* a volume with no letter has only the second to go through */
++        remove_dos_device( -1, info.udi );
++        remove_volume( info.udi );
++        break;
++    case ADD_DISK:
++        arctic_add_disk( info.udi );
++        break;
++    case REMOVE_DISK:
++        arctic_remove_disk( info.udi );
+         break;
+     }
+ }
+ 
++#define IOCTL_MOUNTMGR_QUERY_AUTO_MOUNT CTL_CODE(MOUNTMGRCONTROLTYPE, 15, METHOD_BUFFERED, FILE_ANY_ACCESS)
++#define IOCTL_MOUNTMGR_SET_AUTO_MOUNT   CTL_CODE(MOUNTMGRCONTROLTYPE, 16, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
++
+ /* handler for ioctls on the mount manager device */
+ static NTSTATUS WINAPI mountmgr_ioctl( DEVICE_OBJECT *device, IRP *irp )
+ {
+@@ -425,6 +437,29 @@
+ 
+     switch(irpsp->Parameters.DeviceIoControl.IoControlCode)
+     {
++    case IOCTL_MOUNTMGR_CREATE_POINT:
++        status = create_mount_point( irp->AssociatedIrp.SystemBuffer,
++                                     irpsp->Parameters.DeviceIoControl.InputBufferLength );
++        break;
++    case IOCTL_MOUNTMGR_DELETE_POINTS:
++        status = delete_mount_points( irp->AssociatedIrp.SystemBuffer,
++                                      irpsp->Parameters.DeviceIoControl.InputBufferLength,
++                                      irpsp->Parameters.DeviceIoControl.OutputBufferLength,
++                                      &irp->IoStatus );
++        break;
++    case IOCTL_MOUNTMGR_QUERY_AUTO_MOUNT:
++        if (irpsp->Parameters.DeviceIoControl.OutputBufferLength < sizeof(DWORD))
++            status = STATUS_BUFFER_TOO_SMALL;
++        else
++        {
++            *(DWORD *)irp->AssociatedIrp.SystemBuffer = 1;
++            irp->IoStatus.Information = sizeof(DWORD);
++            status = STATUS_SUCCESS;
++        }
++        break;
++    case IOCTL_MOUNTMGR_SET_AUTO_MOUNT:
++        status = STATUS_SUCCESS;
++        break;
+     case IOCTL_MOUNTMGR_QUERY_POINTS:
+         status = query_mount_points( irp->AssociatedIrp.SystemBuffer,
+                                      irpsp->Parameters.DeviceIoControl.InputBufferLength,
+--- a/dlls/mountmgr.sys/mountmgr.h	2026-11-09 09:56:46.816221500 +0100
++++ b/dlls/mountmgr.sys/mountmgr.h	2026-11-09 12:33:53.964992000 +0100
+@@ -107,6 +107,10 @@
+ extern struct mount_point *add_volume_mount_point( DEVICE_OBJECT *device, UNICODE_STRING *device_name,
+                                                    const GUID *guid );
+ extern void delete_mount_point( struct mount_point *mount );
++extern void arctic_add_disk( const char *name );
++extern void arctic_remove_disk( const char *name );
++extern NTSTATUS create_mount_point( void *buff, SIZE_T size );
++extern NTSTATUS delete_mount_points( void *buff, SIZE_T insize, SIZE_T outsize, IO_STATUS_BLOCK *iosb );
+ extern void set_mount_point_id( struct mount_point *mount, const void *id, unsigned int id_len );
+ 
+ #endif /* __WINE_MOUNTMGR_H */
+--- a/dlls/mountmgr.sys/unixlib.c	2026-11-09 09:56:46.821221500 +0100
++++ b/dlls/mountmgr.sys/unixlib.c	2026-11-09 12:33:53.961992000 +0100
+@@ -29,6 +29,8 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <limits.h>
++#include <string.h>
+ #include <sys/stat.h>
+ #ifdef HAVE_SYS_STATFS_H
+ #include <sys/statfs.h>
+@@ -316,8 +318,24 @@
+ 
+     if (params->dest && params->dest[0])
+     {
+-        unlink( path );
+-        if (symlink( params->dest, path ) == -1) status = STATUS_ACCESS_DENIED;
++        char target[PATH_MAX], *tmp;
++        ssize_t len = readlink( path, target, sizeof(target) - 1 );
++
++        /* a letter that is already there stays, and one that changes is
++         * never missing for a moment: programs are using it */
++        if (len >= 0 && (target[len] = 0, !strcmp( target, params->dest ))) status = STATUS_SUCCESS;
++        else if (!(tmp = malloc( strlen( path ) + 8 ))) status = STATUS_NO_MEMORY;
++        else
++        {
++            sprintf( tmp, "%s.new", path );
++            unlink( tmp );
++            if (symlink( params->dest, tmp ) == -1 || rename( tmp, path ) == -1)
++            {
++                unlink( tmp );
++                status = STATUS_ACCESS_DENIED;
++            }
++            free( tmp );
++        }
+     }
+     else unlink( path );
+ 
+@@ -649,6 +667,10 @@
+     arctic_volume_info,
+     arctic_eject,
+     arctic_disk_info,
++    arctic_disk_record,
++    arctic_disk_io,
++    arctic_disk_command,
++    arctic_hold,
+ };
+ 
+ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+--- a/dlls/mountmgr.sys/unixlib.h	2026-11-09 09:56:46.824221500 +0100
++++ b/dlls/mountmgr.sys/unixlib.h	2026-11-09 12:33:53.959992000 +0100
+@@ -25,7 +25,9 @@
+ {
+     ADD_DOS_DEVICE,
+     ADD_VOLUME,
+-    REMOVE_DEVICE
++    REMOVE_DEVICE,
++    ADD_DISK,
++    REMOVE_DISK
+ };
+ 
+ struct device_info
+@@ -66,6 +68,52 @@
+     ULONG disk_number;   /* the same for every volume of the disk; C: is on 0 */
+     BOOL  usb;           /* on a USB device */
+     BOOL  removable;     /* the medium is removable (a USB stick, a card) */
++    BOOL  managed;       /* a USB disk programs may write to (docs/disks.md) */
++    ULONGLONG offset;    /* where the partition lies on the disk, in bytes */
++    ULONGLONG length;
++    ULONG partnum;
++    char  mount[256];    /* empty: no file system mounted */
++};
++
++/* a USB disk programs may write to, as arctic-volume describes it */
++struct arctic_disk_record
++{
++    char  name[32];
++    char  vendor[64];
++    char  model[64];
++    char  rev[16];
++    char  serial[128];
++    ULONG number;        /* its PhysicalDrive number */
++    ULONG sector;        /* bytes */
++    ULONGLONG sectors;
++    BOOL  removable;
++};
++
++struct arctic_disk_record_params
++{
++    const char *name;
++    struct arctic_disk_record *record;
++};
++
++struct arctic_disk_io_params
++{
++    const char *name;
++    ULONGLONG offset;
++    void *buffer;
++    ULONG size;
++    BOOL write;
++};
++
++struct arctic_disk_command_params
++{
++    const char *command;   /* rescan, dismount or mount, as arctic-disk knows them */
++    const char *name;
++};
++
++struct arctic_hold_params
++{
++    const char *name;
++    BOOL hold;
+ };
+ 
+ struct arctic_volume_info_params
+@@ -242,6 +290,10 @@
+     unix_arctic_volume_info,
+     unix_arctic_eject,
+     unix_arctic_disk_info,
++    unix_arctic_disk_record,
++    unix_arctic_disk_io,
++    unix_arctic_disk_command,
++    unix_arctic_hold,
+     unix_funcs_count
+ };
+ 
+@@ -252,6 +304,10 @@
+ extern NTSTATUS arctic_volume_info( void *args );
+ extern NTSTATUS arctic_eject( void *args );
+ extern NTSTATUS arctic_disk_info( void *args );
++extern NTSTATUS arctic_disk_record( void *args );
++extern NTSTATUS arctic_disk_io( void *args );
++extern NTSTATUS arctic_disk_command( void *args );
++extern NTSTATUS arctic_hold( void *args );
+ extern void queue_device_op( enum device_op op, const char *udi, const char *device,
+                              const char *mount_point, enum device_type type, const GUID *guid,
+                              const char *disk_serial, const char *label,
+--- a/dlls/ntdll/loader.c	2026-11-09 10:20:22.877337300 +0100
++++ b/dlls/ntdll/loader.c	2026-11-09 12:33:53.954992000 +0100
+@@ -4259,6 +4259,22 @@
+     NtClose( linked.LinkedToken );
+ }
+ 
++/* Arctic: the elevation a manifest asks for is the user's to give */
++static void ask_consent(void)
++{
++    UNICODE_STRING *image = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
++    TOKEN_ELEVATION_TYPE type;
++    char path[3 * MAX_PATH];
++    DWORD len = 0;
++
++    if (NtQueryInformationToken( GetCurrentThreadEffectiveToken(), TokenElevationType, &type, sizeof(type), NULL ) ||
++        type != TokenElevationTypeLimited)
++        return;
++    if (RtlUnicodeToUTF8N( path, sizeof(path) - 1, &len, image->Buffer, image->Length )) return;
++    path[len] = 0;
++    if (WINE_UNIX_CALL( unix_arctic_consent, path )) NtTerminateProcess( GetCurrentProcess(), ERROR_CANCELLED );
++}
++
+ static void open_known_dll_ntdir(void)
+ {
+     UNICODE_STRING dir = RTL_CONSTANT_STRING( L"\\KnownDlls" );
+@@ -4515,7 +4531,10 @@
+ 
+         locale_init();
+         if (needs_elevation())
++        {
++            ask_consent();
+             elevate_token();
++        }
+         get_env_var( L"WINESYSTEMDLLPATH", 0, &system_dll_path );
+         if (wm->ldr.Flags & LDR_COR_ILONLY)
+             status = fixup_imports_ilonly( wm, NULL, entry );
+--- a/dlls/ntdll/unix/file.c	2026-11-09 09:56:46.851221600 +0100
++++ b/dlls/ntdll/unix/file.c	2026-11-09 12:33:53.949992000 +0100
+@@ -6117,6 +6117,9 @@
+     if (status == STATUS_BAD_DEVICE_TYPE)
+         return server_read_file( handle, event, apc, apc_user, io, buffer, length, offset, key );
+ 
++    /* a disk whose driver answers requests, while its data goes straight to the fd */
++    if (type == FD_TYPE_DEVICE) type = FD_TYPE_FILE;
++
+     async_read = !(options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT));
+ 
+     if (type == FD_TYPE_FILE)
+@@ -6313,6 +6316,9 @@
+     status = server_get_unix_fd( file, FILE_READ_DATA, &unix_handle, &needs_close, &type, &options );
+     if (status) return status;
+ 
++    /* a disk whose driver answers requests, while its data goes straight to the fd */
++    if (type == FD_TYPE_DEVICE) type = FD_TYPE_FILE;
++
+     if ((type != FD_TYPE_FILE) ||
+         (options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)) ||
+         !(options & FILE_NO_INTERMEDIATE_BUFFERING))
+@@ -6409,6 +6415,9 @@
+     if (status == STATUS_BAD_DEVICE_TYPE)
+         return server_write_file( handle, event, apc, apc_user, io, buffer, length, offset, key );
+ 
++    /* a disk whose driver answers requests, while its data goes straight to the fd */
++    if (type == FD_TYPE_DEVICE) type = FD_TYPE_FILE;
++
+     if (type == FD_TYPE_FILE)
+     {
+         if (async_write &&
+@@ -6614,6 +6623,9 @@
+     status = server_get_unix_fd( file, FILE_WRITE_DATA, &unix_handle, &needs_close, &type, &options );
+     if (status) return status;
+ 
++    /* a disk whose driver answers requests, while its data goes straight to the fd */
++    if (type == FD_TYPE_DEVICE) type = FD_TYPE_FILE;
++
+     if ((type != FD_TYPE_FILE) ||
+         (options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)) ||
+         !(options & FILE_NO_INTERMEDIATE_BUFFERING))
+@@ -6690,6 +6702,20 @@
+     if (HandleToLong( handle ) == ~0)
+         return STATUS_INVALID_HANDLE;
+ 
++    /* a disk whose driver answers requests: it has an fd, but only for its data */
++    {
++        enum server_fd_type type;
++        int fd, needs_close;
++
++        if (!server_get_unix_fd( handle, 0, &fd, &needs_close, &type, NULL ))
++        {
++            if (needs_close) close( fd );
++            if (type == FD_TYPE_DEVICE)
++                return server_ioctl_file( handle, event, apc, apc_context, io, code,
++                                          in_buffer, in_size, out_buffer, out_size );
++        }
++    }
++
+     switch (device)
+     {
+     case FILE_DEVICE_BEEP:
+@@ -6764,6 +6790,7 @@
+                                  IO_STATUS_BLOCK *io, ULONG code, void *in_buffer, ULONG in_size,
+                                  void *out_buffer, ULONG out_size )
+ {
++    enum server_fd_type type = FD_TYPE_INVALID;
+     unsigned int options;
+     int fd, needs_close;
+     ULONG_PTR size = 0;
+@@ -6775,11 +6802,25 @@
+ 
+     if (!io) return STATUS_INVALID_PARAMETER;
+ 
+-    status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, &options );
++    status = server_get_unix_fd( handle, 0, &fd, &needs_close, &type, &options );
+     if (status && status != STATUS_BAD_DEVICE_TYPE)
+         return status;
+     if (needs_close) close( fd );
+ 
++    /* a volume is locked and dismounted by the driver it belongs to */
++    if (status == STATUS_BAD_DEVICE_TYPE || type == FD_TYPE_DEVICE)
++    {
++        switch (code)
++        {
++        case FSCTL_DISMOUNT_VOLUME:
++        case FSCTL_IS_VOLUME_MOUNTED:
++        case FSCTL_LOCK_VOLUME:
++        case FSCTL_UNLOCK_VOLUME:
++            return server_ioctl_file( handle, event, apc, apc_context, io, code,
++                                      in_buffer, in_size, out_buffer, out_size );
++        }
++    }
++
+     ignore_server_ioctl_struct_holes( code, in_buffer, in_size );
+ 
+     switch (code)
+@@ -6891,7 +6932,14 @@
+     if (ret == STATUS_ACCESS_DENIED)
+         ret = server_get_unix_fd( handle, FILE_APPEND_DATA, &fd, &needs_close, &type, NULL );
+ 
+-    if (!ret && (type == FD_TYPE_FILE || type == FD_TYPE_DIR || type == FD_TYPE_CHAR))
++    if (!ret && type == FD_TYPE_DEVICE)
++    {
++        /* a disk: what its driver cached is on it, slow stick or not */
++        if (fsync(fd)) ret = errno_to_status( errno );
++        io->Status      = ret;
++        io->Information = 0;
++    }
++    else if (!ret && (type == FD_TYPE_FILE || type == FD_TYPE_DIR || type == FD_TYPE_CHAR))
+     {
+         /* Arctic: on a slow stick (WINE_LAZY_FLUSH) a flush does not wait for
+          * the medium, as with Windows' "Turn off Windows write-cache buffer
+@@ -7443,10 +7491,17 @@
+                                               void *buffer, ULONG length,
+                                               FS_INFORMATION_CLASS info_class )
+ {
++    enum server_fd_type type = FD_TYPE_INVALID;
+     int fd, needs_close;
+     unsigned int status;
+ 
+-    status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, NULL );
++    status = server_get_unix_fd( handle, 0, &fd, &needs_close, &type, NULL );
++    /* a volume with an fd for its data still has its driver to answer this */
++    if (!status && type == FD_TYPE_DEVICE)
++    {
++        if (needs_close) close( fd );
++        status = STATUS_BAD_DEVICE_TYPE;
++    }
+     if (status == STATUS_BAD_DEVICE_TYPE)
+     {
+         struct async_irp *async;
+--- a/dlls/ntdll/unix/loader.c	2026-11-09 10:20:22.885337300 +0100
++++ b/dlls/ntdll/unix/loader.c	2026-11-09 12:33:53.952992000 +0100
+@@ -34,6 +34,9 @@
+ #include <string.h>
+ #include <stdlib.h>
+ #include <sys/types.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
+ #include <sys/stat.h>
+ #include <sys/mman.h>
+ #include <sys/wait.h>
+@@ -1005,6 +1008,66 @@
+ #endif /* SO_DLLS_SUPPORTED */
+ 
+ 
++/* Arctic: User Account Control. A program whose manifest needs the administrator
++ * asks the Application Information service before it goes on (docs/disks.md).
++ * args: the program's path in UTF-8 */
++static NTSTATUS arctic_consent( void *args )
++{
++    const char *program = args, *name = strrchr( program, '\\' );
++    char session[64] = "", token[64], *path, line[8192];
++    struct sockaddr_in addr;
++    unsigned int port;
++    int fd, i, len, sock = -1;
++    FILE *f;
++
++    if (!(path = malloc( strlen( config_dir ) + 64 ))) return STATUS_NO_MEMORY;
++    sprintf( path, "%s/dosdevices/c:/ProgramData/Arctic/Appinfo/session", config_dir );
++    f = fopen( path, "r" );
++    free( path );
++    if (!f) return STATUS_SUCCESS; /* no such service here: not an installed system */
++    fd = fgets( session, sizeof(session), f ) && sscanf( session, "%u %63s", &port, token ) == 2;
++    fclose( f );
++    if (!fd) return STATUS_ACCESS_DENIED;
++
++    memset( &addr, 0, sizeof(addr) );
++    addr.sin_family = AF_INET;
++    addr.sin_port = htons( port );
++    addr.sin_addr.s_addr = htonl( INADDR_LOOPBACK );
++    /* the service may still be starting */
++    for (i = 0; i < 40 && sock < 0; i++)
++    {
++        if ((sock = socket( AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0 )) < 0) return STATUS_ACCESS_DENIED;
++        if (connect( sock, (struct sockaddr *)&addr, sizeof(addr) ))
++        {
++            close( sock );
++            sock = -1;
++            usleep( 500000 );
++        }
++    }
++    if (sock < 0) return STATUS_ACCESS_DENIED;
++
++    len = snprintf( line, sizeof(line), "%s\nprompt\t0\t%s\t%s\tprogram\n", token, name ? name + 1 : program, program );
++    if (len >= sizeof(line) || write( sock, line, len ) != len)
++    {
++        close( sock );
++        return STATUS_ACCESS_DENIED;
++    }
++    for (i = 0; i < sizeof(line) - 1; i++)
++    {
++        if (read( sock, line + i, 1 ) != 1) break;
++        if (line[i] == '\n') break;
++    }
++    line[i] = 0;
++    if (strncmp( line, "yes", 3 ))
++    {
++        close( sock );
++        return STATUS_CANCELLED;
++    }
++    write( sock, "ok\n", 3 );
++    close( sock );
++    return STATUS_SUCCESS;
++}
++
+ static const unixlib_entry_t unix_call_funcs[] =
+ {
+     load_so_dll,
+@@ -1015,6 +1078,7 @@
+     unixcall_wine_server_handle_to_fd,
+     unixcall_wine_spawnvp,
+     system_time_precise,
++    arctic_consent,
+ };
+ 
+ 
+@@ -1033,6 +1097,7 @@
+     wow64_wine_server_handle_to_fd,
+     wow64_wine_spawnvp,
+     system_time_precise,
++    arctic_consent,
+ };
+ 
+ #endif  /* _WIN64 */
+--- a/dlls/ntdll/unixlib.h	2026-11-09 10:20:22.879337300 +0100
++++ b/dlls/ntdll/unixlib.h	2026-11-09 12:33:53.950992000 +0100
+@@ -76,6 +76,7 @@
+     unix_wine_server_handle_to_fd,
+     unix_wine_spawnvp,
+     unix_system_time_precise,
++    unix_arctic_consent,
+ };
+ 
+ extern unixlib_handle_t __wine_unixlib_handle;
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c	2026-11-09 09:56:46.857221600 +0100
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c	2026-11-09 12:33:53.942992000 +0100
+@@ -1657,6 +1657,27 @@
+ /***********************************************************************
+  *           IoCreateDevice   (NTOSKRNL.EXE.@)
+  */
++/***********************************************************************
++ *           wine_IoSetDeviceUnixPath  (NTOSKRNL.EXE.@)
++ *
++ * What is read from the device and written to it goes straight to this file;
++ * the driver goes on answering everything else.
++ */
++NTSTATUS CDECL wine_IoSetDeviceUnixPath( DEVICE_OBJECT *device, const char *path )
++{
++    NTSTATUS ret;
++
++    SERVER_START_REQ( set_device_unix_path )
++    {
++        req->manager  = wine_server_obj_handle( get_device_manager() );
++        req->user_ptr = wine_server_client_ptr( device );
++        wine_server_add_data( req, path, strlen( path ) );
++        ret = wine_server_call( req );
++    }
++    SERVER_END_REQ;
++    return ret;
++}
++
+ NTSTATUS WINAPI IoCreateDevice( DRIVER_OBJECT *driver, ULONG ext_size,
+                                 UNICODE_STRING *name, DEVICE_TYPE type,
+                                 ULONG characteristics, BOOLEAN exclusive,
+--- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec	2026-11-09 10:13:54.648305500 +0100
++++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec	2026-11-09 12:33:53.944992000 +0100
+@@ -1720,4 +1720,5 @@
+ # or 'wine_' (for user-visible functions) to avoid namespace conflicts.
+ 
+ @ cdecl wine_ntoskrnl_main_loop(long)
++@ cdecl wine_IoSetDeviceUnixPath(ptr str)
+ @ cdecl wine_enumerate_root_devices(wstr)
+--- a/include/winioctl.h	2026-11-09 09:56:46.876221600 +0100
++++ b/include/winioctl.h	2026-11-09 12:33:53.934992000 +0100
+@@ -567,6 +567,83 @@
+     PARTITION_INFORMATION PartitionEntry[1];
+ } DRIVE_LAYOUT_INFORMATION, *PDRIVE_LAYOUT_INFORMATION;
+ 
++typedef enum _PARTITION_STYLE {
++    PARTITION_STYLE_MBR,
++    PARTITION_STYLE_GPT,
++    PARTITION_STYLE_RAW
++} PARTITION_STYLE;
++
++typedef struct _PARTITION_INFORMATION_MBR {
++    BYTE                PartitionType;
++    BOOLEAN             BootIndicator;
++    BOOLEAN             RecognizedPartition;
++    DWORD               HiddenSectors;
++    GUID                PartitionId;
++} PARTITION_INFORMATION_MBR, *PPARTITION_INFORMATION_MBR;
++
++typedef struct _PARTITION_INFORMATION_GPT {
++    GUID                PartitionType;
++    GUID                PartitionId;
++    DWORD64             Attributes;
++    WCHAR               Name[36];
++} PARTITION_INFORMATION_GPT, *PPARTITION_INFORMATION_GPT;
++
++typedef struct _PARTITION_INFORMATION_EX {
++    PARTITION_STYLE     PartitionStyle;
++    LARGE_INTEGER       StartingOffset;
++    LARGE_INTEGER       PartitionLength;
++    DWORD               PartitionNumber;
++    BOOLEAN             RewritePartition;
++    BOOLEAN             IsServicePartition;
++    union {
++        PARTITION_INFORMATION_MBR Mbr;
++        PARTITION_INFORMATION_GPT Gpt;
++    } DUMMYUNIONNAME;
++} PARTITION_INFORMATION_EX, *PPARTITION_INFORMATION_EX;
++
++typedef struct _DRIVE_LAYOUT_INFORMATION_MBR {
++    DWORD               Signature;
++    DWORD               CheckSum;
++} DRIVE_LAYOUT_INFORMATION_MBR, *PDRIVE_LAYOUT_INFORMATION_MBR;
++
++typedef struct _DRIVE_LAYOUT_INFORMATION_GPT {
++    GUID                DiskId;
++    LARGE_INTEGER       StartingUsableOffset;
++    LARGE_INTEGER       UsableLength;
++    DWORD               MaxPartitionCount;
++} DRIVE_LAYOUT_INFORMATION_GPT, *PDRIVE_LAYOUT_INFORMATION_GPT;
++
++typedef struct _DRIVE_LAYOUT_INFORMATION_EX {
++    DWORD               PartitionStyle;
++    DWORD               PartitionCount;
++    union {
++        DRIVE_LAYOUT_INFORMATION_MBR Mbr;
++        DRIVE_LAYOUT_INFORMATION_GPT Gpt;
++    } DUMMYUNIONNAME;
++    PARTITION_INFORMATION_EX PartitionEntry[1];
++} DRIVE_LAYOUT_INFORMATION_EX, *PDRIVE_LAYOUT_INFORMATION_EX;
++
++typedef struct _CREATE_DISK_MBR {
++    DWORD               Signature;
++} CREATE_DISK_MBR, *PCREATE_DISK_MBR;
++
++typedef struct _CREATE_DISK_GPT {
++    GUID                DiskId;
++    DWORD               MaxPartitionCount;
++} CREATE_DISK_GPT, *PCREATE_DISK_GPT;
++
++typedef struct _CREATE_DISK {
++    PARTITION_STYLE     PartitionStyle;
++    union {
++        CREATE_DISK_MBR Mbr;
++        CREATE_DISK_GPT Gpt;
++    } DUMMYUNIONNAME;
++} CREATE_DISK, *PCREATE_DISK;
++
++typedef struct _GET_LENGTH_INFORMATION {
++    LARGE_INTEGER       Length;
++} GET_LENGTH_INFORMATION, *PGET_LENGTH_INFORMATION;
++
+ typedef struct _VERIFY_INFORMATION {
+     LARGE_INTEGER       StartingOffset;
+     DWORD               Length;
+--- a/server/device.c	2026-11-09 09:56:46.861221600 +0100
++++ b/server/device.c	2026-11-09 12:33:53.938992000 +0100
+@@ -25,6 +25,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <stdarg.h>
++#include <sys/stat.h>
+ 
+ #include "ntstatus.h"
+ #include "windef.h"
+@@ -37,6 +38,8 @@
+ #include "handle.h"
+ #include "request.h"
+ #include "process.h"
++#include "thread.h"
++#include "security.h"
+ 
+ /* IRP object */
+ 
+@@ -399,6 +402,7 @@
+ 
+     file->device = (struct device *)grab_object( device );
+     file->closed = 0;
++    file->fd = NULL; /* destroy looks at it, whichever way the open ends */
+     list_init( &file->kernel_object );
+     list_init( &file->requests );
+     list_add_tail( &device->files, &file->entry );
+@@ -406,9 +410,23 @@
+     {
+         if ((fullname = default_get_full_name( &device->obj, ~0u, &nt_name.len )))
+         {
++            struct stat st;
+             mode_t mode = 0666;
+             access = map_obj_access( &file->obj, access );
+             nt_name.str = fullname;
++            /* a disk read or written directly is for elevated programs, as on Windows */
++            if (!stat( device->unix_path, &st ) && S_ISBLK( st.st_mode ))
++            {
++                options &= ~(FILE_DIRECTORY_FILE | FILE_NON_DIRECTORY_FILE);
++                if ((access & (FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA)) &&
++                    token_is_limited( thread_get_impersonation_token( current ) ))
++                {
++                    free( fullname );
++                    set_error( STATUS_ACCESS_DENIED );
++                    release_object( file );
++                    return NULL;
++                }
++            }
+             file->fd = open_fd( NULL, device->unix_path, nt_name, O_NONBLOCK, &mode, access, sharing, options );
+             if (file->fd) set_fd_user( file->fd, &device_file_fd_ops, &file->obj );
+             free( fullname );
+@@ -1105,3 +1123,30 @@
+ 
+     release_object( manager );
+ }
++
++/* give a device a unix file: what is read from it and written to it goes straight there */
++DECL_HANDLER(set_device_unix_path)
++{
++    struct device_manager *manager;
++    struct kernel_object *ref;
++
++    if (!(manager = (struct device_manager *)get_handle_obj( current->process, req->manager,
++                                                             0, &device_manager_ops )))
++        return;
++
++    if ((ref = kernel_object_from_ptr( manager, req->user_ptr )) && ref->object->ops == &device_ops)
++    {
++        struct device *device = (struct device *)ref->object;
++        char *path = mem_alloc( get_req_data_size() + 1 );
++
++        if (path)
++        {
++            memcpy( path, get_req_data(), get_req_data_size() );
++            path[get_req_data_size()] = 0;
++            free( device->unix_path );
++            device->unix_path = path;
++        }
++    }
++    else set_error( STATUS_INVALID_HANDLE );
++    release_object( manager );
++}
+--- a/server/protocol.def	2026-11-09 09:56:46.866221600 +0100
++++ b/server/protocol.def	2026-11-09 12:33:53.936992000 +0100
+@@ -3872,6 +3872,14 @@
+ @END
+ 
+ 
++/* Give a device a unix file: what is read from it and written to it goes straight there */
++@REQ(set_device_unix_path)
++    obj_handle_t manager;         /* device manager */
++    client_ptr_t user_ptr;        /* the device */
++    VARARG(path,string);          /* the unix path */
++@END
++
++
+ /* Delete a device */
+ @REQ(delete_device)
+     obj_handle_t manager;         /* handle to the device manager */
+--- a/server/security.h	2026-11-09 10:13:54.645305500 +0100
++++ b/server/security.h	2026-11-09 12:33:53.940992000 +0100
+@@ -76,6 +76,7 @@
+ extern const struct sid *token_get_primary_group( struct token *token );
+ extern unsigned int token_get_session_id( struct token *token );
+ extern int token_sid_present( struct token *token, const struct sid *sid, int deny );
++extern int token_is_limited( struct token *token );
+ 
+ static inline struct ace *ace_first( const struct acl *acl )
+ {
+--- a/server/token.c	2026-11-09 10:13:54.643305500 +0100
++++ b/server/token.c	2026-11-09 12:33:53.939992000 +0100
+@@ -1624,3 +1624,9 @@
+         release_object( token );
+     }
+ }
++
++/* a token that UAC has not raised */
++int token_is_limited( struct token *token )
++{
++    return token->elevation == TokenElevationTypeLimited;
++}

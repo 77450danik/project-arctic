@@ -1,0 +1,7 @@
+MODULE    = bcdboot.exe
+EXTRADLLFLAGS = -mconsole -municode
+
+VER_FILEDESCRIPTION_STR = "Boot Configuration Data store creation tool"
+
+SOURCES = \
+	main.c

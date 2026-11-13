@@ -1,0 +1,21 @@
+# A fixed disk keeps its letter on an installed Arctic through a power cut,
+# part one: a USB hard disk comes, then the power goes (docs/disks.md).
+#   tools/wsl/make-letter-test-disks.sh
+#   make-install-test-disk.sh <GUID> <set> install.img
+#   vm-test.py --boot-disk install.img --uefi --tcg --pull --disk out/test-local/tools.img --script tests/vm/l4-a-installed-power-cut.txt
+#   vm-test.py --boot-disk install.img --uefi --tcg --pull --disk out/test-local/tools.img --script tests/vm/l4-b-installed-after-the-cut.txt
+# Expected: l4-a the hard disk (FIXED) on the first letter free, GPT in MountedDevices.
+sleep 12
+key win-r
+sleep 15
+key esc
+sleep 3
+plugfixed f fixed.img SERIALFFFF04
+sleep 12
+key win-r
+sleep 6
+type cmd /k for %i in (D E F) do @if exist %i:\letters.exe %i:\letters.exe
+key ret
+sleep 25
+shot l4-a
+sleep 90
