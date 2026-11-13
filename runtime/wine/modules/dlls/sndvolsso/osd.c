@@ -19,7 +19,9 @@
 
 #include "sndvolsso.h"
 #include "dwmapi.h"
+#include "winreg.h"
 #include "wine/arctic_dwm.h"
+#include "wine/arctic_fluent.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
@@ -110,7 +112,8 @@ static void paint( HDC hdc, const RECT *client )
     if (fill > left)
     {
         rect.right = max( fill, left + px( 4 ) );
-        fill_round_rect( hdc, &rect, px( 2 ), ACCENT_COLOR, 0xff );
+        /* the accent of Windows 11's theme with its buttons, else Windows 10's */
+        fill_round_rect( hdc, &rect, px( 2 ), arctic_style11() ? FLUENT_ACCENT( shell_light ) : ACCENT_COLOR, 0xff );
     }
 }
 

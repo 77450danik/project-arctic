@@ -153,14 +153,13 @@ BOOL audio_state( struct endpoint *def, float *level, BOOL *mute )
     return TRUE;
 }
 
-/* the outputs one can choose from */
-UINT audio_endpoints( struct endpoint *list, UINT max )
+static UINT list_endpoints( EDataFlow flow, struct endpoint *list, UINT max )
 {
     IMMDeviceCollection *collection;
     UINT count = 0, n = 0;
 
     if (!enumerator && !audio_init()) return 0;
-    if (FAILED(IMMDeviceEnumerator_EnumAudioEndpoints( enumerator, eRender, DEVICE_STATE_ACTIVE, &collection )))
+    if (FAILED(IMMDeviceEnumerator_EnumAudioEndpoints( enumerator, flow, DEVICE_STATE_ACTIVE, &collection )))
         return 0;
     IMMDeviceCollection_GetCount( collection, &count );
     for (UINT i = 0; i < count && n < max; i++)
@@ -174,6 +173,18 @@ UINT audio_endpoints( struct endpoint *list, UINT max )
     }
     IMMDeviceCollection_Release( collection );
     return n;
+}
+
+/* the outputs one can choose from */
+UINT audio_endpoints( struct endpoint *list, UINT max )
+{
+    return list_endpoints( eRender, list, max );
+}
+
+/* the microphones */
+UINT audio_capture_endpoints( struct endpoint *list, UINT max )
+{
+    return list_endpoints( eCapture, list, max );
 }
 
 void audio_set_level( float level )
@@ -205,4 +216,23 @@ void audio_set_default( const WCHAR *id )
     RegSetValueExW( key, L"DefaultVoiceOutput", 0, REG_SZ, (const BYTE *)id, (lstrlenW( id ) + 1) * sizeof(WCHAR) );
     RegCloseKey( key );
     TRACE( "default output %s\n", debugstr_w( id ) );
+}
+
+/* the microphone for everything from now on, as Windows takes a headset's when it connects */
+void audio_set_default_input( const WCHAR *id )
+{
+    WCHAR driver[64], key_name[128];
+    IMMDevice *device;
+    HKEY key;
+
+    if (!enumerator || FAILED(IMMDeviceEnumerator_GetDevice( enumerator, id, &device ))) return;
+    if (!get_property( device, &key_driver, driver, ARRAY_SIZE(driver) )) lstrcpyW( driver, L"winealsa.drv" );
+    IMMDevice_Release( device );
+
+    swprintf( key_name, ARRAY_SIZE(key_name), L"Software\\Arctic\\Runtime\\Drivers\\%s", driver );
+    if (RegCreateKeyExW( HKEY_CURRENT_USER, key_name, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL )) return;
+    RegSetValueExW( key, L"DefaultInput", 0, REG_SZ, (const BYTE *)id, (lstrlenW( id ) + 1) * sizeof(WCHAR) );
+    RegSetValueExW( key, L"DefaultVoiceInput", 0, REG_SZ, (const BYTE *)id, (lstrlenW( id ) + 1) * sizeof(WCHAR) );
+    RegCloseKey( key );
+    TRACE( "default input %s\n", debugstr_w( id ) );
 }

@@ -1,0 +1,10 @@
+MODULE    = windows.system.launcher.dll
+IMPORTS   = combase uuid shell32 ole32
+
+VER_FILEDESCRIPTION_STR = "Windows.System.Launcher"
+
+SOURCES = \
+	async.c \
+	async_private.idl \
+	classes.idl \
+	main.c

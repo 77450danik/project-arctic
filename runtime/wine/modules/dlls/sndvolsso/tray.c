@@ -190,6 +190,7 @@ static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     switch (msg)
     {
     case WM_TIMER:
+        bluetooth_poll();
         tray_update();
         return 0;
     case WM_TRAY_ICON:
@@ -244,6 +245,7 @@ static DWORD WINAPI tray_thread( void *arg )
     RegisterHotKey( tray_hwnd, HOTKEY_DOWN, 0, VK_VOLUME_DOWN );
     RegisterHotKey( tray_hwnd, HOTKEY_UP, 0, VK_VOLUME_UP );
     hook = SetWindowsHookExW( WH_KEYBOARD_LL, keyboard_proc, sndvolsso_instance, 0 );
+    bluetooth_start();
 
     tray_update();
     /* other programs and other outputs change it too */
@@ -256,6 +258,7 @@ static DWORD WINAPI tray_thread( void *arg )
 
     if (hook) UnhookWindowsHookEx( hook );
     hook = NULL;
+    bluetooth_stop();
     flyout_hide();
     osd_hide();
     if (current_icon) DestroyIcon( current_icon );

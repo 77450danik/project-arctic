@@ -1,0 +1,73 @@
+diff --git a/dlls/explorerframe/taskbarlist.c b/dlls/explorerframe/taskbarlist.c
+index 94597be..a671a22 100644
+--- a/dlls/explorerframe/taskbarlist.c
++++ b/dlls/explorerframe/taskbarlist.c
+@@ -46,16 +46,26 @@ static struct arctic_taskbar_shared *get_shared(void)
+                                         ARCTIC_TASKBAR_SECTION )))
+         return NULL;
+     view = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*view) );
+-    CloseHandle( mapping );
+-    if (!view) return NULL;
++    if (!view)
++    {
++        CloseHandle( mapping );
++        return NULL;
++    }
++    /* the handle stays open: in Wine the section's name goes with its last
++     * handle, and each process had a table of its own the taskbar never saw */
+     /* the first one to map it sets it up */
+     InterlockedCompareExchange( (LONG *)&view->version, ARCTIC_TASKBAR_VERSION, 0 );
+     if (view->version != ARCTIC_TASKBAR_VERSION)
+     {
+         UnmapViewOfFile( view );
++        CloseHandle( mapping );
+         return NULL;
+     }
+-    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL )) UnmapViewOfFile( view );
++    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL ))
++    {
++        UnmapViewOfFile( view );
++        CloseHandle( mapping );
++    }
+     return shared;
+ }
+ 
+@@ -156,13 +166,15 @@ static void prepare_button( struct taskbar_list *list, struct arctic_thumb_butto
+     button->id = from->iId;
+     if (from->dwMask & THB_FLAGS) button->flags = from->dwFlags;
+     if (from->dwMask & THB_TOOLTIP) lstrcpynW( button->tip, from->szTip, ARRAY_SIZE(button->tip) );
+-    if (from->dwMask & THB_ICON) button->has_icon = icon_pixels( from->hIcon, button->icon );
+-    else if ((from->dwMask & THB_BITMAP) && list->image_list)
++    if ((from->dwMask & THB_ICON) && from->hIcon) button->has_icon = icon_pixels( from->hIcon, button->icon );
++    if (!button->has_icon && (from->dwMask & THB_BITMAP) && list->image_list)
+     {
+         HICON icon = ImageList_GetIcon( list->image_list, from->iBitmap, ILD_NORMAL );
+         button->has_icon = icon_pixels( icon, button->icon );
+         if (icon) DestroyIcon( icon );
+     }
++    TRACE( "button %u: mask %#lx, icon %p, bitmap %u, list %p -> %u\n", from->iId, (ULONG)from->dwMask, from->hIcon,
++           from->iBitmap, list->image_list, button->has_icon );
+ }
+ 
+ /* what the mask names goes into the table's button */
+@@ -224,6 +236,7 @@ static ULONG STDMETHODCALLTYPE taskbar_list_Release(ITaskbarList4 *iface)
+ 
+     if (!refcount)
+     {
++        if (This->image_list) ImageList_Destroy(This->image_list);
+         free(This);
+         EFRAME_UnlockModule();
+     }
+@@ -421,7 +434,11 @@ static HRESULT STDMETHODCALLTYPE taskbar_list_ThumbBarSetImageList(ITaskbarList4
+ 
+     TRACE("iface %p, hwnd %p, himl %p\n", iface, hwnd, himl);
+ 
+-    This->image_list = himl;
++    /* Arctic: a copy, as Windows' shell keeps: programs (Chromium, Spotify)
++     * destroy their list right after this call, and the buttons' images
++     * read from it later came out of a destroyed list, empty */
++    if (This->image_list) ImageList_Destroy( This->image_list );
++    This->image_list = himl ? ImageList_Duplicate( himl ) : NULL;
+     return S_OK;
+ }
+ 

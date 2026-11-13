@@ -1,0 +1,879 @@
+diff --git a/dlls/windows.media.mediacontrol/Makefile.in b/dlls/windows.media.mediacontrol/Makefile.in
+index 4cbd42a..f066651 100644
+--- a/dlls/windows.media.mediacontrol/Makefile.in
++++ b/dlls/windows.media.mediacontrol/Makefile.in
+@@ -3,4 +3,5 @@ IMPORTS = combase user32
+ 
+ SOURCES = \
+ 	classes.idl \
+-	main.c
++	main.c \
++	weakref.c
+diff --git a/dlls/windows.media.mediacontrol/classes.idl b/dlls/windows.media.mediacontrol/classes.idl
+index c6d4ac4..6951fe9 100644
+--- a/dlls/windows.media.mediacontrol/classes.idl
++++ b/dlls/windows.media.mediacontrol/classes.idl
+@@ -26,4 +26,5 @@ import "windows.media.idl";
+ 
+ namespace Windows.Media {
+     runtimeclass SystemMediaTransportControls;
++    runtimeclass SystemMediaTransportControlsTimelineProperties;
+ }
+diff --git a/dlls/windows.media.mediacontrol/main.c b/dlls/windows.media.mediacontrol/main.c
+index 55f3702..8b9b72f 100644
+--- a/dlls/windows.media.mediacontrol/main.c
++++ b/dlls/windows.media.mediacontrol/main.c
+@@ -23,10 +23,18 @@
+  * kept until Update. Its state is a session in the shared section of
+  * wine/arctic_media.h, which the volume overlay and flyout (sndvolsso.dll)
+  * show; the presses of their buttons come back to a window of a thread of
+- * this process and go to the program's ButtonPressed handlers. */
++ * this process and go to the program's ButtonPressed handlers.
++ *
++ * The objects give weak references, as every object of Windows' runtime
++ * does: WRL and C++/WinRT programs (Spotify) take one with
++ * As<IWeakReferenceSource> and use it without a check. A control is
++ * ISystemMediaTransportControls2 too (repeat, shuffle, rate, the timeline),
++ * and SystemMediaTransportControlsTimelineProperties is made here, as in
++ * Windows 10: Spotify asks for both as soon as it starts. */
+ 
+ #include "initguid.h"
+ #include "private.h"
++#include "weakref.h"
+ #include "winuser.h"
+ #include "wine/arctic_media.h"
+ #include "wine/list.h"
+@@ -39,6 +47,8 @@ struct media_control_statics
+ {
+     IActivationFactory IActivationFactory_iface;
+     ISystemMediaTransportControlsInterop ISystemMediaTransportControlsInterop_iface;
++    IWeakReferenceSource IWeakReferenceSource_iface;
++    IWeakReference IWeakReference_iface;
+     LONG ref;
+ };
+ 
+@@ -47,6 +57,80 @@ static inline struct media_control_statics *impl_from_IActivationFactory( IActiv
+     return CONTAINING_RECORD( iface, struct media_control_statics, IActivationFactory_iface );
+ }
+ 
++/* the statics live as long as the module: their weak reference always resolves */
++static inline struct media_control_statics *impl_from_IWeakReferenceSource( IWeakReferenceSource *iface )
++{
++    return CONTAINING_RECORD( iface, struct media_control_statics, IWeakReferenceSource_iface );
++}
++
++static HRESULT WINAPI statics_weak_source_QueryInterface( IWeakReferenceSource *iface, REFIID iid, void **out )
++{
++    return IActivationFactory_QueryInterface( &impl_from_IWeakReferenceSource( iface )->IActivationFactory_iface, iid, out );
++}
++
++static ULONG WINAPI statics_weak_source_AddRef( IWeakReferenceSource *iface )
++{
++    return IActivationFactory_AddRef( &impl_from_IWeakReferenceSource( iface )->IActivationFactory_iface );
++}
++
++static ULONG WINAPI statics_weak_source_Release( IWeakReferenceSource *iface )
++{
++    return IActivationFactory_Release( &impl_from_IWeakReferenceSource( iface )->IActivationFactory_iface );
++}
++
++static HRESULT WINAPI statics_weak_source_GetWeakReference( IWeakReferenceSource *iface, IWeakReference **ref )
++{
++    *ref = &impl_from_IWeakReferenceSource( iface )->IWeakReference_iface;
++    return S_OK;
++}
++
++static const struct IWeakReferenceSourceVtbl statics_weak_source_vtbl =
++{
++    statics_weak_source_QueryInterface,
++    statics_weak_source_AddRef,
++    statics_weak_source_Release,
++    statics_weak_source_GetWeakReference,
++};
++
++static inline struct media_control_statics *impl_from_IWeakReference( IWeakReference *iface )
++{
++    return CONTAINING_RECORD( iface, struct media_control_statics, IWeakReference_iface );
++}
++
++static HRESULT WINAPI statics_weak_QueryInterface( IWeakReference *iface, REFIID iid, void **out )
++{
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IWeakReference ))
++    {
++        *out = iface;
++        return S_OK;
++    }
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI statics_weak_AddRef( IWeakReference *iface )
++{
++    return 2;
++}
++
++static ULONG WINAPI statics_weak_Release( IWeakReference *iface )
++{
++    return 1;
++}
++
++static HRESULT WINAPI statics_weak_Resolve( IWeakReference *iface, REFIID iid, IInspectable **out )
++{
++    return IActivationFactory_QueryInterface( &impl_from_IWeakReference( iface )->IActivationFactory_iface, iid, (void **)out );
++}
++
++static const struct IWeakReferenceVtbl statics_weak_vtbl =
++{
++    statics_weak_QueryInterface,
++    statics_weak_AddRef,
++    statics_weak_Release,
++    statics_weak_Resolve,
++};
++
+ static HRESULT WINAPI factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
+ {
+     struct media_control_statics *impl = impl_from_IActivationFactory( iface );
+@@ -70,6 +154,13 @@ static HRESULT WINAPI factory_QueryInterface( IActivationFactory *iface, REFIID
+         return S_OK;
+     }
+ 
++    if (IsEqualGUID( iid, &IID_IWeakReferenceSource ))
++    {
++        *out = &impl->IWeakReferenceSource_iface;
++        IWeakReferenceSource_AddRef( (IWeakReferenceSource *)*out );
++        return S_OK;
++    }
++
+     FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+     *out = NULL;
+     return E_NOINTERFACE;
+@@ -135,13 +226,33 @@ struct button_handler
+     ITypedEventHandler_SystemMediaTransportControls_SystemMediaTransportControlsButtonPressedEventArgs *handler;
+ };
+ 
++/* a handler of an event of ISystemMediaTransportControls2: the program's
++ * position, rate, shuffle and repeat requests. Kept for the program, the
++ * shell has no seek bar, rate or shuffle buttons to raise them yet */
++enum timeline_event
++{
++    EVENT_PLAYBACK_POSITION,
++    EVENT_PLAYBACK_RATE,
++    EVENT_SHUFFLE_ENABLED,
++    EVENT_AUTO_REPEAT_MODE,
++};
++
++struct event_handler
++{
++    struct list entry;
++    EventRegistrationToken token;
++    enum timeline_event event;
++    IUnknown *handler;
++};
++
+ struct media_control
+ {
+     ISystemMediaTransportControls ISystemMediaTransportControls_iface;
++    ISystemMediaTransportControls2 ISystemMediaTransportControls2_iface;
+     ISystemMediaTransportControlsDisplayUpdater ISystemMediaTransportControlsDisplayUpdater_iface;
+     IMusicDisplayProperties IMusicDisplayProperties_iface;
+     IMusicDisplayProperties2 IMusicDisplayProperties2_iface;
+-    LONG ref;
++    struct weak_reference_source weak_reference_source;  /* holds the count of strong references */
+     struct list entry;               /* in controls, one a window */
+ 
+     HWND window;
+@@ -162,6 +273,15 @@ struct media_control
+ 
+     struct list handlers;
+     LONG next_token;
++
++    /* ISystemMediaTransportControls2 */
++    MediaPlaybackAutoRepeatMode auto_repeat_mode;
++    boolean shuffle_enabled;
++    DOUBLE playback_rate;
++    TimeSpan start_time;
++    TimeSpan end_time;
++    TimeSpan position;
++    struct list event_handlers;
+ };
+ 
+ static CRITICAL_SECTION controls_cs;
+@@ -776,6 +896,12 @@ static HRESULT WINAPI media_control_QueryInterface( ISystemMediaTransportControl
+         IInspectable_AddRef( *out );
+         return S_OK;
+     }
++    if (IsEqualGUID( iid, &IID_ISystemMediaTransportControls2 ))
++    {
++        *out = &impl->ISystemMediaTransportControls2_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
+     if (IsEqualGUID( iid, &IID_ISystemMediaTransportControlsDisplayUpdater ))
+     {
+         *out = &impl->ISystemMediaTransportControlsDisplayUpdater_iface;
+@@ -794,6 +920,12 @@ static HRESULT WINAPI media_control_QueryInterface( ISystemMediaTransportControl
+         IInspectable_AddRef( *out );
+         return S_OK;
+     }
++    if (IsEqualGUID( iid, &IID_IWeakReferenceSource ))
++    {
++        *out = &impl->weak_reference_source.IWeakReferenceSource_iface;
++        IWeakReferenceSource_AddRef( (IWeakReferenceSource *)*out );
++        return S_OK;
++    }
+ 
+     FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+     *out = NULL;
+@@ -803,7 +935,7 @@ static HRESULT WINAPI media_control_QueryInterface( ISystemMediaTransportControl
+ static ULONG WINAPI media_control_AddRef( ISystemMediaTransportControls *iface )
+ {
+     struct media_control *impl = impl_from_ISystemMediaTransportControls( iface );
+-    ULONG ref = InterlockedIncrement( &impl->ref );
++    ULONG ref = weak_reference_strong_add_ref( &impl->weak_reference_source );
+     TRACE( "iface %p increasing refcount to %lu.\n", iface, ref );
+     return ref;
+ }
+@@ -812,10 +944,11 @@ static ULONG WINAPI media_control_Release( ISystemMediaTransportControls *iface
+ {
+     struct media_control *impl = impl_from_ISystemMediaTransportControls( iface );
+     struct button_handler *entry, *next;
++    struct event_handler *event, *next_event;
+     ULONG ref;
+ 
+     EnterCriticalSection( &controls_cs );
+-    ref = InterlockedDecrement( &impl->ref );
++    ref = weak_reference_strong_release( &impl->weak_reference_source );
+     if (!ref) list_remove( &impl->entry );
+     LeaveCriticalSection( &controls_cs );
+ 
+@@ -830,6 +963,11 @@ static ULONG WINAPI media_control_Release( ISystemMediaTransportControls *iface
+             ITypedEventHandler_SystemMediaTransportControls_SystemMediaTransportControlsButtonPressedEventArgs_Release( entry->handler );
+             free( entry );
+         }
++        LIST_FOR_EACH_ENTRY_SAFE( event, next_event, &impl->event_handlers, struct event_handler, entry )
++        {
++            IUnknown_Release( event->handler );
++            free( event );
++        }
+         WindowsDeleteString( impl->title );
+         WindowsDeleteString( impl->artist );
+         WindowsDeleteString( impl->album_title );
+@@ -1041,6 +1179,357 @@ static const struct ISystemMediaTransportControlsVtbl media_control_vtbl =
+     media_control_remove_PropertyChanged,
+ };
+ 
++/**********************************************************************
++ *          ISystemMediaTransportControls2
++ */
++
++DEFINE_IINSPECTABLE( media_control2, ISystemMediaTransportControls2, struct media_control, ISystemMediaTransportControls_iface )
++
++static HRESULT WINAPI media_control2_get_AutoRepeatMode( ISystemMediaTransportControls2 *iface, MediaPlaybackAutoRepeatMode *value )
++{
++    *value = impl_from_ISystemMediaTransportControls2( iface )->auto_repeat_mode;
++    return S_OK;
++}
++
++static HRESULT WINAPI media_control2_put_AutoRepeatMode( ISystemMediaTransportControls2 *iface, MediaPlaybackAutoRepeatMode value )
++{
++    TRACE( "iface %p, value %d\n", iface, value );
++    impl_from_ISystemMediaTransportControls2( iface )->auto_repeat_mode = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI media_control2_get_ShuffleEnabled( ISystemMediaTransportControls2 *iface, boolean *value )
++{
++    *value = impl_from_ISystemMediaTransportControls2( iface )->shuffle_enabled;
++    return S_OK;
++}
++
++static HRESULT WINAPI media_control2_put_ShuffleEnabled( ISystemMediaTransportControls2 *iface, boolean value )
++{
++    TRACE( "iface %p, value %d\n", iface, value );
++    impl_from_ISystemMediaTransportControls2( iface )->shuffle_enabled = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI media_control2_get_PlaybackRate( ISystemMediaTransportControls2 *iface, DOUBLE *value )
++{
++    *value = impl_from_ISystemMediaTransportControls2( iface )->playback_rate;
++    return S_OK;
++}
++
++static HRESULT WINAPI media_control2_put_PlaybackRate( ISystemMediaTransportControls2 *iface, DOUBLE value )
++{
++    TRACE( "iface %p, value %f\n", iface, value );
++    impl_from_ISystemMediaTransportControls2( iface )->playback_rate = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI media_control2_UpdateTimelineProperties( ISystemMediaTransportControls2 *iface,
++    ISystemMediaTransportControlsTimelineProperties *properties )
++{
++    struct media_control *impl = impl_from_ISystemMediaTransportControls2( iface );
++
++    TRACE( "iface %p, properties %p\n", iface, properties );
++
++    if (!properties) return E_POINTER;
++    ISystemMediaTransportControlsTimelineProperties_get_StartTime( properties, &impl->start_time );
++    ISystemMediaTransportControlsTimelineProperties_get_EndTime( properties, &impl->end_time );
++    ISystemMediaTransportControlsTimelineProperties_get_Position( properties, &impl->position );
++    return S_OK;
++}
++
++static HRESULT add_event_handler( struct media_control *impl, enum timeline_event event, IUnknown *handler,
++                                  EventRegistrationToken *token )
++{
++    struct event_handler *entry;
++
++    if (!handler) return E_INVALIDARG;
++    if (!(entry = calloc( 1, sizeof(*entry) ))) return E_OUTOFMEMORY;
++    IUnknown_AddRef( handler );
++    entry->handler = handler;
++    entry->event = event;
++    entry->token.value = InterlockedIncrement( &impl->next_token );
++    EnterCriticalSection( &controls_cs );
++    list_add_tail( &impl->event_handlers, &entry->entry );
++    LeaveCriticalSection( &controls_cs );
++    *token = entry->token;
++    return S_OK;
++}
++
++static HRESULT remove_event_handler( struct media_control *impl, EventRegistrationToken token )
++{
++    struct event_handler *entry, *found = NULL;
++
++    EnterCriticalSection( &controls_cs );
++    LIST_FOR_EACH_ENTRY( entry, &impl->event_handlers, struct event_handler, entry )
++    {
++        if (entry->token.value != token.value) continue;
++        list_remove( &entry->entry );
++        found = entry;
++        break;
++    }
++    LeaveCriticalSection( &controls_cs );
++    if (!found) return S_OK;
++    IUnknown_Release( found->handler );
++    free( found );
++    return S_OK;
++}
++
++static HRESULT WINAPI media_control2_add_PlaybackPositionChangeRequested( ISystemMediaTransportControls2 *iface,
++    ITypedEventHandler_SystemMediaTransportControls_PlaybackPositionChangeRequestedEventArgs *handler, EventRegistrationToken *token )
++{
++    TRACE( "iface %p, handler %p, token %p\n", iface, handler, token );
++    return add_event_handler( impl_from_ISystemMediaTransportControls2( iface ), EVENT_PLAYBACK_POSITION, (IUnknown *)handler, token );
++}
++
++static HRESULT WINAPI media_control2_remove_PlaybackPositionChangeRequested( ISystemMediaTransportControls2 *iface, EventRegistrationToken token )
++{
++    return remove_event_handler( impl_from_ISystemMediaTransportControls2( iface ), token );
++}
++
++static HRESULT WINAPI media_control2_add_PlaybackRateChangeRequested( ISystemMediaTransportControls2 *iface,
++    ITypedEventHandler_SystemMediaTransportControls_PlaybackRateChangeRequestedEventArgs *handler, EventRegistrationToken *token )
++{
++    TRACE( "iface %p, handler %p, token %p\n", iface, handler, token );
++    return add_event_handler( impl_from_ISystemMediaTransportControls2( iface ), EVENT_PLAYBACK_RATE, (IUnknown *)handler, token );
++}
++
++static HRESULT WINAPI media_control2_remove_PlaybackRateChangeRequested( ISystemMediaTransportControls2 *iface, EventRegistrationToken token )
++{
++    return remove_event_handler( impl_from_ISystemMediaTransportControls2( iface ), token );
++}
++
++static HRESULT WINAPI media_control2_add_ShuffleEnabledChangeRequested( ISystemMediaTransportControls2 *iface,
++    ITypedEventHandler_SystemMediaTransportControls_ShuffleEnabledChangeRequestedEventArgs *handler, EventRegistrationToken *token )
++{
++    TRACE( "iface %p, handler %p, token %p\n", iface, handler, token );
++    return add_event_handler( impl_from_ISystemMediaTransportControls2( iface ), EVENT_SHUFFLE_ENABLED, (IUnknown *)handler, token );
++}
++
++static HRESULT WINAPI media_control2_remove_ShuffleEnabledChangeRequested( ISystemMediaTransportControls2 *iface, EventRegistrationToken token )
++{
++    return remove_event_handler( impl_from_ISystemMediaTransportControls2( iface ), token );
++}
++
++static HRESULT WINAPI media_control2_add_AutoRepeatModeChangeRequested( ISystemMediaTransportControls2 *iface,
++    ITypedEventHandler_SystemMediaTransportControls_AutoRepeatModeChangeRequestedEventArgs *handler, EventRegistrationToken *token )
++{
++    TRACE( "iface %p, handler %p, token %p\n", iface, handler, token );
++    return add_event_handler( impl_from_ISystemMediaTransportControls2( iface ), EVENT_AUTO_REPEAT_MODE, (IUnknown *)handler, token );
++}
++
++static HRESULT WINAPI media_control2_remove_AutoRepeatModeChangeRequested( ISystemMediaTransportControls2 *iface, EventRegistrationToken token )
++{
++    return remove_event_handler( impl_from_ISystemMediaTransportControls2( iface ), token );
++}
++
++static const struct ISystemMediaTransportControls2Vtbl media_control2_vtbl =
++{
++    media_control2_QueryInterface,
++    media_control2_AddRef,
++    media_control2_Release,
++    /* IInspectable methods */
++    media_control2_GetIids,
++    media_control2_GetRuntimeClassName,
++    media_control2_GetTrustLevel,
++    /* ISystemMediaTransportControls2 methods */
++    media_control2_get_AutoRepeatMode,
++    media_control2_put_AutoRepeatMode,
++    media_control2_get_ShuffleEnabled,
++    media_control2_put_ShuffleEnabled,
++    media_control2_get_PlaybackRate,
++    media_control2_put_PlaybackRate,
++    media_control2_UpdateTimelineProperties,
++    media_control2_add_PlaybackPositionChangeRequested,
++    media_control2_remove_PlaybackPositionChangeRequested,
++    media_control2_add_PlaybackRateChangeRequested,
++    media_control2_remove_PlaybackRateChangeRequested,
++    media_control2_add_ShuffleEnabledChangeRequested,
++    media_control2_remove_ShuffleEnabledChangeRequested,
++    media_control2_add_AutoRepeatModeChangeRequested,
++    media_control2_remove_AutoRepeatModeChangeRequested,
++};
++
++/**********************************************************************
++ *          SystemMediaTransportControlsTimelineProperties
++ */
++
++struct timeline_properties
++{
++    ISystemMediaTransportControlsTimelineProperties ISystemMediaTransportControlsTimelineProperties_iface;
++    struct weak_reference_source weak_reference_source;
++    TimeSpan start_time;
++    TimeSpan end_time;
++    TimeSpan min_seek_time;
++    TimeSpan max_seek_time;
++    TimeSpan position;
++};
++
++static inline struct timeline_properties *impl_from_ISystemMediaTransportControlsTimelineProperties( ISystemMediaTransportControlsTimelineProperties *iface )
++{
++    return CONTAINING_RECORD( iface, struct timeline_properties, ISystemMediaTransportControlsTimelineProperties_iface );
++}
++
++static HRESULT WINAPI timeline_QueryInterface( ISystemMediaTransportControlsTimelineProperties *iface, REFIID iid, void **out )
++{
++    struct timeline_properties *impl = impl_from_ISystemMediaTransportControlsTimelineProperties( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, &IID_ISystemMediaTransportControlsTimelineProperties ))
++    {
++        *out = &impl->ISystemMediaTransportControlsTimelineProperties_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
++    if (IsEqualGUID( iid, &IID_IWeakReferenceSource ))
++    {
++        *out = &impl->weak_reference_source.IWeakReferenceSource_iface;
++        IWeakReferenceSource_AddRef( (IWeakReferenceSource *)*out );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI timeline_AddRef( ISystemMediaTransportControlsTimelineProperties *iface )
++{
++    struct timeline_properties *impl = impl_from_ISystemMediaTransportControlsTimelineProperties( iface );
++    return weak_reference_strong_add_ref( &impl->weak_reference_source );
++}
++
++static ULONG WINAPI timeline_Release( ISystemMediaTransportControlsTimelineProperties *iface )
++{
++    struct timeline_properties *impl = impl_from_ISystemMediaTransportControlsTimelineProperties( iface );
++    ULONG ref = weak_reference_strong_release( &impl->weak_reference_source );
++
++    if (!ref) free( impl );
++    return ref;
++}
++
++static HRESULT WINAPI timeline_GetIids( ISystemMediaTransportControlsTimelineProperties *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI timeline_GetRuntimeClassName( ISystemMediaTransportControlsTimelineProperties *iface, HSTRING *class_name )
++{
++    return WindowsCreateString( RuntimeClass_Windows_Media_SystemMediaTransportControlsTimelineProperties,
++                                wcslen( RuntimeClass_Windows_Media_SystemMediaTransportControlsTimelineProperties ), class_name );
++}
++
++static HRESULT WINAPI timeline_GetTrustLevel( ISystemMediaTransportControlsTimelineProperties *iface, TrustLevel *trust_level )
++{
++    *trust_level = BaseTrust;
++    return S_OK;
++}
++
++#define TIMELINE_PROPERTY( name, field )                                                                     \
++    static HRESULT WINAPI timeline_get_##name( ISystemMediaTransportControlsTimelineProperties *iface, TimeSpan *value ) \
++    {                                                                                                        \
++        *value = impl_from_ISystemMediaTransportControlsTimelineProperties( iface )->field;                  \
++        return S_OK;                                                                                         \
++    }                                                                                                        \
++    static HRESULT WINAPI timeline_put_##name( ISystemMediaTransportControlsTimelineProperties *iface, TimeSpan value ) \
++    {                                                                                                        \
++        impl_from_ISystemMediaTransportControlsTimelineProperties( iface )->field = value;                   \
++        return S_OK;                                                                                         \
++    }
++
++TIMELINE_PROPERTY( StartTime, start_time )
++TIMELINE_PROPERTY( EndTime, end_time )
++TIMELINE_PROPERTY( MinSeekTime, min_seek_time )
++TIMELINE_PROPERTY( MaxSeekTime, max_seek_time )
++TIMELINE_PROPERTY( Position, position )
++
++static const struct ISystemMediaTransportControlsTimelinePropertiesVtbl timeline_vtbl =
++{
++    timeline_QueryInterface,
++    timeline_AddRef,
++    timeline_Release,
++    /* IInspectable methods */
++    timeline_GetIids,
++    timeline_GetRuntimeClassName,
++    timeline_GetTrustLevel,
++    /* ISystemMediaTransportControlsTimelineProperties methods */
++    timeline_get_StartTime,
++    timeline_put_StartTime,
++    timeline_get_EndTime,
++    timeline_put_EndTime,
++    timeline_get_MinSeekTime,
++    timeline_put_MinSeekTime,
++    timeline_get_MaxSeekTime,
++    timeline_put_MaxSeekTime,
++    timeline_get_Position,
++    timeline_put_Position,
++};
++
++static HRESULT WINAPI timeline_factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
++{
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, &IID_IActivationFactory ))
++    {
++        *out = iface;
++        return S_OK;
++    }
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++/* a static object, alive as long as the module */
++static ULONG WINAPI timeline_factory_AddRef( IActivationFactory *iface )
++{
++    return 2;
++}
++
++static ULONG WINAPI timeline_factory_Release( IActivationFactory *iface )
++{
++    return 1;
++}
++
++static HRESULT WINAPI timeline_factory_ActivateInstance( IActivationFactory *iface, IInspectable **instance )
++{
++    struct timeline_properties *impl;
++    HRESULT hr;
++
++    TRACE( "iface %p, instance %p\n", iface, instance );
++
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->ISystemMediaTransportControlsTimelineProperties_iface.lpVtbl = &timeline_vtbl;
++    if (FAILED(hr = weak_reference_source_init( &impl->weak_reference_source,
++                                                (IUnknown *)&impl->ISystemMediaTransportControlsTimelineProperties_iface )))
++    {
++        free( impl );
++        return hr;
++    }
++    *instance = (IInspectable *)&impl->ISystemMediaTransportControlsTimelineProperties_iface;
++    return S_OK;
++}
++
++static const struct IActivationFactoryVtbl timeline_factory_vtbl =
++{
++    timeline_factory_QueryInterface,
++    timeline_factory_AddRef,
++    timeline_factory_Release,
++    /* IInspectable methods */
++    factory_GetIids,
++    factory_GetRuntimeClassName,
++    factory_GetTrustLevel,
++    /* IActivationFactory methods */
++    timeline_factory_ActivateInstance,
++};
++
++static IActivationFactory timeline_factory = { &timeline_factory_vtbl };
++
+ DEFINE_IINSPECTABLE( media_control_statics, ISystemMediaTransportControlsInterop, struct media_control_statics, IActivationFactory_iface )
+ 
+ /* one control a window, as in Windows */
+@@ -1071,7 +1560,16 @@ static HRESULT WINAPI media_control_statics_GetForWindow( ISystemMediaTransportC
+     impl->ISystemMediaTransportControlsDisplayUpdater_iface.lpVtbl = &display_updater_vtbl;
+     impl->IMusicDisplayProperties_iface.lpVtbl = &music_properties_vtbl;
+     impl->IMusicDisplayProperties2_iface.lpVtbl = &music_properties2_vtbl;
+-    impl->ref = 1;
++    impl->ISystemMediaTransportControls2_iface.lpVtbl = &media_control2_vtbl;
++    impl->playback_rate = 1.0;
++    list_init( &impl->event_handlers );
++    if (FAILED(hr = weak_reference_source_init( &impl->weak_reference_source,
++                                                (IUnknown *)&impl->ISystemMediaTransportControls_iface )))
++    {
++        LeaveCriticalSection( &controls_cs );
++        free( impl );
++        return hr;
++    }
+     impl->window = window;
+     impl->press_window = create_press_window();
+     list_init( &impl->handlers );
+@@ -1102,6 +1600,8 @@ static struct media_control_statics media_control_statics =
+ {
+     {&factory_vtbl},
+     {&media_control_statics_vtbl},
++    {&statics_weak_source_vtbl},
++    {&statics_weak_vtbl},
+     1,
+ };
+ 
+@@ -1123,6 +1623,8 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
+ 
+     if (!wcscmp( buffer, RuntimeClass_Windows_Media_SystemMediaTransportControls ))
+         IActivationFactory_QueryInterface( media_control_factory, &IID_IActivationFactory, (void **)factory );
++    if (!wcscmp( buffer, RuntimeClass_Windows_Media_SystemMediaTransportControlsTimelineProperties ))
++        IActivationFactory_QueryInterface( &timeline_factory, &IID_IActivationFactory, (void **)factory );
+ 
+     if (*factory) return S_OK;
+     return CLASS_E_CLASSNOTAVAILABLE;
+diff --git a/dlls/windows.media.mediacontrol/weakref.c b/dlls/windows.media.mediacontrol/weakref.c
+new file mode 100644
+index 0000000..6a10390
+--- /dev/null
++++ b/dlls/windows.media.mediacontrol/weakref.c
+@@ -0,0 +1,175 @@
++/* WinRT weak reference helpers
++ *
++ * Copyright 2025 Zhiyi Zhang for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#define COBJMACROS
++#include "weakref.h"
++
++/* The control block is contained in struct weak_reference so that we don't have to allocate a
++ * separate struct for it */
++struct weak_reference
++{
++    IWeakReference IWeakReference_iface;
++    IUnknown *object;
++    /* control block */
++    LONG ref_strong;
++    LONG ref_weak;
++};
++
++static inline struct weak_reference *impl_from_IWeakReference( IWeakReference *iface )
++{
++    return CONTAINING_RECORD(iface, struct weak_reference, IWeakReference_iface);
++}
++
++static HRESULT WINAPI weak_reference_QueryInterface( IWeakReference *iface, REFIID iid, void **out )
++{
++    struct weak_reference *impl = impl_from_IWeakReference( iface );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IWeakReference ))
++    {
++        *out = &impl->IWeakReference_iface;
++        IWeakReference_AddRef( *out );
++        return S_OK;
++    }
++
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI weak_reference_AddRef( IWeakReference *iface )
++{
++    struct weak_reference *impl = impl_from_IWeakReference( iface );
++    return InterlockedIncrement( &impl->ref_weak );
++}
++
++static ULONG WINAPI weak_reference_Release( IWeakReference *iface )
++{
++    struct weak_reference *impl = impl_from_IWeakReference( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref_weak );
++
++    if (!ref)
++        free( impl );
++    return ref;
++}
++
++static HRESULT WINAPI weak_reference_Resolve( IWeakReference *iface, REFIID iid, IInspectable **out )
++{
++    struct weak_reference *impl = impl_from_IWeakReference( iface );
++    HRESULT hr;
++    LONG ref;
++
++    *out = NULL;
++    do
++    {
++        if (!(ref = ReadNoFence( &impl->ref_strong )))
++            return S_OK;
++    } while (ref != InterlockedCompareExchange( &impl->ref_strong, ref + 1, ref ));
++
++    hr = IUnknown_QueryInterface( impl->object, iid, (void **)out );
++    IUnknown_Release( impl->object );
++    return hr;
++}
++
++static const struct IWeakReferenceVtbl weak_reference_vtbl =
++{
++    weak_reference_QueryInterface,
++    weak_reference_AddRef,
++    weak_reference_Release,
++    weak_reference_Resolve,
++};
++
++static inline struct weak_reference_source *impl_from_IWeakReferenceSource( IWeakReferenceSource *iface )
++{
++    return CONTAINING_RECORD(iface, struct weak_reference_source, IWeakReferenceSource_iface);
++}
++
++static HRESULT WINAPI weak_reference_source_QueryInterface( IWeakReferenceSource *iface, REFIID iid, void **out )
++{
++    struct weak_reference_source *weak_reference_source = impl_from_IWeakReferenceSource( iface );
++    struct weak_reference *weak_reference = impl_from_IWeakReference( weak_reference_source->weak_reference );
++    return IUnknown_QueryInterface( weak_reference->object, iid, out );
++}
++
++static ULONG WINAPI weak_reference_source_AddRef( IWeakReferenceSource *iface )
++{
++    struct weak_reference_source *weak_reference_source = impl_from_IWeakReferenceSource( iface );
++    struct weak_reference *weak_reference = impl_from_IWeakReference( weak_reference_source->weak_reference );
++    return IUnknown_AddRef( weak_reference->object );
++}
++
++static ULONG WINAPI weak_reference_source_Release( IWeakReferenceSource *iface )
++{
++    struct weak_reference_source *weak_reference_source = impl_from_IWeakReferenceSource( iface );
++    struct weak_reference *weak_reference = impl_from_IWeakReference( weak_reference_source->weak_reference );
++    return IUnknown_Release( weak_reference->object );
++}
++
++static HRESULT WINAPI weak_reference_source_GetWeakReference( IWeakReferenceSource *iface,
++                                                              IWeakReference **weak_reference )
++{
++    struct weak_reference_source *impl = impl_from_IWeakReferenceSource( iface );
++
++    *weak_reference = impl->weak_reference;
++    IWeakReference_AddRef( *weak_reference );
++    return S_OK;
++}
++
++static const struct IWeakReferenceSourceVtbl weak_reference_source_vtbl =
++{
++    weak_reference_source_QueryInterface,
++    weak_reference_source_AddRef,
++    weak_reference_source_Release,
++    weak_reference_source_GetWeakReference,
++};
++
++static HRESULT weak_reference_create( IUnknown *object, IWeakReference **out )
++{
++    struct weak_reference *weak_reference;
++
++    if (!(weak_reference = calloc( 1, sizeof(*weak_reference) )))
++        return E_OUTOFMEMORY;
++
++    weak_reference->IWeakReference_iface.lpVtbl = &weak_reference_vtbl;
++    weak_reference->ref_strong = 1;
++    weak_reference->ref_weak = 1;
++    weak_reference->object = object;
++    *out = &weak_reference->IWeakReference_iface;
++    return S_OK;
++}
++
++HRESULT weak_reference_source_init( struct weak_reference_source *source, IUnknown *object )
++{
++    source->IWeakReferenceSource_iface.lpVtbl = &weak_reference_source_vtbl;
++    return weak_reference_create( object, &source->weak_reference );
++}
++
++ULONG weak_reference_strong_add_ref( struct weak_reference_source *source )
++{
++    struct weak_reference *impl = impl_from_IWeakReference( source->weak_reference );
++    return InterlockedIncrement( &impl->ref_strong );
++}
++
++ULONG weak_reference_strong_release( struct weak_reference_source *source )
++{
++    struct weak_reference *impl = impl_from_IWeakReference( source->weak_reference );
++    ULONG ref = InterlockedDecrement( &impl->ref_strong );
++
++    if (!ref)
++        IWeakReference_Release( source->weak_reference );
++    return ref;
++}
+diff --git a/dlls/windows.media.mediacontrol/weakref.h b/dlls/windows.media.mediacontrol/weakref.h
+new file mode 100644
+index 0000000..7d4bc22
+--- /dev/null
++++ b/dlls/windows.media.mediacontrol/weakref.h
+@@ -0,0 +1,38 @@
++/* WinRT weak reference helpers
++ *
++ * Copyright 2025 Zhiyi Zhang for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __WINE_WEAKREF_H
++#define __WINE_WEAKREF_H
++
++#include "weakreference.h"
++
++struct weak_reference_source
++{
++    IWeakReferenceSource IWeakReferenceSource_iface;
++    IWeakReference *weak_reference;
++};
++
++/* Initialize a IWeakReferenceSource with the object to manage */
++HRESULT weak_reference_source_init( struct weak_reference_source *source, IUnknown *object );
++/* Add a strong reference to the managed object */
++ULONG weak_reference_strong_add_ref( struct weak_reference_source *source );
++/* Release a strong reference to the managed object */
++ULONG weak_reference_strong_release( struct weak_reference_source *source );
++
++#endif /* __WINE_WEAKREF_H */

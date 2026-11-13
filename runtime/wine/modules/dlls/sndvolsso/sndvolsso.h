@@ -30,6 +30,7 @@
 #define IDS_DIGITAL_DISPLAY     109
 #define IDS_MUTE                110
 #define IDS_UNMUTE              111
+#define IDS_SENDTO_BLUETOOTH    112
 
 #define MAX_ENDPOINTS 16
 
@@ -61,6 +62,8 @@ UINT audio_endpoints( struct endpoint *list, UINT max );
 void audio_set_level( float level );
 void audio_set_mute( BOOL mute );
 void audio_set_default( const WCHAR *id );
+void audio_set_default_input( const WCHAR *id );
+UINT audio_capture_endpoints( struct endpoint *list, UINT max );
 
 /* listen.c: "Listen to this device" of the Sound control panel */
 void listen_start(void);
@@ -91,6 +94,7 @@ struct media_info
     UINT32 buttons;
     WCHAR  app[128], title[128], artist[128];
     HICON  icon;
+    WCHAR  art[260];          /* the album art's file, "" for none */
 };
 
 BOOL media_current( struct media_info *info );
@@ -108,6 +112,11 @@ void flyout_toggle( HWND tray, UINT icon_id );
 void flyout_hide(void);
 BOOL flyout_visible(void);
 void flyout_refresh(void);
+
+/* bluetooth.c: a headset's buttons, the output following its music */
+void bluetooth_start(void);
+void bluetooth_stop(void);
+void bluetooth_poll(void);
 
 /* tray.c */
 void tray_start(void);

@@ -19,6 +19,9 @@
 
 #include "batmeter.h"
 #include "glyphs.h"
+#include "winreg.h"
+#include "wine/arctic_fluent.h"
+#include "wine/arctic_glyph11.h"
 
 #define SUPERSAMPLE 5
 #define EM          2048
@@ -133,9 +136,39 @@ static float *coverage( WCHAR code, int size, BOOL fit )
     return cov;
 }
 
+/* a battery glyph's charge and what is over it, for Windows 11's picture */
+static BOOL glyph_parts( WCHAR code, float *level, enum g11_badge *badge )
+{
+    if (code == 0xe996)
+    {
+        *level = -1;
+        *badge = G11_NONE;
+        return TRUE;
+    }
+    for (UINT kind = 0; kind < ARRAY_SIZE(battery_codes); kind++)
+        for (UINT tenth = 0; tenth < ARRAY_SIZE(battery_codes[0]); tenth++)
+            if (battery_codes[kind][tenth] == code)
+            {
+                *level = tenth / 10.f;
+                *badge = kind == GLYPH_CHARGING ? G11_BOLT : kind == GLYPH_SAVER ? G11_LEAF : G11_NONE;
+                return TRUE;
+            }
+    return FALSE;
+}
+
+/* Windows 11's battery when the taskbar has its buttons, else Windows 10's glyph */
+static float *style_coverage( WCHAR code, int size, BOOL fit )
+{
+    enum g11_badge badge;
+    float level;
+
+    if (arctic_style11() && glyph_parts( code, &level, &badge )) return g11_render( size, 1, level, badge, FALSE );
+    return coverage( code, size, fit );
+}
+
 float *glyph_coverage( WCHAR code, int size )
 {
-    return coverage( code, size, FALSE );
+    return style_coverage( code, size, FALSE );
 }
 
 static HBITMAP create_dib( HDC hdc, int width, int height, UINT32 **bits )
@@ -177,7 +210,7 @@ void draw_glyph( HDC hdc, WCHAR code, int x, int y, int size, COLORREF color, BY
 HICON make_glyph_icon( WCHAR code, int size )
 {
     ICONINFO info = { .fIcon = TRUE };
-    float *cov = coverage( code, size, TRUE );
+    float *cov = style_coverage( code, size, TRUE );
     UINT32 *bits;
     HICON icon = NULL;
 

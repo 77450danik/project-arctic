@@ -1,0 +1,17 @@
+MODULE    = devicescpl.dll
+IMPORTS   = uuid comctl32 comdlg32 shell32 shlwapi user32 gdi32 advapi32 ole32 dwmapi bluetoothapis
+
+VER_FILEDESCRIPTION_STR = "Devices and Printers Control Panel"
+
+PARENTSRC = ../systemcpl
+
+SOURCES = \
+	battery.c \
+	bluetooth.c \
+	cpanel.c \
+	cpfolder.c \
+	devicescpl.rc \
+	glyphs.c \
+	main.c \
+	sendfiles.c \
+	wizard.c

@@ -23,7 +23,7 @@
 #define ARCTIC_MEDIA_SECTION     L"Global\\__arctic_media"
 #define ARCTIC_MEDIA_MUTEX       L"Global\\__arctic_media_lock"
 #define ARCTIC_MEDIA_BUTTON_MSG  L"ArcticMediaButton"
-#define ARCTIC_MEDIA_VERSION     1
+#define ARCTIC_MEDIA_VERSION     2
 #define ARCTIC_MEDIA_SESSIONS    16
 
 /* the buttons a session takes, 1 << SystemMediaTransportControlsButton */
@@ -46,6 +46,10 @@ struct arctic_media_session
     WCHAR  title[128];
     WCHAR  artist[128];
     WCHAR  album[128];
+    /* the album art (DisplayUpdater.Thumbnail): an image file the program's
+     * process wrote, art_serial moving with each new one; "" for none */
+    UINT32 art_serial;
+    WCHAR  art[260];
 };
 
 struct arctic_media_shared
@@ -55,5 +59,32 @@ struct arctic_media_shared
     UINT32        next_id;
     struct arctic_media_session sessions[ARCTIC_MEDIA_SESSIONS];
 };
+
+/* What a RandomAccessStreamReference of windows.storage was made from, for
+ * windows.media.mediacontrol to read the album art without OpenReadAsync:
+ * the Uri of CreateFromUri, or the IRandomAccessStream of CreateFromStream.
+ * Defined where ARCTIC_MEDIA_STREAM_REFERENCE is, after the COM and WinRT
+ * headers. */
+#ifdef ARCTIC_MEDIA_STREAM_REFERENCE
+#ifndef __IArcticStreamReferenceSource_INTERFACE_DEFINED__
+#define __IArcticStreamReferenceSource_INTERFACE_DEFINED__
+/* in the one file of a module that uses it */
+#define DEFINE_ARCTIC_STREAM_REFERENCE_SOURCE_IID \
+    static const IID IID_IArcticStreamReferenceSource = \
+        { 0x6b1f9c3e, 0x2a4d, 0x4c8e, { 0x9f, 0x17, 0x3d, 0x5a, 0x7e, 0x2b, 0x8c, 0x41 } }
+typedef struct IArcticStreamReferenceSource IArcticStreamReferenceSource;
+typedef struct IArcticStreamReferenceSourceVtbl
+{
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)( IArcticStreamReferenceSource *iface, REFIID iid, void **out );
+    ULONG   (STDMETHODCALLTYPE *AddRef)( IArcticStreamReferenceSource *iface );
+    ULONG   (STDMETHODCALLTYPE *Release)( IArcticStreamReferenceSource *iface );
+    /* the URI's text, or NULL */
+    HRESULT (STDMETHODCALLTYPE *GetUri)( IArcticStreamReferenceSource *iface, HSTRING *uri );
+    /* the IRandomAccessStream, AddRef'ed, or NULL */
+    HRESULT (STDMETHODCALLTYPE *GetStream)( IArcticStreamReferenceSource *iface, IUnknown **stream );
+} IArcticStreamReferenceSourceVtbl;
+struct IArcticStreamReferenceSource { const IArcticStreamReferenceSourceVtbl *lpVtbl; };
+#endif
+#endif
 
 #endif  /* __WINE_ARCTIC_MEDIA_H */

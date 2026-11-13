@@ -1,0 +1,18 @@
+MODULE  = winebth.sys
+IMPORTS = ntoskrnl advapi32 uuid
+UNIXLIB = winebth.so
+UNIX_CFLAGS = $(ALSA_CFLAGS)
+UNIX_LIBS = $(PTHREAD_LIBS) $(ALSA_LIBS) -lm
+
+EXTRADLLFLAGS = -Wl,--subsystem,native
+
+SOURCES = \
+	hci.c \
+	hfp.c \
+	obex.c \
+	profiles.c \
+	sbc.c \
+	unixlib.c \
+	winebluetooth.c \
+	winebth.c \
+	winebth.rc

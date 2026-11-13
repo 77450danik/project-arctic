@@ -9,8 +9,9 @@
  * 12,12 / 12,6 / 12,6,0,6, MediaControlTitleStyle 228 wide), its buttons
  * under them, 36 x 36 with 18 glyphs (Previous E892, Play E768, Pause E769,
  * Next E893; #19FFFFFF under the pointer, #33FFFFFF pressed, 60% when off),
- * and on the right a 96 x 96 tile in a 120 x 120 area, where Windows puts
- * the album art and Arctic the program's icon.
+ * and on the right a 96 x 96 tile in a 120 x 120 area with the album art
+ * (the image file the program's DisplayUpdater.Thumbnail was written to,
+ * cut square from its middle), else the program's icon.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -21,8 +22,11 @@
 #include <math.h>
 #include <stdlib.h>
 
+#define COBJMACROS
 #include "sndvolsso.h"
 #include "winver.h"
+#include "objbase.h"
+#include "wincodec.h"
 #include "wine/arctic_media.h"
 #include "wine/debug.h"
 
@@ -190,6 +194,7 @@ static BOOL find_current( struct media_info *info, BOOL details )
     info->buttons = row.buttons;
     lstrcpynW( info->title, row.title, ARRAY_SIZE(info->title) );
     lstrcpynW( info->artist, row.artist, ARRAY_SIZE(info->artist) );
+    lstrcpynW( info->art, row.art, ARRAY_SIZE(info->art) );
     if (details)
     {
         app_name( row.process, info->app, ARRAY_SIZE(info->app) );
@@ -322,6 +327,87 @@ static void draw_text( HDC hdc, const WCHAR *text, RECT *rect, HFONT font, BYTE 
     SelectObject( hdc, old );
 }
 
+/* WIC's GUIDs are not in libuuid */
+static const CLSID clsid_wic_factory = { 0xcacaf262, 0x9370, 0x4615, { 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
+static const IID iid_wic_factory = { 0xec5ec8a9, 0xc395, 0x4314, { 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
+static const GUID format_32bpp_pbgra = { 0x6fddc324, 0x4e03, 0x4bfe, { 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x10 } };
+
+/* the album art as a size x size premultiplied bitmap, cut square from the
+ * middle of the image; the last one is kept for the next paint */
+static HBITMAP album_art( const WCHAR *path, int size )
+{
+    static WCHAR cached_path[MAX_PATH];
+    static HBITMAP cached;
+    static int cached_size;
+    IWICImagingFactory *factory = NULL;
+    IWICBitmapDecoder *decoder = NULL;
+    IWICBitmapFrameDecode *frame = NULL;
+    IWICBitmapClipper *clipper = NULL;
+    IWICBitmapScaler *scaler = NULL;
+    IWICFormatConverter *converter = NULL;
+    BITMAPINFO bmi = { { sizeof(bmi.bmiHeader) } };
+    HBITMAP bitmap = NULL;
+    UINT width, height, side;
+    WICRect crop;
+    void *bits;
+    HRESULT hr;
+
+    if (cached && cached_size == size && !wcscmp( cached_path, path )) return cached;
+    if (cached) DeleteObject( cached );
+    cached = NULL;
+    lstrcpynW( cached_path, path, ARRAY_SIZE(cached_path) );
+    cached_size = size;
+
+    CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
+    hr = CoCreateInstance( &clsid_wic_factory, NULL, CLSCTX_INPROC_SERVER, &iid_wic_factory, (void **)&factory );
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateDecoderFromFilename( factory, path, NULL, GENERIC_READ,
+                                                                         WICDecodeMetadataCacheOnDemand, &decoder );
+    if (SUCCEEDED(hr)) hr = IWICBitmapDecoder_GetFrame( decoder, 0, &frame );
+    if (SUCCEEDED(hr)) hr = IWICBitmapFrameDecode_GetSize( frame, &width, &height );
+    if (SUCCEEDED(hr) && (!width || !height)) hr = E_FAIL;
+    if (SUCCEEDED(hr))
+    {
+        side = min( width, height );
+        crop.X = (width - side) / 2;
+        crop.Y = (height - side) / 2;
+        crop.Width = crop.Height = side;
+        hr = IWICImagingFactory_CreateBitmapClipper( factory, &clipper );
+    }
+    if (SUCCEEDED(hr)) hr = IWICBitmapClipper_Initialize( clipper, (IWICBitmapSource *)frame, &crop );
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateBitmapScaler( factory, &scaler );
+    if (SUCCEEDED(hr)) hr = IWICBitmapScaler_Initialize( scaler, (IWICBitmapSource *)clipper, size, size,
+                                                         WICBitmapInterpolationModeFant );
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateFormatConverter( factory, &converter );
+    if (SUCCEEDED(hr)) hr = IWICFormatConverter_Initialize( converter, (IWICBitmapSource *)scaler,
+                                                            &format_32bpp_pbgra, WICBitmapDitherTypeNone,
+                                                            NULL, 0.0, WICBitmapPaletteTypeCustom );
+    if (SUCCEEDED(hr))
+    {
+        bmi.bmiHeader.biWidth = size;
+        bmi.bmiHeader.biHeight = -size;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        if ((bitmap = CreateDIBSection( NULL, &bmi, DIB_RGB_COLORS, &bits, NULL, 0 )))
+        {
+            if (FAILED(IWICFormatConverter_CopyPixels( converter, NULL, size * 4, size * size * 4, bits )))
+            {
+                DeleteObject( bitmap );
+                bitmap = NULL;
+            }
+        }
+    }
+    if (FAILED(hr)) WARN( "album art %s: %#lx\n", debugstr_w( path ), hr );
+
+    if (converter) IWICFormatConverter_Release( converter );
+    if (scaler) IWICBitmapScaler_Release( scaler );
+    if (clipper) IWICBitmapClipper_Release( clipper );
+    if (frame) IWICBitmapFrameDecode_Release( frame );
+    if (decoder) IWICBitmapDecoder_Release( decoder );
+    if (factory) IWICImagingFactory_Release( factory );
+    return cached = bitmap;
+}
+
 /* the card in card, which is MEDIA_CARD_WIDTH x MEDIA_CARD_HEIGHT */
 void media_paint( HDC hdc, const RECT *card, const struct media_info *info, int hot, BOOL pressed, BYTE opacity )
 {
@@ -349,9 +435,25 @@ void media_paint( HDC hdc, const RECT *card, const struct media_info *info, int 
         draw_button_glyph( hdc, &rect, action, info->playing, (BYTE)((enabled ? 255 : 0x99) * opacity / 255) );
     }
 
-    /* the program's icon on the tile where Windows has the album art */
+    /* the album art on its tile, else the program's icon */
     SetRect( &rect, card->right - TILE_AREA + (TILE_AREA - TILE_SIZE) / 2, card->top + (TILE_AREA - TILE_SIZE) / 2,
              card->right - TILE_AREA + (TILE_AREA + TILE_SIZE) / 2, card->top + (TILE_AREA + TILE_SIZE) / 2 );
+    if (info->art[0])
+    {
+        HBITMAP art = album_art( info->art, TILE_SIZE );
+        HDC mem;
+
+        if (art && (mem = CreateCompatibleDC( hdc )))
+        {
+            BLENDFUNCTION blend = { AC_SRC_OVER, 0, opacity, AC_SRC_ALPHA };
+            HGDIOBJ old = SelectObject( mem, art );
+
+            GdiAlphaBlend( hdc, rect.left, rect.top, TILE_SIZE, TILE_SIZE, mem, 0, 0, TILE_SIZE, TILE_SIZE, blend );
+            SelectObject( mem, old );
+            DeleteDC( mem );
+            return;
+        }
+    }
     fill_alpha( hdc, &rect, INK, (BYTE)(0x19 * opacity / 255) );
     if (info->icon)
         DrawIconEx( hdc, (rect.left + rect.right) / 2 - px( 24 ), (rect.top + rect.bottom) / 2 - px( 24 ), info->icon,

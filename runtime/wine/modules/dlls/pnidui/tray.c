@@ -26,7 +26,10 @@
 #include "shellapi.h"
 #include "iphlpapi.h"
 #include "wlanapi.h"
+#include "winreg.h"
 #include "wine/debug.h"
+#include "wine/arctic_shell.h"
+#include "wine/arctic_fluent.h"
 
 #include "pnidui.h"
 
@@ -298,18 +301,21 @@ static void paint_arc( struct canvas *c, float cx, float cy, float radius, float
     }
 }
 
-/* Windows 11's Wi-Fi: a dot and three arcs in the taskbar's ink, those the
- * signal does not reach faint */
+/* Wi-Fi: a dot and three arcs in the taskbar's ink, those the signal does
+ * not reach faint; Windows 11's heavier, Windows 10's (Segoe MDL2 Assets'
+ * Wifi1-4) a thin line, with the taskbar's buttons */
 static void paint_wifi( struct canvas *c, UINT bars )
 {
     static const float radii[3] = { 4.0f, 7.4f, 10.8f };
     const float cx = 8, cy = 13.3f;
+    BOOL style11 = arctic_style11();
     UINT32 ink = taskbar_light() ? 0x000000 : 0xffffff;
     UINT arcs = bars >= 4 ? 3 : bars == 3 ? 2 : bars == 2 ? 1 : 0;
     struct rgba dot = color( ink, bars ? 1 : 0.3f );
 
-    paint_circle( c, cx, cy, 1.4f, dot, dot );
-    for (UINT i = 0; i < 3; i++) paint_arc( c, cx, cy, radii[i], 1.6f, color( ink, i < arcs ? 1 : 0.3f ) );
+    paint_circle( c, cx, cy, style11 ? 1.4f : 1.1f, dot, dot );
+    for (UINT i = 0; i < 3; i++)
+        paint_arc( c, cx, cy, radii[i], style11 ? 1.6f : 1.0f, color( ink, i < arcs ? 1 : 0.3f ) );
 }
 
 /* the badge in the corner: a red disc with a white cross (no connection)
@@ -407,8 +413,8 @@ static void update_icon(void)
                              .uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE, .uCallbackMessage = WM_TRAY_ICON };
     struct state state = { 0 };
     static int last_key = -1;
-    static BOOL last_light;
-    BOOL light = taskbar_light();
+    static BOOL last_light, last_style;
+    BOOL light = taskbar_light(), style = arctic_style11();
     int key;
 
     read_wired( &state );
@@ -442,10 +448,10 @@ static void update_icon(void)
         lstrcpynW( data.szTip, load_string( IDS_NOT_CONNECTED ), ARRAY_SIZE(data.szTip) );
     }
 
-    if (key != last_key || !current_icon || light != last_light)
+    if (key != last_key || !current_icon || light != last_light || style != last_style)
     {
         /* a wired network has the pictures of Windows 7 (the two screens);
-         * Wi-Fi is Windows 11's, in the ink of the taskbar */
+         * Wi-Fi is that of the taskbar's buttons, in the ink of the taskbar */
         HICON icon = key >= 100 && key < 200 ? make_icon( ICON_WIRELESS, key - 100, FALSE, FALSE ) :
                      key == 200 ? load_icon( IDI_NETWORK_OK ) :
                      key == 250 ? load_icon( IDI_NETWORK_WARNING ) :
@@ -455,6 +461,7 @@ static void update_icon(void)
         current_icon = icon;
         last_key = key;
         last_light = light;
+        last_style = style;
     }
     else if (!wcscmp( data.szTip, current_tip )) return;
 
@@ -531,6 +538,15 @@ void open_network_center(void)
 
 static LRESULT WINAPI tray_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 {
+    static UINT look_changed;
+
+    if (!look_changed) look_changed = arctic_look_changed_message();
+    if (msg == look_changed)
+    {
+        /* the taskbar's look or its buttons' style changed: the icon follows */
+        update_icon();
+        return 0;
+    }
     if (msg == taskbar_created && taskbar_created)
     {
         /* explorer restarted: the icon goes back */

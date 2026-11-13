@@ -35,6 +35,7 @@
 #include "dwmapi.h"
 #include "wine/arctic_dwm.h"
 #include "wine/arctic_shell.h"
+#include "wine/arctic_fluent.h"
 #include "wine/debug.h"
 
 #include "pnidui.h"
@@ -55,12 +56,19 @@ WINE_DEFAULT_DEBUG_CHANNEL(pnidui);
 #define DISABLED       (light ? RGB( 0xa0, 0xa0, 0xa0 ) : RGB( 0x66, 0x66, 0x66 ))
 
 static BOOL light;   /* the flyout draws dark on white (wine/arctic_shell.h) */
+/* Windows 11's (the taskbar has its buttons): rounded rows on a subtle fill,
+ * WinUI's buttons and check box, the quick actions 96 x 48 with their names
+ * under them, no help text, 12 off the taskbar (wine/arctic_fluent.h) */
+static BOOL style11;
+#define TILE11_WIDTH   px(96)
+#define TILE11_HEIGHT  px(48)
 
 #define REG_KEY        L"Software\\Arctic\\Network"
 
 BOOL WINAPI SetWindowCompositionAttribute( HWND hwnd, void *data );
 
-enum entry_kind { ENTRY_WIRED, ENTRY_WIRELESS, ENTRY_MESSAGE };
+/* Bluetooth's paired devices come after the wired connection, before the networks */
+enum entry_kind { ENTRY_WIRED, ENTRY_BLUETOOTH, ENTRY_WIRELESS, ENTRY_MESSAGE };
 
 struct entry
 {
@@ -72,10 +80,13 @@ struct entry
     WCHAR profile[WLAN_MAX_NAME_LENGTH];
     UINT quality;
     BOOL secured, connected, has_profile, connecting;
+    ULONGLONG bt_address;       /* a Bluetooth device */
+    UINT32 bt_class;
+    BYTE bt_battery[5];         /* its batteries (struct bt_entry) */
 };
 
-enum hit { HIT_NONE, HIT_ENTRY, HIT_BUTTON, HIT_CHECK, HIT_LINK, HIT_TILE };
-enum tile { TILE_WIFI, TILE_AIRPLANE, TILE_HOTSPOT, TILE_COUNT };
+enum hit { HIT_NONE, HIT_ENTRY, HIT_BUTTON, HIT_CHECK, HIT_LINK, HIT_TILE, HIT_TILE_ARROW };
+enum tile { TILE_WIFI, TILE_BLUETOOTH, TILE_AIRPLANE, TILE_HOTSPOT, TILE_COUNT };
 
 static HWND flyout;
 static struct entry *entries;
@@ -85,6 +96,17 @@ static enum hit hot = HIT_NONE, pressed = HIT_NONE;
 static int hot_index = -1, pressed_index = -1;
 static HFONT font_name, font_tile;
 static BOOL radio_on, airplane;
+static BOOL bt_present, bt_on;     /* a Bluetooth radio, switched on */
+static BOOL show_bluetooth;        /* the list holds the Bluetooth devices, not the networks */
+static ULONGLONG bt_connecting;    /* the device a click has just connected or disconnected */
+static BOOL bt_connect_wanted;     /* which of the two */
+static DWORD bt_connecting_since;
+
+/* an entry that opens with a button when picked */
+static BOOL selectable( const struct entry *entry )
+{
+    return entry->kind == ENTRY_WIRELESS || entry->kind == ENTRY_BLUETOOTH;
+}
 static DWORD hidden_at;
 BOOL asking_key;
 
@@ -119,13 +141,20 @@ static BOOL near_arc( float x, float y, float cx, float cy, float r, float from,
     return t <= to - from;
 }
 
-enum glyph { GLYPH_WIFI, GLYPH_ETHERNET, GLYPH_AIRPLANE, GLYPH_HOTSPOT, GLYPH_LOCK };
+enum glyph { GLYPH_WIFI, GLYPH_ETHERNET, GLYPH_AIRPLANE, GLYPH_HOTSPOT, GLYPH_LOCK, GLYPH_BLUETOOTH };
 
 /* coverage of one sample: 1 lit, 2 dim (the arcs above the signal), 0 none */
 static int sample( enum glyph glyph, float x, float y, UINT level )
 {
     switch (glyph)
     {
+    case GLYPH_BLUETOOTH:
+        /* Bluetooth's rune */
+        if (near_segment( x, y, 4.6f, 4.4f, 11.2f, 10.6f, 1.1f ) || near_segment( x, y, 11.2f, 10.6f, 8, 13.8f, 1.1f ) ||
+            near_segment( x, y, 8, 13.8f, 8, 2.2f, 1.1f ) || near_segment( x, y, 8, 2.2f, 11.2f, 5.4f, 1.1f ) ||
+            near_segment( x, y, 11.2f, 5.4f, 4.6f, 11.6f, 1.1f ))
+            return 1;
+        return 0;
     case GLYPH_WIFI:
     {
         /* a little left and smaller, so a padlock fits bottom right, as in Windows */
@@ -309,6 +338,37 @@ static void fill_entries(void)
     read_wired( &state );
     read_wifi( &state );
     read_radio();
+    bt_present = bt_state( &bt_on );
+    if (!bt_present) show_bluetooth = FALSE;
+
+    /* the Bluetooth tile's arrow shows the paired devices in place of the networks */
+    if (show_bluetooth)
+    {
+        struct bt_entry devices[16];
+        UINT count = bt_on ? bt_paired( devices, ARRAY_SIZE(devices) ) : 0;
+
+        if (bt_connecting && GetTickCount() - bt_connecting_since > 20000) bt_connecting = 0;
+        for (UINT i = 0; i < count; i++)
+        {
+            if (!(entry = add_entry( ENTRY_BLUETOOTH, devices[i].name ))) break;
+            entry->bt_address = devices[i].address;
+            entry->bt_class = devices[i].class;
+            entry->connected = devices[i].connected;
+            memcpy( entry->bt_battery, devices[i].battery, sizeof(entry->bt_battery) );
+            /* connected (its music too) or gone, as the click asked */
+            if (bt_connecting == devices[i].address &&
+                (bt_connect_wanted ? devices[i].audio || (devices[i].connected && !(devices[i].class & (1 << 21)) &&
+                                                          ((devices[i].class >> 8) & 0x1f) != 0x04)
+                                   : !devices[i].connected))
+                bt_connecting = 0;
+            entry->connecting = bt_connecting == devices[i].address;
+            lstrcpyW( entry->detail, load_string( entry->connecting ? IDS_CONNECTING : devices[i].audio ? IDS_BT_MUSIC :
+                                                  devices[i].connected ? IDS_CONNECTED : IDS_BT_PAIRED ) );
+            lstrcpyW( entry->detail_selected, entry->detail );
+        }
+        if (!entry_count) add_entry( ENTRY_MESSAGE, load_string( bt_on ? IDS_BT_NONE : IDS_BT_OFF ) );
+        return;
+    }
 
     if (state.wired_present && (entry = add_entry( ENTRY_WIRED, load_string( IDS_NETWORK ) )))
     {
@@ -364,7 +424,7 @@ static void fill_entries(void)
  */
 
 static int line15, line12;      /* the heights of a line at 15 and at 12 */
-static int entry_top[256], separator_y, list_content;
+static int entry_top[256], separators[4], separator_count, list_content;
 static BOOL autoconnect = TRUE;
 
 static int text_block(void)
@@ -388,24 +448,25 @@ static int entry_height( int i )
     {
         /* the pre-connection content: margin 48,4,0,0, a panel 299 wide with 4 under it */
         height += px( 4 );
-        if (!entry->connected) height += px( 32 );          /* Connect automatically */
+        if (!entry->connected && entry->kind == ENTRY_WIRELESS) height += px( 32 );   /* Connect automatically */
         height += px( 12 ) + px( 32 ) + px( 4 );             /* the button, its margin, the panel's */
     }
     return height;
 }
 
-/* where each row starts in the list, and the separator between the
- * connections and the wireless networks (margin 12 all round) */
+/* where each row starts in the list, and the separators between the
+ * connections, the Bluetooth devices and the wireless networks (margin 12 all round) */
 static void layout_entries(void)
 {
     int y = px( 12 );   /* the StackPanel's margin 0,12,0,0 */
 
-    separator_y = -1;
+    separator_count = 0;
     for (UINT i = 0; i < entry_count && i < ARRAY_SIZE(entry_top); i++)
     {
-        if (i && entries[i - 1].kind == ENTRY_WIRED && entries[i].kind != ENTRY_WIRED)
+        if (i && entries[i - 1].kind != entries[i].kind && entries[i - 1].kind != ENTRY_MESSAGE &&
+            separator_count < ARRAY_SIZE(separators))
         {
-            separator_y = y + px( 12 );
+            separators[separator_count++] = y + px( 12 );
             y += px( 12 ) + 1 + px( 12 );
         }
         entry_top[i] = y;
@@ -439,10 +500,13 @@ static int link_height(void)
 
 static int help_height(void)
 {
-    HDC hdc = GetDC( flyout );
-    HGDIOBJ old = SelectObject( hdc, font_tile );
+    HDC hdc;
+    HGDIOBJ old;
     RECT rect = { 0, 0, FLYOUT_WIDTH - 2 * px( 12 ), 0 };
 
+    if (style11) return 0;
+    hdc = GetDC( flyout );
+    old = SelectObject( hdc, font_tile );
     DrawTextW( hdc, load_string( IDS_SETTINGS_HELP ), -1, &rect, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX );
     SelectObject( hdc, old );
     ReleaseDC( flyout, hdc );
@@ -451,12 +515,15 @@ static int help_height(void)
 
 static int tiles_top(void)
 {
+    if (style11) return link_top() + link_height() + px( 8 );
     /* the help: margin 12,-5,12,12 */
     return link_top() + link_height() - px( 5 ) + help_height() + px( 12 );
 }
 
 static int flyout_height(void)
 {
+    /* Windows 11's: the names under the quick actions, 12 under them */
+    if (style11) return tiles_top() + TILE11_HEIGHT + px( 6 ) + 2 * line12 + px( 12 );
     return tiles_top() + TILE_HEIGHT + px( 4 );
 }
 
@@ -499,7 +566,8 @@ static RECT button_rect( int index )
     /* MinWidth 148 (SingleButtonMinWidth), padding 8,4,8,5, 32 high, right in the 299 panel */
     width = max( px( 148 ), size.cx + px( 16 ) );
     entry_rect( index, &rect );
-    top = rect.top + px( 5 ) + text_block() + px( 4 ) + (entries[index].connected ? 0 : px( 32 )) + px( 12 );
+    top = rect.top + px( 5 ) + text_block() + px( 4 ) +
+          (entries[index].connected || entries[index].kind != ENTRY_WIRELESS ? 0 : px( 32 )) + px( 12 );
     SetRect( &rect, px( 48 + 299 ) - width, top, px( 48 + 299 ), top + px( 32 ) );
     return rect;
 }
@@ -511,25 +579,50 @@ static RECT link_rect(void)
     return rect;
 }
 
-/* QuickActionControlStyle: 85 x 64, margin 4,0,0,4, side by side */
+/* QuickActionControlStyle: 85 x 64, margin 4,0,0,4, side by side; Windows 11's
+ * three of 96 a row, the mobile hotspot (not there yet) left out */
 static RECT tile_rect( int tile )
 {
     RECT rect;
     int left = px( 4 ) + tile * px( 85 + 4 );
 
+    if (style11)
+    {
+        if (tile == TILE_HOTSPOT)
+        {
+            SetRectEmpty( &rect );
+            return rect;
+        }
+        left = px( 12 ) + tile * (TILE11_WIDTH + px( 12 ));
+        SetRect( &rect, left, tiles_top(), left + TILE11_WIDTH, tiles_top() + TILE11_HEIGHT );
+        return rect;
+    }
     SetRect( &rect, left, tiles_top(), left + px( 85 ), tiles_top() + px( 64 ) );
+    return rect;
+}
+
+/* the arrow on Bluetooth's tile that shows its devices in the list: the
+ * tile's right part in Windows 11's, its upper right corner in Windows 10's */
+static RECT tile_arrow_rect(void)
+{
+    RECT rect = tile_rect( TILE_BLUETOOTH );
+
+    if (style11) rect.left = rect.right - px( 32 );
+    else SetRect( &rect, rect.right - px( 28 ), rect.top, rect.right, rect.top + px( 28 ) );
     return rect;
 }
 
 static BOOL tile_enabled( int tile )
 {
     if (tile == TILE_HOTSPOT) return FALSE;
-    return have_wifi;
+    if (tile == TILE_BLUETOOTH) return bt_present;
+    return have_wifi || (tile == TILE_AIRPLANE && bt_present);
 }
 
 static BOOL tile_on( int tile )
 {
     if (tile == TILE_WIFI) return radio_on;
+    if (tile == TILE_BLUETOOTH) return bt_on;
     if (tile == TILE_AIRPLANE) return airplane;
     return FALSE;
 }
@@ -546,16 +639,23 @@ static enum hit hit_test( POINT pt, int *index )
             if (!entry_rect( i, &rect ) || !PtInRect( &rect, pt )) continue;
             if (entries[i].kind == ENTRY_MESSAGE) return HIT_NONE;
             *index = i;
-            if ((int)i == selected && entries[i].kind == ENTRY_WIRELESS)
+            if ((int)i == selected && selectable( &entries[i] ))
             {
                 if (rect = button_rect( i ), PtInRect( &rect, pt )) return HIT_BUTTON;
-                if (!entries[i].connected && (rect = check_rect( i ), PtInRect( &rect, pt ))) return HIT_CHECK;
+                if (entries[i].kind == ENTRY_WIRELESS && !entries[i].connected &&
+                    (rect = check_rect( i ), PtInRect( &rect, pt )))
+                    return HIT_CHECK;
             }
             return HIT_ENTRY;
         }
         return HIT_NONE;
     }
     if (rect = link_rect(), PtInRect( &rect, pt )) return HIT_LINK;
+    if (bt_present && (rect = tile_arrow_rect(), PtInRect( &rect, pt )))
+    {
+        *index = TILE_BLUETOOTH;
+        return HIT_TILE_ARROW;
+    }
     for (int t = 0; t < TILE_COUNT; t++)
     {
         rect = tile_rect( t );
@@ -611,20 +711,129 @@ static void frame( HDC hdc, const RECT *rect, int width, COLORREF color, BYTE al
     SetRect( &side, rect->right - width, rect->top + width, rect->right, rect->bottom - width ); fill_alpha( hdc, &side, color, alpha );
 }
 
+static enum fluent_state state11( enum hit what, int index )
+{
+    if (is_pressed( what, index )) return FLUENT_PRESSED;
+    if (is_hot( what, index )) return FLUENT_HOT;
+    return FLUENT_REST;
+}
+
+/* a Bluetooth device's batteries as rings at the right of its row's text;
+ * how much of the text's width they take */
+static int paint_battery( HDC hdc, int i, const RECT *row, BOOL dark )
+{
+    const struct entry *entry = &entries[i];
+    int width;
+    RECT rings;
+
+    if (entry->kind != ENTRY_BLUETOOTH || !entry->connected || !(width = bt_battery_width( entry->bt_battery )))
+        return 0;
+    SetRect( &rings, row->right - px( 10 ) - width, row->top + px( 5 ), row->right - px( 10 ),
+             row->top + px( 5 ) + text_block() );
+    bt_draw_battery( hdc, entry->bt_battery, &rings, dark, font_name );
+    return width + px( 8 );
+}
+
+/* a row of Windows 11's list: rounded, subtle under the pointer, the picked
+ * one lighter and opened: the check box and the button of WinUI */
+static void paint_entry11( HDC hdc, int i )
+{
+    const struct entry *entry = &entries[i];
+    BOOL chosen = i == selected && selectable( entry );
+    RECT rect, text, back;
+    BYTE fill;
+
+    if (!entry_rect( i, &rect )) return;
+    back = rect;
+    InflateRect( &back, -px( 4 ), -px( 1 ) );
+    fill = fluent_subtle_alpha( state11( HIT_ENTRY, i ), light );
+    if (chosen) fill = max( fill, fluent_subtle_alpha( FLUENT_HOT, light ) );
+    if (fill) fluent_rect( hdc, &back, px( 4 ), INK, fill );
+
+    if (entry->kind == ENTRY_WIRED)
+        draw_glyph( hdc, GLYPH_ETHERNET, px( 12 ), rect.top + px( 5 ), px( 26 ), 4, INK, 255 );
+    else if (entry->kind == ENTRY_BLUETOOTH)
+        bt_draw_icon( hdc, entry->bt_class, px( 12 ), rect.top + px( 5 ), GLYPH, INK );
+    else
+    {
+        draw_glyph( hdc, GLYPH_WIFI, px( 12 ), rect.top + px( 5 ), GLYPH,
+                    !entry->quality ? 0 : 1 + min( 3, entry->quality / 25 ), INK, 255 );
+        if (entry->secured) draw_glyph( hdc, GLYPH_LOCK, px( 12 ), rect.top + px( 5 ), GLYPH, 1, INK, 255 );
+    }
+    SetRect( &text, text_left( i ), rect.top + px( 5 ), rect.right - px( 10 ), rect.top + px( 5 ) + line15 );
+    text.right -= paint_battery( hdc, i, &rect, !light );
+    draw_text( hdc, entry->name, &text, font_name, INK, DT_SINGLELINE );
+    OffsetRect( &text, 0, line15 );
+    draw_text( hdc, chosen ? entry->detail_selected : entry->detail, &text, font_name, MEDIUM, DT_SINGLELINE );
+    if (!chosen) return;
+
+    if (!entry->connected && entry->kind == ENTRY_WIRELESS)
+    {
+        RECT check = check_rect( i ), box;
+
+        /* CheckBox: 20, rounded 4; ControlStrongStroke off, the accent with a tick on */
+        SetRect( &box, check.left, (check.top + check.bottom) / 2 - px( 10 ), check.left + px( 20 ),
+                 (check.top + check.bottom) / 2 + px( 10 ) );
+        if (autoconnect)
+        {
+            float u = fluent_unit(), cx = (box.left + box.right) / 2.f, cy = (box.top + box.bottom) / 2.f;
+
+            fluent_rect( hdc, &box, 4 * u, is_hot( HIT_CHECK, i ) ? FLUENT_ACCENT_HOT( light ) : FLUENT_ACCENT( light ), 255 );
+            fluent_line( hdc, cx - 4.5f * u, cy, cx - 1.5f * u, cy + 3 * u, 1.2f * u, FLUENT_ON_ACCENT( light ), 255 );
+            fluent_line( hdc, cx - 1.5f * u, cy + 3 * u, cx + 4.5f * u, cy - 3.5f * u, 1.2f * u, FLUENT_ON_ACCENT( light ), 255 );
+        }
+        else
+        {
+            fluent_rect( hdc, &box, px( 4 ), INK, is_hot( HIT_CHECK, i ) ? 0x15 : 0x0a );
+            fluent_box( hdc, box.left, box.top, box.right, box.bottom, px( 4 ), 1.f, INK, 0x8b );
+        }
+        SetRect( &text, box.right + px( 8 ), check.top, check.right, check.bottom );
+        draw_text( hdc, load_string( IDS_AUTOCONNECT ), &text, font_name, INK, DT_SINGLELINE | DT_VCENTER );
+    }
+    {
+        RECT button = button_rect( i ), inner;
+        enum fluent_state state = entry->connecting ? FLUENT_DISABLED : state11( HIT_BUTTON, i );
+        const WCHAR *label = load_string( entry->connecting ? IDS_CONNECTING : entry->connected ? IDS_DISCONNECT_PLAIN :
+                                          IDS_CONNECT_PLAIN );
+
+        if (!entry->connected && !entry->connecting)
+        {
+            /* AccentButtonStyle: opaque, its text TextOnAccentFillColorPrimary */
+            fluent_rect( hdc, &button, px( 4 ), state == FLUENT_HOT ? FLUENT_ACCENT_HOT( light ) : FLUENT_ACCENT( light ), 255 );
+            draw_text( hdc, label, &button, font_name, FLUENT_ON_ACCENT( light ), DT_SINGLELINE | DT_VCENTER | DT_CENTER );
+            inner = button;
+            InflateRect( &inner, -px( 4 ), 0 );
+            make_opaque( &inner );
+        }
+        else
+        {
+            /* ButtonStyle: ControlFillColorDefault with its edge */
+            fluent_toggle( hdc, &button, FALSE, state, light, NULL, 0, 0 );
+            draw_text( hdc, label, &button, font_name, state == FLUENT_DISABLED ? MEDIUM : INK,
+                       DT_SINGLELINE | DT_VCENTER | DT_CENTER );
+        }
+    }
+}
+
 static void paint_entry( HDC hdc, int i )
 {
     const struct entry *entry = &entries[i];
-    BOOL chosen = i == selected && entry->kind == ENTRY_WIRELESS;
+    BOOL chosen = i == selected && selectable( entry );
     COLORREF medium = chosen ? mix( WHITE, ACCENT, 0x99 ) : MEDIUM, fore = chosen ? WHITE : INK;
     RECT rect, text;
 
+    if (style11 && entry->kind != ENTRY_MESSAGE)
+    {
+        paint_entry11( hdc, i );
+        return;
+    }
     if (!entry_rect( i, &rect )) return;
     if (entry->kind == ENTRY_MESSAGE)
     {
-        /* the Wi-Fi category with its radio off */
-        draw_glyph( hdc, GLYPH_WIFI, px( 12 ), rect.top + px( 2 ), GLYPH, 4, DISABLED, 255 );
+        /* the Wi-Fi category with its radio off, or Bluetooth with nothing to show */
+        draw_glyph( hdc, show_bluetooth ? GLYPH_BLUETOOTH : GLYPH_WIFI, px( 12 ), rect.top + px( 2 ), GLYPH, 4, DISABLED, 255 );
         SetRect( &text, px( 50 ), rect.top + px( 5 ), rect.right - px( 12 ), rect.top + px( 5 ) + line15 );
-        draw_text( hdc, load_string( IDS_TILE_WIFI ), &text, font_name, INK, DT_SINGLELINE );
+        draw_text( hdc, load_string( show_bluetooth ? IDS_TILE_BLUETOOTH : IDS_TILE_WIFI ), &text, font_name, INK, DT_SINGLELINE );
         OffsetRect( &text, 0, line15 );
         draw_text( hdc, entry->name, &text, font_name, medium, DT_SINGLELINE );
         return;
@@ -637,6 +846,8 @@ static void paint_entry( HDC hdc, int i )
 
     if (entry->kind == ENTRY_WIRED)
         draw_glyph( hdc, GLYPH_ETHERNET, px( 12 ), rect.top + px( 5 ), px( 26 ), 4, fore, 255 );
+    else if (entry->kind == ENTRY_BLUETOOTH)
+        bt_draw_icon( hdc, entry->bt_class, px( 12 ), rect.top + px( 5 ), GLYPH, fore );
     else
     {
         draw_glyph( hdc, GLYPH_WIFI, px( 12 ), rect.top + px( 5 ), GLYPH,
@@ -645,6 +856,7 @@ static void paint_entry( HDC hdc, int i )
             draw_glyph( hdc, GLYPH_LOCK, px( 12 ), rect.top + px( 5 ), GLYPH, 1, fore, 255 );
     }
     SetRect( &text, text_left( i ), rect.top + px( 5 ), rect.right - px( 10 ), rect.top + px( 5 ) + line15 );
+    text.right -= paint_battery( hdc, i, &rect, chosen || !light );
     draw_text( hdc, entry->name, &text, font_name, fore, DT_SINGLELINE );
     OffsetRect( &text, 0, line15 );
     draw_text( hdc, chosen ? entry->detail_selected : entry->detail, &text, font_name, medium, DT_SINGLELINE );
@@ -654,7 +866,7 @@ static void paint_entry( HDC hdc, int i )
         RECT button = button_rect( i );
         BYTE fill = is_pressed( HIT_BUTTON, i ) ? 0x66 : 0x33;
 
-        if (!entry->connected)
+        if (!entry->connected && entry->kind == ENTRY_WIRELESS)
         {
             RECT check = check_rect( i ), box;
 
@@ -692,9 +904,26 @@ static void paint_link( HDC hdc )
 {
     RECT link = link_rect(), text;
 
+    if (style11)
+    {
+        /* HyperlinkButton of WinUI: AccentTextFillColorPrimary, no underline,
+         * a subtle fill under the pointer */
+        SIZE size;
+        HGDIOBJ old = SelectObject( hdc, font_name );
+        const WCHAR *s = load_string( show_bluetooth ? IDS_BT_SETTINGS : IDS_SETTINGS_LINK );
+        RECT back;
+
+        GetTextExtentPoint32W( hdc, s, lstrlenW( s ), &size );
+        SelectObject( hdc, old );
+        SetRect( &back, link.left - px( 8 ), link.top, link.left + size.cx + px( 8 ), link.bottom );
+        fluent_rect( hdc, &back, px( 4 ), INK, fluent_subtle_alpha( state11( HIT_LINK, -1 ), light ) );
+        SetRect( &text, link.left, link.top + px( 5 ), link.right, link.top + px( 5 ) + line15 );
+        draw_text( hdc, s, &text, font_name, light ? RGB( 0x00, 0x3e, 0x92 ) : RGB( 0x99, 0xeb, 0xff ), DT_SINGLELINE );
+        return;
+    }
     /* AccentHyperlinkButtonStyle: SystemAccentColorLight3; HyperlinkButton's padding 0,5,0,6 */
     SetRect( &text, link.left, link.top + px( 5 ), link.right, link.top + px( 5 ) + line15 );
-    draw_text( hdc, load_string( IDS_SETTINGS_LINK ), &text, font_name,
+    draw_text( hdc, load_string( show_bluetooth ? IDS_BT_SETTINGS : IDS_SETTINGS_LINK ), &text, font_name,
                is_pressed( HIT_LINK, -1 ) ? MEDIUM : is_hot( HIT_LINK, -1 ) ? LINK_HOT : LINK_COLOR,
                DT_SINGLELINE );
     if (is_hot( HIT_LINK, -1 ))
@@ -702,7 +931,7 @@ static void paint_link( HDC hdc )
         HDC dc = hdc;
         SIZE size;
         HGDIOBJ old = SelectObject( dc, font_name );
-        const WCHAR *s = load_string( IDS_SETTINGS_LINK );
+        const WCHAR *s = load_string( show_bluetooth ? IDS_BT_SETTINGS : IDS_SETTINGS_LINK );
         RECT underline;
 
         GetTextExtentPoint32W( dc, s, lstrlenW( s ), &size );
@@ -717,8 +946,8 @@ static void paint_link( HDC hdc )
 
 static void paint_tiles( HDC hdc )
 {
-    static const UINT names[TILE_COUNT] = { IDS_TILE_WIFI, IDS_TILE_AIRPLANE, IDS_TILE_HOTSPOT };
-    static const enum glyph glyphs[TILE_COUNT] = { GLYPH_WIFI, GLYPH_AIRPLANE, GLYPH_HOTSPOT };
+    static const UINT names[TILE_COUNT] = { IDS_TILE_WIFI, IDS_TILE_BLUETOOTH, IDS_TILE_AIRPLANE, IDS_TILE_HOTSPOT };
+    static const enum glyph glyphs[TILE_COUNT] = { GLYPH_WIFI, GLYPH_BLUETOOTH, GLYPH_AIRPLANE, GLYPH_HOTSPOT };
 
     for (int t = 0; t < TILE_COUNT; t++)
     {
@@ -726,6 +955,33 @@ static void paint_tiles( HDC hdc )
         BOOL enabled = tile_enabled( t ), on = tile_on( t ) && enabled;
         COLORREF fore = !enabled ? DISABLED : on && !is_pressed( HIT_TILE, t ) ? WHITE : INK;
         int height;
+
+        if (IsRectEmpty( &rect )) continue;
+        if (style11)
+        {
+            /* Quick Settings' quick action: the button, its glyph in the middle, its name under it */
+            enum fluent_state state = !enabled ? FLUENT_DISABLED : state11( HIT_TILE, t );
+            int glyph = px( 20 );
+
+            int mid = (rect.left + rect.right) / 2;
+
+            fore = fluent_toggle( hdc, &rect, on, state, light, paint_bits, paint_width, paint_height );
+            if (t == TILE_BLUETOOTH && enabled)
+            {
+                /* the split button of Quick Settings: the switch, and the arrow to the devices */
+                RECT arrow = tile_arrow_rect(), line = { arrow.left, rect.top + px( 10 ), arrow.left + 1, rect.bottom - px( 10 ) };
+
+                if (is_hot( HIT_TILE_ARROW, t )) fluent_rect( hdc, &arrow, px( 4 ), fore, is_pressed( HIT_TILE_ARROW, t ) ? 0x20 : 0x30 );
+                fill_alpha( hdc, &line, fore, 0x60 );
+                fluent_chevron( hdc, (arrow.left + arrow.right) / 2, (arrow.top + arrow.bottom) / 2, px( 12 ),
+                                show_bluetooth ? FLUENT_UP : FLUENT_DOWN, fore, 255 );
+                mid = (rect.left + arrow.left) / 2;
+            }
+            draw_glyph( hdc, glyphs[t], mid - glyph / 2, (rect.top + rect.bottom - glyph) / 2, glyph, 4, fore, 255 );
+            SetRect( &text, rect.left - px( 6 ), rect.bottom + px( 6 ), rect.right + px( 6 ), rect.bottom + px( 6 ) + 2 * line12 );
+            draw_text( hdc, load_string( names[t] ), &text, font_tile, enabled ? INK : DISABLED, DT_WORDBREAK | DT_CENTER );
+            continue;
+        }
 
         /* ToggleButtonRevealStyle: BaseLow off, the accent on, BaseMediumLow pressed;
          * the reveal border lights under the pointer */
@@ -745,6 +1001,15 @@ static void paint_tiles( HDC hdc )
         height = min( (int)measure.bottom, 2 * line12 );
         SetRect( &text, rect.left + px( 4 ), rect.bottom - px( 4 ) - height, rect.right - px( 1 ), rect.bottom - px( 4 ) );
         draw_text( hdc, load_string( names[t] ), &text, font_tile, fore, DT_WORDBREAK );
+        if (t == TILE_BLUETOOTH && enabled)
+        {
+            /* the arrow to the devices, in the tile's corner */
+            RECT arrow = tile_arrow_rect();
+
+            if (is_hot( HIT_TILE_ARROW, t )) fill_alpha( hdc, &arrow, on ? WHITE : INK, 0x33 );
+            fluent_chevron( hdc, (arrow.left + arrow.right) / 2, (arrow.top + arrow.bottom) / 2, px( 10 ),
+                            show_bluetooth ? FLUENT_UP : FLUENT_DOWN, fore, 255 );
+        }
         if (on && !is_pressed( HIT_TILE, t )) make_opaque( &rect );
     }
 }
@@ -773,10 +1038,10 @@ static void on_paint( HWND hwnd )
         clip = CreateRectRgnIndirect( &list );
         SelectClipRgn( mem, clip );
         for (UINT i = 0; i < entry_count; i++) paint_entry( mem, i );
-        if (separator_y >= 0)
+        for (int s = 0; s < separator_count; s++)
         {
             /* SeparatorBorderStyle: a 1 line of BaseLow, margin 12 */
-            RECT line = { px( 12 ), separator_y - scroll, client.right - px( 12 ), separator_y - scroll + 1 };
+            RECT line = { px( 12 ), separators[s] - scroll, client.right - px( 12 ), separators[s] - scroll + 1 };
             fill_alpha( mem, &line, INK, 0x33 );
         }
         SelectClipRgn( mem, NULL );
@@ -935,6 +1200,8 @@ static void set_airplane( BOOL on )
         RegCloseKey( key );
     }
     set_radio( !on );
+    /* airplane mode takes Bluetooth too, as in Windows */
+    if (bt_present) bt_set_power( !on );
 }
 
 static void activate( enum hit what, int index )
@@ -942,12 +1209,26 @@ static void activate( enum hit what, int index )
     switch (what)
     {
     case HIT_ENTRY:
-        if (entries[index].kind != ENTRY_WIRELESS) break;
+        if (!selectable( &entries[index] )) break;
         selected = selected == index ? -1 : index;
         flyout_layout( FALSE );
         break;
     case HIT_BUTTON:
-        if (!entries[index].connecting) connect_entry( index );
+        if (entries[index].connecting) break;
+        if (entries[index].kind == ENTRY_BLUETOOTH)
+        {
+            /* the driver connects the device's music; the list shows it when it has */
+            bt_connect( entries[index].bt_address, !entries[index].connected );
+            bt_connect_wanted = !entries[index].connected;
+            bt_connecting = entries[index].bt_address;
+            bt_connecting_since = GetTickCount();
+            entries[index].connecting = TRUE;
+            lstrcpyW( entries[index].detail, load_string( IDS_CONNECTING ) );
+            lstrcpyW( entries[index].detail_selected, entries[index].detail );
+            InvalidateRect( flyout, NULL, FALSE );
+            break;
+        }
+        connect_entry( index );
         break;
     case HIT_CHECK:
         autoconnect = !autoconnect;
@@ -955,7 +1236,18 @@ static void activate( enum hit what, int index )
         break;
     case HIT_LINK:
         ShowWindow( flyout, SW_HIDE );
-        open_network_center();
+        if (show_bluetooth)
+            ShellExecuteW( NULL, NULL, L"explorer.exe",
+                           L"::{26EE0668-A00A-44D7-9371-BEB064C98683}\\0\\::{A8A91A66-3A7D-4424-8D24-04E180695C7A}",
+                           NULL, SW_SHOWNORMAL );
+        else open_network_center();
+        break;
+    case HIT_TILE_ARROW:
+        /* the list shows the Bluetooth devices, or the networks again */
+        show_bluetooth = !show_bluetooth;
+        selected = -1;
+        scroll = 0;
+        flyout_refresh();
         break;
     case HIT_TILE:
         if (index == TILE_WIFI)
@@ -964,6 +1256,7 @@ static void activate( enum hit what, int index )
             else set_radio( !radio_on );
         }
         else if (index == TILE_AIRPLANE) set_airplane( !airplane );
+        else if (index == TILE_BLUETOOTH) bt_set_power( !bt_on );
         /* iwd brings the device up or down in a moment */
         Sleep( 300 );
         flyout_refresh();
@@ -1115,8 +1408,11 @@ void flyout_layout( BOOL reposition )
     GetWindowRect( flyout, &rect );
     if (reposition)
     {
-        rect.right = work.right;
-        rect.bottom = work.bottom;
+        /* Windows 11's floats 12 off the taskbar and the screen's edge */
+        int margin = style11 ? (int)(FLUENT_MARGIN * fluent_unit() + 0.5f) : 0;
+
+        rect.right = work.right - margin;
+        rect.bottom = work.bottom - margin;
     }
     SetWindowPos( flyout, HWND_TOPMOST, rect.right - FLYOUT_WIDTH, rect.bottom - height, FLYOUT_WIDTH, height,
                   SWP_NOACTIVATE );
@@ -1138,7 +1434,7 @@ void flyout_refresh(void)
     fill_entries();
     selected = -1;
     for (UINT i = 0; keep[0] && i < entry_count && selected < 0; i++)
-        if (entries[i].kind == ENTRY_WIRELESS && !wcscmp( entries[i].name, keep )) selected = i;
+        if (selectable( &entries[i] ) && !wcscmp( entries[i].name, keep )) selected = i;
     flyout_layout( FALSE );
 }
 
@@ -1153,6 +1449,8 @@ void flyout_toggle(void)
     /* the click on the icon that took the focus away and closed it */
     if (GetTickCount() - hidden_at < 300) return;
     if (have_wifi) WlanScan( wlan, &wifi_guid, NULL, NULL, NULL );
+    style11 = arctic_style11();
+    show_bluetooth = FALSE;
     selected = -1;
     scroll = 0;
     hot = pressed = HIT_NONE;

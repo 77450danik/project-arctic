@@ -1,0 +1,657 @@
+diff --git a/dlls/wintypes/Makefile.in b/dlls/wintypes/Makefile.in
+index 883d02f..3f6491e 100644
+--- a/dlls/wintypes/Makefile.in
++++ b/dlls/wintypes/Makefile.in
+@@ -7,6 +7,7 @@ SOURCES = \
+ 	classes.idl \
+ 	main.c \
+ 	map.c \
++	memorybuffer.c \
+ 	propertyset.c \
+ 	storage.c \
+ 	wintypes_private.idl
+diff --git a/dlls/wintypes/buffer.c b/dlls/wintypes/buffer.c
+index 620cb39..d3b1ee0 100644
+--- a/dlls/wintypes/buffer.c
++++ b/dlls/wintypes/buffer.c
+@@ -27,6 +27,7 @@ struct buffer_factory_statics
+ {
+     IActivationFactory IActivationFactory_iface;
+     IBufferFactory IBufferFactory_iface;
++    IBufferStatics IBufferStatics_iface;
+     LONG ref;
+ };
+ 
+@@ -58,6 +59,13 @@ static HRESULT WINAPI factory_QueryInterface( IActivationFactory *iface, REFIID
+         return S_OK;
+     }
+ 
++    if (IsEqualGUID( iid, &IID_IBufferStatics ))
++    {
++        *out = &impl->IBufferStatics_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
++
+     FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+     *out = NULL;
+     return E_NOINTERFACE;
+@@ -324,10 +332,70 @@ static const struct IBufferFactoryVtbl buffer_factory_statics_vtbl =
+     buffer_factory_statics_Create,
+ };
+ 
++/* Arctic: between IBuffer and Windows.Foundation.MemoryBuffer (memorybuffer.c) */
++DEFINE_IINSPECTABLE( buffer_statics, IBufferStatics, struct buffer_factory_statics, IActivationFactory_iface )
++
++static HRESULT WINAPI buffer_statics_CreateCopyFromMemoryBuffer( IBufferStatics *iface, IMemoryBuffer *input, IBuffer **value )
++{
++    IMemoryBufferReference *reference;
++    UINT32 capacity = 0;
++    BYTE *data = NULL;
++    struct buffer *impl;
++    HRESULT hr;
++
++    TRACE( "iface %p, input %p, value %p\n", iface, input, value );
++
++    if (!input || !value) return E_POINTER;
++    *value = NULL;
++    if (FAILED(hr = memory_buffer_bytes( input, &reference, &data, &capacity ))) return hr;
++    if (SUCCEEDED(hr = buffer_factory_statics_Create( NULL, capacity, value )))
++    {
++        impl = impl_from_IBuffer( *value );
++        memcpy( impl->data, data, capacity );
++        impl->length = capacity;
++    }
++    IMemoryBufferReference_Release( reference );
++    return hr;
++}
++
++static HRESULT WINAPI buffer_statics_CreateMemoryBufferOverIBuffer( IBufferStatics *iface, IBuffer *input, IMemoryBuffer **value )
++{
++    IBufferByteAccess *access;
++    UINT32 length = 0;
++    BYTE *data = NULL;
++    HRESULT hr;
++
++    TRACE( "iface %p, input %p, value %p\n", iface, input, value );
++
++    if (!input || !value) return E_POINTER;
++    *value = NULL;
++    if (FAILED(hr = IBuffer_get_Length( input, &length ))) return hr;
++    if (FAILED(hr = IBuffer_QueryInterface( input, &IID_IBufferByteAccess, (void **)&access ))) return hr;
++    hr = IBufferByteAccess_Buffer( access, &data );
++    IBufferByteAccess_Release( access );
++    if (FAILED(hr)) return hr;
++    return memory_buffer_create( data, length, input, value );
++}
++
++static const struct IBufferStaticsVtbl buffer_statics_vtbl =
++{
++    buffer_statics_QueryInterface,
++    buffer_statics_AddRef,
++    buffer_statics_Release,
++    /* IInspectable methods */
++    buffer_statics_GetIids,
++    buffer_statics_GetRuntimeClassName,
++    buffer_statics_GetTrustLevel,
++    /* IBufferStatics methods */
++    buffer_statics_CreateCopyFromMemoryBuffer,
++    buffer_statics_CreateMemoryBufferOverIBuffer,
++};
++
+ static struct buffer_factory_statics buffer_factory_statics =
+ {
+     {&factory_vtbl},
+     {&buffer_factory_statics_vtbl},
++    {&buffer_statics_vtbl},
+     1,
+ };
+ 
+diff --git a/dlls/wintypes/classes.idl b/dlls/wintypes/classes.idl
+index 139b25b..847c87c 100644
+--- a/dlls/wintypes/classes.idl
++++ b/dlls/wintypes/classes.idl
+@@ -26,6 +26,7 @@ import "windows.foundation.metadata.idl";
+ import "windows.storage.streams.idl";
+ 
+ namespace Windows.Foundation {
++    runtimeclass MemoryBuffer;
+     runtimeclass PropertyValue;
+ }
+ namespace Windows.Foundation.Collections {
+diff --git a/dlls/wintypes/main.c b/dlls/wintypes/main.c
+index d8aa8b6..c076a28 100644
+--- a/dlls/wintypes/main.c
++++ b/dlls/wintypes/main.c
+@@ -1796,6 +1796,8 @@ HRESULT WINAPI DllGetActivationFactory(HSTRING classid, IActivationFactory **fac
+         IActivationFactory_AddRef((*factory = &property_value_statics.IActivationFactory_iface));
+     if (!wcscmp(buffer, L"Windows.Foundation.Collections.PropertySet"))
+         IActivationFactory_AddRef((*factory = property_set_factory));
++    if (!wcscmp(buffer, L"Windows.Foundation.MemoryBuffer"))
++        IActivationFactory_AddRef((*factory = memory_buffer_activation_factory));
+     if (!wcscmp(buffer, L"Windows.Storage.Streams.Buffer"))
+         IActivationFactory_AddRef((*factory = buffer_activation_factory));
+     if (!wcscmp(buffer, L"Windows.Storage.Streams.DataWriter"))
+diff --git a/dlls/wintypes/memorybuffer.c b/dlls/wintypes/memorybuffer.c
+new file mode 100644
+index 0000000..98d0f10
+--- /dev/null
++++ b/dlls/wintypes/memorybuffer.c
+@@ -0,0 +1,501 @@
++/*
++ * Windows.Foundation.MemoryBuffer
++ *
++ * A block of memory a program fills through a reference's
++ * IMemoryBufferByteAccess, as Windows 10 has it; Spotify puts its album art
++ * in one for SystemMediaTransportControls and failed for want of the class.
++ * Buffer.CreateCopyFromMemoryBuffer and CreateMemoryBufferOverIBuffer
++ * (buffer.c) go between it and IBuffer.
++ *
++ * Copyright 2026 Project Arctic
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include "private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(wintypes);
++
++/* memorybuffer.h of the Windows SDK, which Wine has not */
++static const IID IID_IMemoryBufferByteAccess = { 0x5b0d3235, 0x4dba, 0x4d44, { 0x86, 0x5e, 0x8f, 0x1d, 0x0e, 0x4f, 0xd0, 0x4d } };
++
++typedef struct IMemoryBufferByteAccess IMemoryBufferByteAccess;
++typedef struct IMemoryBufferByteAccessVtbl
++{
++    HRESULT (STDMETHODCALLTYPE *QueryInterface)( IMemoryBufferByteAccess *iface, REFIID iid, void **out );
++    ULONG   (STDMETHODCALLTYPE *AddRef)( IMemoryBufferByteAccess *iface );
++    ULONG   (STDMETHODCALLTYPE *Release)( IMemoryBufferByteAccess *iface );
++    HRESULT (STDMETHODCALLTYPE *GetBuffer)( IMemoryBufferByteAccess *iface, BYTE **value, UINT32 *capacity );
++} IMemoryBufferByteAccessVtbl;
++struct IMemoryBufferByteAccess { const IMemoryBufferByteAccessVtbl *lpVtbl; };
++
++struct memory_buffer
++{
++    IMemoryBuffer IMemoryBuffer_iface;
++    IClosable IClosable_iface;
++    LONG ref;
++    BYTE *data;
++    UINT32 capacity;
++    IBuffer *over;        /* the IBuffer whose bytes these are, or NULL: our own */
++    BOOL closed;
++};
++
++struct memory_buffer_reference
++{
++    IMemoryBufferReference IMemoryBufferReference_iface;
++    IClosable IClosable_iface;
++    IMemoryBufferByteAccess IMemoryBufferByteAccess_iface;
++    LONG ref;
++    struct memory_buffer *buffer;
++    BOOL closed;
++};
++
++/**********************************************************************
++ *          IMemoryBufferReference
++ */
++
++static inline struct memory_buffer_reference *impl_from_IMemoryBufferReference( IMemoryBufferReference *iface )
++{
++    return CONTAINING_RECORD( iface, struct memory_buffer_reference, IMemoryBufferReference_iface );
++}
++
++static HRESULT WINAPI reference_QueryInterface( IMemoryBufferReference *iface, REFIID iid, void **out )
++{
++    struct memory_buffer_reference *impl = impl_from_IMemoryBufferReference( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IMemoryBufferReference ))
++        *out = &impl->IMemoryBufferReference_iface;
++    else if (IsEqualGUID( iid, &IID_IClosable ))
++        *out = &impl->IClosable_iface;
++    else if (IsEqualGUID( iid, &IID_IMemoryBufferByteAccess ))
++        *out = &impl->IMemoryBufferByteAccess_iface;
++    else
++    {
++        FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++        *out = NULL;
++        return E_NOINTERFACE;
++    }
++    IInspectable_AddRef( (IInspectable *)&impl->IMemoryBufferReference_iface );
++    return S_OK;
++}
++
++static ULONG WINAPI reference_AddRef( IMemoryBufferReference *iface )
++{
++    return InterlockedIncrement( &impl_from_IMemoryBufferReference( iface )->ref );
++}
++
++static ULONG WINAPI reference_Release( IMemoryBufferReference *iface )
++{
++    struct memory_buffer_reference *impl = impl_from_IMemoryBufferReference( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        IMemoryBuffer_Release( &impl->buffer->IMemoryBuffer_iface );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI reference_GetIids( IMemoryBufferReference *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI reference_GetRuntimeClassName( IMemoryBufferReference *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI reference_GetTrustLevel( IMemoryBufferReference *iface, TrustLevel *trust_level )
++{
++    *trust_level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI reference_get_Capacity( IMemoryBufferReference *iface, UINT32 *value )
++{
++    struct memory_buffer_reference *impl = impl_from_IMemoryBufferReference( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->closed || impl->buffer->closed ? 0 : impl->buffer->capacity;
++    return S_OK;
++}
++
++static HRESULT WINAPI reference_add_Closed( IMemoryBufferReference *iface, ITypedEventHandler_IMemoryBufferReference_IInspectable *handler,
++                                            EventRegistrationToken *cookie )
++{
++    /* Closed is raised when the buffer is closed under the reference; not kept */
++    TRACE( "iface %p, handler %p, cookie %p\n", iface, handler, cookie );
++    cookie->value = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI reference_remove_Closed( IMemoryBufferReference *iface, EventRegistrationToken cookie )
++{
++    return S_OK;
++}
++
++static const struct IMemoryBufferReferenceVtbl reference_vtbl =
++{
++    reference_QueryInterface,
++    reference_AddRef,
++    reference_Release,
++    /* IInspectable methods */
++    reference_GetIids,
++    reference_GetRuntimeClassName,
++    reference_GetTrustLevel,
++    /* IMemoryBufferReference methods */
++    reference_get_Capacity,
++    reference_add_Closed,
++    reference_remove_Closed,
++};
++
++DEFINE_IINSPECTABLE_( reference_closable, IClosable, struct memory_buffer_reference, reference_from_IClosable, IClosable_iface,
++                      &impl->IMemoryBufferReference_iface )
++
++static HRESULT WINAPI reference_closable_Close( IClosable *iface )
++{
++    reference_from_IClosable( iface )->closed = TRUE;
++    return S_OK;
++}
++
++static const struct IClosableVtbl reference_closable_vtbl =
++{
++    reference_closable_QueryInterface,
++    reference_closable_AddRef,
++    reference_closable_Release,
++    /* IInspectable methods */
++    reference_closable_GetIids,
++    reference_closable_GetRuntimeClassName,
++    reference_closable_GetTrustLevel,
++    /* IClosable methods */
++    reference_closable_Close,
++};
++
++static inline struct memory_buffer_reference *impl_from_IMemoryBufferByteAccess( IMemoryBufferByteAccess *iface )
++{
++    return CONTAINING_RECORD( iface, struct memory_buffer_reference, IMemoryBufferByteAccess_iface );
++}
++
++static HRESULT STDMETHODCALLTYPE byte_access_QueryInterface( IMemoryBufferByteAccess *iface, REFIID iid, void **out )
++{
++    return reference_QueryInterface( &impl_from_IMemoryBufferByteAccess( iface )->IMemoryBufferReference_iface, iid, out );
++}
++
++static ULONG STDMETHODCALLTYPE byte_access_AddRef( IMemoryBufferByteAccess *iface )
++{
++    return reference_AddRef( &impl_from_IMemoryBufferByteAccess( iface )->IMemoryBufferReference_iface );
++}
++
++static ULONG STDMETHODCALLTYPE byte_access_Release( IMemoryBufferByteAccess *iface )
++{
++    return reference_Release( &impl_from_IMemoryBufferByteAccess( iface )->IMemoryBufferReference_iface );
++}
++
++static HRESULT STDMETHODCALLTYPE byte_access_GetBuffer( IMemoryBufferByteAccess *iface, BYTE **value, UINT32 *capacity )
++{
++    struct memory_buffer_reference *impl = impl_from_IMemoryBufferByteAccess( iface );
++
++    TRACE( "iface %p, value %p, capacity %p\n", iface, value, capacity );
++
++    if (!value || !capacity) return E_POINTER;
++    if (impl->closed || impl->buffer->closed)
++    {
++        *value = NULL;
++        *capacity = 0;
++        return RO_E_CLOSED;
++    }
++    *value = impl->buffer->data;
++    *capacity = impl->buffer->capacity;
++    return S_OK;
++}
++
++static const IMemoryBufferByteAccessVtbl byte_access_vtbl =
++{
++    byte_access_QueryInterface,
++    byte_access_AddRef,
++    byte_access_Release,
++    byte_access_GetBuffer,
++};
++
++/**********************************************************************
++ *          IMemoryBuffer
++ */
++
++static inline struct memory_buffer *impl_from_IMemoryBuffer( IMemoryBuffer *iface )
++{
++    return CONTAINING_RECORD( iface, struct memory_buffer, IMemoryBuffer_iface );
++}
++
++static HRESULT WINAPI memory_buffer_QueryInterface( IMemoryBuffer *iface, REFIID iid, void **out )
++{
++    struct memory_buffer *impl = impl_from_IMemoryBuffer( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IMemoryBuffer ))
++        *out = &impl->IMemoryBuffer_iface;
++    else if (IsEqualGUID( iid, &IID_IClosable ))
++        *out = &impl->IClosable_iface;
++    else
++    {
++        FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++        *out = NULL;
++        return E_NOINTERFACE;
++    }
++    IInspectable_AddRef( (IInspectable *)&impl->IMemoryBuffer_iface );
++    return S_OK;
++}
++
++static ULONG WINAPI memory_buffer_AddRef( IMemoryBuffer *iface )
++{
++    return InterlockedIncrement( &impl_from_IMemoryBuffer( iface )->ref );
++}
++
++static ULONG WINAPI memory_buffer_Release( IMemoryBuffer *iface )
++{
++    struct memory_buffer *impl = impl_from_IMemoryBuffer( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        if (impl->over) IBuffer_Release( impl->over );
++        else free( impl->data );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI memory_buffer_GetIids( IMemoryBuffer *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI memory_buffer_GetRuntimeClassName( IMemoryBuffer *iface, HSTRING *class_name )
++{
++    static const WCHAR name[] = L"Windows.Foundation.MemoryBuffer";
++    return WindowsCreateString( name, ARRAY_SIZE(name) - 1, class_name );
++}
++
++static HRESULT WINAPI memory_buffer_GetTrustLevel( IMemoryBuffer *iface, TrustLevel *trust_level )
++{
++    *trust_level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI memory_buffer_CreateReference( IMemoryBuffer *iface, IMemoryBufferReference **reference )
++{
++    struct memory_buffer *impl = impl_from_IMemoryBuffer( iface );
++    struct memory_buffer_reference *ref;
++
++    TRACE( "iface %p, reference %p\n", iface, reference );
++
++    if (!reference) return E_POINTER;
++    if (!(ref = calloc( 1, sizeof(*ref) ))) return E_OUTOFMEMORY;
++    ref->IMemoryBufferReference_iface.lpVtbl = &reference_vtbl;
++    ref->IClosable_iface.lpVtbl = &reference_closable_vtbl;
++    ref->IMemoryBufferByteAccess_iface.lpVtbl = &byte_access_vtbl;
++    ref->ref = 1;
++    ref->buffer = impl;
++    IMemoryBuffer_AddRef( &impl->IMemoryBuffer_iface );
++    *reference = &ref->IMemoryBufferReference_iface;
++    return S_OK;
++}
++
++static const struct IMemoryBufferVtbl memory_buffer_vtbl =
++{
++    memory_buffer_QueryInterface,
++    memory_buffer_AddRef,
++    memory_buffer_Release,
++    /* IInspectable methods */
++    memory_buffer_GetIids,
++    memory_buffer_GetRuntimeClassName,
++    memory_buffer_GetTrustLevel,
++    /* IMemoryBuffer methods */
++    memory_buffer_CreateReference,
++};
++
++DEFINE_IINSPECTABLE_( memory_buffer_closable, IClosable, struct memory_buffer, memory_buffer_from_IClosable, IClosable_iface,
++                      &impl->IMemoryBuffer_iface )
++
++static HRESULT WINAPI memory_buffer_closable_Close( IClosable *iface )
++{
++    memory_buffer_from_IClosable( iface )->closed = TRUE;
++    return S_OK;
++}
++
++static const struct IClosableVtbl memory_buffer_closable_vtbl =
++{
++    memory_buffer_closable_QueryInterface,
++    memory_buffer_closable_AddRef,
++    memory_buffer_closable_Release,
++    /* IInspectable methods */
++    memory_buffer_closable_GetIids,
++    memory_buffer_closable_GetRuntimeClassName,
++    memory_buffer_closable_GetTrustLevel,
++    /* IClosable methods */
++    memory_buffer_closable_Close,
++};
++
++/* over: the IBuffer whose data these are (kept), else data is allocated here */
++HRESULT memory_buffer_create( BYTE *data, UINT32 capacity, IBuffer *over, IMemoryBuffer **out )
++{
++    struct memory_buffer *impl;
++
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->IMemoryBuffer_iface.lpVtbl = &memory_buffer_vtbl;
++    impl->IClosable_iface.lpVtbl = &memory_buffer_closable_vtbl;
++    impl->ref = 1;
++    impl->capacity = capacity;
++    if ((impl->over = over))
++    {
++        IBuffer_AddRef( over );
++        impl->data = data;
++    }
++    else if (!(impl->data = calloc( 1, max( capacity, 1 ) )))
++    {
++        free( impl );
++        return E_OUTOFMEMORY;
++    }
++    *out = &impl->IMemoryBuffer_iface;
++    return S_OK;
++}
++
++/* the bytes of a memory buffer, for Buffer.CreateCopyFromMemoryBuffer */
++HRESULT memory_buffer_bytes( IMemoryBuffer *buffer, IMemoryBufferReference **reference, BYTE **data, UINT32 *capacity )
++{
++    IMemoryBufferByteAccess *access;
++    HRESULT hr;
++
++    if (FAILED(hr = IMemoryBuffer_CreateReference( buffer, reference ))) return hr;
++    if (SUCCEEDED(hr = IMemoryBufferReference_QueryInterface( *reference, &IID_IMemoryBufferByteAccess, (void **)&access )))
++    {
++        hr = access->lpVtbl->GetBuffer( access, data, capacity );
++        access->lpVtbl->Release( access );
++    }
++    if (FAILED(hr))
++    {
++        IMemoryBufferReference_Release( *reference );
++        *reference = NULL;
++    }
++    return hr;
++}
++
++/**********************************************************************
++ *          The factory
++ */
++
++struct memory_buffer_statics
++{
++    IActivationFactory IActivationFactory_iface;
++    IMemoryBufferFactory IMemoryBufferFactory_iface;
++};
++
++static inline struct memory_buffer_statics *impl_from_IActivationFactory( IActivationFactory *iface )
++{
++    return CONTAINING_RECORD( iface, struct memory_buffer_statics, IActivationFactory_iface );
++}
++
++static HRESULT WINAPI factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
++{
++    struct memory_buffer_statics *impl = impl_from_IActivationFactory( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IActivationFactory ))
++        *out = &impl->IActivationFactory_iface;
++    else if (IsEqualGUID( iid, &IID_IMemoryBufferFactory ))
++        *out = &impl->IMemoryBufferFactory_iface;
++    else
++    {
++        FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++        *out = NULL;
++        return E_NOINTERFACE;
++    }
++    return S_OK;
++}
++
++/* a static object */
++static ULONG WINAPI factory_AddRef( IActivationFactory *iface ) { return 2; }
++static ULONG WINAPI factory_Release( IActivationFactory *iface ) { return 1; }
++
++static HRESULT WINAPI factory_GetIids( IActivationFactory *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_GetRuntimeClassName( IActivationFactory *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_GetTrustLevel( IActivationFactory *iface, TrustLevel *trust_level )
++{
++    *trust_level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI factory_ActivateInstance( IActivationFactory *iface, IInspectable **instance )
++{
++    /* MemoryBuffer is made with a capacity only */
++    *instance = NULL;
++    return E_NOTIMPL;
++}
++
++static const struct IActivationFactoryVtbl factory_vtbl =
++{
++    factory_QueryInterface,
++    factory_AddRef,
++    factory_Release,
++    /* IInspectable methods */
++    factory_GetIids,
++    factory_GetRuntimeClassName,
++    factory_GetTrustLevel,
++    /* IActivationFactory methods */
++    factory_ActivateInstance,
++};
++
++DEFINE_IINSPECTABLE( memory_buffer_factory, IMemoryBufferFactory, struct memory_buffer_statics, IActivationFactory_iface )
++
++static HRESULT WINAPI memory_buffer_factory_Create( IMemoryBufferFactory *iface, UINT32 capacity, IMemoryBuffer **value )
++{
++    TRACE( "iface %p, capacity %u, value %p\n", iface, capacity, value );
++
++    if (!value) return E_POINTER;
++    return memory_buffer_create( NULL, capacity, NULL, value );
++}
++
++static const struct IMemoryBufferFactoryVtbl memory_buffer_factory_vtbl =
++{
++    memory_buffer_factory_QueryInterface,
++    memory_buffer_factory_AddRef,
++    memory_buffer_factory_Release,
++    /* IInspectable methods */
++    memory_buffer_factory_GetIids,
++    memory_buffer_factory_GetRuntimeClassName,
++    memory_buffer_factory_GetTrustLevel,
++    /* IMemoryBufferFactory methods */
++    memory_buffer_factory_Create,
++};
++
++static struct memory_buffer_statics memory_buffer_statics =
++{
++    {&factory_vtbl},
++    {&memory_buffer_factory_vtbl},
++};
++
++IActivationFactory *memory_buffer_activation_factory = &memory_buffer_statics.IActivationFactory_iface;
+diff --git a/dlls/wintypes/private.h b/dlls/wintypes/private.h
+index 901b651..121e15b 100644
+--- a/dlls/wintypes/private.h
++++ b/dlls/wintypes/private.h
+@@ -52,6 +52,11 @@ extern HRESULT multi_threaded_map_create( const struct map_iids *iids, IInspecta
+ 
+ extern IActivationFactory *data_writer_activation_factory;
+ extern IActivationFactory *buffer_activation_factory;
++extern IActivationFactory *memory_buffer_activation_factory;
++
++/* memorybuffer.c */
++extern HRESULT memory_buffer_create( BYTE *data, UINT32 capacity, IBuffer *over, IMemoryBuffer **out );
++extern HRESULT memory_buffer_bytes( IMemoryBuffer *buffer, IMemoryBufferReference **reference, BYTE **data, UINT32 *capacity );
+ extern IActivationFactory *property_set_factory;
+ 
+ #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \

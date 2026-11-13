@@ -42,6 +42,13 @@
 #define IDS_WIRED_NONE           129
 #define IDS_AUTOCONNECT          130
 #define IDS_OPEN_NETWORK_CENTER  131
+#define IDS_TILE_BLUETOOTH       132
+#define IDS_BT_MUSIC             133
+#define IDS_BT_PAIRED            134
+#define IDS_BT_NONE              135
+#define IDS_BT_OFF               136
+#define IDS_BT_SETTINGS          137
+#define IDS_BT_DEVICES           138
 
 /* the notification area's pictures of a wired network */
 #define IDI_NETWORK_OK           300
@@ -82,6 +89,23 @@ UINT quality_bars( UINT quality );
 BOOL connections_folder_exists(void);
 void open_connections(void);
 void open_network_center(void);
+
+/* bluetooth.c: Bluetooth's quick action and its paired devices */
+struct bt_entry
+{
+    WCHAR name[248];
+    ULONGLONG address;
+    UINT32 class;
+    BOOL connected, audio;
+    BYTE battery[5];   /* 0-100 or 0xff: its own, left, right, case; then the charging bits */
+};
+BOOL bt_state( BOOL *on );
+void bt_set_power( BOOL on );
+UINT bt_paired( struct bt_entry *list, UINT max );
+void bt_connect( ULONGLONG address, BOOL connect );
+void bt_draw_icon( HDC hdc, UINT32 class, int x, int y, int size, COLORREF color );
+int bt_battery_width( const BYTE battery[5] );
+void bt_draw_battery( HDC hdc, const BYTE battery[5], const RECT *rect, BOOL dark, HFONT font );
 
 /* flyout.c: the flyout of Windows 10 */
 void flyout_toggle(void);

@@ -31,7 +31,9 @@
 #include "sndvolsso.h"
 #include "shellapi.h"
 #include "dwmapi.h"
+#include "winreg.h"
 #include "wine/arctic_dwm.h"
+#include "wine/arctic_fluent.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
@@ -50,6 +52,18 @@ WINE_DEFAULT_DEBUG_CHANNEL(sndvolsso);
 
 #define TIMER_POLL     1
 #define TIMER_ANIMATE  2
+
+/* Windows 11's (Quick Settings' volume row and its list of outputs): 12
+ * around, the row 48 high with 40 square subtle buttons either end, the
+ * outputs 40 high, rounded, the one in use ticked in the accent */
+#define PAD11          px(12)
+#define ROW11          px(48)
+#define BUTTON11       px(40)
+#define ITEM11         px(40)
+#define LEVEL11        px(36)
+#define LIST_MAX11     px(240)
+
+static BOOL style11;
 
 BOOL WINAPI SetWindowCompositionAttribute( HWND hwnd, void *data );
 
@@ -100,8 +114,40 @@ static int volume_top(void)
     return media_height() + ROW_HEIGHT + shown_list_height();
 }
 
+/* Windows 11's: the row, then the outputs under it */
+static int row11_top(void)
+{
+    return media_height() + PAD11;
+}
+
+static int list11_top(void)
+{
+    return row11_top() + ROW11 + px( 4 );
+}
+
+static int list11_height(void)
+{
+    return min( (int)endpoint_count * ITEM11, LIST_MAX11 );
+}
+
+static int shown11(void)
+{
+    return (int)((list11_height() + px( 4 )) * list_shown + 0.5f);
+}
+
+static void row11_parts( RECT *mute, RECT *slider, RECT *value, RECT *chevron )
+{
+    int top = row11_top(), right = FLYOUT_WIDTH - PAD11 - (can_choose() ? BUTTON11 : 0);
+
+    SetRect( mute, PAD11, top + px( 4 ), PAD11 + BUTTON11, top + px( 4 ) + BUTTON11 );
+    SetRect( value, right - LEVEL11, top, right, top + ROW11 );
+    SetRect( slider, mute->right + px( 4 ), top, value->left - px( 4 ), top + ROW11 );
+    SetRect( chevron, FLYOUT_WIDTH - PAD11 - BUTTON11, top + px( 4 ), FLYOUT_WIDTH - PAD11, top + px( 4 ) + BUTTON11 );
+}
+
 static int flyout_height(void)
 {
+    if (style11) return row11_top() + ROW11 + shown11() + PAD11;
     return volume_top() + VOLUME_ROW;
 }
 
@@ -118,7 +164,8 @@ static void place(void)
                   SWP_NOACTIVATE );
 }
 
-/* over the icon, on the taskbar's edge, inside the work area */
+/* over the icon, on the taskbar's edge, inside the work area; Windows 11's
+ * at the right end of the taskbar, 12 off it */
 static void anchor(void)
 {
     NOTIFYICONIDENTIFIER id = { sizeof(id), tray_window, tray_icon };
@@ -130,6 +177,11 @@ static void anchor(void)
     {
         GetCursorPos( &pt );
         SetRect( &icon, pt.x, pt.y, pt.x + 1, pt.y + 1 );
+    }
+    if (style11)
+    {
+        fluent_anchor( &icon, FLYOUT_WIDTH, &anchor_x, &anchor_y, &anchor_above );
+        return;
     }
     GetMonitorInfoW( MonitorFromRect( &icon, MONITOR_DEFAULTTONEAREST ), &info );
     anchor_x = (icon.left + icon.right - FLYOUT_WIDTH) / 2;
@@ -236,6 +288,79 @@ static void paint_volume( HDC hdc )
     draw_text( hdc, text, &rect, font_level, (BYTE)(255 * opacity), DT_CENTER | DT_VCENTER );
 }
 
+static enum fluent_state state11( enum hit what, int item )
+{
+    if (pressed == what && hot == what && (item < 0 || pressed_item == item)) return FLUENT_PRESSED;
+    if (hot == what && (item < 0 || hot_item == item)) return FLUENT_HOT;
+    return FLUENT_REST;
+}
+
+/* the mute button, the slider, the level, the button that opens the outputs */
+static void paint_row11( HDC hdc )
+{
+    RECT mute, slider, value, chevron;
+    int glyph = px( 20 );
+    enum fluent_state slider_state = !have_device ? FLUENT_DISABLED :
+                                     dragging ? FLUENT_PRESSED : hot == HIT_SLIDER ? FLUENT_HOT : FLUENT_REST;
+    WCHAR text[8];
+
+    row11_parts( &mute, &slider, &value, &chevron );
+    if (have_device) fluent_rect( hdc, &mute, px( 4 ), INK, fluent_subtle_alpha( state11( HIT_MUTE, -1 ), shell_light ) );
+    draw_speaker( hdc, (mute.left + mute.right - glyph) / 2, (mute.top + mute.bottom - glyph) / 2, glyph, level,
+                  muted || !have_device, have_device ? 255 : 0x5c, 0 );
+    fluent_slider( hdc, slider.left, slider.right, (slider.top + slider.bottom) / 2, fluent_unit(),
+                   have_device ? level : 0, slider_state, shell_light, 255 );
+    swprintf( text, ARRAY_SIZE(text), L"%d", have_device ? (int)(level * 100 + 0.5f) : 0 );
+    draw_text( hdc, text, &value, font_body, have_device ? 255 : 0x5c, DT_RIGHT | DT_VCENTER );
+    if (can_choose())
+    {
+        fluent_rect( hdc, &chevron, px( 4 ), INK, fluent_subtle_alpha( state11( HIT_HEADER, -1 ), shell_light ) );
+        fluent_chevron( hdc, (chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2, px( 12 ),
+                        expanded ? FLUENT_UP : FLUENT_DOWN, INK, 255 );
+    }
+}
+
+/* the outputs: rounded rows, the one in use ticked in the accent */
+static void paint_list11( HDC hdc )
+{
+    int top = list11_top(), shown = shown11() - px( 4 ), total = endpoint_count * ITEM11;
+    HRGN clip;
+
+    if (shown <= 0) return;
+    clip = CreateRectRgn( 0, top, FLYOUT_WIDTH, top + shown );
+    SelectClipRgn( hdc, clip );
+    for (UINT i = 0; i < endpoint_count; i++)
+    {
+        RECT rect = { px( 8 ), top + i * ITEM11 - scroll, FLYOUT_WIDTH - px( 8 ), top + (i + 1) * ITEM11 - scroll };
+        BOOL chosen = !wcscmp( endpoints[i].id, current.id );
+        enum fluent_state state = state11( HIT_ITEM, i );
+        BYTE fill = fluent_subtle_alpha( state, shell_light );
+
+        if (rect.bottom <= top || rect.top >= top + shown) continue;
+        if (chosen && !fill) fill = fluent_subtle_alpha( FLUENT_HOT, shell_light );
+        InflateRect( &rect, 0, -px( 2 ) );
+        fluent_rect( hdc, &rect, px( 4 ), INK, fill );
+        if (chosen)
+        {
+            /* CheckMark, 12 across */
+            float cx = rect.right - px( 20 ), cy = (rect.top + rect.bottom) / 2.f, u = fluent_unit();
+            fluent_line( hdc, cx - 5 * u, cy, cx - 1.5f * u, cy + 3.5f * u, 1.3f * u, FLUENT_ACCENT( shell_light ), 255 );
+            fluent_line( hdc, cx - 1.5f * u, cy + 3.5f * u, cx + 5.5f * u, cy - 4 * u, 1.3f * u, FLUENT_ACCENT( shell_light ), 255 );
+        }
+        rect.left += px( 12 );
+        rect.right -= px( 40 );
+        draw_text( hdc, endpoints[i].name, &rect, font_body, 255, DT_LEFT | DT_VCENTER );
+    }
+    if (total > LIST_MAX11)
+    {
+        int length = max( px( 16 ), LIST_MAX11 * LIST_MAX11 / total ), pos = scroll * (LIST_MAX11 - length) / (total - LIST_MAX11);
+        RECT bar = { FLYOUT_WIDTH - px( 5 ), top + pos + px( 2 ), FLYOUT_WIDTH - px( 3 ), top + pos + length - px( 2 ) };
+        fluent_rect( hdc, &bar, px( 1 ), INK, 0x66 );
+    }
+    SelectClipRgn( hdc, NULL );
+    DeleteObject( clip );
+}
+
 static void on_paint( HWND hwnd )
 {
     PAINTSTRUCT ps;
@@ -261,9 +386,17 @@ static void on_paint( HWND hwnd )
             RECT card = { 0, 0, MEDIA_CARD_WIDTH, MEDIA_CARD_HEIGHT };
             media_paint( mem, &card, &media, hot == HIT_MEDIA ? hot_item : -1, pressed == HIT_MEDIA, 255 );
         }
-        paint_header( mem );
-        paint_list( mem );
-        paint_volume( mem );
+        if (style11)
+        {
+            paint_row11( mem );
+            paint_list11( mem );
+        }
+        else
+        {
+            paint_header( mem );
+            paint_list( mem );
+            paint_volume( mem );
+        }
         BitBlt( hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY );
         SelectObject( mem, old );
         DeleteObject( bitmap );
@@ -276,12 +409,34 @@ static void on_paint( HWND hwnd )
  *          Input
  */
 
+static enum hit hit_test11( POINT pt, int *item )
+{
+    RECT mute, slider, value, chevron;
+    int top = list11_top();
+
+    row11_parts( &mute, &slider, &value, &chevron );
+    if (have_device && PtInRect( &mute, pt )) return HIT_MUTE;
+    if (have_device && pt.x >= slider.left && pt.x < slider.right && pt.y >= slider.top && pt.y < slider.bottom)
+        return HIT_SLIDER;
+    if (can_choose() && PtInRect( &chevron, pt )) return HIT_HEADER;
+    if (expanded && pt.y >= top && pt.y < top + shown11() - px( 4 ) && pt.x >= px( 8 ) && pt.x < FLYOUT_WIDTH - px( 8 ))
+    {
+        int i = (pt.y - top + scroll) / ITEM11;
+
+        if (i < 0 || i >= (int)endpoint_count) return HIT_NONE;
+        *item = i;
+        return HIT_ITEM;
+    }
+    return HIT_NONE;
+}
+
 static enum hit hit_test( POINT pt, int *item )
 {
     int top = volume_top();
 
     *item = -1;
     if (pt.y < 0 || pt.x < 0 || pt.x >= FLYOUT_WIDTH) return HIT_NONE;
+    if (style11 && pt.y >= media_height()) return hit_test11( pt, item );
     if (pt.y < media_height())
     {
         RECT card = { 0, 0, MEDIA_CARD_WIDTH, MEDIA_CARD_HEIGHT };
@@ -323,6 +478,14 @@ static void set_level( float value )
 
 static void set_level_at( int x )
 {
+    if (style11)
+    {
+        RECT mute, slider, value, chevron;
+
+        row11_parts( &mute, &slider, &value, &chevron );
+        set_level( fluent_slider_value( slider.left, slider.right, fluent_unit(), x ) );
+        return;
+    }
     set_level( (float)(x - SIDE_COLUMN - THUMB_WIDTH / 2) / (SLIDER_WIDTH - THUMB_WIDTH) );
 }
 
@@ -488,7 +651,16 @@ static LRESULT CALLBACK flyout_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
         int notches = GET_WHEEL_DELTA_WPARAM( wparam ) / WHEEL_DELTA, item;
 
         ScreenToClient( hwnd, &pt );
-        if (expanded && pt.y >= media_height() + ROW_HEIGHT && pt.y < volume_top())
+        if (style11 && expanded && pt.y >= list11_top())
+        {
+            int most = max( 0, (int)endpoint_count * ITEM11 - list11_height() );
+            scroll = max( 0, min( most, scroll - notches * ITEM11 ) );
+            hot = hit_test( pt, &item );
+            hot_item = item;
+            InvalidateRect( hwnd, NULL, FALSE );
+        }
+        else if (style11 && have_device) step_level( notches * 2 );
+        else if (expanded && pt.y >= media_height() + ROW_HEIGHT && pt.y < volume_top())
         {
             int most = max( 0, (int)endpoint_count * ROW_HEIGHT - list_height() );
             scroll = max( 0, min( most, scroll - notches * ROW_HEIGHT ) );
@@ -591,6 +763,7 @@ void flyout_toggle( HWND tray, UINT icon_id )
 
     tray_window = tray;
     tray_icon = icon_id;
+    style11 = arctic_style11();
     expanded = dragging = FALSE;
     list_shown = 0;
     scroll = 0;

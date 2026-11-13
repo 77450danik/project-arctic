@@ -19,6 +19,9 @@
 #include <stdlib.h>
 
 #include "sndvolsso.h"
+#include "winreg.h"
+#include "wine/arctic_fluent.h"
+#include "wine/arctic_glyph11.h"
 
 #define SUPERSAMPLE  4
 #define STROKE       1.0f
@@ -164,8 +167,21 @@ void blend_white( HDC hdc, int x, int y, int width, int height, const float *alp
 /* the speaker in white at alpha, the unlit waves at bars_alpha (0: none) */
 void draw_speaker( HDC hdc, int x, int y, int size, float level, BOOL mute, BYTE alpha, BYTE bars_alpha )
 {
-    float *lit = malloc( size * size * sizeof(float) ), *faint = malloc( size * size * sizeof(float) );
+    float *lit, *faint;
 
+    if (arctic_style11())
+    {
+        /* Windows 11's: only the waves the level lights */
+        if ((lit = g11_render( size, 0, level, g11_waves( level, mute ), mute )))
+        {
+            for (int i = 0; i < size * size; i++) lit[i] *= alpha / 255.f;
+            blend_white( hdc, x, y, size, size, lit );
+        }
+        free( lit );
+        return;
+    }
+    lit = malloc( size * size * sizeof(float) );
+    faint = malloc( size * size * sizeof(float) );
     if (lit && faint)
     {
         render( size, level, mute, lit, bars_alpha ? faint : NULL );
@@ -216,11 +232,19 @@ void draw_chevron( HDC hdc, int cx, int cy, BOOL up, BYTE alpha )
 HICON make_speaker_icon( int size, float level, BOOL mute )
 {
     ICONINFO info = { .fIcon = TRUE };
-    float *lit = malloc( size * size * sizeof(float) );
+    float *lit;
     UINT32 *bits;
     HICON icon = NULL;
 
-    if (!lit) return NULL;
+    if (arctic_style11())
+    {
+        /* the speaker of Windows 11, as heavy as the Wi-Fi beside it */
+        lit = g11_render( size, 0, level, g11_waves( level, mute ), mute );
+        icon = g11_icon( lit, size, arctic_taskbar_is_light() ? RGB( 0, 0, 0 ) : RGB( 0xff, 0xff, 0xff ) );
+        free( lit );
+        return icon;
+    }
+    if (!(lit = malloc( size * size * sizeof(float) ))) return NULL;
     render( size, level, mute, lit, NULL );
     if ((info.hbmColor = create_dib( NULL, size, size, &bits )))
     {

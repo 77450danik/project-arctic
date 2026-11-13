@@ -1,0 +1,30 @@
+REGEDIT4
+
+; Devices and Printers (docs/bluetooth.md): a shell folder of devicescpl.dll,
+; Windows' own item, a page of the Control Panel inside File Explorer: the
+; Bluetooth radio, its devices, adding one, the printers
+[HKEY_CLASSES_ROOT\CLSID\{A8A91A66-3A7D-4424-8D24-04E180695C7A}]
+@="Devices and Printers"
+"LocalizedString"="@C:\\Windows\\System32\\devicescpl.dll,-1"
+"InfoTip"="@C:\\Windows\\System32\\devicescpl.dll,-2"
+"System.ApplicationName"="Microsoft.DevicesAndPrinters"
+"System.ControlPanel.Category"="2"
+
+[-HKEY_CLASSES_ROOT\CLSID\{A8A91A66-3A7D-4424-8D24-04E180695C7A}\Shell]
+
+[HKEY_CLASSES_ROOT\CLSID\{A8A91A66-3A7D-4424-8D24-04E180695C7A}\InProcServer32]
+@="C:\\Windows\\System32\\devicescpl.dll"
+"ThreadingModel"="Apartment"
+
+; its picture: the printer of the icon theme, as the Printers folder had
+[HKEY_CLASSES_ROOT\CLSID\{A8A91A66-3A7D-4424-8D24-04E180695C7A}\DefaultIcon]
+@="C:\\Windows\\System32\\imageres.dll,-51"
+
+[HKEY_CLASSES_ROOT\CLSID\{A8A91A66-3A7D-4424-8D24-04E180695C7A}\ShellFolder]
+"Attributes"=dword:28000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{A8A91A66-3A7D-4424-8D24-04E180695C7A}]
+@="Devices and Printers"
+
+; the Printers folder is reached from it, as in Windows 7 and later
+[-HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{2227A280-3AEA-1069-A2DE-08002B30309D}]

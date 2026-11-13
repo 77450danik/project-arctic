@@ -1,0 +1,72 @@
+diff --git a/dlls/uiautomationcore/uia_client.c b/dlls/uiautomationcore/uia_client.c
+index 6027e23..bfd5c07 100644
+--- a/dlls/uiautomationcore/uia_client.c
++++ b/dlls/uiautomationcore/uia_client.c
+@@ -2136,6 +2136,9 @@ struct uia_client_thread
+ struct uia_get_node_prov_args {
+     LRESULT lr;
+     BOOL unwrap;
++    /* Arctic: set by the client thread when an STA caller waits on it */
++    HANDLE done;
++    HRESULT hr;
+ };
+ 
+ static struct uia_client_thread client_thread;
+@@ -2150,6 +2153,7 @@ static CRITICAL_SECTION client_thread_cs = { &client_thread_cs_debug, -1, 0, 0,
+ 
+ #define WM_UIA_CLIENT_GET_NODE_PROV (WM_USER + 1)
+ #define WM_UIA_CLIENT_THREAD_STOP (WM_USER + 2)
++#define WM_UIA_CLIENT_GET_NODE_PROV_POSTED (WM_USER + 3)
+ static HRESULT create_wine_uia_nested_node_provider(struct uia_node *node, LRESULT lr, BOOL unwrap);
+ static LRESULT CALLBACK uia_client_thread_msg_proc(HWND hwnd, UINT msg, WPARAM wparam,
+         LPARAM lparam)
+@@ -2162,6 +2166,14 @@ static LRESULT CALLBACK uia_client_thread_msg_proc(HWND hwnd, UINT msg, WPARAM w
+         return create_wine_uia_nested_node_provider((struct uia_node *)lparam, args->lr, args->unwrap);
+     }
+ 
++    case WM_UIA_CLIENT_GET_NODE_PROV_POSTED:
++    {
++        struct uia_get_node_prov_args *args = (struct uia_get_node_prov_args *)wparam;
++        args->hr = create_wine_uia_nested_node_provider((struct uia_node *)lparam, args->lr, args->unwrap);
++        SetEvent(args->done);
++        return 0;
++    }
++
+     default:
+         break;
+     }
+@@ -2716,6 +2728,34 @@ static HRESULT uia_get_provider_from_hwnd(struct uia_node *node)
+     }
+ 
+     args.unwrap = GetCurrentThreadId() == GetWindowThreadProcessId(node->hwnd, NULL);
++
++    /*
++     * Arctic: a caller in a single-threaded apartment waits as COM waits,
++     * servicing incoming calls. The client thread calls the provider, and a
++     * provider living in the caller's apartment (Chromium's, when a CEF
++     * program such as Spotify asks for its own window) is reached through
++     * that apartment: in SendMessageW the caller would never answer, and
++     * both threads waited forever.
++     */
++    {
++        APTTYPE type;
++        APTTYPEQUALIFIER qualifier;
++
++        if (SUCCEEDED(CoGetApartmentType(&type, &qualifier)) && (type == APTTYPE_STA || type == APTTYPE_MAINSTA)
++                && (args.done = CreateEventW(NULL, TRUE, FALSE, NULL)))
++        {
++            DWORD index;
++
++            args.hr = E_FAIL;
++            if (PostMessageW(client_thread.hwnd, WM_UIA_CLIENT_GET_NODE_PROV_POSTED, (WPARAM)&args, (LPARAM)node))
++            {
++                CoWaitForMultipleHandles(0, INFINITE, 1, &args.done, &index);
++                CloseHandle(args.done);
++                return args.hr;
++            }
++            CloseHandle(args.done);
++        }
++    }
+     return SendMessageW(client_thread.hwnd, WM_UIA_CLIENT_GET_NODE_PROV, (WPARAM)&args, (LPARAM)node);
+ }
+ 

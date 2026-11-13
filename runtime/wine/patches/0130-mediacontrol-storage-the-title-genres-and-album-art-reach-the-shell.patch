@@ -1,0 +1,1411 @@
+diff --git a/dlls/windows.media.mediacontrol/Makefile.in b/dlls/windows.media.mediacontrol/Makefile.in
+index f066651..600c9be 100644
+--- a/dlls/windows.media.mediacontrol/Makefile.in
++++ b/dlls/windows.media.mediacontrol/Makefile.in
+@@ -1,7 +1,8 @@
+ MODULE  = windows.media.mediacontrol.dll
+-IMPORTS = combase user32
++IMPORTS = combase user32 urlmon
+ 
+ SOURCES = \
+ 	classes.idl \
+ 	main.c \
++	vector.c \
+ 	weakref.c
+diff --git a/dlls/windows.media.mediacontrol/main.c b/dlls/windows.media.mediacontrol/main.c
+index 8b9b72f..d3240d1 100644
+--- a/dlls/windows.media.mediacontrol/main.c
++++ b/dlls/windows.media.mediacontrol/main.c
+@@ -36,6 +36,10 @@
+ #include "private.h"
+ #include "weakref.h"
+ #include "winuser.h"
++#include "urlmon.h"
++#include "roapi.h"
++#include "robuffer.h"
++#define ARCTIC_MEDIA_STREAM_REFERENCE
+ #include "wine/arctic_media.h"
+ #include "wine/list.h"
+ 
+@@ -43,6 +47,8 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(mediacontrol);
+ 
++DEFINE_ARCTIC_STREAM_REFERENCE_SOURCE_IID;
++
+ struct media_control_statics
+ {
+     IActivationFactory IActivationFactory_iface;
+@@ -270,6 +276,17 @@ struct media_control
+     HSTRING album_title;
+     HSTRING artist;
+     HSTRING title;
++    HSTRING album_artist;
++    HSTRING app_media_id;
++    UINT32 track_number;
++    IVector_HSTRING *genres;
++
++    /* the album art: what the program set, what was last fetched, and the
++     * file it was written to (under controls_cs) */
++    IRandomAccessStreamReference *thumbnail;
++    IRandomAccessStreamReference *fetched_thumbnail;
++    UINT32 art_serial;
++    WCHAR art[MAX_PATH];
+ 
+     struct list handlers;
+     LONG next_token;
+@@ -395,6 +412,13 @@ static void publish( struct media_control *impl, BOOL with_display )
+             copy_hstring( row->artist, ARRAY_SIZE(row->artist), impl->artist );
+             copy_hstring( row->album, ARRAY_SIZE(row->album), impl->album_title );
+         }
++        EnterCriticalSection( &controls_cs );
++        if (row->art_serial != impl->art_serial)
++        {
++            row->art_serial = impl->art_serial;
++            lstrcpynW( row->art, impl->art, ARRAY_SIZE(row->art) );
++        }
++        LeaveCriticalSection( &controls_cs );
+         InterlockedIncrement( &shared->serial );
+     }
+     unlock_shared( mutex );
+@@ -412,6 +436,191 @@ static void withdraw( struct media_control *impl )
+     InterlockedIncrement( &shared->serial );
+     unlock_shared( mutex );
+     impl->session = 0;
++    EnterCriticalSection( &controls_cs );
++    if (impl->art[0]) DeleteFileW( impl->art );
++    impl->art[0] = 0;
++    LeaveCriticalSection( &controls_cs );
++}
++
++/**********************************************************************
++ *          The album art
++ *
++ * DisplayUpdater.Thumbnail is a RandomAccessStreamReference, made from a Uri
++ * (Spotify: the cover on i.scdn.co) or from a stream the program filled. At
++ * Update the image is fetched on the thread pool and written to a file of
++ * %TEMP%\ArcticMedia, whose name goes into the session's row for the shell.
++ */
++
++static BOOL art_file_name( WCHAR *path, UINT size, UINT32 serial )
++{
++    WCHAR dir[MAX_PATH];
++
++    if (!GetTempPathW( ARRAY_SIZE(dir), dir )) return FALSE;
++    lstrcatW( dir, L"ArcticMedia" );
++    CreateDirectoryW( dir, NULL );
++    swprintf( path, size, L"%s\\%08x-%08x.img", dir, GetCurrentProcessId(), serial );
++    return TRUE;
++}
++
++/* the whole stream: its bytes from the start, through IInputStream.ReadAsync */
++static BOOL write_stream_art( IUnknown *unknown, const WCHAR *path )
++{
++    static const WCHAR buffer_class[] = L"Windows.Storage.Streams.Buffer";
++    IAsyncOperationWithProgress_IBuffer_UINT32 *operation = NULL;
++    IRandomAccessStream *stream = NULL;
++    IBufferFactory *factory = NULL;
++    IBufferByteAccess *bytes = NULL;
++    IInputStream *input = NULL;
++    IBuffer *buffer = NULL, *result = NULL;
++    IAsyncInfo *info = NULL;
++    AsyncStatus status = Started;
++    UINT32 length = 0;
++    BOOL written = FALSE;
++    HSTRING class = NULL;
++    UINT64 size = 0;
++    BYTE *data;
++    HANDLE file;
++    DWORD done;
++
++    if (FAILED(IUnknown_QueryInterface( unknown, &IID_IRandomAccessStream, (void **)&stream ))) return FALSE;
++    if (FAILED(IRandomAccessStream_get_Size( stream, &size )) || !size || size > 32 * 1024 * 1024) goto done;
++    if (FAILED(IRandomAccessStream_GetInputStreamAt( stream, 0, &input )))
++    {
++        /* the memory stream of windows.storage reads from where it is */
++        if (FAILED(IRandomAccessStream_Seek( stream, 0 )) ||
++            FAILED(IRandomAccessStream_QueryInterface( stream, &IID_IInputStream, (void **)&input )))
++            goto done;
++    }
++    if (FAILED(WindowsCreateString( buffer_class, ARRAY_SIZE(buffer_class) - 1, &class )) ||
++        FAILED(RoGetActivationFactory( class, &IID_IBufferFactory, (void **)&factory )) ||
++        FAILED(IBufferFactory_Create( factory, (UINT32)size, &buffer )) ||
++        FAILED(IInputStream_ReadAsync( input, buffer, (UINT32)size, InputStreamOptions_None, &operation )) ||
++        FAILED(IAsyncOperationWithProgress_IBuffer_UINT32_QueryInterface( operation, &IID_IAsyncInfo, (void **)&info )))
++        goto done;
++    for (int i = 0; i < 500 && status == Started; i++)
++    {
++        if (FAILED(IAsyncInfo_get_Status( info, &status ))) break;
++        if (status == Started) Sleep( 10 );
++    }
++    if (status != Completed ||
++        FAILED(IAsyncOperationWithProgress_IBuffer_UINT32_GetResults( operation, &result )) ||
++        FAILED(IBuffer_get_Length( result, &length )) || !length ||
++        FAILED(IBuffer_QueryInterface( result, &IID_IBufferByteAccess, (void **)&bytes )) ||
++        FAILED(IBufferByteAccess_Buffer( bytes, &data )))
++        goto done;
++    file = CreateFileW( path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL );
++    if (file != INVALID_HANDLE_VALUE)
++    {
++        written = WriteFile( file, data, length, &done, NULL ) && done == length;
++        CloseHandle( file );
++        if (!written) DeleteFileW( path );
++    }
++
++done:
++    if (bytes) IBufferByteAccess_Release( bytes );
++    if (result) IBuffer_Release( result );
++    if (info) IAsyncInfo_Release( info );
++    if (operation) IAsyncOperationWithProgress_IBuffer_UINT32_Release( operation );
++    if (buffer) IBuffer_Release( buffer );
++    if (factory) IBufferFactory_Release( factory );
++    WindowsDeleteString( class );
++    if (input) IInputStream_Release( input );
++    IRandomAccessStream_Release( stream );
++    return written;
++}
++
++struct art_work
++{
++    struct media_control *impl;
++    IRandomAccessStreamReference *thumbnail;
++};
++
++static void CALLBACK fetch_art( TP_CALLBACK_INSTANCE *instance, void *context )
++{
++    struct art_work *work = context;
++    struct media_control *impl = work->impl;
++    IArcticStreamReferenceSource *source;
++    static LONG files;
++    WCHAR path[MAX_PATH], old[MAX_PATH];
++    BOOL written = FALSE;
++    HRESULT init;
++
++    init = CoInitializeEx( NULL, COINIT_MULTITHREADED );
++    if (art_file_name( path, ARRAY_SIZE(path), InterlockedIncrement( &files ) ) &&
++        SUCCEEDED(IRandomAccessStreamReference_QueryInterface( work->thumbnail, &IID_IArcticStreamReferenceSource, (void **)&source )))
++    {
++        HSTRING uri = NULL;
++        IUnknown *stream = NULL;
++
++        if (SUCCEEDED(source->lpVtbl->GetUri( source, &uri )) && uri)
++        {
++            const WCHAR *text = WindowsGetStringRawBuffer( uri, NULL );
++            written = SUCCEEDED(URLDownloadToFileW( NULL, text, path, 0, NULL ));
++            TRACE( "album art %s -> %s: %d\n", debugstr_w( text ), debugstr_w( path ), written );
++            WindowsDeleteString( uri );
++        }
++        else if (SUCCEEDED(source->lpVtbl->GetStream( source, &stream )) && stream)
++        {
++            written = write_stream_art( stream, path );
++            TRACE( "album art from a stream -> %s: %d\n", debugstr_w( path ), written );
++            IUnknown_Release( stream );
++        }
++        source->lpVtbl->Release( source );
++    }
++    else FIXME( "album art from a stream reference windows.storage did not make\n" );
++    if (SUCCEEDED(init)) CoUninitialize();
++
++    /* the art the program set last wins */
++    EnterCriticalSection( &controls_cs );
++    if (written && impl->fetched_thumbnail == work->thumbnail)
++    {
++        lstrcpyW( old, impl->art );
++        lstrcpyW( impl->art, path );
++        impl->art_serial++;
++        if (old[0]) DeleteFileW( old );
++    }
++    else
++    {
++        if (written) DeleteFileW( path );
++        written = FALSE;
++    }
++    LeaveCriticalSection( &controls_cs );
++    if (written) publish( impl, FALSE );
++
++    IRandomAccessStreamReference_Release( work->thumbnail );
++    ISystemMediaTransportControls_Release( &impl->ISystemMediaTransportControls_iface );
++    free( work );
++}
++
++/* at Update: a new thumbnail is fetched, no thumbnail takes the art away */
++static void update_art( struct media_control *impl )
++{
++    struct art_work *work;
++
++    if (impl->thumbnail == impl->fetched_thumbnail) return;
++    if (impl->fetched_thumbnail) IRandomAccessStreamReference_Release( impl->fetched_thumbnail );
++    if ((impl->fetched_thumbnail = impl->thumbnail)) IRandomAccessStreamReference_AddRef( impl->fetched_thumbnail );
++
++    if (!impl->thumbnail)
++    {
++        EnterCriticalSection( &controls_cs );
++        if (impl->art[0]) DeleteFileW( impl->art );
++        impl->art[0] = 0;
++        impl->art_serial++;
++        LeaveCriticalSection( &controls_cs );
++        return;
++    }
++    if (!(work = malloc( sizeof(*work) ))) return;
++    work->impl = impl;
++    work->thumbnail = impl->thumbnail;
++    IRandomAccessStreamReference_AddRef( work->thumbnail );
++    ISystemMediaTransportControls_AddRef( &impl->ISystemMediaTransportControls_iface );
++    if (!TrySubmitThreadpoolCallback( fetch_art, work, NULL ))
++    {
++        IRandomAccessStreamReference_Release( work->thumbnail );
++        ISystemMediaTransportControls_Release( &impl->ISystemMediaTransportControls_iface );
++        free( work );
++    }
+ }
+ 
+ /**********************************************************************
+@@ -651,8 +860,10 @@ static HRESULT WINAPI music_properties_get_AlbumArtist( IMusicDisplayProperties
+ 
+ static HRESULT WINAPI music_properties_put_AlbumArtist( IMusicDisplayProperties *iface, HSTRING value )
+ {
+-    FIXME( "iface %p, value %s stub!\n", iface, debugstr_hstring(value) );
+-    return S_OK;
++    struct media_control *impl = impl_from_IMusicDisplayProperties( iface );
++    TRACE( "iface %p, value %s\n", iface, debugstr_hstring( value ) );
++    WindowsDeleteString( impl->album_artist );
++    return WindowsDuplicateString( value, &impl->album_artist );
+ }
+ 
+ static HRESULT WINAPI music_properties_get_Artist( IMusicDisplayProperties *iface, HSTRING *value )
+@@ -707,20 +918,31 @@ static HRESULT STDMETHODCALLTYPE music_properties2_put_AlbumTitle( IMusicDisplay
+ 
+ static HRESULT STDMETHODCALLTYPE music_properties2_get_TrackNumber( IMusicDisplayProperties2 *iface, UINT32 *value )
+ {
+-    FIXME( "iface %p, value %p stub\n", iface, value );
+-    return E_NOTIMPL;
++    *value = impl_from_IMusicDisplayProperties2( iface )->track_number;
++    return S_OK;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE music_properties2_put_TrackNumber( IMusicDisplayProperties2 *iface, UINT32 value )
+ {
+-    FIXME( "iface %p, value %u stub\n", iface, value );
++    TRACE( "iface %p, value %u\n", iface, value );
++    impl_from_IMusicDisplayProperties2( iface )->track_number = value;
+     return S_OK;
+ }
+ 
++/* Arctic: the program fills it (Clear, Append); Spotify threw on the
++ * E_NOTIMPL it was and never reached Update, so no title showed */
+ static HRESULT STDMETHODCALLTYPE music_properties2_get_Genres( IMusicDisplayProperties2 *iface, IVector_HSTRING **value )
+ {
+-    FIXME( "iface %p, value %p stub\n", iface, value );
+-    return E_NOTIMPL;
++    struct media_control *impl = impl_from_IMusicDisplayProperties2( iface );
++    HRESULT hr;
++
++    TRACE( "iface %p, value %p\n", iface, value );
++
++    if (!value) return E_POINTER;
++    if (!impl->genres && FAILED(hr = vector_hstring_create( &impl->genres ))) return hr;
++    *value = impl->genres;
++    IVector_HSTRING_AddRef( *value );
++    return S_OK;
+ }
+ 
+ static const struct IMusicDisplayProperties2Vtbl music_properties2_vtbl =
+@@ -769,27 +991,36 @@ static HRESULT WINAPI display_updater_put_Type( ISystemMediaTransportControlsDis
+ 
+ static HRESULT WINAPI display_updater_get_AppMediaId( ISystemMediaTransportControlsDisplayUpdater *iface, HSTRING *value )
+ {
+-    FIXME( "iface %p, value %p stub!\n", iface, value );
+-    return E_NOTIMPL;
++    return WindowsDuplicateString( impl_from_ISystemMediaTransportControlsDisplayUpdater( iface )->app_media_id, value );
+ }
+ 
+ static HRESULT WINAPI display_updater_put_AppMediaId( ISystemMediaTransportControlsDisplayUpdater *iface, HSTRING value )
+ {
+-    FIXME( "iface %p, value %s stub!\n", iface, debugstr_hstring( value ) );
+-    return S_OK;
++    struct media_control *impl = impl_from_ISystemMediaTransportControlsDisplayUpdater( iface );
++    TRACE( "iface %p, value %s\n", iface, debugstr_hstring( value ) );
++    WindowsDeleteString( impl->app_media_id );
++    return WindowsDuplicateString( value, &impl->app_media_id );
+ }
+ 
+ static HRESULT WINAPI display_updater_get_Thumbnail( ISystemMediaTransportControlsDisplayUpdater *iface, IRandomAccessStreamReference **value )
+ {
+-    FIXME( "iface %p, value %p stub!\n", iface, value );
++    struct media_control *impl = impl_from_ISystemMediaTransportControlsDisplayUpdater( iface );
++
++    TRACE( "iface %p, value %p\n", iface, value );
+ 
+-    *value = NULL;
++    if ((*value = impl->thumbnail)) IRandomAccessStreamReference_AddRef( *value );
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI display_updater_put_Thumbnail( ISystemMediaTransportControlsDisplayUpdater *iface, IRandomAccessStreamReference *value )
+ {
+-    FIXME( "iface %p, value %p stub!\n", iface, value );
++    struct media_control *impl = impl_from_ISystemMediaTransportControlsDisplayUpdater( iface );
++
++    TRACE( "iface %p, value %p\n", iface, value );
++
++    if (value) IRandomAccessStreamReference_AddRef( value );
++    if (impl->thumbnail) IRandomAccessStreamReference_Release( impl->thumbnail );
++    impl->thumbnail = value;
+     return S_OK;
+ }
+ 
+@@ -832,7 +1063,13 @@ static HRESULT WINAPI display_updater_ClearAll( ISystemMediaTransportControlsDis
+     WindowsDeleteString( impl->title );
+     WindowsDeleteString( impl->artist );
+     WindowsDeleteString( impl->album_title );
+-    impl->title = impl->artist = impl->album_title = NULL;
++    WindowsDeleteString( impl->album_artist );
++    WindowsDeleteString( impl->app_media_id );
++    impl->title = impl->artist = impl->album_title = impl->album_artist = impl->app_media_id = NULL;
++    impl->track_number = 0;
++    if (impl->genres) IVector_HSTRING_Clear( impl->genres );
++    if (impl->thumbnail) IRandomAccessStreamReference_Release( impl->thumbnail );
++    impl->thumbnail = NULL;
+     impl->playback_type = MediaPlaybackType_Unknown;
+     publish( impl, TRUE );
+     return S_OK;
+@@ -842,8 +1079,10 @@ static HRESULT WINAPI display_updater_Update( ISystemMediaTransportControlsDispl
+ {
+     struct media_control *impl = impl_from_ISystemMediaTransportControlsDisplayUpdater( iface );
+ 
+-    TRACE( "iface %p, title %s, artist %s\n", iface, debugstr_hstring( impl->title ), debugstr_hstring( impl->artist ) );
++    TRACE( "iface %p, title %s, artist %s, thumbnail %p\n", iface, debugstr_hstring( impl->title ),
++           debugstr_hstring( impl->artist ), impl->thumbnail );
+ 
++    update_art( impl );
+     publish( impl, TRUE );
+     return S_OK;
+ }
+@@ -971,6 +1210,11 @@ static ULONG WINAPI media_control_Release( ISystemMediaTransportControls *iface
+         WindowsDeleteString( impl->title );
+         WindowsDeleteString( impl->artist );
+         WindowsDeleteString( impl->album_title );
++        WindowsDeleteString( impl->album_artist );
++        WindowsDeleteString( impl->app_media_id );
++        if (impl->genres) IVector_HSTRING_Release( impl->genres );
++        if (impl->thumbnail) IRandomAccessStreamReference_Release( impl->thumbnail );
++        if (impl->fetched_thumbnail) IRandomAccessStreamReference_Release( impl->fetched_thumbnail );
+         free( impl );
+     }
+     return ref;
+diff --git a/dlls/windows.media.mediacontrol/private.h b/dlls/windows.media.mediacontrol/private.h
+index 4291ab4..9ab8f30 100644
+--- a/dlls/windows.media.mediacontrol/private.h
++++ b/dlls/windows.media.mediacontrol/private.h
+@@ -38,6 +38,10 @@
+ #include "windows.media.h"
+ #include "systemmediatransportcontrolsinterop.h"
+ 
++/* vector.c: MusicDisplayProperties.Genres */
++HRESULT vector_hstring_create( IVector_HSTRING **out );
++HRESULT vector_hstring_create_copy( IIterable_HSTRING *iterable, IVector_HSTRING **out );
++
+ #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
+     static inline impl_type *impl_from( iface_type *iface )                                        \
+     {                                                                                              \
+diff --git a/dlls/windows.media.mediacontrol/vector.c b/dlls/windows.media.mediacontrol/vector.c
+new file mode 100644
+index 0000000..8110383
+--- /dev/null
++++ b/dlls/windows.media.mediacontrol/vector.c
+@@ -0,0 +1,775 @@
++/* IVector<HSTRING>, from windows.media.speech (MusicDisplayProperties.Genres)
++ *
++ * Copyright 2022 Bernhard Kölbl for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(mediacontrol);
++
++/*
++ *
++ * IIterator<HSTRING>
++ *
++ */
++
++struct iterator_hstring
++{
++   IIterator_HSTRING IIterator_HSTRING_iface;
++   LONG ref;
++
++   IVectorView_HSTRING *view;
++   UINT32 index;
++   UINT32 size;
++};
++
++static inline struct iterator_hstring *impl_from_IIterator_HSTRING( IIterator_HSTRING *iface )
++{
++   return CONTAINING_RECORD(iface, struct iterator_hstring, IIterator_HSTRING_iface);
++}
++
++static HRESULT WINAPI iterator_hstring_QueryInterface( IIterator_HSTRING *iface, REFIID iid, void **out )
++{
++    struct iterator_hstring *impl = impl_from_IIterator_HSTRING(iface);
++
++   TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++   if (IsEqualGUID(iid, &IID_IUnknown) ||
++       IsEqualGUID(iid, &IID_IInspectable) ||
++       IsEqualGUID(iid, &IID_IAgileObject) ||
++       IsEqualGUID(iid, &IID_IIterator_HSTRING))
++    {
++       IInspectable_AddRef((*out = &impl->IIterator_HSTRING_iface));
++       return S_OK;
++    }
++
++    WARN("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(iid));
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI iterator_hstring_AddRef( IIterator_HSTRING *iface )
++{
++    struct iterator_hstring *impl = impl_from_IIterator_HSTRING(iface);
++    ULONG ref = InterlockedIncrement(&impl->ref);
++    TRACE("iface %p increasing refcount to %lu.\n", iface, ref);
++    return ref;
++}
++
++static ULONG WINAPI iterator_hstring_Release( IIterator_HSTRING *iface )
++{
++    struct iterator_hstring *impl = impl_from_IIterator_HSTRING(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++
++    TRACE("iface %p decreasing refcount to %lu.\n", iface, ref);
++
++    if (!ref)
++    {
++        IVectorView_HSTRING_Release(impl->view);
++        free(impl);
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI iterator_hstring_GetIids( IIterator_HSTRING *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME("iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_hstring_GetRuntimeClassName( IIterator_HSTRING *iface, HSTRING *class_name )
++{
++    FIXME("iface %p, class_name %p stub!\n", iface, class_name);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_hstring_GetTrustLevel( IIterator_HSTRING *iface, TrustLevel *trust_level )
++{
++    FIXME("iface %p, trust_level %p stub!\n", iface, trust_level);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_hstring_get_Current( IIterator_HSTRING *iface, HSTRING *value )
++{
++    struct iterator_hstring *impl = impl_from_IIterator_HSTRING(iface);
++    TRACE("iface %p, value %p.\n", iface, value);
++    return IVectorView_HSTRING_GetAt(impl->view, impl->index, value);
++}
++
++static HRESULT WINAPI iterator_hstring_get_HasCurrent( IIterator_HSTRING *iface, boolean *value )
++{
++    struct iterator_hstring *impl = impl_from_IIterator_HSTRING(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    *value = impl->index < impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI iterator_hstring_MoveNext( IIterator_HSTRING *iface, boolean *value )
++{
++    struct iterator_hstring *impl = impl_from_IIterator_HSTRING(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    if (impl->index < impl->size) impl->index++;
++    return IIterator_HSTRING_get_HasCurrent(iface, value);
++}
++
++static HRESULT WINAPI iterator_hstring_GetMany( IIterator_HSTRING *iface, UINT32 items_size,
++                                                HSTRING *items, UINT *count )
++{
++    struct iterator_hstring *impl = impl_from_IIterator_HSTRING(iface);
++    TRACE("iface %p, items_size %u, items %p, count %p.\n", iface, items_size, items, count);
++    return IVectorView_HSTRING_GetMany(impl->view, impl->index, items_size, items, count);
++}
++
++static const IIterator_HSTRINGVtbl iterator_hstring_vtbl =
++{
++    /* IUnknown methods */
++    iterator_hstring_QueryInterface,
++    iterator_hstring_AddRef,
++    iterator_hstring_Release,
++    /* IInspectable methods */
++    iterator_hstring_GetIids,
++    iterator_hstring_GetRuntimeClassName,
++    iterator_hstring_GetTrustLevel,
++    /* IIterator<HSTRING> methods */
++    iterator_hstring_get_Current,
++    iterator_hstring_get_HasCurrent,
++    iterator_hstring_MoveNext,
++    iterator_hstring_GetMany,
++};
++
++/*
++ *
++ * IVectorView<HSTRING>
++ *
++ */
++
++struct vector_view_hstring
++{
++    IVectorView_HSTRING IVectorView_HSTRING_iface;
++    IIterable_HSTRING IIterable_HSTRING_iface;
++    LONG ref;
++
++    UINT32 size;
++    HSTRING elements[];
++};
++
++C_ASSERT(sizeof(struct vector_view_hstring) == offsetof(struct vector_view_hstring, elements[0]));
++
++static inline struct vector_view_hstring *impl_from_IVectorView_HSTRING( IVectorView_HSTRING *iface )
++{
++    return CONTAINING_RECORD(iface, struct vector_view_hstring, IVectorView_HSTRING_iface);
++}
++
++static HRESULT WINAPI vector_view_hstring_QueryInterface( IVectorView_HSTRING *iface, REFIID iid, void **out )
++{
++    struct vector_view_hstring *impl = impl_from_IVectorView_HSTRING(iface);
++
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (IsEqualGUID(iid, &IID_IUnknown) ||
++        IsEqualGUID(iid, &IID_IInspectable) ||
++        IsEqualGUID(iid, &IID_IAgileObject) ||
++        IsEqualGUID(iid, &IID_IVectorView_HSTRING))
++    {
++        IInspectable_AddRef((*out = &impl->IVectorView_HSTRING_iface));
++        return S_OK;
++    }
++
++    if (IsEqualGUID(iid, &IID_IIterable_HSTRING))
++    {
++        IInspectable_AddRef((*out = &impl->IIterable_HSTRING_iface));
++        return S_OK;
++    }
++
++    WARN("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(iid));
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI vector_view_hstring_AddRef( IVectorView_HSTRING *iface )
++{
++    struct vector_view_hstring *impl = impl_from_IVectorView_HSTRING(iface);
++    ULONG ref = InterlockedIncrement(&impl->ref);
++    TRACE("iface %p increasing refcount to %lu.\n", iface, ref);
++    return ref;
++}
++
++static ULONG WINAPI vector_view_hstring_Release( IVectorView_HSTRING *iface )
++{
++    struct vector_view_hstring *impl = impl_from_IVectorView_HSTRING(iface);
++    ULONG i, ref = InterlockedDecrement(&impl->ref);
++
++    TRACE("iface %p decreasing refcount to %lu.\n", iface, ref);
++
++    if (!ref)
++    {
++        for (i = 0; i < impl->size; ++i) WindowsDeleteString(impl->elements[i]);
++        free(impl);
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI vector_view_hstring_GetIids( IVectorView_HSTRING *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME("iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_hstring_GetRuntimeClassName( IVectorView_HSTRING *iface, HSTRING *class_name )
++{
++    FIXME("iface %p, class_name %p stub!\n", iface, class_name);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_hstring_GetTrustLevel( IVectorView_HSTRING *iface, TrustLevel *trust_level )
++{
++    FIXME("iface %p, trust_level %p stub!\n", iface, trust_level);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_hstring_GetAt( IVectorView_HSTRING *iface, UINT32 index, HSTRING *value )
++{
++    struct vector_view_hstring *impl = impl_from_IVectorView_HSTRING(iface);
++
++    TRACE("iface %p, index %u, value %p.\n", iface, index, value);
++
++    *value = NULL;
++    if (index >= impl->size) return E_BOUNDS;
++
++    return WindowsDuplicateString(impl->elements[index], value);
++}
++
++static HRESULT WINAPI vector_view_hstring_get_Size( IVectorView_HSTRING *iface, UINT32 *value )
++{
++    struct vector_view_hstring *impl = impl_from_IVectorView_HSTRING(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    *value = impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_view_hstring_IndexOf( IVectorView_HSTRING *iface, HSTRING element,
++                                                   UINT32 *index, BOOLEAN *found )
++{
++    struct vector_view_hstring *impl = impl_from_IVectorView_HSTRING(iface);
++    ULONG i;
++
++    TRACE("iface %p, element %p, index %p, found %p.\n", iface, element, index, found);
++
++    for (i = 0; i < impl->size; ++i) if (impl->elements[i] == element) break;
++    if ((*found = (i < impl->size))) *index = i;
++    else *index = 0;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_view_hstring_GetMany( IVectorView_HSTRING *iface, UINT32 start_index,
++                                                   UINT32 items_size, HSTRING *items, UINT *count )
++{
++    struct vector_view_hstring *impl = impl_from_IVectorView_HSTRING(iface);
++    HRESULT hr;
++    UINT32 i;
++
++    TRACE( "iface %p, start_index %u, items_size %u, items %p, count %p.\n",
++           iface, start_index, items_size, items, count );
++
++    if (start_index >= impl->size) return E_BOUNDS;
++
++    for (i = start_index; i < impl->size; ++i)
++    {
++        if (i - start_index >= items_size) break;
++        if (FAILED(hr = WindowsDuplicateString(impl->elements[i], &items[i - start_index]))) goto error;
++    }
++    *count = i - start_index;
++
++    return S_OK;
++
++error:
++    *count = 0;
++    while (i-- > start_index) WindowsDeleteString(items[i-start_index]);
++    return hr;
++}
++
++static const struct IVectorView_HSTRINGVtbl vector_view_hstring_vtbl =
++{
++    /* IUnknown methods */
++    vector_view_hstring_QueryInterface,
++    vector_view_hstring_AddRef,
++    vector_view_hstring_Release,
++    /* IInspectable methods */
++    vector_view_hstring_GetIids,
++    vector_view_hstring_GetRuntimeClassName,
++    vector_view_hstring_GetTrustLevel,
++    /* IVectorView<HSTRING> methods */
++    vector_view_hstring_GetAt,
++    vector_view_hstring_get_Size,
++    vector_view_hstring_IndexOf,
++    vector_view_hstring_GetMany,
++};
++
++/*
++ *
++ * IIterable<HSTRING>
++ *
++ */
++
++DEFINE_IINSPECTABLE_(iterable_view_hstring, IIterable_HSTRING, struct vector_view_hstring, view_impl_from_IIterable_HSTRING,
++                     IIterable_HSTRING_iface, &impl->IVectorView_HSTRING_iface)
++
++static HRESULT WINAPI iterable_view_hstring_First( IIterable_HSTRING *iface, IIterator_HSTRING **value )
++{
++    struct vector_view_hstring *impl = view_impl_from_IIterable_HSTRING(iface);
++    struct iterator_hstring *iter;
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    if (!(iter = calloc(1, sizeof(*iter)))) return E_OUTOFMEMORY;
++    iter->IIterator_HSTRING_iface.lpVtbl = &iterator_hstring_vtbl;
++    iter->ref = 1;
++
++    IVectorView_HSTRING_AddRef((iter->view = &impl->IVectorView_HSTRING_iface));
++    iter->size = impl->size;
++
++    *value = &iter->IIterator_HSTRING_iface;
++    return S_OK;
++}
++
++static const struct IIterable_HSTRINGVtbl iterable_view_hstring_vtbl =
++{
++    /* IUnknown methods */
++    iterable_view_hstring_QueryInterface,
++    iterable_view_hstring_AddRef,
++    iterable_view_hstring_Release,
++    /* IInspectable methods */
++    iterable_view_hstring_GetIids,
++    iterable_view_hstring_GetRuntimeClassName,
++    iterable_view_hstring_GetTrustLevel,
++    /* IIterable<HSTRING> methods */
++    iterable_view_hstring_First,
++};
++
++/*
++ *
++ * IVector<HSTRING>
++ *
++ */
++
++struct vector_hstring
++{
++    IVector_HSTRING IVector_HSTRING_iface;
++    IIterable_HSTRING IIterable_HSTRING_iface;
++    LONG ref;
++
++    UINT32 size;
++    UINT32 capacity;
++    HSTRING *elements;
++};
++
++static inline struct vector_hstring *impl_from_IVector_HSTRING( IVector_HSTRING *iface )
++{
++    return CONTAINING_RECORD(iface, struct vector_hstring, IVector_HSTRING_iface);
++}
++
++static HRESULT WINAPI vector_hstring_QueryInterface( IVector_HSTRING *iface, REFIID iid, void **out )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (IsEqualGUID(iid, &IID_IUnknown) ||
++        IsEqualGUID(iid, &IID_IInspectable) ||
++        IsEqualGUID(iid, &IID_IAgileObject) ||
++        IsEqualGUID(iid, &IID_IVector_HSTRING))
++    {
++        IInspectable_AddRef((*out = &impl->IVector_HSTRING_iface));
++        return S_OK;
++    }
++
++    if (IsEqualGUID(iid, &IID_IIterable_HSTRING))
++    {
++        IInspectable_AddRef((*out = &impl->IIterable_HSTRING_iface));
++        return S_OK;
++    }
++
++    WARN("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(iid));
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI vector_hstring_AddRef( IVector_HSTRING *iface )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++    ULONG ref = InterlockedIncrement(&impl->ref);
++    TRACE("iface %p, ref %lu.\n", iface, ref);
++    return ref;
++}
++
++static ULONG WINAPI vector_hstring_Release( IVector_HSTRING *iface )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++
++    TRACE("iface %p, ref %lu.\n", iface, ref);
++
++    if (!ref)
++    {
++        IVector_HSTRING_Clear(iface);
++        free(impl);
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI vector_hstring_GetIids( IVector_HSTRING *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_hstring_GetRuntimeClassName( IVector_HSTRING *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_hstring_GetTrustLevel( IVector_HSTRING *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_hstring_GetAt( IVector_HSTRING *iface, UINT32 index, HSTRING *value )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    *value = NULL;
++    if (index >= impl->size) return E_BOUNDS;
++
++    return WindowsDuplicateString(impl->elements[index], value);
++}
++
++static HRESULT WINAPI vector_hstring_get_Size( IVector_HSTRING *iface, UINT32 *value )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++    TRACE( "iface %p, value %p.\n", iface, value );
++    *value = impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_hstring_GetView( IVector_HSTRING *iface, IVectorView_HSTRING **value )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++    struct vector_view_hstring *view;
++    HRESULT hr;
++    ULONG i;
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    if (!(view = calloc(1, offsetof(struct vector_view_hstring, elements[impl->size])))) return E_OUTOFMEMORY;
++    view->IVectorView_HSTRING_iface.lpVtbl = &vector_view_hstring_vtbl;
++    view->IIterable_HSTRING_iface.lpVtbl = &iterable_view_hstring_vtbl;
++    view->ref = 1;
++
++    for (i = 0; i < impl->size; ++i)
++        if (FAILED(hr = WindowsDuplicateString(impl->elements[i], &view->elements[view->size++]))) goto error;
++
++    *value = &view->IVectorView_HSTRING_iface;
++    return S_OK;
++
++error:
++    while (i-- > 0) WindowsDeleteString(view->elements[i]);
++    free(view);
++    return hr;
++}
++
++static HRESULT WINAPI vector_hstring_IndexOf( IVector_HSTRING *iface, HSTRING element, UINT32 *index, BOOLEAN *found )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++    ULONG i;
++
++    TRACE("iface %p, element %p, index %p, found %p.\n", iface, element, index, found);
++
++    for (i = 0; i < impl->size; ++i) if (impl->elements[i] == element) break;
++    if ((*found = (i < impl->size))) *index = i;
++    else *index = 0;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_hstring_SetAt( IVector_HSTRING *iface, UINT32 index, HSTRING value )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++    HSTRING tmp;
++    HRESULT hr;
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    if (index >= impl->size) return E_BOUNDS;
++
++    if (FAILED(hr = WindowsDuplicateString(value, &tmp))) return hr;
++
++    WindowsDeleteString(impl->elements[index]);
++    impl->elements[index] = tmp;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_hstring_InsertAt( IVector_HSTRING *iface, UINT32 index, HSTRING value )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++    HSTRING tmp, *tmp2 = impl->elements;
++    HRESULT hr;
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    if (FAILED(hr = WindowsDuplicateString(value, &tmp))) return hr;
++
++    if (impl->size == impl->capacity)
++    {
++        impl->capacity = max(32, impl->capacity * 3 / 2);
++        if (!(impl->elements = realloc(impl->elements, impl->capacity * sizeof(*impl->elements))))
++        {
++            impl->elements = tmp2;
++            return E_OUTOFMEMORY;
++        }
++    }
++
++    memmove(impl->elements + index + 1, impl->elements + index, (impl->size++ - index) * sizeof(*impl->elements));
++    impl->elements[index] = tmp;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_hstring_RemoveAt( IVector_HSTRING *iface, UINT32 index )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++
++    TRACE("iface %p, index %u.\n", iface, index);
++
++    if (index >= impl->size) return E_BOUNDS;
++
++    WindowsDeleteString(impl->elements[index]);
++    memmove(impl->elements + index, impl->elements + index + 1, (--impl->size - index) * sizeof(*impl->elements));
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_hstring_Append( IVector_HSTRING *iface, HSTRING value )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return IVector_HSTRING_InsertAt(iface, impl->size, value);
++}
++
++static HRESULT WINAPI vector_hstring_RemoveAtEnd( IVector_HSTRING *iface )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++
++    TRACE("iface %p.\n", iface);
++
++    if (impl->size) WindowsDeleteString(impl->elements[--impl->size]);
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_hstring_Clear( IVector_HSTRING *iface )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++
++    TRACE("iface %p.\n", iface);
++
++    while (impl->size) IVector_HSTRING_RemoveAtEnd(iface);
++    free(impl->elements);
++    impl->capacity = 0;
++    impl->elements = NULL;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_hstring_GetMany( IVector_HSTRING *iface, UINT32 start_index,
++                                              UINT32 items_size, HSTRING *items, UINT32 *count )
++{
++    struct vector_hstring *impl = impl_from_IVector_HSTRING(iface);
++    HRESULT hr;
++    UINT32 i;
++
++    TRACE("iface %p, start_index %u, items_size %u, items %p, count %p.\n", iface, start_index, items_size, items, count);
++
++    if (start_index >= impl->size) return E_BOUNDS;
++
++    for (i = start_index; i < impl->size; ++i)
++    {
++        if (i - start_index >= items_size) break;
++        if (FAILED(hr = WindowsDuplicateString(impl->elements[i], &items[i-start_index]))) goto error;
++    }
++    *count = i - start_index;
++
++    return S_OK;
++
++error:
++    *count = 0;
++    while (i-- > start_index) WindowsDeleteString(items[i-start_index]);
++    return hr;
++}
++
++static HRESULT WINAPI vector_hstring_ReplaceAll( IVector_HSTRING *iface, UINT32 count, HSTRING *items )
++{
++    HRESULT hr;
++    ULONG i;
++
++    TRACE("iface %p, count %u, items %p.\n", iface, count, items);
++
++    hr = IVector_HSTRING_Clear(iface);
++    for (i = 0; i < count && SUCCEEDED(hr); ++i) hr = IVector_HSTRING_Append(iface, items[i]);
++    return hr;
++}
++
++static const struct IVector_HSTRINGVtbl vector_hstring_vtbl =
++{
++    /* IUnknown methods */
++    vector_hstring_QueryInterface,
++    vector_hstring_AddRef,
++    vector_hstring_Release,
++    /* IInspectable methods */
++    vector_hstring_GetIids,
++    vector_hstring_GetRuntimeClassName,
++    vector_hstring_GetTrustLevel,
++    /* IVector<HSTRING> methods */
++    vector_hstring_GetAt,
++    vector_hstring_get_Size,
++    vector_hstring_GetView,
++    vector_hstring_IndexOf,
++    vector_hstring_SetAt,
++    vector_hstring_InsertAt,
++    vector_hstring_RemoveAt,
++    vector_hstring_Append,
++    vector_hstring_RemoveAtEnd,
++    vector_hstring_Clear,
++    vector_hstring_GetMany,
++    vector_hstring_ReplaceAll,
++};
++
++/*
++ *
++ * IIterable<HSTRING>
++ *
++ */
++
++DEFINE_IINSPECTABLE(iterable_hstring, IIterable_HSTRING, struct vector_hstring, IVector_HSTRING_iface)
++
++static HRESULT WINAPI iterable_hstring_First( IIterable_HSTRING *iface, IIterator_HSTRING **value )
++{
++    struct vector_hstring *impl = impl_from_IIterable_HSTRING(iface);
++    IIterable_HSTRING *iterable;
++    IVectorView_HSTRING *view;
++    HRESULT hr;
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    if (FAILED(hr = IVector_HSTRING_GetView(&impl->IVector_HSTRING_iface, &view))) return hr;
++
++    hr = IVectorView_HSTRING_QueryInterface(view, &IID_IIterable_HSTRING, (void **)&iterable);
++    IVectorView_HSTRING_Release(view);
++    if (FAILED(hr)) return hr;
++
++    hr = IIterable_HSTRING_First(iterable, value);
++    IIterable_HSTRING_Release(iterable);
++    return hr;
++}
++
++static const struct IIterable_HSTRINGVtbl iterable_hstring_vtbl =
++{
++    /* IUnknown methods */
++    iterable_hstring_QueryInterface,
++    iterable_hstring_AddRef,
++    iterable_hstring_Release,
++    /* IInspectable methods */
++    iterable_hstring_GetIids,
++    iterable_hstring_GetRuntimeClassName,
++    iterable_hstring_GetTrustLevel,
++    /* IIterable<HSTRING> methods */
++    iterable_hstring_First,
++};
++
++HRESULT vector_hstring_create( IVector_HSTRING **out )
++{
++    struct vector_hstring *impl;
++
++    TRACE("out %p.\n", out);
++
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IVector_HSTRING_iface.lpVtbl = &vector_hstring_vtbl;
++    impl->IIterable_HSTRING_iface.lpVtbl = &iterable_hstring_vtbl;
++    impl->ref = 1;
++
++    *out = &impl->IVector_HSTRING_iface;
++    TRACE("created %p\n", *out);
++    return S_OK;
++}
++
++HRESULT vector_hstring_create_copy( IIterable_HSTRING *iterable, IVector_HSTRING **out )
++{
++    struct vector_hstring *impl;
++    IIterator_HSTRING *iterator;
++    UINT32 capacity = 0;
++    boolean available;
++    HRESULT hr;
++
++    TRACE("iterable %p, out %p.\n", iterable, out);
++
++    if (FAILED(hr = vector_hstring_create(out))) return hr;
++    if (FAILED(hr = IIterable_HSTRING_First(iterable, &iterator))) goto error;
++
++    for (IIterator_HSTRING_get_HasCurrent(iterator, &available); available; IIterator_HSTRING_MoveNext(iterator, &available))
++        capacity++;
++
++    IIterator_HSTRING_Release(iterator);
++
++    impl = impl_from_IVector_HSTRING(*out);
++    impl->size = 0;
++    impl->capacity = capacity;
++    if (!(impl->elements = realloc(impl->elements, impl->capacity * sizeof(*impl->elements)))) goto error;
++
++    if (FAILED(hr = IIterable_HSTRING_First(iterable, &iterator))) goto error;
++
++    for (IIterator_HSTRING_get_HasCurrent(iterator, &available); available; IIterator_HSTRING_MoveNext(iterator, &available))
++    {
++        HSTRING str;
++        if (FAILED(hr = IIterator_HSTRING_get_Current(iterator, &str))) goto error;
++        if (FAILED(hr = WindowsDuplicateString(str, &impl->elements[impl->size]))) goto error;
++        WindowsDeleteString(str);
++        impl->size++;
++    }
++
++    IIterator_HSTRING_Release(iterator);
++
++    TRACE("created %p\n", *out);
++    return S_OK;
++
++error:
++    IVector_HSTRING_Release(*out);
++    return hr;
++}
+diff --git a/dlls/windows.storage/streams.c b/dlls/windows.storage/streams.c
+index b5d0eef..eff6a8e 100644
+--- a/dlls/windows.storage/streams.c
++++ b/dlls/windows.storage/streams.c
+@@ -20,9 +20,180 @@
+ 
+ #include <assert.h>
+ #include "private.h"
++#define ARCTIC_MEDIA_STREAM_REFERENCE
++#include "wine/arctic_media.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(storage);
+ 
++DEFINE_ARCTIC_STREAM_REFERENCE_SOURCE_IID;
++
++/*
++ * Arctic: a RandomAccessStreamReference keeps what it was made from, the Uri
++ * or the stream, as Windows' does. SystemMediaTransportControls' album art
++ * (Spotify, browsers) is one; windows.media.mediacontrol reads it through
++ * IArcticStreamReferenceSource of wine/arctic_media.h. OpenReadAsync is not
++ * there yet.
++ */
++struct stream_reference
++{
++    IRandomAccessStreamReference IRandomAccessStreamReference_iface;
++    IArcticStreamReferenceSource IArcticStreamReferenceSource_iface;
++    LONG ref;
++    HSTRING uri;
++    IRandomAccessStream *stream;
++};
++
++static inline struct stream_reference *impl_from_IRandomAccessStreamReference( IRandomAccessStreamReference *iface )
++{
++    return CONTAINING_RECORD( iface, struct stream_reference, IRandomAccessStreamReference_iface );
++}
++
++static HRESULT WINAPI stream_reference_QueryInterface( IRandomAccessStreamReference *iface, REFIID iid, void **out )
++{
++    struct stream_reference *impl = impl_from_IRandomAccessStreamReference( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IRandomAccessStreamReference ))
++    {
++        *out = &impl->IRandomAccessStreamReference_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
++    if (IsEqualGUID( iid, &IID_IArcticStreamReferenceSource ))
++    {
++        *out = &impl->IArcticStreamReferenceSource_iface;
++        IInspectable_AddRef( (IInspectable *)&impl->IRandomAccessStreamReference_iface );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI stream_reference_AddRef( IRandomAccessStreamReference *iface )
++{
++    struct stream_reference *impl = impl_from_IRandomAccessStreamReference( iface );
++    return InterlockedIncrement( &impl->ref );
++}
++
++static ULONG WINAPI stream_reference_Release( IRandomAccessStreamReference *iface )
++{
++    struct stream_reference *impl = impl_from_IRandomAccessStreamReference( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        WindowsDeleteString( impl->uri );
++        if (impl->stream) IRandomAccessStream_Release( impl->stream );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI stream_reference_GetIids( IRandomAccessStreamReference *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI stream_reference_GetRuntimeClassName( IRandomAccessStreamReference *iface, HSTRING *class_name )
++{
++    static const WCHAR name[] = L"Windows.Storage.Streams.RandomAccessStreamReference";
++    return WindowsCreateString( name, ARRAY_SIZE(name) - 1, class_name );
++}
++
++static HRESULT WINAPI stream_reference_GetTrustLevel( IRandomAccessStreamReference *iface, TrustLevel *trust_level )
++{
++    *trust_level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI stream_reference_OpenReadAsync( IRandomAccessStreamReference *iface,
++                                                      IAsyncOperation_IRandomAccessStreamWithContentType **operation )
++{
++    FIXME( "iface %p, operation %p stub!\n", iface, operation );
++    *operation = NULL;
++    return E_NOTIMPL;
++}
++
++static const struct IRandomAccessStreamReferenceVtbl stream_reference_vtbl =
++{
++    stream_reference_QueryInterface,
++    stream_reference_AddRef,
++    stream_reference_Release,
++    /* IInspectable methods */
++    stream_reference_GetIids,
++    stream_reference_GetRuntimeClassName,
++    stream_reference_GetTrustLevel,
++    /* IRandomAccessStreamReference methods */
++    stream_reference_OpenReadAsync,
++};
++
++static inline struct stream_reference *impl_from_IArcticStreamReferenceSource( IArcticStreamReferenceSource *iface )
++{
++    return CONTAINING_RECORD( iface, struct stream_reference, IArcticStreamReferenceSource_iface );
++}
++
++static HRESULT STDMETHODCALLTYPE stream_source_QueryInterface( IArcticStreamReferenceSource *iface, REFIID iid, void **out )
++{
++    return stream_reference_QueryInterface( &impl_from_IArcticStreamReferenceSource( iface )->IRandomAccessStreamReference_iface, iid, out );
++}
++
++static ULONG STDMETHODCALLTYPE stream_source_AddRef( IArcticStreamReferenceSource *iface )
++{
++    return stream_reference_AddRef( &impl_from_IArcticStreamReferenceSource( iface )->IRandomAccessStreamReference_iface );
++}
++
++static ULONG STDMETHODCALLTYPE stream_source_Release( IArcticStreamReferenceSource *iface )
++{
++    return stream_reference_Release( &impl_from_IArcticStreamReferenceSource( iface )->IRandomAccessStreamReference_iface );
++}
++
++static HRESULT STDMETHODCALLTYPE stream_source_GetUri( IArcticStreamReferenceSource *iface, HSTRING *uri )
++{
++    struct stream_reference *impl = impl_from_IArcticStreamReferenceSource( iface );
++    *uri = NULL;
++    return impl->uri ? WindowsDuplicateString( impl->uri, uri ) : S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE stream_source_GetStream( IArcticStreamReferenceSource *iface, IUnknown **stream )
++{
++    struct stream_reference *impl = impl_from_IArcticStreamReferenceSource( iface );
++    if ((*stream = (IUnknown *)impl->stream)) IUnknown_AddRef( *stream );
++    return S_OK;
++}
++
++static const struct IArcticStreamReferenceSourceVtbl stream_source_vtbl =
++{
++    stream_source_QueryInterface,
++    stream_source_AddRef,
++    stream_source_Release,
++    stream_source_GetUri,
++    stream_source_GetStream,
++};
++
++static HRESULT stream_reference_create( HSTRING uri, IRandomAccessStream *stream, IRandomAccessStreamReference **out )
++{
++    struct stream_reference *impl;
++    HRESULT hr;
++
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->IRandomAccessStreamReference_iface.lpVtbl = &stream_reference_vtbl;
++    impl->IArcticStreamReferenceSource_iface.lpVtbl = &stream_source_vtbl;
++    impl->ref = 1;
++    if (uri && FAILED(hr = WindowsDuplicateString( uri, &impl->uri )))
++    {
++        free( impl );
++        return hr;
++    }
++    if ((impl->stream = stream)) IRandomAccessStream_AddRef( stream );
++    *out = &impl->IRandomAccessStreamReference_iface;
++    return S_OK;
++}
++
+ struct random_access_stream_reference_statics
+ {
+     IActivationFactory IActivationFactory_iface;
+@@ -128,19 +299,30 @@ static HRESULT WINAPI random_access_stream_reference_statics_CreateFromFile( IRa
+ static HRESULT WINAPI random_access_stream_reference_statics_CreateFromUri( IRandomAccessStreamReferenceStatics *iface, IUriRuntimeClass *uri,
+                                                                             IRandomAccessStreamReference **stream_reference )
+ {
+-    FIXME( "iface %p, uri %p, stream_reference %p stub!\n", iface, uri, stream_reference );
+-    return E_NOTIMPL;
++    HSTRING text = NULL;
++    HRESULT hr;
++
++    TRACE( "iface %p, uri %p, stream_reference %p\n", iface, uri, stream_reference );
++
++    if (!stream_reference) return E_POINTER;
++    *stream_reference = NULL;
++    if (!uri) return E_POINTER;
++    if (FAILED(hr = IUriRuntimeClass_get_AbsoluteUri( uri, &text ))) return hr;
++    TRACE( "uri %s\n", debugstr_hstring( text ) );
++    hr = stream_reference_create( text, NULL, stream_reference );
++    WindowsDeleteString( text );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI random_access_stream_reference_statics_CreateFromStream( IRandomAccessStreamReferenceStatics *iface, IRandomAccessStream *stream,
+                                                                                IRandomAccessStreamReference **stream_reference )
+ {
+-    FIXME( "iface %p, stream %p, stream_reference %p stub!\n", iface, stream, stream_reference );
++    TRACE( "iface %p, stream %p, stream_reference %p\n", iface, stream, stream_reference );
+ 
+     *stream_reference = NULL;
+ 
+     if (!stream) return E_POINTER;
+-    return E_NOTIMPL;
++    return stream_reference_create( NULL, stream, stream_reference );
+ }
+ 
+ static const struct IRandomAccessStreamReferenceStaticsVtbl random_access_stream_reference_statics_vtbl =

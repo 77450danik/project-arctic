@@ -1,0 +1,277 @@
+diff --git a/dlls/advapi32/advapi32.spec b/dlls/advapi32/advapi32.spec
+index 2496f44..688d4d6 100644
+--- a/dlls/advapi32/advapi32.spec
++++ b/dlls/advapi32/advapi32.spec
+@@ -475,7 +475,7 @@
+ # @ stub LsaLookupPrivilegeValue
+ @ stdcall LsaLookupSids(ptr long ptr ptr ptr)
+ # @ stub LsaLookupSids2
+-# @ stub LsaManageSidNameMapping
++@ stdcall LsaManageSidNameMapping(long ptr ptr)
+ @ stdcall LsaNtStatusToWinError(long)
+ @ stub LsaOpenAccount
+ @ stdcall LsaOpenPolicy(long ptr long long)
+@@ -730,7 +730,7 @@
+ # @ stub SaferiPopulateDefaultsInRegistry
+ # @ stub SaferiRecordEventLogEntry
+ # @ stub SaferiReplaceProcessThreadTokens
+-# @ stub SaferiSearchMatchingHashRules
++@ stdcall SaferiSearchMatchingHashRules(long ptr long long ptr ptr)
+ @ stdcall -import SetAclInformation(ptr ptr long long)
+ # @ stub SetEncryptedFileMetadata
+ # @ stub SetEntriesInAccessListA
+diff --git a/dlls/advapi32/lsa.c b/dlls/advapi32/lsa.c
+index 5ca7273..85591c7 100644
+--- a/dlls/advapi32/lsa.c
++++ b/dlls/advapi32/lsa.c
+@@ -1190,3 +1190,16 @@ BOOLEAN WINAPI AuditQuerySystemPolicy(const GUID* guids, ULONG count, AUDIT_POLI
+     SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+     return FALSE;
+ }
++
++/******************************************************************************
++ * LsaManageSidNameMapping [ADVAPI32.@]
++ *
++ * Arctic: names of virtual accounts are not mapped to SIDs; OpenSSH imports it
++ * and goes on without the mapping when it fails.
++ */
++NTSTATUS WINAPI LsaManageSidNameMapping( DWORD type, void *input, void **output )
++{
++    FIXME( "type %lu, input %p, output %p: not supported\n", type, input, output );
++    if (output) *output = NULL;
++    return STATUS_NOT_SUPPORTED;
++}
+diff --git a/dlls/advapi32/security.c b/dlls/advapi32/security.c
+index 8310a4a..51f0745 100644
+--- a/dlls/advapi32/security.c
++++ b/dlls/advapi32/security.c
+@@ -3232,3 +3232,16 @@ BOOL WINAPI AddConditionalAce(PACL acl, DWORD ace_revision, DWORD ace_flags, UCH
+            access_mask, sid, debugstr_w(condition), length);
+     return FALSE;
+ }
++
++/******************************************************************************
++ * SaferiSearchMatchingHashRules [ADVAPI32.@]
++ *
++ * Arctic: there are no software restriction hash rules, so none matches.
++ */
++BOOL WINAPI SaferiSearchMatchingHashRules( ALG_ID alg, BYTE *hash, DWORD hash_size, DWORD image_size,
++                                           DWORD *level, DWORD *flags )
++{
++    TRACE( "alg %#x, hash %p, size %lu, image %lu, level %p, flags %p\n", alg, hash, hash_size, image_size, level, flags );
++    SetLastError( ERROR_NOT_FOUND );
++    return FALSE;
++}
+diff --git a/dlls/iphlpapi/iphlpapi.spec b/dlls/iphlpapi/iphlpapi.spec
+index 9da2a26..e22dec3 100644
+--- a/dlls/iphlpapi/iphlpapi.spec
++++ b/dlls/iphlpapi/iphlpapi.spec
+@@ -108,7 +108,7 @@
+ @ stub GetIpForwardTableFromStack
+ @ stdcall GetIpInterfaceEntry( ptr )
+ @ stdcall GetIpInterfaceTable( long ptr )
+-#@ stub GetIpNetEntry2
++@ stdcall GetIpNetEntry2(ptr)
+ @ stdcall GetIpNetTable( ptr ptr long )
+ @ stdcall GetIpNetTable2( long ptr )
+ @ stub GetIpNetTableFromStack
+@@ -164,7 +164,7 @@
+ @ stdcall if_indextoname(long ptr) IPHLP_if_indextoname
+ @ stdcall if_nametoindex(str) IPHLP_if_nametoindex
+ #@ stub InitializeIpForwardEntry
+-#@ stub InitializeIpInterfaceEntry
++@ stdcall InitializeIpInterfaceEntry(ptr)
+ #@ stub InitializeUnicastIpAddressEntry
+ #@ stub InternalCleanupPersistentStore
+ #@ stub InternalCreateAnycastIpAddressEntry
+@@ -262,7 +262,7 @@
+ @ stub _PfTestPacket@20
+ @ stdcall _PfUnBindInterface@4(long) PfUnBindInterface
+ #@ stub register_icmp
+-#@ stub ResolveIpNetEntry2
++@ stdcall ResolveIpNetEntry2(ptr ptr)
+ #@ stub ResolveNeighbor
+ #@ stub RestoreMediaSense
+ @ stdcall SendARP( long long ptr ptr )
+diff --git a/dlls/iphlpapi/iphlpapi_main.c b/dlls/iphlpapi/iphlpapi_main.c
+index 243f1ca..53018c6 100644
+--- a/dlls/iphlpapi/iphlpapi_main.c
++++ b/dlls/iphlpapi/iphlpapi_main.c
+@@ -5387,3 +5387,46 @@ DWORD WINAPI SetCurrentThreadCompartmentId( NET_IF_COMPARTMENT_ID id )
+     FIXME( "(%x): stub\n", id );
+     return ERROR_SUCCESS;
+ }
++
++/******************************************************************
++ *    InitializeIpInterfaceEntry (IPHLPAPI.@)
++ *
++ * Arctic: as in Windows, every field "unspecified" before SetIpInterfaceEntry.
++ */
++void WINAPI InitializeIpInterfaceEntry( MIB_IPINTERFACE_ROW *row )
++{
++    TRACE( "row %p\n", row );
++    memset( row, 0, sizeof(*row) );
++    row->Family = AF_UNSPEC;
++    row->SitePrefixLength = 0xff;
++    row->Metric = ~0u;
++    row->NlMtu = ~0u;
++    row->BaseReachableTime = ~0u;
++    row->ReachableTime = ~0u;
++    row->RetransmitTime = ~0u;
++    row->PathMtuDiscoveryTimeout = ~0u;
++    row->DadTransmits = ~0u;
++    row->LinkLocalAddressTimeout = ~0u;
++    row->ZoneIndices[0] = ~0u;
++}
++
++/******************************************************************
++ *    GetIpNetEntry2 (IPHLPAPI.@)
++ *
++ * Arctic: one neighbour of the table is not looked up; programs (msquic) take
++ * the address without its link-layer details then.
++ */
++DWORD WINAPI GetIpNetEntry2( MIB_IPNET_ROW2 *row )
++{
++    TRACE( "row %p\n", row );
++    return row ? ERROR_NOT_FOUND : ERROR_INVALID_PARAMETER;
++}
++
++/******************************************************************
++ *    ResolveIpNetEntry2 (IPHLPAPI.@)
++ */
++DWORD WINAPI ResolveIpNetEntry2( MIB_IPNET_ROW2 *row, const SOCKADDR_INET *source )
++{
++    TRACE( "row %p, source %p\n", row, source );
++    return row ? ERROR_NOT_FOUND : ERROR_INVALID_PARAMETER;
++}
+diff --git a/dlls/secur32/secur32.spec b/dlls/secur32/secur32.spec
+index 569bb12..759cb90 100644
+--- a/dlls/secur32/secur32.spec
++++ b/dlls/secur32/secur32.spec
+@@ -48,6 +48,7 @@
+ @ stdcall QueryContextAttributesW(ptr long ptr)
+ @ stdcall QueryCredentialsAttributesA(ptr long ptr)
+ @ stdcall QueryCredentialsAttributesW(ptr long ptr)
++@ stdcall SetCredentialsAttributesW(ptr long ptr long)
+ @ stdcall QuerySecurityContextToken(ptr ptr)
+ @ stdcall QuerySecurityPackageInfoA(str ptr)
+ @ stdcall QuerySecurityPackageInfoW(wstr ptr)
+diff --git a/dlls/secur32/wrapper.c b/dlls/secur32/wrapper.c
+index 53fea29..4858ade 100644
+--- a/dlls/secur32/wrapper.c
++++ b/dlls/secur32/wrapper.c
+@@ -937,3 +937,15 @@ SECURITY_STATUS WINAPI SetContextAttributesW(PCtxtHandle phContext,
+         ret = SEC_E_INVALID_HANDLE;
+     return ret;
+ }
++
++/***********************************************************************
++ *		SetCredentialsAttributesW (SECUR32.@)
++ *
++ * Arctic: the packages have no attributes to set on credentials; msquic and
++ * other programs import it and go on without them.
++ */
++SECURITY_STATUS WINAPI SetCredentialsAttributesW( PCredHandle credential, ULONG attribute, void *buffer, ULONG size )
++{
++    FIXME( "credential %p, attribute %lu, buffer %p, size %lu: not supported\n", credential, attribute, buffer, size );
++    return SEC_E_UNSUPPORTED_FUNCTION;
++}
+diff --git a/dlls/user32/misc.c b/dlls/user32/misc.c
+index ca252df..8b265a0 100644
+--- a/dlls/user32/misc.c
++++ b/dlls/user32/misc.c
+@@ -574,3 +574,15 @@ LRESULT WINAPI ImeWndProcW( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
+     if (!imm_ime_wnd_proc) return DefWindowProcW(hwnd, msg, wParam, lParam);
+     return imm_ime_wnd_proc( hwnd, msg, wParam, lParam, FALSE );
+ }
++
++/**********************************************************************
++ *          SkipPointerFrameMessages   (USER32.@)
++ *
++ * Arctic: no pointer frames come (WM_POINTER is not sent), nothing to skip.
++ * Qt programs (qBittorrent) import it.
++ */
++BOOL WINAPI SkipPointerFrameMessages( UINT32 id )
++{
++    TRACE( "id %u\n", id );
++    return TRUE;
++}
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 0dd0d92..f906fa3 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -1139,7 +1139,7 @@
+ @ stdcall ShutdownBlockReasonDestroy(long)
+ # @ stub ShutdownBlockReasonQuery
+ # @ stub SignalRedirectionStartComplete
+-# @ stub SkipPointerFrameMessages
++@ stdcall SkipPointerFrameMessages(long)
+ # @ stub SoftModalMessageBox
+ # @ stub SoundSentry
+ @ stdcall SubtractRect(ptr ptr ptr)
+diff --git a/dlls/userenv/userenv.spec b/dlls/userenv/userenv.spec
+index 8bfaccd..780ff82 100644
+--- a/dlls/userenv/userenv.spec
++++ b/dlls/userenv/userenv.spec
+@@ -1,6 +1,7 @@
+ 138 stdcall @(long str str str str long str long long str str long) USERENV_138
+ 
+ @ stdcall CreateAppContainerProfile(wstr wstr wstr ptr long ptr)
++@ stdcall DeleteAppContainerProfile(wstr)
+ @ stdcall DeriveAppContainerSidFromAppContainerName(wstr ptr)
+ @ stdcall CreateEnvironmentBlock(ptr ptr long)
+ @ stdcall DestroyEnvironmentBlock(ptr)
+diff --git a/dlls/userenv/userenv_main.c b/dlls/userenv/userenv_main.c
+index 4be268e..b73d9dd 100644
+--- a/dlls/userenv/userenv_main.c
++++ b/dlls/userenv/userenv_main.c
+@@ -729,3 +729,15 @@ HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(PCWSTR container_name,
+         return HRESULT_FROM_WIN32(GetLastError());
+     return S_OK;
+ }
++
++/******************************************************************************
++ *              DeleteAppContainerProfile   [USERENV.@]
++ *
++ * Arctic: CreateAppContainerProfile keeps no profile, so there is none to
++ * delete; Windows answers S_OK for a container that is not there.
++ */
++HRESULT WINAPI DeleteAppContainerProfile( PCWSTR container_name )
++{
++    TRACE( "container_name %s\n", debugstr_w(container_name) );
++    return container_name ? S_OK : E_INVALIDARG;
++}
+diff --git a/dlls/wintrust/wintrust.spec b/dlls/wintrust/wintrust.spec
+index 79e9bd3..95aeb49 100644
+--- a/dlls/wintrust/wintrust.spec
++++ b/dlls/wintrust/wintrust.spec
+@@ -94,7 +94,7 @@
+ @ stub WTHelperCheckCertUsage
+ @ stub WTHelperGetAgencyInfo
+ @ stdcall WTHelperGetFileHandle(ptr)
+-#@ stub WTHelperGetFileHash
++@ stdcall WTHelperGetFileHash(wstr long ptr ptr ptr ptr)
+ @ stdcall WTHelperGetFileName(ptr)
+ @ stdcall WTHelperGetKnownUsages(long ptr)
+ @ stdcall WTHelperGetProvCertFromChain(ptr long)
+diff --git a/dlls/wintrust/wintrust_main.c b/dlls/wintrust/wintrust_main.c
+index a9b1587..e39a593 100644
+--- a/dlls/wintrust/wintrust_main.c
++++ b/dlls/wintrust/wintrust_main.c
+@@ -1161,3 +1161,16 @@ HRESULT WINAPI FindCertsByIssuer(PCERT_CHAIN pCertChains, DWORD *pcbCertChains,
+      debugstr_w(pwszPurpose), dwKeySpec);
+     return E_FAIL;
+ }
++
++/***********************************************************************
++ *		WTHelperGetFileHash (WINTRUST.@)
++ *
++ * Arctic: the hash of a signed file's signature; files here carry none that
++ * wintrust reads this way, as for an unsigned file in Windows.
++ */
++HRESULT WINAPI WTHelperGetFileHash( const WCHAR *path, DWORD flags, void *reserved, BYTE *hash,
++                                    DWORD *hash_size, ALG_ID *alg )
++{
++    FIXME( "path %s, flags %#lx, hash %p, size %p, alg %p\n", debugstr_w(path), flags, hash, hash_size, alg );
++    return TRUST_E_NOSIGNATURE;
++}

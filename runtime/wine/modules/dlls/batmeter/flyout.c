@@ -33,7 +33,9 @@
 #include "batmeter.h"
 #include "shellapi.h"
 #include "dwmapi.h"
+#include "winreg.h"
 #include "wine/arctic_dwm.h"
+#include "wine/arctic_fluent.h"
 
 #define FLYOUT_WIDTH   px(360)
 #define ICON_SIZE      px(64)
@@ -118,11 +120,19 @@ static BOOL show_tile(void)
     return !view.slider && !view.status.ac_online;
 }
 
+static BOOL style11;
+static void lay_out11(void);
+
 static void lay_out(void)
 {
     WCHAR label[256];
     int y;
 
+    if (style11)
+    {
+        lay_out11();
+        return;
+    }
     battery_state_label( &view, label, ARRAY_SIZE(label) );
 
     /* the icon, the charge and the state side by side */
@@ -161,13 +171,71 @@ static void lay_out(void)
     layout.height = y;
 }
 
+/* Windows 11's: 16 around, the battery at 48 beside its charge at 28
+ * (SemiBold) and its state, the power slider of WinUI, battery saver as a
+ * quick action (96 x 48, its name under it), and at the bottom a darker
+ * strip that leads to the battery's settings, as Quick Settings' footer */
+#define PAD11          px(16)
+#define GLYPH11        px(48)
+#define SLIDER11       px(32)
+#define TILE11_WIDTH   px(96)
+#define TILE11_HEIGHT  px(48)
+#define FOOTER11       px(48)
+
+static HFONT font_title, font_body14;
+static int line28, line14;
+
+static struct
+{
+    int row_top, row_height, text_x;
+    int list_top, list_height;
+    int header_top, header_height, slider_top, labels_top, labels_height;
+    int tile_top, footer_top, height;
+} l11;
+
+static void lay_out11(void)
+{
+    WCHAR label[256];
+    int y = PAD11, width = FLYOUT_WIDTH - 2 * PAD11;
+
+    battery_state_label( &view, label, ARRAY_SIZE(label) );
+    l11.row_top = y;
+    l11.text_x = PAD11 + GLYPH11 + px( 16 );
+    l11.row_height = max( GLYPH11, line28 + (label[0] ? text_height( label, font_body14, FLYOUT_WIDTH - PAD11 - l11.text_x ) : 0) );
+    y += l11.row_height;
+
+    l11.list_top = y + px( 4 );
+    l11.list_height = view.status.battery_count > 1 ? view.status.battery_count * (line14 + px( 4 )) : 0;
+    y = l11.list_top + l11.list_height;
+
+    if (view.slider)
+    {
+        l11.header_top = y + px( 16 );
+        l11.header_height = text_height( slider_header(), font_body14, width );
+        l11.slider_top = l11.header_top + l11.header_height + px( 4 );
+        l11.labels_top = l11.slider_top + SLIDER11 + px( 4 );
+        l11.labels_height = max( text_height( load_string( IDS_BEST_BATTERY ), font_caption, width / 2 - px( 8 ) ),
+                                 text_height( load_string( IDS_BEST_PERFORMANCE ), font_caption, width / 2 - px( 8 ) ) );
+        y = l11.labels_top + l11.labels_height;
+    }
+    if (show_tile())
+    {
+        l11.tile_top = y + px( 16 );
+        y = l11.tile_top + TILE11_HEIGHT + px( 6 ) + 2 * line12;
+    }
+    l11.footer_top = y + PAD11;
+    l11.height = l11.footer_top + FOOTER11;
+    layout.height = l11.height;
+}
+
 static void place(void)
 {
     SetWindowPos( flyout, HWND_TOPMOST, anchor_x, anchor_above ? anchor_y - layout.height : anchor_y, FLYOUT_WIDTH,
                   layout.height, SWP_NOACTIVATE );
 }
 
-/* over the icon, on the taskbar's edge, inside the work area */
+/* over the icon, on the taskbar's edge, inside the work area; Windows 11's
+ * at the right end of the taskbar, 12 off it */
 static void anchor(void)
 {
     NOTIFYICONIDENTIFIER id = { sizeof(id), tray_window, tray_icon };
@@ -179,6 +247,11 @@ static void anchor(void)
     {
         GetCursorPos( &pt );
         SetRect( &icon, pt.x, pt.y, pt.x + 1, pt.y + 1 );
+    }
+    if (style11)
+    {
+        fluent_anchor( &icon, FLYOUT_WIDTH, &anchor_x, &anchor_y, &anchor_above );
+        return;
     }
     GetMonitorInfoW( MonitorFromRect( &icon, MONITOR_DEFAULTTONEAREST ), &info );
     anchor_x = (icon.left + icon.right - FLYOUT_WIDTH) / 2;
@@ -336,6 +409,113 @@ static void paint_tile( HDC hdc, UINT32 *bits, int width, int height )
                 bits[y * width + x] |= 0xff000000;
 }
 
+static enum fluent_state state11( enum hit what )
+{
+    if (pressed == what && hot == what) return FLUENT_PRESSED;
+    if (hot == what) return FLUENT_HOT;
+    return FLUENT_REST;
+}
+
+static void slider11_extent( int *left, int *right )
+{
+    *left = PAD11 - px( 10 );   /* the thumb's 10 inside the track's ends */
+    *right = FLYOUT_WIDTH - PAD11 + px( 10 );
+}
+
+static void paint11( HDC hdc, UINT32 *bits, int width, int height )
+{
+    WCHAR label[256];
+    RECT rect;
+    int x;
+
+    /* the battery, its charge, its state */
+    draw_glyph( hdc, battery_view_glyph( &view ), PAD11, l11.row_top + (l11.row_height - GLYPH11) / 2, GLYPH11, INK, 255 );
+    battery_state_label( &view, label, ARRAY_SIZE(label) );
+    {
+        int text_height_ = line28 + (label[0] ? text_height( label, font_body14, FLYOUT_WIDTH - PAD11 - l11.text_x ) : 0);
+        int top = l11.row_top + (l11.row_height - text_height_) / 2;
+
+        SetRect( &rect, l11.text_x, top, FLYOUT_WIDTH - PAD11, top + line28 );
+        draw_text( hdc, percent_text(), &rect, font_title, INK, DT_SINGLELINE | DT_LEFT );
+        if (label[0])
+        {
+            SetRect( &rect, l11.text_x, top + line28, FLYOUT_WIDTH - PAD11, l11.row_top + l11.row_height + line14 );
+            draw_text( hdc, label, &rect, font_body14, MEDIUM, DT_WORDBREAK | DT_LEFT );
+        }
+    }
+
+    /* more than one battery: a line each */
+    for (UINT i = 0; view.status.battery_count > 1 && i < view.status.battery_count; i++)
+    {
+        const struct arctic_battery *bat = &view.status.batteries[i];
+        int top = l11.list_top + i * (line14 + px( 4 ));
+        const WCHAR *text;
+
+        if (bat->state == ARCTIC_BATTERY_FULL || bat->percent >= 100) text = format_string( IDS_BATTERY_FULL, i + 1, bat->percent );
+        else if (bat->state == ARCTIC_BATTERY_DISCHARGING) text = format_string( IDS_BATTERY_IN_USE, i + 1, bat->percent );
+        else text = format_string( IDS_BATTERY_PERCENT, i + 1, bat->percent );
+        SetRect( &rect, PAD11, top, FLYOUT_WIDTH - PAD11, top + line14 );
+        draw_text( hdc, text, &rect, font_body14, MEDIUM, DT_SINGLELINE | DT_LEFT | DT_END_ELLIPSIS );
+    }
+
+    /* the power mode: its name, the slider with a tick a place, the ends' names */
+    if (view.slider)
+    {
+        int left, right, cy = l11.slider_top + SLIDER11 / 2;
+        float unit = fluent_unit();
+
+        SetRect( &rect, PAD11, l11.header_top, FLYOUT_WIDTH - PAD11, l11.header_top + l11.header_height );
+        draw_text( hdc, slider_header(), &rect, font_body14, INK, DT_WORDBREAK | DT_LEFT );
+        slider11_extent( &left, &right );
+        for (int i = 0; i < view.positions; i++)
+        {
+            /* TickBar: 1 wide, 4 high, 4 under the track */
+            x = fluent_slider_x( left, right, unit, (float)i / max( view.positions - 1, 1 ) );
+            SetRect( &rect, x, cy + px( 2 ) + px( 4 ), x + max( px( 1 ), 1 ), cy + px( 2 ) + px( 8 ) );
+            fill_alpha( hdc, &rect, INK, 0x8b );
+        }
+        fluent_slider( hdc, left, right, cy, unit, (float)view.position / max( view.positions - 1, 1 ),
+                       dragging ? FLUENT_PRESSED : hot == HIT_SLIDER ? FLUENT_HOT : FLUENT_REST, shell_light, 255 );
+        SetRect( &rect, PAD11, l11.labels_top, FLYOUT_WIDTH / 2 - px( 8 ), l11.labels_top + l11.labels_height );
+        draw_text( hdc, load_string( IDS_BEST_BATTERY ), &rect, font_caption, MEDIUM, DT_WORDBREAK | DT_LEFT );
+        SetRect( &rect, FLYOUT_WIDTH / 2 + px( 8 ), l11.labels_top, FLYOUT_WIDTH - PAD11, l11.labels_top + l11.labels_height );
+        draw_text( hdc, load_string( IDS_BEST_PERFORMANCE ), &rect, font_caption, MEDIUM, DT_WORDBREAK | DT_RIGHT );
+    }
+
+    /* battery saver, a quick action */
+    if (show_tile())
+    {
+        RECT tile = { PAD11, l11.tile_top, PAD11 + TILE11_WIDTH, l11.tile_top + TILE11_HEIGHT };
+        COLORREF fore = fluent_toggle( hdc, &tile, view.saver, state11( HIT_TILE ), shell_light, bits, width, height );
+        int glyph = px( 20 );
+
+        draw_glyph( hdc, battery_glyph( GLYPH_SAVER, view.status.percent ), (tile.left + tile.right - glyph) / 2,
+                    (tile.top + tile.bottom - glyph) / 2, glyph, fore, 255 );
+        SetRect( &rect, tile.left - px( 8 ), tile.bottom + px( 6 ), tile.right + px( 8 ), tile.bottom + px( 6 ) + 2 * line12 );
+        draw_text( hdc, load_string( IDS_BATTERY_SAVER ), &rect, font_caption, INK, DT_WORDBREAK | DT_CENTER );
+    }
+
+    /* the footer: darker, the way to the battery's settings */
+    SetRect( &rect, 0, l11.footer_top, FLYOUT_WIDTH, l11.height );
+    fill_alpha( hdc, &rect, shell_light ? RGB( 0, 0, 0 ) : RGB( 0, 0, 0 ), shell_light ? 0x08 : 0x40 );
+    if (hot == HIT_LINK) fill_alpha( hdc, &rect, INK, fluent_subtle_alpha( state11( HIT_LINK ), shell_light ) );
+    SetRect( &rect, PAD11, l11.footer_top, FLYOUT_WIDTH - PAD11 - px( 24 ), l11.height );
+    draw_text( hdc, load_string( IDS_SETTINGS_LINK ), &rect, font_body14, INK, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS );
+    fluent_chevron( hdc, FLYOUT_WIDTH - PAD11 - px( 6 ), (l11.footer_top + l11.height) / 2, px( 12 ), FLUENT_RIGHT, INK, 255 );
+}
+
+static enum hit hit_test11( POINT pt )
+{
+    if (view.slider && pt.x >= PAD11 - px( 10 ) && pt.x < FLYOUT_WIDTH - PAD11 + px( 10 ) &&
+        pt.y >= l11.slider_top && pt.y < l11.slider_top + SLIDER11)
+        return HIT_SLIDER;
+    if (show_tile() && pt.x >= PAD11 && pt.x < PAD11 + TILE11_WIDTH && pt.y >= l11.tile_top &&
+        pt.y < l11.tile_top + TILE11_HEIGHT)
+        return HIT_TILE;
+    if (pt.y >= l11.footer_top && pt.y < l11.height) return HIT_LINK;
+    return HIT_NONE;
+}
+
 static void on_paint( HWND hwnd )
 {
     PAINTSTRUCT ps;
@@ -356,11 +536,15 @@ static void on_paint( HWND hwnd )
         /* black is the acrylic seen through */
         arctic_fill_back( mem, &client, shell_light );
         SetBkMode( mem, TRANSPARENT );
-        paint_battery( mem );
-        paint_list( mem );
-        paint_slider( mem );
-        paint_link( mem );
-        paint_tile( mem, bits, client.right, client.bottom );
+        if (style11) paint11( mem, bits, client.right, client.bottom );
+        else
+        {
+            paint_battery( mem );
+            paint_list( mem );
+            paint_slider( mem );
+            paint_link( mem );
+            paint_tile( mem, bits, client.right, client.bottom );
+        }
         BitBlt( hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY );
         SelectObject( mem, old );
         DeleteObject( bitmap );
@@ -375,6 +559,7 @@ static void on_paint( HWND hwnd )
 
 static enum hit hit_test( POINT pt )
 {
+    if (style11) return hit_test11( pt );
     if (view.slider && pt.x >= SLIDER_LEFT - px( 4 ) && pt.x < SLIDER_LEFT + SLIDER_WIDTH + px( 4 ) &&
         pt.y >= layout.slider_top && pt.y < layout.slider_top + SLIDER_HEIGHT)
         return HIT_SLIDER;
@@ -414,6 +599,14 @@ static void set_position_at( int x )
     int steps = max( view.positions - 1, 1 ), span = SLIDER_WIDTH - THUMB_WIDTH;
     int at = x - SLIDER_LEFT - THUMB_WIDTH / 2;
 
+    if (style11)
+    {
+        int left, right;
+
+        slider11_extent( &left, &right );
+        set_position( (int)(fluent_slider_value( left, right, fluent_unit(), x ) * steps + 0.5f) );
+        return;
+    }
     set_position( (at * steps + span / 2) / span );
 }
 
@@ -579,6 +772,11 @@ static BOOL create_flyout(void)
     line15 = font_line( font_body );
     line12 = font_line( font_caption );
     line46 = font_line( font_header );
+    /* Windows 11's TitleTextBlockStyle and BodyTextBlockStyle */
+    font_title = shell_font( px( 28 ), FW_SEMIBOLD );
+    font_body14 = shell_font( px( 14 ), FW_NORMAL );
+    line28 = font_line( font_title );
+    line14 = font_line( font_body14 );
     return TRUE;
 }
 
@@ -614,6 +812,7 @@ void flyout_toggle( HWND tray, UINT icon_id )
 
     tray_window = tray;
     tray_icon = icon_id;
+    style11 = arctic_style11();
     dragging = FALSE;
     hot = pressed = HIT_NONE;
     battery_read( &view );

@@ -1,0 +1,9 @@
+MODULE    = fsquirt.exe
+IMPORTS   = shell32 user32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Bluetooth File Transfer"
+
+SOURCES = \
+	fsquirt.rc \
+	main.c

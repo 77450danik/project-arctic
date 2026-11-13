@@ -31,6 +31,7 @@ STRINGTABLE
     IDS_DIGITAL_DISPLAY   "Digital Display"
     IDS_MUTE              "Mute"
     IDS_UNMUTE            "Unmute"
+    IDS_SENDTO_BLUETOOTH  "Bluetooth device"
 }
 
 LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
@@ -49,6 +50,7 @@ STRINGTABLE
     IDS_DIGITAL_DISPLAY   "Цифровий дисплей"
     IDS_MUTE              "Вимкнути звук"
     IDS_UNMUTE            "Увімкнути звук"
+    IDS_SENDTO_BLUETOOTH  "Пристрій Bluetooth"
 }
 
 LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
@@ -67,4 +69,5 @@ STRINGTABLE
     IDS_DIGITAL_DISPLAY   "Цифровой дисплей"
     IDS_MUTE              "Выключить звук"
     IDS_UNMUTE            "Включить звук"
+    IDS_SENDTO_BLUETOOTH  "Устройство Bluetooth"
 }

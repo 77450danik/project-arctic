@@ -1,0 +1,167 @@
+diff --git a/dlls/winealsa.drv/alsa.c b/dlls/winealsa.drv/alsa.c
+index b3729c6..f470402 100644
+--- a/dlls/winealsa.drv/alsa.c
++++ b/dlls/winealsa.drv/alsa.c
+@@ -606,6 +606,57 @@ static void get_default_output(int *card, int *device)
+         *device = value;
+ }
+ 
++/* Arctic: Bluetooth headphones. winebth.sys plays to them what programs play
++ * to the loopback card "Bluetooth" (arctic-init loads snd-aloop as it), and
++ * says in /dev/shm/arctic-bt-audio which device has the music now. The card
++ * is an output only then, named after the device, as Windows names it, and
++ * the default output while it is there, as in Windows; its dmix plays at
++ * what the driver reads, 48 kHz in 16 bits. */
++#define BLUETOOTH_CARD_ID "Bluetooth"
++#define BLUETOOTH_STATE "/dev/shm/arctic-bt-audio"
++#define BLUETOOTH_OUTPUT_FORMAT "plug:'dmix:CARD=%u,DEV=0,SUBDEV=0,FORMAT=S16_LE,RATE=48000'"
++/* the headset's microphone (hands-free): the loopback's second substream, which
++ * the driver plays what the headset hears to, in the same format */
++#define BLUETOOTH_INPUT_FORMAT "plug:'dsnoop:CARD=%u,DEV=1,SUBDEV=1,FORMAT=S16_LE,RATE=48000'"
++
++static BOOL is_bluetooth_card(unsigned int card)
++{
++    char path[64], id[32] = "";
++    FILE *f;
++
++    snprintf(path, sizeof(path), "/proc/asound/card%u/id", card);
++    if (!(f = fopen(path, "r")))
++        return FALSE;
++    if (!fgets(id, sizeof(id), f)) id[0] = 0;
++    fclose(f);
++    id[strcspn(id, "\n")] = 0;
++    return !strcmp(id, BLUETOOTH_CARD_ID);
++}
++
++/* the name of the device whose music plays, whether its microphone is there; FALSE: none */
++static BOOL bluetooth_device_name(char *buf, size_t size, BOOL *hfp)
++{
++    char line[300];
++    BOOL found = FALSE;
++    FILE *f = fopen(BLUETOOTH_STATE, "r");
++
++    if (hfp)
++        *hfp = FALSE;
++    if (!f)
++        return FALSE;
++    while (fgets(line, sizeof(line), f))
++    {
++        line[strcspn(line, "\n")] = 0;
++        if (!strcmp(line, "hfp=1") && hfp)
++            *hfp = TRUE;
++        if (strncmp(line, "name=", 5)) continue;
++        snprintf(buf, size, "%s", line + 5);
++        found = buf[0] != 0;
++    }
++    fclose(f);
++    return found;
++}
++
+ /* what the output is, as DEVPKEY_Device_DeviceDesc says it; FALSE: no such output */
+ static BOOL get_output_description(unsigned int card, unsigned int device, char *buf, size_t size)
+ {
+@@ -614,6 +665,11 @@ static BOOL get_output_description(unsigned int card, unsigned int device, char
+     char cardpath[16], *cardname = NULL;
+     BOOL ret = FALSE;
+ 
++    if (is_bluetooth_card(card))
++    {
++        snprintf(buf, size, "Headphones");
++        return TRUE;
++    }
+     snprintf(cardpath, sizeof(cardpath), "hw:%u", card);
+     if (snd_ctl_open(&ctl, cardpath, 0) < 0)
+         return FALSE;
+@@ -648,7 +704,7 @@ static BOOL get_output_description(unsigned int card, unsigned int device, char
+ static void alsa_get_outputs(struct endpoints_info *endpoints_info, unsigned int *default_idx)
+ {
+     int card = -1, def_card, def_device, err;
+-    unsigned int first_analog = ~0u;
++    unsigned int first_analog = ~0u, bluetooth_idx = ~0u;
+ 
+     *default_idx = ~0u;
+     get_default_output(&def_card, &def_device);
+@@ -662,6 +718,22 @@ static void alsa_get_outputs(struct endpoints_info *endpoints_info, unsigned int
+         int device = -1;
+         BOOL has_codec;
+ 
++        if (is_bluetooth_card(card))
++        {
++            char devnode[96], device_name[256];
++            WCHAR *name;
++
++            /* the headphones, while their music is connected; the default then */
++            if (!bluetooth_device_name(device_name, sizeof(device_name), NULL))
++                continue;
++            snprintf(devnode, sizeof(devnode), BLUETOOTH_OUTPUT_FORMAT, card);
++            if (!(name = strdupAtoW(device_name)))
++                continue;
++            bluetooth_idx = endpoints_info->num;
++            TRACE("Bluetooth output %s: %s\n", devnode, wine_dbgstr_w(name));
++            endpoints_add(endpoints_info, name, strdup(devnode));
++            continue;
++        }
+         snprintf(cardpath, sizeof(cardpath), "hw:%u", card);
+         if (snd_ctl_open(&ctl, cardpath, 0) < 0)
+             continue;
+@@ -704,6 +776,8 @@ static void alsa_get_outputs(struct endpoints_info *endpoints_info, unsigned int
+         snd_ctl_close(ctl);
+     }
+ 
++    if (bluetooth_idx != ~0u)
++        *default_idx = bluetooth_idx;
+     if (*default_idx == ~0u)
+         *default_idx = first_analog != ~0u ? first_analog : 0;
+ }
+@@ -742,6 +816,21 @@ static NTSTATUS alsa_get_endpoint_ids(void *args)
+         WCHAR *cardname;
+         snd_ctl_t *ctl;
+ 
++        /* Arctic: the Bluetooth loopback is the headset's microphone while hands-free
++         * is connected, and the default then, as in Windows; nothing else */
++        if(is_bluetooth_card(card)){
++            char devnode[96], device_name[256];
++            WCHAR *name;
++            BOOL hfp;
++
++            if(bluetooth_device_name(device_name, sizeof(device_name), &hfp) && hfp &&
++               (name = strdupAtoW(device_name))){
++                snprintf(devnode, sizeof(devnode), BLUETOOTH_INPUT_FORMAT, card);
++                params->default_idx = endpoints_info.num;
++                endpoints_add(&endpoints_info, name, strdup(devnode));
++            }
++            continue;
++        }
+         sprintf(cardpath, "hw:%u", card);
+ 
+         if((err = snd_ctl_open(&ctl, cardpath, 0)) < 0){
+@@ -2525,6 +2614,7 @@ static NTSTATUS alsa_get_prop_value(void *args)
+     const GUID *guid = params->guid;
+     const PROPERTYKEY *prop = params->prop;
+     PROPVARIANT *out = params->value;
++    unsigned int bt_card;
+     static const PROPERTYKEY devicepath_key = { /* undocumented? - {b3f8fa53-0004-438e-9003-51a46e139bfc},2 */
+         {0xb3f8fa53, 0x0004, 0x438e, {0x90, 0x03, 0x51, 0xa4, 0x6e, 0x13, 0x9b, 0xfc}}, 2
+     };
+@@ -2632,6 +2722,21 @@ static NTSTATUS alsa_get_prop_value(void *args)
+         else if (num_speakers == 1)
+             out->ulVal = KSAUDIO_SPEAKER_MONO;
+ 
++        params->result = S_OK;
++        return STATUS_SUCCESS;
++    } else if (flow == eCapture && IsEqualPropertyKey(*prop, devicedesc_key) &&
++               sscanf(name, "plug:'dsnoop:CARD=%u", &bt_card) == 1 && is_bluetooth_card(bt_card)) {
++        /* Arctic: as Windows names a hands-free microphone */
++        static const WCHAR headsetW[] = {'H','e','a','d','s','e','t',0};
++
++        if(*params->buffer_size < sizeof(headsetW)){
++            params->result = E_NOT_SUFFICIENT_BUFFER;
++            *params->buffer_size = sizeof(headsetW);
++            return STATUS_SUCCESS;
++        }
++        out->vt = VT_LPWSTR;
++        out->pwszVal = params->buffer;
++        memcpy(out->pwszVal, headsetW, sizeof(headsetW));
+         params->result = S_OK;
+         return STATUS_SUCCESS;
+     } else if (flow == eRender && IsEqualPropertyKey(*prop, devicedesc_key)) {
