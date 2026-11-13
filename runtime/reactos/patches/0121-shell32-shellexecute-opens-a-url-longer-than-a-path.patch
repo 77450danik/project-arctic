@@ -1,0 +1,79 @@
+From: Arctic <arctic@localhost>
+Subject: [PATCH] shell32: ShellExecute opens a URL longer than a path.
+
+Spotify's login link is over a thousand characters. App Paths copied it
+into a 1024-character buffer and SHELL_FindExecutable into a MAX_PATH one,
+both past their end, and the program died; execute_from_key cut the
+browser's command line at 1024 characters. Names longer than a path are no
+program or file to look for now, and the command line is as long as the
+URL needs.
+---
+diff -ruN a/dll/win32/shell32/shlexec.cpp b/dll/win32/shell32/shlexec.cpp
+--- a/dll/win32/shell32/shlexec.cpp	2026-11-12 17:00:10.677499700 +0100
++++ b/dll/win32/shell32/shlexec.cpp	2026-11-12 17:01:49.902507800 +0100
+@@ -912,6 +912,10 @@
+     BOOL found = FALSE;
+ 
+     if (env) *env = NULL;
++    /* Arctic: App Paths names a program, never longer than a path; a long URL
++     * (a login link) went past the end of buffer here */
++    if (wcslen(szName) >= MAX_PATH)
++        return FALSE;
+     wcscpy(buffer, L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\");
+     wcscat(buffer, szName);
+     res = RegOpenKeyExW(HKEY_LOCAL_MACHINE, buffer, 0, KEY_READ, &hkApp);
+@@ -1098,9 +1102,16 @@
+         search_paths[0] = curdir;
+     }
+ 
+-    lstrcpyW(xlpFile, lpFile);
+-    if (PathResolveW(xlpFile, search_paths, PRF_TRYPROGRAMEXTENSIONS | PRF_VERIFYEXISTS) ||
+-        PathFindOnPathW(xlpFile, search_paths))
++    /* Arctic: what is longer than a path (a URL) is no file to find, and it
++     * would not fit in xlpFile */
++    BOOL resolved = FALSE;
++    if (wcslen(lpFile) < _countof(xlpFile))
++    {
++        lstrcpyW(xlpFile, lpFile);
++        resolved = PathResolveW(xlpFile, search_paths, PRF_TRYPROGRAMEXTENSIONS | PRF_VERIFYEXISTS) ||
++                   PathFindOnPathW(xlpFile, search_paths);
++    }
++    if (resolved)
+     {
+         TRACE("PathResolveW returned non-zero\n");
+         lpFile = xlpFile;
+@@ -1499,7 +1510,9 @@
+                                  SHELL_ExecuteW32 execfunc,
+                                  LPSHELLEXECUTEINFOW psei, LPSHELLEXECUTEINFOW psei_out)
+ {
+-    WCHAR cmd[256], param[1024], ddeexec[256];
++    WCHAR cmd[256], paramBuffer[1024], ddeexec[256];
++    LPWSTR param = paramBuffer;
++    CHeapPtr<WCHAR, CLocalAllocator> paramAlloc;
+     DWORD cmdlen = sizeof(cmd), ddeexeclen = sizeof(ddeexec);
+     UINT_PTR retval = SE_ERR_NOASSOC;
+     DWORD resultLen;
+@@ -1521,10 +1534,20 @@
+         if (cmdlen >= ARRAY_SIZE(cmd))
+             cmdlen = ARRAY_SIZE(cmd) - 1;
+         cmd[cmdlen] = '\0';
+-        SHELL_ArgifyW(param, ARRAY_SIZE(param), cmd, lpFile, (LPITEMIDLIST)psei->lpIDList, szCommandline, &resultLen,
++        SHELL_ArgifyW(param, ARRAY_SIZE(paramBuffer), cmd, lpFile, (LPITEMIDLIST)psei->lpIDList, szCommandline, &resultLen,
+                       (psei->lpDirectory && *psei->lpDirectory) ? psei->lpDirectory : NULL);
+-        if (resultLen > ARRAY_SIZE(param))
+-            ERR("Argify buffer not large enough, truncating\n");
++        /* Arctic: a long URL (a login link) goes to the browser whole, not cut */
++        if (resultLen > ARRAY_SIZE(paramBuffer))
++        {
++            if (paramAlloc.Allocate(resultLen))
++            {
++                param = paramAlloc;
++                SHELL_ArgifyW(param, resultLen, cmd, lpFile, (LPITEMIDLIST)psei->lpIDList, szCommandline, &resultLen,
++                              (psei->lpDirectory && *psei->lpDirectory) ? psei->lpDirectory : NULL);
++            }
++            else
++                ERR("Argify buffer not large enough, truncating\n");
++        }
+     }
+ 
+     /* Get the parameters needed by the application

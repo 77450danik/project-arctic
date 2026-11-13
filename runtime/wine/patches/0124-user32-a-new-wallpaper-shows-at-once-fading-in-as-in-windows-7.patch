@@ -1,0 +1,238 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 11 Nov 2026 15:00:00 +0200
+Subject: [PATCH] user32: A new wallpaper shows at once, fading in as in Windows 7.
+
+The shell took the wallpaper from its own copy of the setting
+(SPI_GETDESKWALLPAPER), which another process changing it does not reach:
+the desktop kept the old picture until the shell started again. It is
+read from the registry each time the desktop is drawn now, as its style
+already was.
+
+A new picture, fit or colour fades in over the old one for 0.7 s, as
+Windows 7 changes it: the old background is kept as it looked and drawn
+over the new one, fainter each time, while a timer has the desktop drawn
+again.
+---
+diff --git a/dlls/user32/desktop.c b/dlls/user32/desktop.c
+--- a/dlls/user32/desktop.c
++++ b/dlls/user32/desktop.c
+@@ -169,17 +169,168 @@ static void CALLBACK wallpaper_retry_proc( HWND hwnd, UINT msg, UINT_PTR id, DWO
+                                                   RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
+ }
+ 
++/* The desktop's background: the colour (or the pattern) where the picture
++ * does not cover it, the picture centred, laid out or tiled */
++static void paint_background( HDC hdc, HWND desktop, const RECT *rect, COLORREF color )
++{
++    if (!hbitmapWallPaper ||
++        (!fTileWallPaper && ((bitmapSize.cx < rect->right) || (bitmapSize.cy < rect->bottom))))
++    {
++        HBRUSH brush = hbrushPattern, solid = 0;
++
++        if (!brush) brush = solid = CreateSolidBrush( color );
++        /* Set colors in case pattern is a monochrome bitmap */
++        SetBkColor( hdc, RGB(0,0,0) );
++        SetTextColor( hdc, color );
++        FillRect( hdc, rect, brush );
++        if (solid) DeleteObject( solid );
++    }
++
++    if (hbitmapWallPaper)
++    {
++        INT x, y;
++        HDC hMemDC = CreateCompatibleDC( hdc );
++
++        SelectObject( hMemDC, hbitmapWallPaper );
++
++        if (fTileWallPaper)
++        {
++            for (y = 0; y < rect->bottom; y += bitmapSize.cy)
++                for (x = 0; x < rect->right; x += bitmapSize.cx)
++                    BitBlt( hdc, x, y, bitmapSize.cx, bitmapSize.cy, hMemDC, 0, 0, SRCCOPY );
++        }
++        else
++        {
++            x = (rect->left + rect->right - bitmapSize.cx) / 2;
++            y = (rect->top + rect->bottom - bitmapSize.cy) / 2;
++            if (x < 0) x = 0;
++            if (y < 0) y = 0;
++            BitBlt( hdc, x, y, bitmapSize.cx, bitmapSize.cy, hMemDC, 0, 0, SRCCOPY );
++        }
++        DeleteDC( hMemDC );
++    }
++}
++
++/* Windows 7 fades a new background in over the old one. The desktop as it
++ * was is kept and drawn over the new one, fainter each time, while a timer
++ * has the desktop drawn again; then it goes. */
++#define FADE_MS 700
++
++static HBITMAP fade_bitmap;
++static DWORD fade_start;
++static HWND fade_hwnd;
++static UINT_PTR fade_timer;
++static COLORREF wallpaper_color;
++static BOOL wallpaper_painted;
++
++/* the window the desktop is drawn in, in this process: the shell's, or the desktop itself */
++static HWND fade_window( HDC hdc )
++{
++    HWND hwnd = NtUserWindowFromDC( hdc ), shell;
++    DWORD pid;
++
++    if (hwnd && (hwnd = NtUserGetAncestor( hwnd, GA_ROOT ))) return hwnd;
++    if ((shell = FindWindowW( L"Progman", NULL )) && GetWindowThreadProcessId( shell, &pid ) &&
++        pid == GetCurrentProcessId())
++        return shell;
++    return GetDesktopWindow();
++}
++
++static void CALLBACK fade_proc( HWND hwnd, UINT msg, UINT_PTR id, DWORD time )
++{
++    /* drawn once more after the end, without what was */
++    if (!fade_bitmap || GetTickCount() - fade_start >= FADE_MS)
++    {
++        NtUserKillTimer( NULL, id );
++        fade_timer = 0;
++    }
++    if (fade_hwnd) NtUserRedrawWindow( fade_hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
++}
++
++/* the background that is going, kept as it looks */
++static void fade_begin( HDC hdc, HWND desktop, const RECT *rect )
++{
++    BITMAPINFO info = {{ sizeof(info.bmiHeader) }};
++    HDC mem;
++    void *bits;
++
++    if (fade_bitmap) DeleteObject( fade_bitmap );
++    fade_bitmap = 0;
++    info.bmiHeader.biWidth = rect->right;
++    info.bmiHeader.biHeight = -rect->bottom;
++    info.bmiHeader.biPlanes = 1;
++    info.bmiHeader.biBitCount = 32;
++    if (rect->right <= 0 || rect->bottom <= 0 ||
++        !(fade_bitmap = CreateDIBSection( 0, &info, DIB_RGB_COLORS, &bits, NULL, 0 )))
++        return;
++    mem = CreateCompatibleDC( hdc );
++    SelectObject( mem, fade_bitmap );
++    paint_background( mem, desktop, rect, wallpaper_color );
++    DeleteDC( mem );
++    fade_start = GetTickCount();
++    fade_hwnd = fade_window( hdc );
++    if (!fade_timer) fade_timer = SetTimer( NULL, 0, 15, fade_proc );
++}
++
++/* what is going, over what came, fainter as the time passes (eased) */
++static void fade_paint( HDC hdc, const RECT *rect )
++{
++    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 0, 0 };
++    DWORD elapsed;
++    float t;
++    HDC mem;
++
++    if (!fade_bitmap) return;
++    if ((elapsed = GetTickCount() - fade_start) >= FADE_MS)
++    {
++        DeleteObject( fade_bitmap );
++        fade_bitmap = 0;
++        return;
++    }
++    t = (float)elapsed / FADE_MS;
++    t = t * t * (3 - 2 * t);
++    blend.SourceConstantAlpha = (BYTE)(255 * (1 - t));
++    mem = CreateCompatibleDC( hdc );
++    SelectObject( mem, fade_bitmap );
++    GdiAlphaBlend( hdc, 0, 0, rect->right, rect->bottom, mem, 0, 0, rect->right, rect->bottom, blend );
++    DeleteDC( mem );
++}
++
++/* the picture as the settings have it now: read anew, the setting of this
++ * process (SPI_GETDESKWALLPAPER) is not told when another one changes it */
++static void current_wallpaper( WCHAR *path, DWORD count )
++{
++    WCHAR value[MAX_PATH];
++    DWORD size = sizeof(value);
++
++    path[0] = 0;
++    if (!RegGetValueW( HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"Wallpaper", RRF_RT_REG_SZ, NULL, value, &size ))
++        lstrcpynW( path, value, count );
++    else if (!SystemParametersInfoW( SPI_GETDESKWALLPAPER, count, path, 0 )) path[0] = 0;
++}
++
+ /* keeps the wallpaper this process paints in step with the settings and the desktop */
+ static void refresh_wallpaper( HDC hdc, const RECT *rect )
+ {
+     WCHAR path[MAX_PATH];
+     int style = get_desktop_setting( L"WallpaperStyle", 10 );
+     BOOL tile = style == 0 && get_desktop_setting( L"TileWallpaper", 0 );
++    COLORREF color = GetSysColor( COLOR_BACKGROUND );
++    BOOL same_size = wallpaper_desktop.cx == rect->right && wallpaper_desktop.cy == rect->bottom;
+ 
+-    if (!SystemParametersInfoW( SPI_GETDESKWALLPAPER, ARRAY_SIZE(path), path, 0 )) path[0] = 0;
+-    if (!wcscmp( path, wallpaper_path ) && style == wallpaper_style && tile == fTileWallPaper &&
+-        wallpaper_desktop.cx == rect->right && wallpaper_desktop.cy == rect->bottom)
++    current_wallpaper( path, ARRAY_SIZE(path) );
++    if (!wcscmp( path, wallpaper_path ) && style == wallpaper_style && tile == fTileWallPaper && same_size)
++    {
++        /* another colour under it: that fades too */
++        if (color != wallpaper_color && wallpaper_painted) fade_begin( hdc, GetDesktopWindow(), rect );
++        wallpaper_color = color;
++        wallpaper_painted = TRUE;
+         return;
++    }
++    /* a new background on the same desktop, not the first one nor a new screen */
++    if (wallpaper_painted && same_size && wallpaper_style != -1) fade_begin( hdc, GetDesktopWindow(), rect );
++    wallpaper_color = color;
++    wallpaper_painted = TRUE;
+ 
+     lstrcpynW( wallpaper_path, path, ARRAY_SIZE(wallpaper_path) );
+     wallpaper_style = style;
+@@ -260,45 +411,8 @@ BOOL WINAPI PaintDesktop(HDC hdc)
+ 
+         GetClientRect( hwnd, &rect );
+         refresh_wallpaper( hdc, &rect );
+-
+-        /* Paint desktop pattern (only if wall paper does not cover everything) */
+-
+-        if (!hbitmapWallPaper ||
+-            (!fTileWallPaper && ((bitmapSize.cx < rect.right) || (bitmapSize.cy < rect.bottom))))
+-        {
+-            HBRUSH brush = hbrushPattern;
+-            if (!brush) brush = (HBRUSH)GetClassLongPtrW( hwnd, GCLP_HBRBACKGROUND );
+-            /* Set colors in case pattern is a monochrome bitmap */
+-            SetBkColor( hdc, RGB(0,0,0) );
+-            SetTextColor( hdc, GetSysColor(COLOR_BACKGROUND) );
+-            FillRect( hdc, &rect, brush );
+-        }
+-
+-        /* Paint wall paper */
+-
+-        if (hbitmapWallPaper)
+-        {
+-            INT x, y;
+-            HDC hMemDC = CreateCompatibleDC( hdc );
+-
+-            SelectObject( hMemDC, hbitmapWallPaper );
+-
+-            if (fTileWallPaper)
+-            {
+-                for (y = 0; y < rect.bottom; y += bitmapSize.cy)
+-                    for (x = 0; x < rect.right; x += bitmapSize.cx)
+-                        BitBlt( hdc, x, y, bitmapSize.cx, bitmapSize.cy, hMemDC, 0, 0, SRCCOPY );
+-            }
+-            else
+-            {
+-                x = (rect.left + rect.right - bitmapSize.cx) / 2;
+-                y = (rect.top + rect.bottom - bitmapSize.cy) / 2;
+-                if (x < 0) x = 0;
+-                if (y < 0) y = 0;
+-                BitBlt( hdc, x, y, bitmapSize.cx, bitmapSize.cy, hMemDC, 0, 0, SRCCOPY );
+-            }
+-            DeleteDC( hMemDC );
+-        }
++        paint_background( hdc, hwnd, &rect, GetSysColor( COLOR_BACKGROUND ) );
++        fade_paint( hdc, &rect );
+     }
+     return TRUE;
+ }

@@ -1,0 +1,726 @@
+/*
+ * Arctic WordPad resources
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "commctrl.h"
+#include "resource.h"
+
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+/* @makedep: wordpad.ico */
+IDI_WORDPAD ICON wordpad.ico
+/* @makedep: document.ico */
+IDI_DOCUMENT ICON document.ico
+/* @makedep: rtf.ico */
+IDI_RTF ICON rtf.ico
+
+/* tools/wordpad-icons.py */
+/* @makedep: icons.bin */
+IDR_ICONS RCDATA icons.bin
+
+/* @makedep: wordpad.manifest */
+1 RT_MANIFEST wordpad.manifest
+
+IDA_ACCEL ACCELERATORS
+{
+    "N", IDM_NEW, VIRTKEY, CONTROL
+    "O", IDM_OPEN, VIRTKEY, CONTROL
+    "S", IDM_SAVE, VIRTKEY, CONTROL
+    VK_F12, IDM_SAVEAS, VIRTKEY
+    "P", IDM_PRINT, VIRTKEY, CONTROL
+    "W", IDM_CLOSE, VIRTKEY, CONTROL
+    "Z", IDM_UNDO, VIRTKEY, CONTROL
+    "Y", IDM_REDO, VIRTKEY, CONTROL
+    "F", IDM_FIND, VIRTKEY, CONTROL
+    "H", IDM_REPLACE, VIRTKEY, CONTROL
+    VK_F3, IDM_FINDNEXT, VIRTKEY
+    "B", IDM_BOLD, VIRTKEY, CONTROL
+    "I", IDM_ITALIC, VIRTKEY, CONTROL
+    "U", IDM_UNDERLINE, VIRTKEY, CONTROL
+    "D", IDM_FONTDIALOG, VIRTKEY, CONTROL
+    "E", IDM_ALIGN_CENTER, VIRTKEY, CONTROL
+    "L", IDM_ALIGN_LEFT, VIRTKEY, CONTROL
+    "R", IDM_ALIGN_RIGHT, VIRTKEY, CONTROL
+    "J", IDM_ALIGN_JUSTIFY, VIRTKEY, CONTROL
+    "M", IDM_INDENT, VIRTKEY, CONTROL
+    "M", IDM_OUTDENT, VIRTKEY, CONTROL, SHIFT
+    "L", IDM_BULLETS, VIRTKEY, CONTROL, SHIFT
+    "K", IDM_LINK, VIRTKEY, CONTROL
+    VK_OEM_PERIOD, IDM_GROW, VIRTKEY, CONTROL, SHIFT
+    VK_OEM_COMMA, IDM_SHRINK, VIRTKEY, CONTROL, SHIFT
+    VK_OEM_6, IDM_GROW, VIRTKEY, CONTROL
+    VK_OEM_4, IDM_SHRINK, VIRTKEY, CONTROL
+    VK_OEM_PLUS, IDM_SUBSCRIPT, VIRTKEY, CONTROL
+    VK_OEM_PLUS, IDM_SUPERSCRIPT, VIRTKEY, CONTROL, SHIFT
+    VK_SPACE, IDM_CLEARFORMAT, VIRTKEY, CONTROL
+    VK_RETURN, IDM_PAGEBREAK, VIRTKEY, CONTROL
+    VK_F3, IDM_CASE_TOGGLE, VIRTKEY, SHIFT
+    "1", IDM_LS_100, VIRTKEY, CONTROL
+    "2", IDM_LS_200, VIRTKEY, CONTROL
+    "5", IDM_LS_150, VIRTKEY, CONTROL
+    "1", IDM_STYLE_FIRST + 2, VIRTKEY, CONTROL, ALT
+    "2", IDM_STYLE_FIRST + 3, VIRTKEY, CONTROL, ALT
+    "3", IDM_STYLE_FIRST + 4, VIRTKEY, CONTROL, ALT
+    "N", IDM_STYLE_FIRST, VIRTKEY, CONTROL, SHIFT
+    VK_ADD, IDM_ZOOM_IN, VIRTKEY, CONTROL
+    VK_SUBTRACT, IDM_ZOOM_OUT, VIRTKEY, CONTROL
+}
+
+/**********************************************************************
+ *          English
+ */
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_APP_NAME            "Arctic WordPad"
+    IDS_DEFAULT_NAME        "Document%d"
+    IDS_SAVED               "Saved"
+    IDS_SEARCH              "Search"
+    IDS_SAVE_CHANGES        "Do you want to save your changes to %s?"
+    IDS_SAVE                "Save"
+    IDS_DONT_SAVE           "Don't save"
+    IDS_CANCEL              "Cancel"
+    IDS_FILTER_OPEN         "All documents (*.docx;*.docm;*.rtf;*.odt;*.txt)|*.docx;*.docm;*.dotx;*.rtf;*.odt;*.txt|Word document (*.docx)|*.docx;*.docm;*.dotx|Rich Text Format (*.rtf)|*.rtf|OpenDocument text (*.odt)|*.odt|Text (*.txt)|*.txt|All files (*.*)|*.*|"
+    IDS_FILTER_SAVE         "Word document (*.docx)|*.docx|Rich Text Format (*.rtf)|*.rtf|Plain text (*.txt)|*.txt|"
+    IDS_CANT_OPEN           "%s could not be opened."
+    IDS_CANT_SAVE           "%s could not be saved."
+    IDS_PAGE_OF             "Page %d of %d"
+    IDS_WORDS               "%d words"
+    IDS_WORD_ONE            "%d word"
+    IDS_NOT_FOUND           "The search item was not found."
+    IDS_REPLACED            "All done. Replacements made: %d."
+    IDS_DOC_UNSUPPORTED     "%s is a Word 97-2003 document (.doc). Save it as .docx in another program to open it here."
+    IDS_AUTOMATIC           "Automatic"
+    IDS_NO_COLOR            "No Color"
+    IDS_THEME_COLORS        "Theme Colors"
+    IDS_STANDARD_COLORS     "Standard Colors"
+    IDS_MORE_COLORS         "More Colors..."
+    IDS_TABLE_SIZE          "%d x %d Table"
+    IDS_INSERT_TABLE        "Insert Table"
+    IDS_WORDCOUNT_TITLE     "Pages\t%d\nWords\t%d\nCharacters (with spaces)\t%d\nCharacters (no spaces)\t%d\nParagraphs\t%d"
+    IDS_PICTURE_FILTER      "Pictures (*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.tif;*.tiff)|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.tif;*.tiff;*.ico|All files (*.*)|*.*|"
+    IDS_ABOUT_TEXT          "A free word processor of Arctic, under the LGPL"
+    IDS_RECENT              "Recent"
+    IDS_BLANK_DOCUMENT      "Blank document"
+    IDS_BROWSE              "Browse"
+    IDS_NO_RECENT           "No documents opened yet."
+    IDS_INFO_LOCATION       "Location"
+    IDS_INFO_SIZE           "Size"
+    IDS_INFO_MODIFIED       "Last modified"
+    IDS_INFO_STATS          "%d pages, %d words"
+    IDS_PAGES               "Statistics"
+    IDS_NOT_SAVED           "Not saved yet"
+    IDS_GOOD_MORNING        "Good morning"
+    IDS_GOOD_DAY            "Good afternoon"
+    IDS_GOOD_EVENING        "Good evening"
+    IDS_UNITS_CM            "cm"
+    IDS_UNITS_PT            "pt"
+    IDS_LEFT                "Left:"
+    IDS_RIGHT               "Right:"
+    IDS_BEFORE              "Before:"
+    IDS_AFTER               "After:"
+    IDS_FORMAT_DOCX         "Word Document"
+    IDS_FORMAT_RTF          "Rich Text Document"
+    IDS_FORMAT_TXT          "Text Document"
+    IDS_FORMAT_ODT          "OpenDocument Text"
+
+    IDS_TAB_FILE            "File"
+    IDS_TAB_HOME            "Home"
+    IDS_TAB_INSERT          "Insert"
+    IDS_TAB_LAYOUT          "Layout"
+    IDS_TAB_VIEW            "View"
+
+    IDS_G_UNDO              "Undo"
+    IDS_G_CLIPBOARD         "Clipboard"
+    IDS_G_FONT              "Font"
+    IDS_G_PARAGRAPH         "Paragraph"
+    IDS_G_STYLES            "Styles"
+    IDS_G_EDITING           "Editing"
+    IDS_G_PAGES             "Pages"
+    IDS_G_TABLES            "Tables"
+    IDS_G_ILLUSTRATIONS     "Illustrations"
+    IDS_G_LINKS             "Links"
+    IDS_G_TEXT              "Text"
+    IDS_G_SYMBOLS           "Symbols"
+    IDS_G_PAGESETUP         "Page Setup"
+    IDS_G_INDENT            "Indent"
+    IDS_G_SPACING           "Spacing"
+    IDS_G_VIEWS             "Views"
+    IDS_G_ZOOM              "Zoom"
+    IDS_G_PROOFING          "Proofing"
+
+    IDS_STYLE_NORMAL        "Normal"
+    IDS_STYLE_NOSPACING     "No Spacing"
+    IDS_STYLE_H1            "Heading 1"
+    IDS_STYLE_H2            "Heading 2"
+    IDS_STYLE_H3            "Heading 3"
+    IDS_STYLE_TITLE         "Title"
+    IDS_STYLE_SUBTITLE      "Subtitle"
+    IDS_STYLE_QUOTE         "Quote"
+    IDS_STYLE_LIST          "List Paragraph"
+
+    IDS_BS_HOME             "Home"
+    IDS_BS_NEW              "New"
+    IDS_BS_OPEN             "Open"
+    IDS_BS_INFO             "Info"
+    IDS_BS_SAVE             "Save"
+    IDS_BS_SAVEAS           "Save As"
+    IDS_BS_PRINT            "Print"
+    IDS_BS_CLOSE            "Close"
+    IDS_BS_ABOUT            "About"
+
+    IDS_CMD(IDM_NEW)            "New"
+    IDS_CMD(IDM_OPEN)           "Open"
+    IDS_CMD(IDM_SAVE)           "Save"
+    IDS_CMD(IDM_SAVEAS)         "Save As"
+    IDS_CMD(IDM_PRINT)          "Print"
+    IDS_CMD(IDM_PAGESETUP)      "Page Setup"
+    IDS_CMD(IDM_CLOSE)          "Close"
+    IDS_CMD(IDM_UNDO)           "Undo"
+    IDS_CMD(IDM_REDO)           "Redo"
+    IDS_CMD(IDM_CUT)            "Cut"
+    IDS_CMD(IDM_COPY)           "Copy"
+    IDS_CMD(IDM_PASTE)          "Paste"
+    IDS_CMD(IDM_PASTE_TEXT)     "Keep Text Only"
+    IDS_CMD(IDM_FORMATPAINTER)  "Format Painter"
+    IDS_CMD(IDM_SELECTALL)      "Select All"
+    IDS_CMD(IDM_FIND)           "Find"
+    IDS_CMD(IDM_REPLACE)        "Replace"
+    IDS_CMD(IDM_SELECT_MENU)    "Select"
+    IDS_CMD(IDM_FONTFACE)       "Font"
+    IDS_CMD(IDM_FONTSIZE)       "Font Size"
+    IDS_CMD(IDM_GROW)           "Increase Font Size"
+    IDS_CMD(IDM_SHRINK)         "Decrease Font Size"
+    IDS_CMD(IDM_CASE)           "Change Case"
+    IDS_CMD(IDM_CASE_SENTENCE)  "Sentence case."
+    IDS_CMD(IDM_CASE_LOWER)     "lowercase"
+    IDS_CMD(IDM_CASE_UPPER)     "UPPERCASE"
+    IDS_CMD(IDM_CASE_TITLE)     "Capitalize Each Word"
+    IDS_CMD(IDM_CASE_TOGGLE)    "tOGGLE cASE"
+    IDS_CMD(IDM_CLEARFORMAT)    "Clear All Formatting"
+    IDS_CMD(IDM_BOLD)           "Bold"
+    IDS_CMD(IDM_ITALIC)         "Italic"
+    IDS_CMD(IDM_UNDERLINE)      "Underline"
+    IDS_CMD(IDM_UNDERLINE_MENU) "Underline"
+    IDS_CMD(IDM_UL_SINGLE)      "Single"
+    IDS_CMD(IDM_UL_DOUBLE)      "Double"
+    IDS_CMD(IDM_UL_DOTTED)      "Dotted"
+    IDS_CMD(IDM_UL_WORD)        "Words Only"
+    IDS_CMD(IDM_STRIKE)         "Strikethrough"
+    IDS_CMD(IDM_SUBSCRIPT)      "Subscript"
+    IDS_CMD(IDM_SUPERSCRIPT)    "Superscript"
+    IDS_CMD(IDM_HIGHLIGHT)      "Text Highlight Color"
+    IDS_CMD(IDM_HIGHLIGHT_MENU) "Text Highlight Color"
+    IDS_CMD(IDM_FONTCOLOR)      "Font Color"
+    IDS_CMD(IDM_FONTCOLOR_MENU) "Font Color"
+    IDS_CMD(IDM_FONTDIALOG)     "Font..."
+    IDS_CMD(IDM_TEXTEFFECTS)    "Text Effects"
+    IDS_CMD(IDM_FX_SMALLCAPS)   "Small Caps"
+    IDS_CMD(IDM_FX_ALLCAPS)     "All Caps"
+    IDS_CMD(IDM_FX_HIDDEN)      "Hidden"
+    IDS_CMD(IDM_BULLETS)        "Bullets"
+    IDS_CMD(IDM_BULLETS_MENU)   "Bullets"
+    IDS_CMD(IDM_NUMBERING)      "Numbering"
+    IDS_CMD(IDM_NUMBERING_MENU) "Numbering"
+    IDS_CMD(IDM_MULTILEVEL)     "Multilevel List"
+    IDS_CMD(IDM_OUTDENT)        "Decrease Indent"
+    IDS_CMD(IDM_INDENT)         "Increase Indent"
+    IDS_CMD(IDM_SORT)           "Sort"
+    IDS_CMD(IDM_ALIGN_LEFT)     "Align Left"
+    IDS_CMD(IDM_ALIGN_CENTER)   "Center"
+    IDS_CMD(IDM_ALIGN_RIGHT)    "Align Right"
+    IDS_CMD(IDM_ALIGN_JUSTIFY)  "Justify"
+    IDS_CMD(IDM_LINESPACING)    "Line and Paragraph Spacing"
+    IDS_CMD(IDM_LS_100)         "1.0"
+    IDS_CMD(IDM_LS_115)         "1.15"
+    IDS_CMD(IDM_LS_150)         "1.5"
+    IDS_CMD(IDM_LS_200)         "2.0"
+    IDS_CMD(IDM_LS_250)         "2.5"
+    IDS_CMD(IDM_LS_300)         "3.0"
+    IDS_CMD(IDM_LS_BEFORE)      "Add Space Before Paragraph"
+    IDS_CMD(IDM_LS_AFTER)       "Add Space After Paragraph"
+    IDS_CMD(IDM_PARADIALOG)     "Paragraph..."
+    IDS_CMD(IDM_BULLET_DOT)     "•  Bullet"
+    IDS_CMD(IDM_BULLET_NONE)    "None"
+    IDS_CMD(IDM_NUM_ARABIC)     "1.  2.  3."
+    IDS_CMD(IDM_NUM_PAREN)      "1)  2)  3)"
+    IDS_CMD(IDM_NUM_UCLETTER)   "A.  B.  C."
+    IDS_CMD(IDM_NUM_LCLETTER)   "a)  b)  c)"
+    IDS_CMD(IDM_NUM_UCROMAN)    "I.  II.  III."
+    IDS_CMD(IDM_NUM_LCROMAN)    "i.  ii.  iii."
+    IDS_CMD(IDM_NUM_NONE)       "None"
+    IDS_CMD(IDM_SHADING)        "Shading"
+    IDS_CMD(IDM_PAGEBREAK)      "Page Break"
+    IDS_CMD(IDM_TABLE)          "Table"
+    IDS_CMD(IDM_PICTURE)        "Pictures"
+    IDS_CMD(IDM_LINK)           "Link"
+    IDS_CMD(IDM_DATETIME)       "Date & Time"
+    IDS_CMD(IDM_SYMBOL)         "Symbol"
+    IDS_CMD(IDM_MARGINS)        "Margins"
+    IDS_CMD(IDM_MARGIN_NORMAL)  "Normal   3 / 1.5 / 2 / 2 cm"
+    IDS_CMD(IDM_MARGIN_NARROW)  "Narrow   1.27 cm"
+    IDS_CMD(IDM_MARGIN_MODERATE) "Moderate   1.91 / 2.54 cm"
+    IDS_CMD(IDM_MARGIN_WIDE)    "Wide   5.08 / 2.54 cm"
+    IDS_CMD(IDM_ORIENTATION)    "Orientation"
+    IDS_CMD(IDM_PORTRAIT)       "Portrait"
+    IDS_CMD(IDM_LANDSCAPE)      "Landscape"
+    IDS_CMD(IDM_SIZE)           "Size"
+    IDS_CMD(IDM_SIZE_A4)        "A4   21 × 29.7 cm"
+    IDS_CMD(IDM_SIZE_A5)        "A5   14.8 × 21 cm"
+    IDS_CMD(IDM_SIZE_A3)        "A3   29.7 × 42 cm"
+    IDS_CMD(IDM_SIZE_LETTER)    "Letter   21.59 × 27.94 cm"
+    IDS_CMD(IDM_SIZE_LEGAL)     "Legal   21.59 × 35.56 cm"
+    IDS_CMD(IDM_INDENT_LEFT)    "Indent Left"
+    IDS_CMD(IDM_INDENT_RIGHT)   "Indent Right"
+    IDS_CMD(IDM_SPACE_BEFORE)   "Spacing Before"
+    IDS_CMD(IDM_SPACE_AFTER)    "Spacing After"
+    IDS_CMD(IDM_VIEW_PRINT)     "Print Layout"
+    IDS_CMD(IDM_VIEW_WEB)       "Web Layout"
+    IDS_CMD(IDM_ZOOM)           "Zoom"
+    IDS_CMD(IDM_ZOOM_100)       "100%"
+    IDS_CMD(IDM_ONEPAGE)        "One Page"
+    IDS_CMD(IDM_MULTIPAGE)      "Multiple Pages"
+    IDS_CMD(IDM_PAGEWIDTH)      "Page Width"
+    IDS_CMD(IDM_WORDCOUNT)      "Word Count"
+
+    IDS_TIP(IDM_UNDO)           "Undo (Ctrl+Z)"
+    IDS_TIP(IDM_REDO)           "Redo (Ctrl+Y)"
+    IDS_TIP(IDM_CUT)            "Cut (Ctrl+X)"
+    IDS_TIP(IDM_COPY)           "Copy (Ctrl+C)"
+    IDS_TIP(IDM_PASTE)          "Paste (Ctrl+V)"
+    IDS_TIP(IDM_BOLD)           "Bold (Ctrl+B)"
+    IDS_TIP(IDM_ITALIC)         "Italic (Ctrl+I)"
+    IDS_TIP(IDM_UNDERLINE)      "Underline (Ctrl+U)"
+    IDS_TIP(IDM_SUBSCRIPT)      "Subscript (Ctrl+=)"
+    IDS_TIP(IDM_SUPERSCRIPT)    "Superscript (Ctrl+Shift++)"
+    IDS_TIP(IDM_GROW)           "Increase Font Size (Ctrl+])"
+    IDS_TIP(IDM_SHRINK)         "Decrease Font Size (Ctrl+[)"
+    IDS_TIP(IDM_ALIGN_LEFT)     "Align Left (Ctrl+L)"
+    IDS_TIP(IDM_ALIGN_CENTER)   "Center (Ctrl+E)"
+    IDS_TIP(IDM_ALIGN_RIGHT)    "Align Right (Ctrl+R)"
+    IDS_TIP(IDM_ALIGN_JUSTIFY)  "Justify (Ctrl+J)"
+    IDS_TIP(IDM_FIND)           "Find (Ctrl+F)"
+    IDS_TIP(IDM_REPLACE)        "Replace (Ctrl+H)"
+    IDS_TIP(IDM_LINK)           "Link (Ctrl+K)"
+    IDS_TIP(IDM_PAGEBREAK)      "Page Break (Ctrl+Enter)"
+    IDS_TIP(IDM_CLEARFORMAT)    "Clear All Formatting (Ctrl+Space)"
+
+    3000 "(none)"
+    3001 "First line"
+    3002 "Hanging"
+    3010 "Single"
+    3011 "1.5 lines"
+    3012 "Double"
+    3013 "At least"
+    3014 "Exactly"
+    3015 "Multiple"
+}
+
+IDD_PARAGRAPH DIALOGEX 0, 0, 300, 196
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Paragraph"
+FONT 9, "MS Shell Dlg"
+{
+    LTEXT "Alignment:", -1, 10, 12, 60, 10
+    COMBOBOX IDC_PARA_ALIGN, 80, 10, 90, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    GROUPBOX "Indentation", -1, 6, 30, 288, 52
+    LTEXT "Left:", -1, 14, 44, 40, 10
+    EDITTEXT IDC_PARA_LEFT, 60, 42, 50, 13
+    LTEXT "Right:", -1, 14, 62, 40, 10
+    EDITTEXT IDC_PARA_RIGHT, 60, 60, 50, 13
+    LTEXT "Special:", -1, 130, 44, 50, 10
+    COMBOBOX IDC_PARA_SPECIAL, 130, 56, 80, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT "By (cm):", -1, 220, 44, 60, 10
+    EDITTEXT IDC_PARA_BY, 220, 56, 50, 13
+    GROUPBOX "Spacing", -1, 6, 88, 288, 52
+    LTEXT "Before (pt):", -1, 14, 102, 44, 10
+    EDITTEXT IDC_PARA_BEFORE, 60, 100, 50, 13
+    LTEXT "After (pt):", -1, 14, 120, 44, 10
+    EDITTEXT IDC_PARA_AFTER, 60, 118, 50, 13
+    LTEXT "Line spacing:", -1, 130, 102, 80, 10
+    COMBOBOX IDC_PARA_LINE, 130, 114, 80, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT "At:", -1, 220, 102, 60, 10
+    EDITTEXT IDC_PARA_AT, 220, 114, 50, 13
+    AUTOCHECKBOX "Page break before", IDC_PARA_PAGEBREAK, 10, 148, 140, 12
+    AUTOCHECKBOX "Keep with next", IDC_PARA_KEEPNEXT, 150, 148, 140, 12
+    DEFPUSHBUTTON "OK", IDOK, 184, 174, 52, 15
+    PUSHBUTTON "Cancel", IDCANCEL, 242, 174, 52, 15
+}
+
+IDD_LINK DIALOGEX 0, 0, 280, 80
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Insert Link"
+FONT 9, "MS Shell Dlg"
+{
+    LTEXT "Text to display:", -1, 8, 10, 70, 10
+    EDITTEXT IDC_LINK_TEXT, 80, 8, 192, 13, ES_AUTOHSCROLL
+    LTEXT "Address:", -1, 8, 30, 70, 10
+    EDITTEXT IDC_LINK_URL, 80, 28, 192, 13, ES_AUTOHSCROLL
+    DEFPUSHBUTTON "OK", IDOK, 164, 58, 52, 15
+    PUSHBUTTON "Cancel", IDCANCEL, 220, 58, 52, 15
+}
+
+IDD_DATETIME DIALOGEX 0, 0, 200, 150
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Date and Time"
+FONT 9, "MS Shell Dlg"
+{
+    LTEXT "Available formats:", -1, 8, 6, 180, 10
+    LISTBOX IDC_DATETIME_LIST, 8, 18, 184, 102, LBS_NOINTEGRALHEIGHT | LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON "OK", IDOK, 84, 128, 52, 15
+    PUSHBUTTON "Cancel", IDCANCEL, 140, 128, 52, 15
+}
+
+IDD_ZOOM DIALOGEX 0, 0, 200, 120
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Zoom"
+FONT 9, "MS Shell Dlg"
+{
+    AUTORADIOBUTTON "200%", IDC_ZOOM_200, 10, 10, 80, 12, WS_GROUP
+    AUTORADIOBUTTON "100%", IDC_ZOOM_100, 10, 26, 80, 12
+    AUTORADIOBUTTON "75%", IDC_ZOOM_75, 10, 42, 80, 12
+    AUTORADIOBUTTON "Page width", IDC_ZOOM_WIDTH, 100, 10, 90, 12
+    AUTORADIOBUTTON "Whole page", IDC_ZOOM_WHOLE, 100, 26, 90, 12
+    LTEXT "Percent:", -1, 10, 66, 40, 10
+    EDITTEXT IDC_ZOOM_PERCENT, 52, 64, 40, 13, ES_NUMBER
+    CONTROL "", IDC_ZOOM_SPIN, "msctls_updown32", UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | UDS_ARROWKEYS, 92, 64, 10, 13
+    DEFPUSHBUTTON "OK", IDOK, 84, 98, 52, 15
+    PUSHBUTTON "Cancel", IDCANCEL, 140, 98, 52, 15
+}
+
+/**********************************************************************
+ *          Українська
+ */
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_APP_NAME            "Arctic WordPad"
+    IDS_DEFAULT_NAME        "Документ%d"
+    IDS_SAVED               "Збережено"
+    IDS_SEARCH              "Пошук"
+    IDS_SAVE_CHANGES        "Зберегти зміни в документі «%s»?"
+    IDS_SAVE                "Зберегти"
+    IDS_DONT_SAVE           "Не зберігати"
+    IDS_CANCEL              "Скасувати"
+    IDS_FILTER_OPEN         "Усі документи (*.docx;*.docm;*.rtf;*.odt;*.txt)|*.docx;*.docm;*.dotx;*.rtf;*.odt;*.txt|Документ Word (*.docx)|*.docx;*.docm;*.dotx|Формат RTF (*.rtf)|*.rtf|Текст OpenDocument (*.odt)|*.odt|Текст (*.txt)|*.txt|Усі файли (*.*)|*.*|"
+    IDS_FILTER_SAVE         "Документ Word (*.docx)|*.docx|Формат RTF (*.rtf)|*.rtf|Звичайний текст (*.txt)|*.txt|"
+    IDS_CANT_OPEN           "Не вдалося відкрити %s."
+    IDS_CANT_SAVE           "Не вдалося зберегти %s."
+    IDS_PAGE_OF             "Сторінка %d з %d"
+    IDS_WORDS               "Слів: %d"
+    IDS_WORD_ONE            "Слів: %d"
+    IDS_NOT_FOUND           "Шуканий елемент не знайдено."
+    IDS_REPLACED            "Готово. Виконано замін: %d."
+    IDS_DOC_UNSUPPORTED     "%s — документ Word 97–2003 (.doc). Збережіть його як .docx в іншій програмі, щоб відкрити тут."
+    IDS_AUTOMATIC           "Автоматично"
+    IDS_NO_COLOR            "Без кольору"
+    IDS_THEME_COLORS        "Кольори теми"
+    IDS_STANDARD_COLORS     "Стандартні кольори"
+    IDS_MORE_COLORS         "Інші кольори..."
+    IDS_TABLE_SIZE          "Таблиця %d × %d"
+    IDS_INSERT_TABLE        "Вставити таблицю"
+    IDS_WORDCOUNT_TITLE     "Сторінки\t%d\nСлова\t%d\nЗнаки (з пробілами)\t%d\nЗнаки (без пробілів)\t%d\nАбзаци\t%d"
+    IDS_PICTURE_FILTER      "Зображення (*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.tif;*.tiff)|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.tif;*.tiff;*.ico|Усі файли (*.*)|*.*|"
+    IDS_ABOUT_TEXT          "Вільний текстовий процесор Arctic, LGPL"
+    IDS_RECENT              "Останні"
+    IDS_BLANK_DOCUMENT      "Новий документ"
+    IDS_BROWSE              "Огляд"
+    IDS_NO_RECENT           "Документів ще не відкривали."
+    IDS_INFO_LOCATION       "Розташування"
+    IDS_INFO_SIZE           "Розмір"
+    IDS_INFO_MODIFIED       "Змінено"
+    IDS_INFO_STATS          "Сторінок: %d, слів: %d"
+    IDS_PAGES               "Статистика"
+    IDS_NOT_SAVED           "Ще не збережено"
+    IDS_GOOD_MORNING        "Доброго ранку"
+    IDS_GOOD_DAY            "Доброго дня"
+    IDS_GOOD_EVENING        "Добрий вечір"
+    IDS_UNITS_CM            "см"
+    IDS_UNITS_PT            "пт"
+    IDS_LEFT                "Ліворуч:"
+    IDS_RIGHT               "Праворуч:"
+    IDS_BEFORE              "Перед:"
+    IDS_AFTER               "Після:"
+    IDS_FORMAT_DOCX         "Документ Word"
+    IDS_FORMAT_RTF          "Документ RTF"
+    IDS_FORMAT_TXT          "Текстовий документ"
+    IDS_FORMAT_ODT          "Текст OpenDocument"
+
+    IDS_TAB_FILE            "Файл"
+    IDS_TAB_HOME            "Основне"
+    IDS_TAB_INSERT          "Вставлення"
+    IDS_TAB_LAYOUT          "Макет"
+    IDS_TAB_VIEW            "Вигляд"
+
+    IDS_G_UNDO              "Скасування"
+    IDS_G_CLIPBOARD         "Буфер обміну"
+    IDS_G_FONT              "Шрифт"
+    IDS_G_PARAGRAPH         "Абзац"
+    IDS_G_STYLES            "Стилі"
+    IDS_G_EDITING           "Редагування"
+    IDS_G_PAGES             "Сторінки"
+    IDS_G_TABLES            "Таблиці"
+    IDS_G_ILLUSTRATIONS     "Ілюстрації"
+    IDS_G_LINKS             "Посилання"
+    IDS_G_TEXT              "Текст"
+    IDS_G_SYMBOLS           "Символи"
+    IDS_G_PAGESETUP         "Параметри сторінки"
+    IDS_G_INDENT            "Відступ"
+    IDS_G_SPACING           "Інтервал"
+    IDS_G_VIEWS             "Режими"
+    IDS_G_ZOOM              "Масштаб"
+    IDS_G_PROOFING          "Правопис"
+
+    IDS_STYLE_NORMAL        "Звичайний"
+    IDS_STYLE_NOSPACING     "Без інтервалів"
+    IDS_STYLE_H1            "Заголовок 1"
+    IDS_STYLE_H2            "Заголовок 2"
+    IDS_STYLE_H3            "Заголовок 3"
+    IDS_STYLE_TITLE         "Назва"
+    IDS_STYLE_SUBTITLE      "Підзаголовок"
+    IDS_STYLE_QUOTE         "Цитата"
+    IDS_STYLE_LIST          "Абзац списку"
+
+    IDS_BS_HOME             "Головна"
+    IDS_BS_NEW              "Створити"
+    IDS_BS_OPEN             "Відкрити"
+    IDS_BS_INFO             "Відомості"
+    IDS_BS_SAVE             "Зберегти"
+    IDS_BS_SAVEAS           "Зберегти як"
+    IDS_BS_PRINT            "Друк"
+    IDS_BS_CLOSE            "Закрити"
+    IDS_BS_ABOUT            "Про програму"
+
+    IDS_CMD(IDM_NEW)            "Створити"
+    IDS_CMD(IDM_OPEN)           "Відкрити"
+    IDS_CMD(IDM_SAVE)           "Зберегти"
+    IDS_CMD(IDM_SAVEAS)         "Зберегти як"
+    IDS_CMD(IDM_PRINT)          "Друк"
+    IDS_CMD(IDM_PAGESETUP)      "Параметри сторінки"
+    IDS_CMD(IDM_CLOSE)          "Закрити"
+    IDS_CMD(IDM_UNDO)           "Скасувати"
+    IDS_CMD(IDM_REDO)           "Повторити"
+    IDS_CMD(IDM_CUT)            "Вирізати"
+    IDS_CMD(IDM_COPY)           "Копіювати"
+    IDS_CMD(IDM_PASTE)          "Вставити"
+    IDS_CMD(IDM_PASTE_TEXT)     "Зберегти лише текст"
+    IDS_CMD(IDM_FORMATPAINTER)  "Формат за зразком"
+    IDS_CMD(IDM_SELECTALL)      "Виділити все"
+    IDS_CMD(IDM_FIND)           "Знайти"
+    IDS_CMD(IDM_REPLACE)        "Замінити"
+    IDS_CMD(IDM_SELECT_MENU)    "Виділити"
+    IDS_CMD(IDM_FONTFACE)       "Шрифт"
+    IDS_CMD(IDM_FONTSIZE)       "Розмір шрифту"
+    IDS_CMD(IDM_GROW)           "Збільшити розмір шрифту"
+    IDS_CMD(IDM_SHRINK)         "Зменшити розмір шрифту"
+    IDS_CMD(IDM_CASE)           "Регістр"
+    IDS_CMD(IDM_CASE_SENTENCE)  "Як у реченнях."
+    IDS_CMD(IDM_CASE_LOWER)     "усі малі"
+    IDS_CMD(IDM_CASE_UPPER)     "УСІ ВЕЛИКІ"
+    IDS_CMD(IDM_CASE_TITLE)     "Кожне Слово З Великої"
+    IDS_CMD(IDM_CASE_TOGGLE)    "зМІНИТИ рЕГІСТР"
+    IDS_CMD(IDM_CLEARFORMAT)    "Очистити все форматування"
+    IDS_CMD(IDM_BOLD)           "Жирний"
+    IDS_CMD(IDM_ITALIC)         "Курсив"
+    IDS_CMD(IDM_UNDERLINE)      "Підкреслений"
+    IDS_CMD(IDM_UNDERLINE_MENU) "Підкреслення"
+    IDS_CMD(IDM_UL_SINGLE)      "Одинарне"
+    IDS_CMD(IDM_UL_DOUBLE)      "Подвійне"
+    IDS_CMD(IDM_UL_DOTTED)      "Пунктирне"
+    IDS_CMD(IDM_UL_WORD)        "Лише слова"
+    IDS_CMD(IDM_STRIKE)         "Закреслений"
+    IDS_CMD(IDM_SUBSCRIPT)      "Нижній індекс"
+    IDS_CMD(IDM_SUPERSCRIPT)    "Верхній індекс"
+    IDS_CMD(IDM_HIGHLIGHT)      "Колір виділення тексту"
+    IDS_CMD(IDM_HIGHLIGHT_MENU) "Колір виділення тексту"
+    IDS_CMD(IDM_FONTCOLOR)      "Колір шрифту"
+    IDS_CMD(IDM_FONTCOLOR_MENU) "Колір шрифту"
+    IDS_CMD(IDM_FONTDIALOG)     "Шрифт..."
+    IDS_CMD(IDM_TEXTEFFECTS)    "Текстові ефекти"
+    IDS_CMD(IDM_FX_SMALLCAPS)   "Малі великі літери"
+    IDS_CMD(IDM_FX_ALLCAPS)     "Усі великі"
+    IDS_CMD(IDM_FX_HIDDEN)      "Прихований"
+    IDS_CMD(IDM_BULLETS)        "Маркери"
+    IDS_CMD(IDM_BULLETS_MENU)   "Маркери"
+    IDS_CMD(IDM_NUMBERING)      "Нумерація"
+    IDS_CMD(IDM_NUMBERING_MENU) "Нумерація"
+    IDS_CMD(IDM_MULTILEVEL)     "Багаторівневий список"
+    IDS_CMD(IDM_OUTDENT)        "Зменшити відступ"
+    IDS_CMD(IDM_INDENT)         "Збільшити відступ"
+    IDS_CMD(IDM_SORT)           "Сортувати"
+    IDS_CMD(IDM_ALIGN_LEFT)     "Вирівняти ліворуч"
+    IDS_CMD(IDM_ALIGN_CENTER)   "По центру"
+    IDS_CMD(IDM_ALIGN_RIGHT)    "Вирівняти праворуч"
+    IDS_CMD(IDM_ALIGN_JUSTIFY)  "По ширині"
+    IDS_CMD(IDM_LINESPACING)    "Інтервал між рядками й абзацами"
+    IDS_CMD(IDM_LS_100)         "1,0"
+    IDS_CMD(IDM_LS_115)         "1,15"
+    IDS_CMD(IDM_LS_150)         "1,5"
+    IDS_CMD(IDM_LS_200)         "2,0"
+    IDS_CMD(IDM_LS_250)         "2,5"
+    IDS_CMD(IDM_LS_300)         "3,0"
+    IDS_CMD(IDM_LS_BEFORE)      "Додати інтервал перед абзацом"
+    IDS_CMD(IDM_LS_AFTER)       "Додати інтервал після абзацу"
+    IDS_CMD(IDM_PARADIALOG)     "Абзац..."
+    IDS_CMD(IDM_BULLET_DOT)     "•  Маркер"
+    IDS_CMD(IDM_BULLET_NONE)    "Немає"
+    IDS_CMD(IDM_NUM_ARABIC)     "1.  2.  3."
+    IDS_CMD(IDM_NUM_PAREN)      "1)  2)  3)"
+    IDS_CMD(IDM_NUM_UCLETTER)   "A.  B.  C."
+    IDS_CMD(IDM_NUM_LCLETTER)   "a)  b)  c)"
+    IDS_CMD(IDM_NUM_UCROMAN)    "I.  II.  III."
+    IDS_CMD(IDM_NUM_LCROMAN)    "i.  ii.  iii."
+    IDS_CMD(IDM_NUM_NONE)       "Немає"
+    IDS_CMD(IDM_SHADING)        "Заливка"
+    IDS_CMD(IDM_PAGEBREAK)      "Розрив сторінки"
+    IDS_CMD(IDM_TABLE)          "Таблиця"
+    IDS_CMD(IDM_PICTURE)        "Зображення"
+    IDS_CMD(IDM_LINK)           "Посилання"
+    IDS_CMD(IDM_DATETIME)       "Дата й час"
+    IDS_CMD(IDM_SYMBOL)         "Символ"
+    IDS_CMD(IDM_MARGINS)        "Поля"
+    IDS_CMD(IDM_MARGIN_NORMAL)  "Звичайні   3 / 1,5 / 2 / 2 см"
+    IDS_CMD(IDM_MARGIN_NARROW)  "Вузькі   1,27 см"
+    IDS_CMD(IDM_MARGIN_MODERATE) "Помірні   1,91 / 2,54 см"
+    IDS_CMD(IDM_MARGIN_WIDE)    "Широкі   5,08 / 2,54 см"
+    IDS_CMD(IDM_ORIENTATION)    "Орієнтація"
+    IDS_CMD(IDM_PORTRAIT)       "Книжкова"
+    IDS_CMD(IDM_LANDSCAPE)      "Альбомна"
+    IDS_CMD(IDM_SIZE)           "Розмір"
+    IDS_CMD(IDM_SIZE_A4)        "A4   21 × 29,7 см"
+    IDS_CMD(IDM_SIZE_A5)        "A5   14,8 × 21 см"
+    IDS_CMD(IDM_SIZE_A3)        "A3   29,7 × 42 см"
+    IDS_CMD(IDM_SIZE_LETTER)    "Letter   21,59 × 27,94 см"
+    IDS_CMD(IDM_SIZE_LEGAL)     "Legal   21,59 × 35,56 см"
+    IDS_CMD(IDM_INDENT_LEFT)    "Відступ ліворуч"
+    IDS_CMD(IDM_INDENT_RIGHT)   "Відступ праворуч"
+    IDS_CMD(IDM_SPACE_BEFORE)   "Інтервал перед"
+    IDS_CMD(IDM_SPACE_AFTER)    "Інтервал після"
+    IDS_CMD(IDM_VIEW_PRINT)     "Розмітка сторінки"
+    IDS_CMD(IDM_VIEW_WEB)       "Веб-документ"
+    IDS_CMD(IDM_ZOOM)           "Масштаб"
+    IDS_CMD(IDM_ZOOM_100)       "100%"
+    IDS_CMD(IDM_ONEPAGE)        "Одна сторінка"
+    IDS_CMD(IDM_MULTIPAGE)      "Кілька сторінок"
+    IDS_CMD(IDM_PAGEWIDTH)      "Ширина сторінки"
+    IDS_CMD(IDM_WORDCOUNT)      "Статистика"
+
+    IDS_TIP(IDM_UNDO)           "Скасувати (Ctrl+Z)"
+    IDS_TIP(IDM_REDO)           "Повторити (Ctrl+Y)"
+    IDS_TIP(IDM_CUT)            "Вирізати (Ctrl+X)"
+    IDS_TIP(IDM_COPY)           "Копіювати (Ctrl+C)"
+    IDS_TIP(IDM_PASTE)          "Вставити (Ctrl+V)"
+    IDS_TIP(IDM_BOLD)           "Жирний (Ctrl+B)"
+    IDS_TIP(IDM_ITALIC)         "Курсив (Ctrl+I)"
+    IDS_TIP(IDM_UNDERLINE)      "Підкреслений (Ctrl+U)"
+    IDS_TIP(IDM_SUBSCRIPT)      "Нижній індекс (Ctrl+=)"
+    IDS_TIP(IDM_SUPERSCRIPT)    "Верхній індекс (Ctrl+Shift++)"
+    IDS_TIP(IDM_GROW)           "Збільшити розмір шрифту (Ctrl+])"
+    IDS_TIP(IDM_SHRINK)         "Зменшити розмір шрифту (Ctrl+[)"
+    IDS_TIP(IDM_ALIGN_LEFT)     "Вирівняти ліворуч (Ctrl+L)"
+    IDS_TIP(IDM_ALIGN_CENTER)   "По центру (Ctrl+E)"
+    IDS_TIP(IDM_ALIGN_RIGHT)    "Вирівняти праворуч (Ctrl+R)"
+    IDS_TIP(IDM_ALIGN_JUSTIFY)  "По ширині (Ctrl+J)"
+    IDS_TIP(IDM_FIND)           "Знайти (Ctrl+F)"
+    IDS_TIP(IDM_REPLACE)        "Замінити (Ctrl+H)"
+    IDS_TIP(IDM_LINK)           "Посилання (Ctrl+K)"
+    IDS_TIP(IDM_PAGEBREAK)      "Розрив сторінки (Ctrl+Enter)"
+    IDS_TIP(IDM_CLEARFORMAT)    "Очистити все форматування (Ctrl+Пробіл)"
+
+    3000 "(немає)"
+    3001 "Перший рядок"
+    3002 "Виступ"
+    3010 "Одинарний"
+    3011 "1,5 рядка"
+    3012 "Подвійний"
+    3013 "Мінімум"
+    3014 "Точно"
+    3015 "Множник"
+}
+
+IDD_PARAGRAPH DIALOGEX 0, 0, 300, 196
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Абзац"
+FONT 9, "MS Shell Dlg"
+{
+    LTEXT "Вирівнювання:", -1, 10, 12, 66, 10
+    COMBOBOX IDC_PARA_ALIGN, 80, 10, 90, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    GROUPBOX "Відступ (см)", -1, 6, 30, 288, 52
+    LTEXT "Ліворуч:", -1, 14, 44, 44, 10
+    EDITTEXT IDC_PARA_LEFT, 60, 42, 50, 13
+    LTEXT "Праворуч:", -1, 14, 62, 44, 10
+    EDITTEXT IDC_PARA_RIGHT, 60, 60, 50, 13
+    LTEXT "Перший рядок:", -1, 130, 44, 80, 10
+    COMBOBOX IDC_PARA_SPECIAL, 130, 56, 80, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT "На (см):", -1, 220, 44, 60, 10
+    EDITTEXT IDC_PARA_BY, 220, 56, 50, 13
+    GROUPBOX "Інтервал", -1, 6, 88, 288, 52
+    LTEXT "Перед (пт):", -1, 14, 102, 44, 10
+    EDITTEXT IDC_PARA_BEFORE, 60, 100, 50, 13
+    LTEXT "Після (пт):", -1, 14, 120, 44, 10
+    EDITTEXT IDC_PARA_AFTER, 60, 118, 50, 13
+    LTEXT "Міжрядковий:", -1, 130, 102, 80, 10
+    COMBOBOX IDC_PARA_LINE, 130, 114, 80, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT "Значення:", -1, 220, 102, 60, 10
+    EDITTEXT IDC_PARA_AT, 220, 114, 50, 13
+    AUTOCHECKBOX "З нової сторінки", IDC_PARA_PAGEBREAK, 10, 148, 140, 12
+    AUTOCHECKBOX "Не відривати від наступного", IDC_PARA_KEEPNEXT, 150, 148, 140, 12
+    DEFPUSHBUTTON "OK", IDOK, 184, 174, 52, 15
+    PUSHBUTTON "Скасувати", IDCANCEL, 242, 174, 52, 15
+}
+
+IDD_LINK DIALOGEX 0, 0, 280, 80
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Вставлення посилання"
+FONT 9, "MS Shell Dlg"
+{
+    LTEXT "Текст:", -1, 8, 10, 70, 10
+    EDITTEXT IDC_LINK_TEXT, 80, 8, 192, 13, ES_AUTOHSCROLL
+    LTEXT "Адреса:", -1, 8, 30, 70, 10
+    EDITTEXT IDC_LINK_URL, 80, 28, 192, 13, ES_AUTOHSCROLL
+    DEFPUSHBUTTON "OK", IDOK, 164, 58, 52, 15
+    PUSHBUTTON "Скасувати", IDCANCEL, 220, 58, 52, 15
+}
+
+IDD_DATETIME DIALOGEX 0, 0, 200, 150
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Дата й час"
+FONT 9, "MS Shell Dlg"
+{
+    LTEXT "Доступні формати:", -1, 8, 6, 180, 10
+    LISTBOX IDC_DATETIME_LIST, 8, 18, 184, 102, LBS_NOINTEGRALHEIGHT | LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON "OK", IDOK, 84, 128, 52, 15
+    PUSHBUTTON "Скасувати", IDCANCEL, 140, 128, 52, 15
+}
+
+IDD_ZOOM DIALOGEX 0, 0, 200, 120
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Масштаб"
+FONT 9, "MS Shell Dlg"
+{
+    AUTORADIOBUTTON "200%", IDC_ZOOM_200, 10, 10, 80, 12, WS_GROUP
+    AUTORADIOBUTTON "100%", IDC_ZOOM_100, 10, 26, 80, 12
+    AUTORADIOBUTTON "75%", IDC_ZOOM_75, 10, 42, 80, 12
+    AUTORADIOBUTTON "Ширина сторінки", IDC_ZOOM_WIDTH, 100, 10, 90, 12
+    AUTORADIOBUTTON "Сторінка цілком", IDC_ZOOM_WHOLE, 100, 26, 90, 12
+    LTEXT "Відсотки:", -1, 10, 66, 40, 10
+    EDITTEXT IDC_ZOOM_PERCENT, 52, 64, 40, 13, ES_NUMBER
+    CONTROL "", IDC_ZOOM_SPIN, "msctls_updown32", UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | UDS_ARROWKEYS, 92, 64, 10, 13
+    DEFPUSHBUTTON "OK", IDOK, 84, 98, 52, 15
+    PUSHBUTTON "Скасувати", IDCANCEL, 140, 98, 52, 15
+}

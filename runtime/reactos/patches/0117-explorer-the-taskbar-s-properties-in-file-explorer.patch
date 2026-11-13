@@ -1,0 +1,279 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 10 Nov 2026 12:00:00 +0200
+Subject: [PATCH] explorer: The taskbar's properties in File Explorer.
+
+The taskbar's properties are pages of the Control Panel inside File
+Explorer (taskbarcpl.dll), drawn as Windows 11's Settings, as Windows 10
+opens its Settings. The tray says what its pages of the taskbar and the
+notification area set, and sets it as their Apply did, by bits
+(ArcticTraySettings); it opens Customize of the classic Start menu for them.
+It still makes each of its five old pages by itself when asked
+(ArcticTrayPropertyPage); a page of explorer's own goes when comctl32 lets
+it go. The dialog stays for where the page cannot open.
+---
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+index 18afffb..b60263c 100644
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -326,6 +326,10 @@ static inline VOID DoFinishStartupItems() { ReleaseStartupMutex(); }
+ VOID
+ DisplayTrayProperties(IN HWND hwndOwner, IN HWND hwndTaskbar);
+ 
++/* Arctic: one of the pages by itself, for the Control Panel's page in File Explorer */
++HPROPSHEETPAGE
++CreateTrayPropertyPage(IN UINT uPage, IN HWND hwndTaskbar);
++
+ /*
+  * desktop.cpp
+  */
+diff --git a/base/shell/explorer/trayprop.cpp b/base/shell/explorer/trayprop.cpp
+index dd08c6e..6a13906 100644
+--- a/base/shell/explorer/trayprop.cpp
++++ b/base/shell/explorer/trayprop.cpp
+@@ -91,12 +91,23 @@ public:
+         CHAIN_MSG_MAP(CPropertyPageImpl<CTaskBarSettingsPage>)
+     END_MSG_MAP()
+ 
+-    CTaskBarSettingsPage(HWND hwnd):
++    /* Arctic: made by itself for a page of the Control Panel, it goes when
++     * comctl32 lets the page go */
++    BOOL m_bOwned;
++
++    CTaskBarSettingsPage(HWND hwnd, BOOL bOwned = FALSE):
+         m_hbmpTaskbar(NULL),
+-        m_hwndTaskbar(hwnd)
++        m_hwndTaskbar(hwnd),
++        m_bOwned(bOwned)
+     {
+     }
+ 
++    VOID OnPageRelease()
++    {
++        if (m_bOwned)
++            delete this;
++    }
++
+     ~CTaskBarSettingsPage()
+     {
+         if (m_hbmpTaskbar)
+@@ -213,11 +224,20 @@ public:
+         CHAIN_MSG_MAP(CPropertyPageImpl<CStartMenuSettingsPage>)
+     END_MSG_MAP()
+ 
+-    CStartMenuSettingsPage():
+-        m_hbmpStartBitmap(NULL)
++    BOOL m_bOwned;
++
++    CStartMenuSettingsPage(BOOL bOwned = FALSE):
++        m_hbmpStartBitmap(NULL),
++        m_bOwned(bOwned)
+     {
+     }
+ 
++    VOID OnPageRelease()
++    {
++        if (m_bOwned)
++            delete this;
++    }
++
+     ~CStartMenuSettingsPage()
+     {
+         if (m_hbmpStartBitmap)
+@@ -308,12 +328,21 @@ public:
+         CHAIN_MSG_MAP(CPropertyPageImpl<CNotifySettingsPage>)
+     END_MSG_MAP()
+ 
+-    CNotifySettingsPage(HWND hwnd):
++    BOOL m_bOwned;
++
++    CNotifySettingsPage(HWND hwnd, BOOL bOwned = FALSE):
+         m_hbmpTray(NULL),
+-        m_hwndTaskbar(hwnd)
++        m_hwndTaskbar(hwnd),
++        m_bOwned(bOwned)
+     {
+     }
+ 
++    VOID OnPageRelease()
++    {
++        if (m_bOwned)
++            delete this;
++    }
++
+     ~CNotifySettingsPage()
+     {
+         if (m_hbmpTray)
+@@ -407,6 +436,66 @@ PropSheetProc(HWND hwndDlg, UINT uMsg, LPARAM lParam)
+     return 0;
+ }
+ 
++/* Arctic: one page of the properties by itself, for the page of the Control
++ * Panel in File Explorer that shows it (taskbarcpl.dll): 0 the taskbar,
++ * 1 its look, 2 its buttons, 3 the Start menu, 4 the notification area. A
++ * page of explorer's own is made for it and goes with it. */
++HPROPSHEETPAGE
++CreateTrayPropertyPage(IN UINT uPage, IN HWND hwndTaskbar)
++{
++    HMODULE hStartUi = LoadLibraryW(L"startui.dll");
++    HPROPSHEETPAGE hPage = NULL;
++
++    switch (uPage)
++    {
++        case 0:
++        {
++            CTaskBarSettingsPage *pPage = new CTaskBarSettingsPage(hwndTaskbar, TRUE);
++            if (!(hPage = pPage->Create()))
++                delete pPage;
++            break;
++        }
++        case 1:
++        {
++            typedef HPROPSHEETPAGE (WINAPI *PFN_LOOKPAGE)(HWND);
++            PFN_LOOKPAGE pLookPage = hStartUi ? (PFN_LOOKPAGE)GetProcAddress(hStartUi, "ArcticTaskbarLookPage") : NULL;
++            if (pLookPage)
++                hPage = pLookPage(hwndTaskbar);
++            break;
++        }
++        case 2:
++        {
++            typedef HPROPSHEETPAGE (WINAPI *PFN_BUTTONSPAGE)(HWND);
++            PFN_BUTTONSPAGE pButtonsPage = hStartUi ? (PFN_BUTTONSPAGE)GetProcAddress(hStartUi, "ArcticTaskbarButtonsPage") : NULL;
++            if (pButtonsPage)
++                hPage = pButtonsPage(hwndTaskbar);
++            break;
++        }
++        case 3:
++        {
++            typedef HPROPSHEETPAGE (WINAPI *PFN_STARTPAGE)(HWND, VOID (WINAPI *)(HWND));
++            PFN_STARTPAGE pStartPage = hStartUi ? (PFN_STARTPAGE)GetProcAddress(hStartUi, "ArcticStartMenuPage") : NULL;
++            if (pStartPage)
++                hPage = pStartPage(hwndTaskbar, ArcticCustomizeClassic);
++            if (!hPage)
++            {
++                CStartMenuSettingsPage *pPage = new CStartMenuSettingsPage(TRUE);
++                if (!(hPage = pPage->Create()))
++                    delete pPage;
++            }
++            break;
++        }
++        case 4:
++        {
++            CNotifySettingsPage *pPage = new CNotifySettingsPage(hwndTaskbar, TRUE);
++            if (!(hPage = pPage->Create()))
++                delete pPage;
++            break;
++        }
++    }
++    return hPage;
++}
++
+ VOID
+ DisplayTrayProperties(IN HWND hwndOwner, IN HWND hwndTaskbar)
+ {
+@@ -417,6 +506,17 @@ DisplayTrayProperties(IN HWND hwndOwner, IN HWND hwndTaskbar)
+     CNotifySettingsPage naSettingsPage(hwndTaskbar);
+     CStringW caption;
+ 
++    /* Arctic: the page of the Control Panel in File Explorer, as Windows 10
++     * opens its Settings; the dialog where that cannot be */
++    {
++        typedef BOOL (WINAPI *PFN_OPEN)(UINT);
++        HMODULE hModule = LoadLibraryW(L"taskbarcpl.dll");
++        PFN_OPEN pOpen = hModule ? (PFN_OPEN)GetProcAddress(hModule, "ArcticTaskbarOpen") : NULL;
++
++        if (pOpen && pOpen(0))
++            return;
++    }
++
+     caption.LoadStringW(IDS_TASKBAR_STARTMENU_PROP_CAPTION);
+ 
+     hpsp.Add(tbSettingsPage.Create());
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+index 7a5e5bd..d46ee71 100644
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -41,6 +41,10 @@ static const UINT g_uArcticShellLookChanged = RegisterWindowMessageW(L"ArcticShe
+ /* ... and the page Buttons: the style of the buttons, where they stand, Start's picture */
+ static const UINT g_uArcticTaskbarOptions = RegisterWindowMessageW(L"ArcticTaskbarOptionsChanged");
+ static const UINT g_uArcticWidgetChanged = RegisterWindowMessageW(L"ArcticWidgetChanged");
++/* Arctic: a page of the properties for the Control Panel's page in File Explorer (taskbarcpl.dll) */
++static const UINT g_uArcticTrayPropertyPage = RegisterWindowMessageW(L"ArcticTrayPropertyPage");
++/* Arctic: the settings of those pages, for the Control Panel's own pages (taskbarcpl.dll) */
++static const UINT g_uArcticTraySettings = RegisterWindowMessageW(L"ArcticTraySettings");
+ 
+ static FARPROC ArcticStartUiProc(LPCSTR pszName)
+ {
+@@ -2150,6 +2154,64 @@ ChangePos:
+         return 0;
+     }
+ 
++    /* Arctic: wParam the page (CreateTrayPropertyPage), the page made returned */
++    LRESULT OnArcticTrayPropertyPage(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        return (LRESULT)CreateTrayPropertyPage((UINT)wParam, m_hWnd);
++    }
++
++    /* Arctic: what the pages of the taskbar and the notification area set,
++     * as bits, for the Control Panel's pages (taskbarcpl.dll): wParam 0
++     * returns them, 1 sets those of lParam as the pages' Apply did, 2 opens
++     * Customize of the classic Start menu (lParam its owner). The bits: 0x1
++     * locked, 0x2 hidden by itself, 0x4 on top, 0x8 small buttons, 0x30 how
++     * buttons combine (0 always, 1 when full, 2 never), 0x40 no clock, 0x80
++     * the seconds, 0x200 the Show desktop button; 0x400 (got only) the clock
++     * may not be shown (policy). */
++    LRESULT OnArcticTraySettings(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        switch (wParam)
++        {
++        case 0:
++        {
++            LRESULT bits = 0;
++
++            if (g_TaskbarSettings.bLock) bits |= 0x1;
++            if (g_TaskbarSettings.sr.AutoHide) bits |= 0x2;
++            if (g_TaskbarSettings.sr.AlwaysOnTop) bits |= 0x4;
++            if (g_TaskbarSettings.bSmallIcons) bits |= 0x8;
++            bits |= (g_TaskbarSettings.dwGlomLevel <= 2 ? g_TaskbarSettings.dwGlomLevel : 0) << 4;
++            if (GetHideClock()) bits |= 0x40;
++            if (g_TaskbarSettings.bShowSeconds) bits |= 0x80;
++            if (g_TaskbarSettings.bShowDesktopButton) bits |= 0x200;
++            if (SHRestricted(REST_HIDECLOCK)) bits |= 0x400;
++            return bits;
++        }
++        case 1:
++        {
++            TaskbarSettings newSettings = g_TaskbarSettings;
++            DWORD bits = (DWORD)lParam;
++
++            newSettings.bLock = (bits & 0x1) != 0;
++            newSettings.sr.AutoHide = (bits & 0x2) != 0;
++            newSettings.sr.AlwaysOnTop = (bits & 0x4) != 0;
++            newSettings.bSmallIcons = (bits & 0x8) != 0;
++            newSettings.dwGlomLevel = ((bits >> 4) & 3) <= 2 ? ((bits >> 4) & 3) : 2;
++            newSettings.bGroupButtons = newSettings.dwGlomLevel != 2;
++            newSettings.bHideLabels = newSettings.dwGlomLevel == 0;
++            newSettings.sr.HideClock = (bits & 0x40) != 0;
++            newSettings.bShowSeconds = (bits & 0x80) != 0;
++            newSettings.bShowDesktopButton = (bits & 0x200) != 0;
++            SendMessageW(TWM_SETTINGSCHANGED, 0, (LPARAM)&newSettings);
++            return TRUE;
++        }
++        case 2:
++            ShowCustomizeClassic(hExplorerInstance, (HWND)lParam);
++            return TRUE;
++        }
++        return 0;
++    }
++
+     /* Arctic: the task buttons fill the height of the rebar: the band of a
+        running taskbar kept the old height, and the buttons stayed at its top */
+     VOID ArcticFitTaskBand()
+@@ -3964,6 +4026,8 @@ HandleTrayContextMenu:
+         MESSAGE_HANDLER(g_uArcticStartMenuClosed, OnArcticStartMenuClosed)
+         MESSAGE_HANDLER(g_uArcticTaskbarOptions, OnArcticTaskbarOptions)
+         MESSAGE_HANDLER(g_uArcticWidgetChanged, OnArcticWidgetChanged)
++        MESSAGE_HANDLER(g_uArcticTrayPropertyPage, OnArcticTrayPropertyPage)
++        MESSAGE_HANDLER(g_uArcticTraySettings, OnArcticTraySettings)
+         MESSAGE_HANDLER(TWM_ARCTICTASKSWIDTH, OnArcticTasksWidth)
+         MESSAGE_HANDLER(g_uArcticShellLookChanged, OnArcticShellLookChanged)
+         MESSAGE_HANDLER(TWM_DOEXITWINDOWS, OnDoExitWindows)

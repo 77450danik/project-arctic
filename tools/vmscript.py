@@ -12,7 +12,8 @@ Steps, one per line ('#' starts a comment):
     sleep SECONDS
     shot NAME             screenshot to out/test-local/NAME.png
     hold KEY SECONDS      keeps a key down, for key repeat
-    plug NAME IMAGE       a USB stick with that raw image (relative to out/test-local)
+    plug NAME IMAGE [SERIAL]       a USB stick with that raw image (relative to out/test-local)
+    plugfixed NAME IMAGE [SERIAL]  a USB hard disk: the same, its medium not removable
     unplug NAME           pull it out
 """
 import json
@@ -234,12 +235,15 @@ def run(qmp, steps):
             qmp.key(ALIASES.get(words[0], words[0]), True)
             time.sleep(float(words[1]))
             qmp.key(ALIASES.get(words[0], words[0]), False)
-        elif cmd == "plug":
+        elif cmd in ("plug", "plugfixed"):
             image = os.path.join(RES, words[1])
             qmp.call("blockdev-add", {"driver": "raw", "node-name": words[0],
                                       "file": {"driver": "file", "filename": image}})
-            qmp.call("device_add", {"driver": "usb-storage", "id": words[0], "drive": words[0],
-                                    "bus": "xhci.0", "removable": True})
+            device = {"driver": "usb-storage", "id": words[0], "drive": words[0],
+                      "bus": "xhci.0", "removable": cmd == "plug"}
+            if len(words) > 2:
+                device["serial"] = words[2]
+            qmp.call("device_add", device)
         elif cmd == "unplug":
             qmp.call("device_del", {"id": words[0]})
             time.sleep(1)

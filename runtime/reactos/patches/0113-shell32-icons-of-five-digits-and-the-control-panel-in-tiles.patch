@@ -1,0 +1,74 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 10 Nov 2026 12:00:00 +0200
+Subject: [PATCH] shell32: icons of five digits, and the Control Panel in tiles.
+
+An icon's number in DefaultIcon kept only four characters: This PC's
+Downloads, shell32.dll,-16801, read as -1680, an icon there is none of, and
+showed a blank document. The Control Panel opens in tiles, as asked: the
+item's icon beside its name.
+---
+diff --git a/dll/win32/shell32/wine/classes.c b/dll/win32/shell32/wine/classes.c
+index 6deb064..259a922 100644
+--- a/dll/win32/shell32/wine/classes.c
++++ b/dll/win32/shell32/wine/classes.c
+@@ -271,7 +271,7 @@ static BOOL HCR_RegGetIconW(HKEY hkey, LPWSTR szDest, LPCWSTR szName, DWORD len,
+ {
+     DWORD dwType, size = len * sizeof(WCHAR);
+     WCHAR sTemp[MAX_PATH];
+-    WCHAR sNum[5];
++    WCHAR sNum[16];  /* Arctic: five digits and a sign, as shell32.dll,-16801 */
+ 
+     if (!RegQueryValueExW(hkey, szName, 0, &dwType, (LPBYTE)szDest, &size))
+     {
+@@ -295,7 +295,7 @@ static BOOL HCR_RegGetIconA(HKEY hkey, LPSTR szDest, LPCSTR szName, DWORD len, i
+ {
+ 	DWORD dwType;
+ 	char sTemp[MAX_PATH];
+-	char  sNum[5];
++	char  sNum[16];
+ 
+ 	if (!RegQueryValueExA(hkey, szName, 0, &dwType, (LPBYTE)szDest, &len))
+ 	{
+@@ -304,7 +304,7 @@ static BOOL HCR_RegGetIconA(HKEY hkey, LPSTR szDest, LPCSTR szName, DWORD len, i
+ 	    ExpandEnvironmentStringsA(szDest, sTemp, MAX_PATH);
+ 	    lstrcpynA(szDest, sTemp, len);
+ 	  }
+-	  if (ParseFieldA (szDest, 2, sNum, 5))
++	  if (ParseFieldA (szDest, 2, sNum, sizeof(sNum)))
+              *picon_idx=atoi(sNum);
+           else
+              *picon_idx=0; /* sometimes the icon number is missing */
+diff --git a/dll/win32/shell32/folders/CFSFolder.cpp b/dll/win32/shell32/folders/CFSFolder.cpp
+index 8a41b76..46dc3a9 100644
+--- a/dll/win32/shell32/folders/CFSFolder.cpp
++++ b/dll/win32/shell32/folders/CFSFolder.cpp
+@@ -422,8 +422,8 @@ HRESULT CFSExtractIcon_CreateInstance(IShellFolder * psf, LPCITEMIDLIST pidl, RE
+         DWORD dwSize = sizeof(wTemp);
+         if (hkey && !SHQueryValueExW(hkey, NULL, NULL, NULL, wTemp, &dwSize))
+         {
+-            WCHAR sNum[5];
+-            if (ParseFieldW (wTemp, 2, sNum, 5))
++            WCHAR sNum[16];  // Arctic: five digits and a sign
++            if (ParseFieldW (wTemp, 2, sNum, _countof(sNum)))
+                 icon_idx = _wtoi(sNum);
+             else
+                 icon_idx = 0; /* sometimes the icon number is missing */
+diff --git a/dll/win32/shell32/folders/CControlPanelFolder.cpp b/dll/win32/shell32/folders/CControlPanelFolder.cpp
+index 7b6ed6b..1ddf880 100644
+--- a/dll/win32/shell32/folders/CControlPanelFolder.cpp
++++ b/dll/win32/shell32/folders/CControlPanelFolder.cpp
+@@ -701,11 +701,9 @@ HRESULT WINAPI CControlPanelFolder::MessageSFVCB(UINT uMsg, WPARAM wParam, LPARA
+     {
+         case SFVM_DEFVIEWMODE:
+         {
+-        #if ROSPOLICY_CONTROLSFOLDER_DEFLARGEICONS
+-            *((FOLDERVIEWMODE*)lParam) = FVM_ICON;
+-        #else
+-            *((FOLDERVIEWMODE*)lParam) = IsOS(OS_SERVERADMINUI) ? FVM_LIST : FVM_ICON;
+-        #endif
++            /* Arctic: tiles, the item's name with what it is for under it;
++             * a view chosen for it since is kept (CDefView) */
++            *((FOLDERVIEWMODE*)lParam) = FVM_TILE;
+             return S_OK;
+         }
+     }

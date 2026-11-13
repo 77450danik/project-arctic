@@ -36,6 +36,8 @@
 
 #define WM_ARCTIC_BROWSE    (WM_APP + 0x51)     /* wparam: not a new step of the history; lparam: an ITEMIDLIST */
 #define WM_ARCTIC_SEARCH    (WM_APP + 0x52)     /* lparam: the text; nothing: back where the search began */
+#define WM_ARCTIC_NAVPANE   (WM_APP + 0x53)     /* wparam: the navigation pane shown */
+#define WM_ARCTIC_RELAYOUT  (WM_APP + 0x54)     /* the rows and the side are laid out again */
 
 #define EXPLORER_WIN10      1
 #define EXPLORER_WIN11      2
@@ -47,6 +49,7 @@
 
 #define TIMER_POLL          1
 #define TIMER_SEARCH        2
+#define SIDE_ROW            px(44)
 #define ID_ADDRESS          100
 #define ID_SEARCH           101
 
@@ -80,6 +83,9 @@
 #define CMD_NEW_WINDOW           2
 #define CMD_SELECT_NONE          3
 #define CMD_SORT_MENU            4
+#define CMD_NAV_PANE             5
+#define CMD_ADD_DEVICE           6     /* Devices and Printers: the wizard */
+#define CMD_ADD_PRINTER          7
 
 enum { NEED_NONE, NEED_SELECTION, NEED_CLIPBOARD };
 
@@ -87,7 +93,7 @@ enum icon
 {
     I_BACK, I_FORWARD, I_UP, I_REFRESH, I_PLUS, I_CUT, I_COPY, I_PASTE, I_RENAME, I_SHARE, I_DELETE, I_SORT, I_VIEW,
     I_MORE, I_DOWN, I_RIGHT, I_CLOSE, I_MIN, I_MAX, I_RESTORE, I_SEARCH, I_DETAILS, I_TILES, I_NEW_FOLDER, I_PROPS,
-    I_SELECT, I_MOVE, I_LIST, I_LARGE, I_OPTIONS, I_NONE,
+    I_SELECT, I_MOVE, I_LIST, I_LARGE, I_OPTIONS, I_NAVPANE, I_NONE,
 };
 
 enum kind
@@ -131,6 +137,21 @@ struct chrome
     WCHAR status[160];
     HHOOK hook;
     int low_hot;
+    int caption_top;             /* the client area's top below the window's, for dwm */
+    /* in the Control Panel its items stand where the tree was */
+    HWND side, split;            /* the list, and the edge that drags its width */
+    BOOL in_controls, side_shown;
+    struct side_item *side_items;
+    int side_count, side_width, side_hot, side_selected, side_scroll;
+    int split_grab;              /* where in the edge it was taken, while dragged */
+};
+
+struct side_item
+{
+    LPITEMIDLIST pidl;
+    WCHAR name[128];
+    HBITMAP icon;
+    BOOL folder;                 /* opens in the window; the others start */
 };
 
 struct colors
@@ -191,7 +212,8 @@ static void get_colors( struct colors *c )
 static const float g_back[] = { 17,10,3.5f,10, 3.5f,10,8.5f,5, 3.5f,10,8.5f,15, END };
 static const float g_forward[] = { 3,10,16.5f,10, 16.5f,10,11.5f,5, 16.5f,10,11.5f,15, END };
 static const float g_up[] = { 10,17,10,3.5f, 10,3.5f,5,8.5f, 10,3.5f,15,8.5f, END };
-static const float g_refresh[] = { ARC,10,10.5f,7,20,320, 15.36f,6,15.36f,1.8f, 15.36f,6,11.2f,6, END };
+/* a ring turning clockwise, open at the upper right; its head a corner pointing on */
+static const float g_refresh[] = { ARC,10,10,6.5f,-10,310, 16,5.3f,16,2, 16,5.3f,12.7f,5.3f, END };
 static const float g_plus[] = { 10,3.5f,10,16.5f, 3.5f,10,16.5f,10, END };
 static const float g_cut[] = { ARC,5.6f,15,2.6f,0,360, ARC,14.4f,15,2.6f,0,360, 7,12.8f,14.5f,3, 13,12.8f,5.5f,3, END };
 static const float g_copy[] = { RBOX,7,3,17,14,2, 3.5f,7,3.5f,15, ARC,6,15,2.5f,180,90, 6,17.5f,13,17.5f, END };
@@ -218,12 +240,13 @@ static const float g_move[] = { RBOX,2.5f,6,17.5f,16.5f,2, 3.5f,6,4.5f,4, 4.5f,4
 static const float g_list[] = { DOT,3.5f,5,1.2f, DOT,3.5f,10,1.2f, DOT,3.5f,15,1.2f, 7,5,17,5, 7,10,17,10, 7,15,17,15, END };
 static const float g_large[] = { RBOX,3,3,17,14,2, 7,17,13,17, END };
 static const float g_options[] = { ARC,10,10,3,0,360, ARC,10,10,7,0,360, END };
+static const float g_navpane[] = { RBOX,3,4,17,16,2, 8,4,8,16, END };
 
 static const float *const glyphs[] =
 {
     g_back, g_forward, g_up, g_refresh, g_plus, g_cut, g_copy, g_paste, g_rename, g_share, g_delete, g_sort, g_view,
     g_more, g_down, g_right, g_close, g_min, g_max, g_restore, g_search, g_details, g_tiles, g_new_folder, g_props,
-    g_select, g_move, g_list, g_large, g_options,
+    g_select, g_move, g_list, g_large, g_options, g_navpane,
 };
 
 struct segment { float x0, y0, x1, y1; };
@@ -370,19 +393,24 @@ static UINT32 *make_icon( int icon, int size, COLORREF color )
 static void draw_icon( HDC hdc, int icon, int x, int y, int size, COLORREF color )
 {
     UINT32 *pixels = NULL;
+    BOOL kept = TRUE;
 
     AcquireSRWLockExclusive( &icon_lock );
     for (int i = 0; i < icon_cache_count && !pixels; i++)
         if (icon_cache[i].icon == icon && icon_cache[i].size == size && icon_cache[i].color == color) pixels = icon_cache[i].pixels;
-    if (!pixels && (pixels = make_icon( icon, size, color )) && icon_cache_count < ARRAY_SIZE(icon_cache))
+    if (!pixels && (pixels = make_icon( icon, size, color )))
     {
-        icon_cache[icon_cache_count].icon = icon;
-        icon_cache[icon_cache_count].size = size;
-        icon_cache[icon_cache_count].color = color;
-        icon_cache[icon_cache_count++].pixels = pixels;
+        if ((kept = icon_cache_count < ARRAY_SIZE(icon_cache)))
+        {
+            icon_cache[icon_cache_count].icon = icon;
+            icon_cache[icon_cache_count].size = size;
+            icon_cache[icon_cache_count].color = color;
+            icon_cache[icon_cache_count++].pixels = pixels;
+        }
     }
     ReleaseSRWLockExclusive( &icon_lock );
     if (pixels) blend_bits( hdc, x, y, size, size, pixels );
+    if (!kept) free( pixels );   /* the cache is full: drawn once */
 }
 
 /**********************************************************************
@@ -404,6 +432,23 @@ static void tab_describe( struct tab *t, LPCITEMIDLIST pidl )
             t->icon = icon_bitmap( info.hIcon, px( 16 ) );
             DestroyIcon( info.hIcon );
         }
+        return;
+    }
+    /* an item without an icon of its own, a page of a Control Panel item:
+     * its name, and the icon of what it is in */
+    if (SHGetFileInfoW( (const WCHAR *)pidl, 0, &info, sizeof(info), SHGFI_PIDL | SHGFI_DISPLAYNAME ))
+        lstrcpynW( t->title, info.szDisplayName, ARRAY_SIZE(t->title) );
+    {
+        ITEMIDLIST *parent = ILClone( pidl );
+
+        if (parent && ILRemoveLastID( parent ) &&
+            SHGetFileInfoW( (const WCHAR *)parent, 0, &info, sizeof(info), SHGFI_PIDL | SHGFI_ICON | SHGFI_SMALLICON ) &&
+            info.hIcon)
+        {
+            t->icon = icon_bitmap( info.hIcon, px( 16 ) );
+            DestroyIcon( info.hIcon );
+        }
+        ILFree( parent );
     }
 }
 
@@ -585,12 +630,26 @@ static void copy_path( struct chrome *c )
     CloseClipboard();
 }
 
+/* View, Show, Navigation pane: Windows' own setting, for the tree and for
+ * the Control Panel's list in its place */
+static BOOL nav_pane_wanted(void)
+{
+    DWORD value = 1, size = sizeof(value);
+
+    RegGetValueW( HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"NavPaneVisible",
+                  RRF_RT_REG_DWORD, NULL, &value, &size );
+    return value != 0;
+}
+
 static void run_command( struct chrome *c, UINT id )
 {
     HWND list;
 
     switch (id)
     {
+    case CMD_NAV_PANE:
+        PostMessageW( c->browser, WM_ARCTIC_NAVPANE, !nav_pane_wanted(), 0 );
+        break;
     case CMD_COPY_PATH:
         copy_path( c );
         break;
@@ -636,15 +695,53 @@ static UINT show_menu( struct chrome *c, const RECT *anchor, const struct popup_
                         c->style == EXPLORER_WIN11 ? POPUP_WIN11 : POPUP_WIN10, &look );
 }
 
+/* Devices and Printers (devicescpl.dll) is open: "Створити" adds a device there, as Windows 11's Settings */
+static BOOL in_devices( struct chrome *c )
+{
+    static struct chrome *checked_chrome;
+    static LPITEMIDLIST checked;
+    static BOOL result;
+    WCHAR *name;
+
+    if (!c->tab_count || !c->tabs[c->active].pidl) return FALSE;
+    if (c == checked_chrome && c->tabs[c->active].pidl == checked) return result;
+    checked_chrome = c;
+    checked = c->tabs[c->active].pidl;
+    result = FALSE;
+    if (SUCCEEDED(SHGetNameFromIDList( checked, SIGDN_DESKTOPABSOLUTEPARSING, &name )))
+    {
+        result = !!wcsstr( _wcsupr( name ), L"{A8A91A66-3A7D-4424-8D24-04E180695C7A}" );
+        CoTaskMemFree( name );
+    }
+    return result;
+}
+
+static void add_device( struct chrome *c, int kind )
+{
+    HMODULE module = LoadLibraryW( L"devicescpl.dll" );
+    void (WINAPI *wizard)( HWND, int ) = module ? (void *)GetProcAddress( module, "ArcticAddDevice" ) : NULL;
+
+    if (wizard) wizard( c->browser, kind );
+}
+
 static void new_menu( struct chrome *c, const RECT *anchor )
 {
     const struct popup_item items[] =
     {
         { CMD_NEW_FOLDER, load_string( IDS_EX_FOLDER ), GLYPH_FOLDER },
     };
-    UINT id = show_menu( c, anchor, items, ARRAY_SIZE(items) );
+    const struct popup_item devices[] =
+    {
+        { CMD_ADD_DEVICE, load_string( IDS_EX_BLUETOOTH_DEVICE ), GLYPH_NONE },
+        { CMD_ADD_PRINTER, load_string( IDS_EX_PRINTER ), GLYPH_NONE },
+    };
+    UINT id;
 
-    if (id) run_command( c, id );
+    if (in_devices( c )) id = show_menu( c, anchor, devices, ARRAY_SIZE(devices) );
+    else id = show_menu( c, anchor, items, ARRAY_SIZE(items) );
+    if (id == CMD_ADD_DEVICE) add_device( c, 0 );
+    else if (id == CMD_ADD_PRINTER) add_device( c, 1 );
+    else if (id) run_command( c, id );
 }
 
 static void sort_menu( struct chrome *c, const RECT *anchor )
@@ -663,6 +760,10 @@ static void sort_menu( struct chrome *c, const RECT *anchor )
 
 static void view_menu( struct chrome *c, const RECT *anchor )
 {
+    const struct popup_item show[] =
+    {
+        { CMD_NAV_PANE, load_string( IDS_EX_NAV_PANE ), GLYPH_NONE, nav_pane_wanted() },
+    };
     const struct popup_item items[] =
     {
         { CMD_LARGE, load_string( IDS_EX_LARGE ), GLYPH_NONE },
@@ -670,6 +771,8 @@ static void view_menu( struct chrome *c, const RECT *anchor )
         { CMD_LIST, load_string( IDS_EX_LIST ), GLYPH_NONE },
         { CMD_DETAILS, load_string( IDS_EX_DETAILS ), GLYPH_NONE },
         { CMD_TILES, load_string( IDS_EX_TILES ), GLYPH_NONE },
+        { 0 },
+        { 0, load_string( IDS_EX_SHOW ), GLYPH_NONE, FALSE, FALSE, show, ARRAY_SIZE(show) },
     };
     UINT id = show_menu( c, anchor, items, ARRAY_SIZE(items) );
 
@@ -771,6 +874,7 @@ static void edit_start( struct chrome *c, const RECT *field )
     SetWindowSubclass( c->edit, edit_proc, 1, (DWORD_PTR)c );
     SendMessageW( c->edit, EM_SETSEL, 0, -1 );
     SetFocus( c->edit );
+    redraw( c );
 }
 
 /**********************************************************************
@@ -989,15 +1093,28 @@ static void paint_tabs( struct chrome *c, HDC hdc, const struct colors *col, con
     }
 }
 
-/* the address: its places, or the typed text */
+/* the address: its places, or the typed text; at its end, as in Windows, the
+ * button that refreshes the folder, and goes where the text says while it
+ * is typed */
 static void paint_address( struct chrome *c, HDC hdc, const struct colors *col, const RECT *field, HFONT font )
 {
     int radius = c->style == EXPLORER_WIN11 ? px( 4 ) : 0, x = field->left + px( 8 ), first = 0, total = 0, room;
+    int size = px( 16 );
+    RECT text = *field, button = *field;
 
     fill_round_rect( hdc, field, (float)radius, col->field, 255 );
-    zone_add( c, Z_ADDRESS, 0, field, TRUE );
+    text.right -= px( 34 );
+    button.left = text.right;
+    InflateRect( &button, 0, -px( 2 ) );
+    button.right -= px( 2 );
+    zone_add( c, Z_ADDRESS, 0, &text, TRUE );
+    zone_add( c, Z_REFRESH, 0, &button, TRUE );
+    if (is_hot( c, Z_REFRESH, 0 ))
+        fill_round_rect( hdc, &button, (float)px( 3 ), c->down_kind == Z_REFRESH ? col->down : col->hover, 255 );
+    draw_icon( hdc, c->edit ? I_FORWARD : I_REFRESH, (button.left + button.right - size) / 2,
+               (button.top + button.bottom - size) / 2, size, c->edit ? col->text : col->dim );
     if (c->edit) return;
-    room = field->right - field->left - px( 24 );
+    room = text.right - text.left - px( 24 );
     for (int i = c->segment_count - 1; i >= 0; i--)
     {
         total += text_px( hdc, font, c->segment_name[i] ) + px( 24 );
@@ -1038,7 +1155,7 @@ static void paint_search( struct chrome *c, HDC hdc, const struct colors *col, c
     draw_icon( hdc, I_SEARCH, field->right - size - px( 8 ), (field->top + field->bottom - size) / 2, size, col->dim );
 }
 
-/* back, forward, up, refresh, the address and the search */
+/* back, forward, up, the address and the search */
 static void paint_nav( struct chrome *c, HDC hdc, const struct colors *col, const RECT *row, HFONT font )
 {
     struct tab *t = c->tab_count ? &c->tabs[c->active] : NULL;
@@ -1052,8 +1169,6 @@ static void paint_nav( struct chrome *c, HDC hdc, const struct colors *col, cons
     paint_button( c, hdc, col, r, Z_FORWARD, 0, I_FORWARD, col->text, NULL, NULL, t && t->forward_count, FALSE );
     OffsetRect( &r, side + px( 2 ), 0 );
     paint_button( c, hdc, col, r, Z_UP, 0, I_UP, col->text, NULL, NULL, has_parent, FALSE );
-    OffsetRect( &r, side + px( 2 ), 0 );
-    paint_button( c, hdc, col, r, Z_REFRESH, 0, I_REFRESH, col->text, NULL, NULL, TRUE, FALSE );
 
     SetRect( &field, r.right + px( 6 ), y, row->right - search - px( 16 ), y + high );
     paint_address( c, hdc, col, &field, font );
@@ -1073,8 +1188,13 @@ static void paint_commands( struct chrome *c, HDC hdc, const struct colors *col,
         { I_RENAME, CMD_RENAME, NEED_SELECTION }, { I_SHARE, CMD_PROPERTIES, NEED_SELECTION }, { I_DELETE, CMD_DELETE, NEED_SELECTION },
     };
 
-    SetRect( &r, x, y, x + text_px( hdc, font, load_string( IDS_EX_NEW ) ) + px( 60 ), y + high );
-    paint_button( c, hdc, col, r, Z_NEW_MENU, 0, I_PLUS, col->accent, load_string( IDS_EX_NEW ), font, TRUE, TRUE );
+    {
+        /* in Devices and Printers: "Додати пристрій" */
+        const WCHAR *label = load_string( in_devices( c ) ? IDS_EX_ADD_DEVICE : IDS_EX_NEW );
+
+        SetRect( &r, x, y, x + text_px( hdc, font, label ) + px( 60 ), y + high );
+        paint_button( c, hdc, col, r, Z_NEW_MENU, 0, I_PLUS, col->accent, label, font, TRUE, TRUE );
+    }
     x = r.right + px( 6 );
     {
         RECT sep = { x, y + px( 8 ), x + 1, y + high - px( 8 ) };
@@ -1129,12 +1249,14 @@ static const struct ribbon_group home_groups[] =
 static const struct ribbon_button share_big[] = { { CMD_PROPERTIES, IDS_EX_PROPERTIES, I_SHARE, NEED_SELECTION }, { CMD_COPY_PATH, IDS_EX_COPY_PATH, I_COPY, NEED_NONE } };
 static const struct ribbon_group share_groups[] = { { IDS_EX_SHARE_WITH, share_big, ARRAY_SIZE(share_big), NULL, 0 } };
 
+static const struct ribbon_button view_panes_big[] = { { CMD_NAV_PANE, IDS_EX_NAV_PANE, I_NAVPANE, NEED_NONE } };
 static const struct ribbon_button view_layout_big[] = { { CMD_LARGE, IDS_EX_LARGE, I_LARGE, NEED_NONE }, { CMD_DETAILS, IDS_EX_DETAILS, I_DETAILS, NEED_NONE }, { CMD_TILES, IDS_EX_TILES, I_TILES, NEED_NONE } };
 static const struct ribbon_button view_layout_small[] = { { CMD_SMALL, IDS_EX_SMALL, I_VIEW, NEED_NONE }, { CMD_LIST, IDS_EX_LIST, I_LIST, NEED_NONE } };
 static const struct ribbon_button view_sort_big[] = { { CMD_SORT_MENU, IDS_EX_SORT, I_SORT, NEED_NONE } };
 static const struct ribbon_button view_opt_big[] = { { IDM_TOOLS_FOLDEROPTIONS, IDS_EX_OPTIONS, I_OPTIONS, NEED_NONE } };
 static const struct ribbon_group view_groups[] =
 {
+    { IDS_EX_PANES, view_panes_big, ARRAY_SIZE(view_panes_big), NULL, 0 },
     { IDS_EX_LAYOUT, view_layout_big, ARRAY_SIZE(view_layout_big), view_layout_small, ARRAY_SIZE(view_layout_small) },
     { IDS_EX_CURRENT_VIEW, view_sort_big, ARRAY_SIZE(view_sort_big), NULL, 0 },
     { IDS_EX_OPTIONS, view_opt_big, ARRAY_SIZE(view_opt_big), NULL, 0 },
@@ -1430,6 +1552,368 @@ static void paint_bottom( struct chrome *c )
 }
 
 /**********************************************************************
+ *          The Control Panel's items where the tree was, as Windows 11's
+ *          side shows its settings: they stay there on every page of it
+ */
+
+static LPCITEMIDLIST controls_pidl(void)
+{
+    static LPITEMIDLIST controls;
+
+    if (!controls) SHGetSpecialFolderLocation( NULL, CSIDL_CONTROLS, &controls );
+    return controls;
+}
+
+static BOOL is_controls( LPCITEMIDLIST pidl )
+{
+    LPCITEMIDLIST controls = controls_pidl();
+
+    return controls && pidl && (ILIsEqual( controls, pidl ) || ILIsParent( controls, pidl, FALSE ));
+}
+
+static int __cdecl compare_side( const void *a, const void *b )
+{
+    const struct side_item *x = a, *y = b;
+
+    return CompareStringW( LOCALE_USER_DEFAULT, NORM_IGNORECASE, x->name, -1, y->name, -1 ) - CSTR_EQUAL;
+}
+
+static void side_add( struct chrome *c, LPITEMIDLIST pidl, int *capacity )
+{
+    struct side_item *item;
+    SHFILEINFOW info;
+
+    if (!pidl) return;
+    memset( &info, 0, sizeof(info) );
+    info.dwAttributes = SFGAO_FOLDER;
+    if (!SHGetFileInfoW( (const WCHAR *)pidl, 0, &info, sizeof(info),
+                         SHGFI_PIDL | SHGFI_DISPLAYNAME | SHGFI_ICON | SHGFI_LARGEICON | SHGFI_ATTRIBUTES | SHGFI_ATTR_SPECIFIED ) ||
+        !info.szDisplayName[0])
+    {
+        if (info.hIcon) DestroyIcon( info.hIcon );
+        ILFree( pidl );
+        return;
+    }
+    if (c->side_count == *capacity)
+    {
+        struct side_item *grown = realloc( c->side_items, (*capacity = max( 32, *capacity * 2 )) * sizeof(*grown) );
+
+        if (!grown)
+        {
+            if (info.hIcon) DestroyIcon( info.hIcon );
+            ILFree( pidl );
+            return;
+        }
+        c->side_items = grown;
+    }
+    item = &c->side_items[c->side_count++];
+    item->pidl = pidl;
+    lstrcpynW( item->name, info.szDisplayName, ARRAY_SIZE(item->name) );
+    item->folder = (info.dwAttributes & SFGAO_FOLDER) != 0;
+    item->icon = NULL;
+    if (info.hIcon)
+    {
+        item->icon = icon_bitmap( info.hIcon, px( 32 ) );
+        DestroyIcon( info.hIcon );
+    }
+}
+
+/* the Control Panel itself first, then its items by name */
+static void side_load( struct chrome *c )
+{
+    LPCITEMIDLIST controls = controls_pidl();
+    IShellFolder *desktop, *folder;
+    LPITEMIDLIST child;
+    IEnumIDList *list;
+    int capacity = 0;
+
+    if (c->side_items || !controls) return;
+    side_add( c, ILClone( controls ), &capacity );
+    if (FAILED(SHGetDesktopFolder( &desktop ))) return;
+    if (SUCCEEDED(IShellFolder_BindToObject( desktop, controls, NULL, &IID_IShellFolder, (void **)&folder )))
+    {
+        if (IShellFolder_EnumObjects( folder, c->browser, SHCONTF_FOLDERS | SHCONTF_NONFOLDERS, &list ) == S_OK)
+        {
+            while (IEnumIDList_Next( list, 1, &child, NULL ) == S_OK)
+            {
+                side_add( c, ILCombine( controls, child ), &capacity );
+                ILFree( child );
+            }
+            IEnumIDList_Release( list );
+        }
+        IShellFolder_Release( folder );
+    }
+    IShellFolder_Release( desktop );
+    if (c->side_count > 1) qsort( c->side_items + 1, c->side_count - 1, sizeof(*c->side_items), compare_side );
+}
+
+static void side_free( struct chrome *c )
+{
+    for (int i = 0; i < c->side_count; i++)
+    {
+        ILFree( c->side_items[i].pidl );
+        if (c->side_items[i].icon) DeleteObject( c->side_items[i].icon );
+    }
+    free( c->side_items );
+    c->side_items = NULL;
+    c->side_count = 0;
+}
+
+/* the item the window is in, or one of whose pages */
+static void side_select( struct chrome *c, LPCITEMIDLIST pidl )
+{
+    c->side_selected = -1;
+    for (int i = 1; i < c->side_count && c->side_selected < 0; i++)
+        if (ILIsEqual( c->side_items[i].pidl, pidl ) || ILIsParent( c->side_items[i].pidl, pidl, FALSE ))
+            c->side_selected = i;
+    if (c->side_selected < 0 && c->side_count) c->side_selected = 0;
+}
+
+/* The list's width, dragged by its edge, is kept for every window
+ * (HKCU\Software\Arctic\Explorer, ControlPanelPaneWidth, at 96 DPI) */
+#define SPLIT_W px( 5 )
+
+static int side_width_saved(void)
+{
+    DWORD value = 0, size = sizeof(value);
+
+    if (RegGetValueW( HKEY_CURRENT_USER, L"Software\\Arctic\\Explorer", L"ControlPanelPaneWidth", RRF_RT_REG_DWORD,
+                      NULL, &value, &size ) || value < 120 || value > 2000)
+        value = 240;
+    return px( value );
+}
+
+static void side_width_save( int width )
+{
+    DWORD value = MulDiv( width, 96, GetDpiForSystem() );
+
+    RegSetKeyValueW( HKEY_CURRENT_USER, L"Software\\Arctic\\Explorer", L"ControlPanelPaneWidth", REG_DWORD,
+                     &value, sizeof(value) );
+}
+
+/* not narrower than its icons, and the folder keeps room of its own */
+static int side_width_fit( int width, int window_width )
+{
+    return max( px( 140 ), min( width, max( px( 140 ), window_width - px( 320 ) ) ) );
+}
+
+static int side_content( struct chrome *c )
+{
+    return px( 8 ) + c->side_count * SIDE_ROW;
+}
+
+static void side_scroll_to( struct chrome *c, int pos )
+{
+    RECT client;
+    SCROLLINFO info = { sizeof(info), SIF_ALL };
+
+    GetClientRect( c->side, &client );
+    c->side_scroll = max( 0, min( pos, side_content( c ) - client.bottom ) );
+    info.nMin = 0;
+    info.nMax = side_content( c ) - 1;
+    info.nPage = client.bottom;
+    info.nPos = c->side_scroll;
+    SetScrollInfo( c->side, SB_VERT, &info, TRUE );
+    InvalidateRect( c->side, NULL, FALSE );
+}
+
+static int side_at( struct chrome *c, int y )
+{
+    int index = (y + c->side_scroll - px( 4 )) / SIDE_ROW;
+
+    return y + c->side_scroll >= px( 4 ) && index < c->side_count ? index : -1;
+}
+
+static void side_open( struct chrome *c, int index )
+{
+    struct side_item *item;
+    SHELLEXECUTEINFOW info = { sizeof(info) };
+
+    if (index < 0 || index >= c->side_count) return;
+    item = &c->side_items[index];
+    if (!index || item->folder)
+    {
+        browse( c, item->pidl, FALSE );
+        return;
+    }
+    /* an applet: its window, as from the Control Panel's view */
+    info.fMask = SEE_MASK_INVOKEIDLIST | SEE_MASK_FLAG_NO_UI;
+    info.lpIDList = item->pidl;
+    info.hwnd = c->browser;
+    info.nShow = SW_SHOWNORMAL;
+    ShellExecuteExW( &info );
+}
+
+static void paint_side( struct chrome *c )
+{
+    struct colors col;
+    struct palette pal;
+    PAINTSTRUCT ps;
+    HBITMAP bitmap;
+    HGDIOBJ old;
+    RECT client;
+    HFONT font;
+    HDC mem;
+
+    get_colors( &col );
+    palette_init( &pal, !col.dark );
+    if (!(mem = paint_begin( c->side, &ps, &pal, &bitmap, &old ))) return;
+    GetClientRect( c->side, &client );
+    fill( mem, &client, GetSysColor( COLOR_WINDOW ) );
+    font = shell_font( px( 13 ), FW_NORMAL );
+    for (int i = 0; i < c->side_count; i++)
+    {
+        struct side_item *item = &c->side_items[i];
+        int y = px( 4 ) + i * SIDE_ROW - c->side_scroll;
+        RECT row = { px( 4 ), y + px( 2 ), client.right - px( 4 ), y + SIDE_ROW - px( 2 ) }, text;
+
+        if (row.bottom < 0 || row.top > client.bottom) continue;
+        if (i == c->side_selected)
+            fill_round_rect( mem, &row, (float)px( 4 ), col.dark ? RGB( 0x2d, 0x2d, 0x2d ) : RGB( 0xe6, 0xe6, 0xe6 ), 255 );
+        else if (i == c->side_hot)
+            fill_round_rect( mem, &row, (float)px( 4 ), col.dark ? RGB( 0x26, 0x26, 0x26 ) : RGB( 0xf0, 0xf0, 0xf0 ), 255 );
+        if (item->icon) draw_icon_bitmap( mem, item->icon, row.left + px( 8 ), (row.top + row.bottom - px( 32 )) / 2, px( 32 ) );
+        SetRect( &text, row.left + px( 50 ), row.top, row.right - px( 6 ), row.bottom );
+        paint_text( mem, item->name, &text, font, col.text, DT_LEFT );
+    }
+    make_opaque( mem, &client );
+    DeleteObject( font );
+    paint_end( c->side, &ps, mem, bitmap, old );
+}
+
+static LRESULT WINAPI side_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    struct chrome *c = (struct chrome *)GetWindowLongPtrW( hwnd, GWLP_USERDATA );
+
+    if (!c) return DefWindowProcW( hwnd, msg, wparam, lparam );
+    switch (msg)
+    {
+    case WM_MOUSEMOVE:
+    {
+        int hot = side_at( c, (short)HIWORD( lparam ) );
+
+        if (hot != c->side_hot)
+        {
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+
+            TrackMouseEvent( &tme );
+            c->side_hot = hot;
+            InvalidateRect( hwnd, NULL, FALSE );
+        }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        c->side_hot = -1;
+        InvalidateRect( hwnd, NULL, FALSE );
+        return 0;
+    case WM_LBUTTONUP:
+        side_open( c, side_at( c, (short)HIWORD( lparam ) ) );
+        return 0;
+    case WM_MOUSEWHEEL:
+        side_scroll_to( c, c->side_scroll - GET_WHEEL_DELTA_WPARAM( wparam ) * SIDE_ROW * 3 / WHEEL_DELTA );
+        return 0;
+    case WM_VSCROLL:
+    {
+        SCROLLINFO info = { sizeof(info), SIF_ALL };
+        RECT client;
+
+        GetScrollInfo( hwnd, SB_VERT, &info );
+        GetClientRect( hwnd, &client );
+        switch (LOWORD( wparam ))
+        {
+        case SB_LINEUP: side_scroll_to( c, c->side_scroll - SIDE_ROW ); break;
+        case SB_LINEDOWN: side_scroll_to( c, c->side_scroll + SIDE_ROW ); break;
+        case SB_PAGEUP: side_scroll_to( c, c->side_scroll - client.bottom ); break;
+        case SB_PAGEDOWN: side_scroll_to( c, c->side_scroll + client.bottom ); break;
+        case SB_THUMBTRACK: case SB_THUMBPOSITION: side_scroll_to( c, info.nTrackPos ); break;
+        case SB_TOP: side_scroll_to( c, 0 ); break;
+        case SB_BOTTOM: side_scroll_to( c, side_content( c ) ); break;
+        }
+        return 0;
+    }
+    case WM_SIZE:
+        side_scroll_to( c, c->side_scroll );
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        paint_side( c );
+        return 0;
+    }
+    return DefWindowProcW( hwnd, msg, wparam, lparam );
+}
+
+/* the edge between the list and the folder: dragged, the list's width */
+static LRESULT WINAPI split_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    struct chrome *c = (struct chrome *)GetWindowLongPtrW( hwnd, GWLP_USERDATA );
+
+    if (!c) return DefWindowProcW( hwnd, msg, wparam, lparam );
+    switch (msg)
+    {
+    case WM_LBUTTONDOWN:
+        c->split_grab = (short)LOWORD( lparam );
+        SetCapture( hwnd );
+        return 0;
+    case WM_MOUSEMOVE:
+        if (GetCapture() == hwnd)
+        {
+            POINT pt = { (short)LOWORD( lparam ), 0 };
+            RECT client;
+            int width;
+
+            MapWindowPoints( hwnd, c->browser, &pt, 1 );
+            GetClientRect( c->browser, &client );
+            width = side_width_fit( pt.x - c->split_grab, client.right );
+            if (width != c->side_width)
+            {
+                c->side_width = width;
+                SendMessageW( c->browser, WM_ARCTIC_RELAYOUT, 0, 0 );
+                UpdateWindow( c->browser );
+            }
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (GetCapture() == hwnd) ReleaseCapture();
+        return 0;
+    case WM_CAPTURECHANGED:
+        side_width_save( c->side_width );
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint( hwnd, &ps );
+        HBRUSH brush = CreateSolidBrush( GetSysColor( COLOR_WINDOW ) );
+
+        FillRect( hdc, &ps.rcPaint, brush );
+        DeleteObject( brush );
+        EndPaint( hwnd, &ps );
+        return 0;
+    }
+    }
+    return DefWindowProcW( hwnd, msg, wparam, lparam );
+}
+
+/* where the window went: the list comes or goes with the Control Panel */
+static void side_navigated( struct chrome *c, LPCITEMIDLIST pidl )
+{
+    BOOL in = is_controls( pidl ) && !is_find_folder( pidl );
+
+    if (in && !c->side_width) c->side_width = side_width_saved();
+    c->in_controls = in;
+    if (in)
+    {
+        side_load( c );
+        side_select( c, pidl );
+        if (c->side) InvalidateRect( c->side, NULL, FALSE );
+    }
+    /* browseui lays the view out anew, and asks ArcticExplorerLayout */
+    if ((in && nav_pane_wanted()) != c->side_shown) SendMessageW( c->browser, WM_ARCTIC_RELAYOUT, 0, 0 );
+}
+
+/**********************************************************************
  *          The windows
  */
 
@@ -1458,8 +1942,13 @@ static void activate_zone( struct chrome *c, const struct zone *z )
     case Z_BACK: go_back( c ); break;
     case Z_FORWARD: go_forward( c ); break;
     case Z_UP: if (c->segment_count > 1) browse( c, c->segment[c->segment_count - 2], FALSE ); else command( c, IDM_GOTO_UPONELEVEL ); break;
-    case Z_REFRESH: command( c, CMD_REFRESH ); break;
-    case Z_SEGMENT: if (index < c->segment_count - 1) browse( c, c->segment[index], FALSE ); else edit_start( c, &c->zones[0].rect ); break;
+    case Z_REFRESH: if (c->edit) edit_finish( c, TRUE ); else command( c, CMD_REFRESH ); break;
+    case Z_SEGMENT:
+        if (index < c->segment_count - 1) browse( c, c->segment[index], FALSE );
+        else
+            for (int i = 0; i < c->zone_count; i++)
+                if (c->zones[i].kind == Z_ADDRESS) { r = c->zones[i].rect; edit_start( c, &r ); break; }
+        break;
     case Z_ADDRESS: edit_start( c, &r ); break;
     case Z_SEARCH: search_start( c, &r ); break;
     case Z_COMMAND: if (index == CMD_SORT_MENU) sort_menu( c, &r ); else run_command( c, index ); break;
@@ -1650,6 +2139,16 @@ static DWORD caption_value( const WCHAR *name, DWORD def, BOOL *found )
     return ok ? value : def;
 }
 
+/* how far below the window's top its client area begins */
+static int client_top( struct chrome *c )
+{
+    POINT origin = { 0, 0 };
+    RECT window;
+
+    if (!GetWindowRect( c->browser, &window ) || !ClientToScreen( c->browser, &origin )) return 0;
+    return max( 0, origin.y - window.top );
+}
+
 static void set_caption_backdrop( struct chrome *c )
 {
     struct arctic_caption cap = { 0 };
@@ -1663,9 +2162,12 @@ static void set_caption_backdrop( struct chrome *c )
     if (!has_color) color = col.dark ? RGB( 0x20, 0x20, 0x20 ) : RGB( 0xf3, 0xf3, 0xf3 );
     alpha = effect == ARCTIC_ACCENT_ENABLE_GRADIENT ? 255 : min( caption_value( L"Opacity", 75, NULL ), 100 ) * 255 / 100;
     c->backdrop = effect != 0;
+    c->caption_top = client_top( c );
     if (c->backdrop)
     {
-        cap.height = TAB_H;
+        /* dwm counts the rows from the window's top: a maximized window's
+         * frame reaches past the screen, above the tabs */
+        cap.height = TAB_H + c->caption_top;
         cap.accent = effect;
         cap.color = (alpha << 24) | (GetBValue( color ) << 16) | (GetGValue( color ) << 8) | GetRValue( color );
         cap.blur = max( 1, min( caption_value( L"Blur", 60, NULL ), 100 ) );
@@ -1737,6 +2239,29 @@ static LRESULT CALLBACK browser_subclass( HWND hwnd, UINT msg, WPARAM wparam, LP
         }
         break;
 
+    case WM_GETMINMAXINFO:
+        /* Without a caption of its own a window is maximized over the whole
+         * monitor, as a popup is: the taskbar went under it. Windows 11's
+         * File Explorer stops at the work area, its frame off the edges as
+         * a captioned window's. */
+        if (c->style == EXPLORER_WIN11)
+        {
+            MINMAXINFO *info = (MINMAXINFO *)lparam;
+            MONITORINFO monitor = { sizeof(monitor) };
+            LRESULT result = DefSubclassProc( hwnd, msg, wparam, lparam );
+            int bx = max( 0, -info->ptMaxPosition.x ), by = max( 0, -info->ptMaxPosition.y );
+
+            if (GetMonitorInfoW( MonitorFromWindow( hwnd, MONITOR_DEFAULTTONEAREST ), &monitor ))
+            {
+                info->ptMaxPosition.x = monitor.rcWork.left - monitor.rcMonitor.left - bx;
+                info->ptMaxPosition.y = monitor.rcWork.top - monitor.rcMonitor.top - by;
+                info->ptMaxSize.x = monitor.rcWork.right - monitor.rcWork.left + 2 * bx;
+                info->ptMaxSize.y = monitor.rcWork.bottom - monitor.rcWork.top + 2 * by;
+            }
+            return result;
+        }
+        break;
+
     case WM_NCPAINT:
         if (c->style == EXPLORER_WIN11)
         {
@@ -1798,8 +2323,13 @@ static LRESULT CALLBACK browser_subclass( HWND hwnd, UINT msg, WPARAM wparam, LP
         InvalidateRect( c->top, NULL, FALSE );
         break;
 
-    case WM_ACTIVATE:
     case WM_SIZE:
+        /* maximized or back: the title bar's rows begin elsewhere */
+        if (c->style == EXPLORER_WIN11 && client_top( c ) != c->caption_top) set_caption_backdrop( c );
+        InvalidateRect( c->top, NULL, FALSE );
+        break;
+
+    case WM_ACTIVATE:
         InvalidateRect( c->top, NULL, FALSE );
         break;
 
@@ -1808,6 +2338,8 @@ static LRESULT CALLBACK browser_subclass( HWND hwnd, UINT msg, WPARAM wparam, LP
         if (c->hook) UnhookWindowsHookEx( c->hook );
         RemoveWindowSubclass( hwnd, browser_subclass, id );
         RemovePropW( hwnd, L"ArcticExplorerChrome" );
+        RemovePropW( hwnd, L"ArcticExplorerSide" );
+        side_free( c );
         for (int i = 0; i < c->tab_count; i++) tab_clear( &c->tabs[i] );
         for (int i = 0; i < c->segment_count; i++) ILFree( c->segment[i] );
         free( c );
@@ -1821,6 +2353,21 @@ static LRESULT CALLBACK key_hook( int code, WPARAM wparam, LPARAM lparam )
 {
     MSG *m = (MSG *)lparam;
 
+    /* the wheel turns what is under the pointer, as in Windows 10: the
+     * Control Panel's list, though the focus is in the folder's view */
+    if (code == HC_ACTION && wparam == PM_REMOVE && m->message == WM_MOUSEWHEEL)
+    {
+        POINT pt = { (short)LOWORD( m->lParam ), (short)HIWORD( m->lParam ) };
+        HWND under = WindowFromPoint( pt ), root = under ? GetAncestor( under, GA_ROOT ) : NULL;
+        struct chrome *c = root ? (struct chrome *)GetPropW( root, L"ArcticExplorerChrome" ) : NULL;
+
+        if (c && c->side && under == c->side && m->hwnd != c->side)
+        {
+            SendMessageW( c->side, WM_MOUSEWHEEL, m->wParam, m->lParam );
+            m->message = WM_NULL;
+        }
+        return CallNextHookEx( NULL, code, wparam, lparam );
+    }
     if (code == HC_ACTION && wparam == PM_REMOVE && m->message == WM_KEYDOWN)
     {
         HWND root = GetAncestor( m->hwnd, GA_ROOT );
@@ -1865,12 +2412,20 @@ HWND WINAPI ArcticExplorerAttach( HWND browser, int style )
         cls.lpfnWndProc = bottom_proc;
         cls.lpszClassName = L"ArcticExplorerBottom";
         RegisterClassW( &cls );
+        cls.lpfnWndProc = side_proc;
+        cls.lpszClassName = L"ArcticExplorerSide";
+        RegisterClassW( &cls );
+        cls.hCursor = LoadCursorW( NULL, (const WCHAR *)IDC_SIZEWE );
+        cls.lpfnWndProc = split_proc;
+        cls.lpszClassName = L"ArcticExplorerSplit";
+        RegisterClassW( &cls );
         registered = TRUE;
     }
     if (!(c = calloc( 1, sizeof(*c) ))) return NULL;
     c->browser = browser;
     c->style = style;
     c->low_hot = -1;
+    c->side_hot = c->side_selected = -1;
     c->top = CreateWindowExW( 0, L"ArcticExplorerTop", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN, 0, 0, 0, 0, browser, NULL,
                               startui_instance, NULL );
     if (style == EXPLORER_WIN11)
@@ -1897,13 +2452,15 @@ HWND WINAPI ArcticExplorerAttach( HWND browser, int style )
     return c->top;
 }
 
-/* the client area is this large: where the rows go, and what they take of it */
-void WINAPI ArcticExplorerLayout( HWND top, int width, int height, int *cy_top, int *cy_bottom )
+/* the client area is this large: where the rows go, and what they take of
+ * it; in the Control Panel its list at the left, where the tree was */
+void WINAPI ArcticExplorerLayout( HWND top, int width, int height, int *cy_top, int *cy_bottom, int *cx_left )
 {
     struct chrome *c = (struct chrome *)GetWindowLongPtrW( top, GWLP_USERDATA );
+    BOOL shown;
     int high;
 
-    *cy_top = *cy_bottom = 0;
+    *cy_top = *cy_bottom = *cx_left = 0;
     if (!c) return;
     high = c->style == EXPLORER_WIN11 ? TAB_H + NAV_H + CMD_H + 1 : RIBTAB_H + RIBBON_H + ADDR_H;
     /* over the side panel, whose own margin at the top goes under it */
@@ -1913,6 +2470,42 @@ void WINAPI ArcticExplorerLayout( HWND top, int width, int height, int *cy_top, 
     {
         SetWindowPos( c->bottom, NULL, 0, height - STATUS_H, width, STATUS_H, SWP_NOZORDER | SWP_NOACTIVATE );
         *cy_bottom = STATUS_H;
+    }
+
+    shown = c->in_controls && nav_pane_wanted() && c->side_count;
+    if (shown && !c->side)
+    {
+        c->side = CreateWindowExW( 0, L"ArcticExplorerSide", L"", WS_CHILD | WS_CLIPSIBLINGS | WS_VSCROLL, 0, 0, 0, 0,
+                                   c->browser, NULL, startui_instance, NULL );
+        c->split = CreateWindowExW( 0, L"ArcticExplorerSplit", L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0,
+                                    c->browser, NULL, startui_instance, NULL );
+        if (c->side) SetWindowLongPtrW( c->side, GWLP_USERDATA, (LONG_PTR)c );
+        if (c->split) SetWindowLongPtrW( c->split, GWLP_USERDATA, (LONG_PTR)c );
+        if (!c->side) shown = FALSE;
+    }
+    if (shown)
+    {
+        int cx = side_width_fit( c->side_width ? c->side_width : side_width_saved(), width ), cy = max( 0, height - high - *cy_bottom );
+
+        SetWindowPos( c->side, HWND_TOP, 0, high, cx, cy, SWP_SHOWWINDOW | SWP_NOACTIVATE );
+        *cx_left = cx;
+        if (c->split)
+        {
+            SetWindowPos( c->split, HWND_TOP, cx, high, SPLIT_W, cy, SWP_SHOWWINDOW | SWP_NOACTIVATE );
+            *cx_left = cx + SPLIT_W;
+        }
+    }
+    else
+    {
+        if (c->side) ShowWindow( c->side, SW_HIDE );
+        if (c->split) ShowWindow( c->split, SW_HIDE );
+    }
+    if (shown != c->side_shown)
+    {
+        /* the Control Panel's pages put their task links on the right then */
+        c->side_shown = shown;
+        if (shown) SetPropW( c->browser, L"ArcticExplorerSide", (HANDLE)1 );
+        else RemovePropW( c->browser, L"ArcticExplorerSide" );
     }
 }
 
@@ -1942,5 +2535,6 @@ void WINAPI ArcticExplorerNavigated( HWND top, LPCITEMIDLIST pidl )
     t->pidl = ILClone( pidl );
     tab_describe( t, pidl );
     build_segments( c, pidl );
+    side_navigated( c, pidl );
     redraw( c );
 }

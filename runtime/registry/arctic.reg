@@ -140,6 +140,16 @@ REGEDIT4
 "Source Sans Pro Semibold Italic (TrueType)"="SourceSansPro-SemiboldIt.ttf"
 "Source Sans Pro Bold (TrueType)"="SourceSansPro-Bold.ttf"
 "Source Sans Pro Bold Italic (TrueType)"="SourceSansPro-BoldIt.ttf"
+; Inter, the interface font of the Windows 11 style, and Quicksand of the
+; desktop clock: GDI found them in the folder, DirectWrite only knows what is
+; registered here, and Chrome, which asks it for the system font, drew Tahoma
+"Inter (TrueType)"="Inter-Regular.ttf"
+"Inter Italic (TrueType)"="Inter-Italic.ttf"
+"Inter Bold (TrueType)"="Inter-Bold.ttf"
+"Inter Bold Italic (TrueType)"="Inter-BoldItalic.ttf"
+"Inter Light (TrueType)"="Inter-Light.ttf"
+"Inter SemiBold (TrueType)"="Inter-SemiBold.ttf"
+"Quicksand Bold (OpenType)"="Quicksand-Bold.otf"
 ; Arial, Times New Roman and Courier New, made from Liberation (ci/windows-fonts.py)
 "Arial (TrueType)"="arial.ttf"
 "Arial Bold (TrueType)"="arialbd.ttf"

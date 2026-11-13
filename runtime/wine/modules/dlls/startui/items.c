@@ -71,6 +71,8 @@ static const struct builtin applets[] =
 
 static struct item builtin_items[ARRAY_SIZE(builtins)], applet_items[ARRAY_SIZE(applets)];
 static UINT builtin_count, applet_count;
+static struct item external_items[32];     /* pinned files of no Programs folder */
+static UINT external_count;
 static struct item *root;              /* All programs */
 static UINT root_count;
 static struct item results_programs, results_settings, results_files;
@@ -87,7 +89,7 @@ static void free_items( struct item *items, UINT count )
         if (items[i].icon_other) DeleteObject( items[i].icon_other );
         if (items[i].children != builtin_items) free_items( items[i].children, items[i].child_count );
     }
-    if (items != builtin_items && items != applet_items) free( items );
+    if (items != builtin_items && items != applet_items && items != external_items) free( items );
 }
 
 static void make_key( struct item *item )
@@ -271,6 +273,8 @@ void items_reload(void)
     if (root) free_items( root, root_count );
     root = NULL;
     root_count = 0;
+    free_items( external_items, external_count );
+    external_count = 0;
     load_builtins();
 
     SHGetFolderPathW( NULL, CSIDL_COMMON_PROGRAMS, NULL, SHGFP_TYPE_CURRENT, common );
@@ -310,6 +314,7 @@ done:
     memset( &results_files, 0, sizeof(results_files) );
     results_files.kind = ITEM_HEADER;
     lstrcpynW( results_files.name, load_string( IDS_RESULTS_FILES ), ARRAY_SIZE(results_files.name) );
+    items_sync_classic();
 }
 
 /**********************************************************************
@@ -344,13 +349,93 @@ static struct item *find_in( struct item *items, UINT count, const WCHAR *key, B
     return NULL;
 }
 
+/* a pinned file of no Programs folder: a shortcut of User Pinned\StartMenu,
+ * or one in the Start Menu folder itself (the classic menu's top) */
+static struct item *external_item( const WCHAR *key )
+{
+    WIN32_FIND_DATAW data;
+    struct item *item;
+    HANDLE find;
+    WCHAR *slash;
+
+    for (UINT i = 0; i < external_count; i++)
+        if (!wcscmp( external_items[i].key, key )) return &external_items[i];
+    if (external_count == ARRAY_SIZE(external_items) || !key[0] || key[1] != ':' || key[2] != '\\') return NULL;
+    if ((find = FindFirstFileW( key, &data )) == INVALID_HANDLE_VALUE) return NULL;
+    FindClose( find );
+    item = &external_items[external_count++];
+    memset( item, 0, sizeof(*item) );
+    item->kind = ITEM_PROGRAM;
+    lstrcpynW( item->key, key, ARRAY_SIZE(item->key) );
+    /* the folder as the key has it, the file's name as it is written */
+    lstrcpynW( item->path, key, ARRAY_SIZE(item->path) );
+    if ((slash = wcsrchr( item->path, '\\' ))) lstrcpynW( slash + 1, data.cFileName, MAX_PATH - (slash + 1 - item->path) );
+    lstrcpynW( item->name, data.cFileName, ARRAY_SIZE(item->name) );
+    if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcsrchr( item->name, '.' )) *wcsrchr( item->name, '.' ) = 0;
+    item->added = data.ftCreationTime;
+    return item;
+}
+
 static struct item *find_item( const WCHAR *key )
 {
     struct item *item;
 
     if ((item = find_in( builtin_items, builtin_count, key, FALSE ))) return item;
     if ((item = find_in( applet_items, applet_count, key, FALSE ))) return item;
-    return find_in( root, root_count, key, TRUE );
+    if ((item = find_in( root, root_count, key, TRUE ))) return item;
+    return external_item( key );
+}
+
+/* what an item starts: its shortcut's program, or its own file */
+static BOOL item_program( struct item *item, WCHAR *program, int size )
+{
+    program[0] = 0;
+    if (item->kind != ITEM_PROGRAM) return FALSE;
+    if (!wcsicmp( path_extension( item->path ), L".lnk" )) return link_target( item->path, program, size );
+    if (item->args[0]) return FALSE;    /* control.exe of an applet is not the applet */
+    lstrcpynW( program, item->path, size );
+    return TRUE;
+}
+
+static struct item *find_program_in( struct item *items, UINT count, const WCHAR *program )
+{
+    WCHAR target[MAX_PATH];
+
+    for (UINT i = 0; i < count; i++)
+    {
+        struct item *found;
+
+        if (items[i].kind == ITEM_FOLDER)
+        {
+            load_children( &items[i] );
+            if ((found = find_program_in( items[i].children, items[i].child_count, program ))) return found;
+        }
+        else if (item_program( &items[i], target, ARRAY_SIZE(target) ) && !wcsicmp( target, program )) return &items[i];
+    }
+    return NULL;
+}
+
+/* the menu's program that starts this one, a shortcut of All programs first */
+static struct item *find_program( const WCHAR *program )
+{
+    struct item *item;
+
+    if (!program[0]) return NULL;
+    if (!root) items_reload();
+    if ((item = find_program_in( root, root_count, program ))) return item;
+    return find_program_in( builtin_items, builtin_count, program );
+}
+
+/* the shortcut All programs has of a program: what the taskbar copies */
+BOOL items_shortcut_of( const WCHAR *program, WCHAR *link )
+{
+    struct item *item;
+
+    if (!root) items_reload();
+    if (!(item = find_program_in( root, root_count, program ))) return FALSE;
+    if (wcsicmp( path_extension( item->path ), L".lnk" )) return FALSE;
+    lstrcpynW( link, item->path, MAX_PATH );
+    return TRUE;
 }
 
 /* a REG_MULTI_SZ of keys, or NULL */
@@ -425,18 +510,23 @@ static void multi_change( const WCHAR *name, const WCHAR *change, BOOL add )
  * browser, and Windows' tools the reference menu shows */
 static WCHAR *default_pins(void)
 {
-    const WCHAR *keys[] = { L"builtin:explorer.exe", NULL, L"builtin:notepad.exe", L"builtin:pwsh.exe",
+    const WCHAR *keys[] = { L"builtin:explorer.exe", NULL, NULL, L"builtin:notepad.exe", L"builtin:pwsh.exe",
                                    L"builtin:snippingtool.exe" };
-    WCHAR chrome[MAX_PATH] = L"", *data, *p;
+    WCHAR chrome[MAX_PATH] = L"", wordpad[MAX_PATH] = L"", *data, *p;
     DWORD chars = 1;
 
     if (!SHGetFolderPathW( NULL, CSIDL_COMMON_PROGRAMS, NULL, SHGFP_TYPE_CURRENT, chrome ))
     {
+        lstrcpyW( wordpad, chrome );
         lstrcatW( chrome, L"\\Google Chrome.lnk" );
         CharLowerW( chrome );
         if (GetFileAttributesW( chrome ) != INVALID_FILE_ATTRIBUTES) keys[1] = chrome;
+        /* Arctic WordPad, the word processor of Word's documents */
+        lstrcatW( wordpad, L"\\Arctic WordPad.lnk" );
+        CharLowerW( wordpad );
+        if (GetFileAttributesW( wordpad ) != INVALID_FILE_ATTRIBUTES) keys[2] = wordpad;
     }
-    if (!find_item( L"builtin:pwsh.exe" )) keys[3] = L"builtin:cmd.exe";
+    if (!find_item( L"builtin:pwsh.exe" )) keys[4] = L"builtin:cmd.exe";
     for (UINT i = 0; i < ARRAY_SIZE(keys); i++) if (keys[i]) chars += lstrlenW( keys[i] ) + 1;
     if (!(p = data = calloc( chars, sizeof(WCHAR) ))) return NULL;
     for (UINT i = 0; i < ARRAY_SIZE(keys); i++)
@@ -491,6 +581,215 @@ void items_pin( struct item *item, BOOL pin )
     }
     free( pins );
     multi_change( L"Pinned", item->key, pin );
+    items_sync_classic();
+}
+
+/* the list of pins written out, so that it can change */
+static void pins_materialize(void)
+{
+    BOOL present;
+    WCHAR *pins = read_multi( L"Pinned", &present );
+
+    if (!present && (pins = default_pins()))
+    {
+        DWORD chars = 1;
+        for (const WCHAR *p = pins; *p; p += lstrlenW( p ) + 1) chars += lstrlenW( p ) + 1;
+        write_multi( L"Pinned", pins, chars );
+    }
+    free( pins );
+}
+
+/* a file dropped on a Start menu or the Start button: the menu's program
+ * when it is one, by its shortcut or by what that starts; else a shortcut of
+ * its own in User Pinned\StartMenu, which stays when the original goes */
+BOOL items_pin_file( const WCHAR *path )
+{
+    WCHAR key[MAX_PATH], program[MAX_PATH] = L"", folder[MAX_PATH], dest[MAX_PATH], name[MAX_PATH], *dot;
+    const WCHAR *ext = path_extension( path );
+    struct item *item;
+    BOOL ok;
+
+    if (!root) items_reload();
+    lstrcpynW( key, path, ARRAY_SIZE(key) );
+    CharLowerW( key );
+    if (!(item = find_in( root, root_count, key, TRUE )))
+    {
+        if (!wcsicmp( ext, L".lnk" )) link_target( path, program, ARRAY_SIZE(program) );
+        else if (!wcsicmp( ext, L".exe" )) lstrcpynW( program, path, ARRAY_SIZE(program) );
+        item = find_program( program );
+    }
+    if (!item)
+    {
+        if (!pinned_folder( L"StartMenu", folder )) return FALSE;
+        if (!wcsicmp( ext, L".exe" )) program_name( path, name, ARRAY_SIZE(name) );
+        else
+        {
+            lstrcpynW( name, wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path, ARRAY_SIZE(name) );
+            if ((dot = wcsrchr( name, '.' )) && !(GetFileAttributesW( path ) & FILE_ATTRIBUTE_DIRECTORY)) *dot = 0;
+        }
+        if (!wcsicmp( ext, L".lnk" ) || !wcsicmp( ext, L".url" ))
+        {
+            free_name( folder, name, ext, dest );
+            ok = CopyFileW( path, dest, TRUE );
+        }
+        else
+        {
+            /* a program, a folder: a shortcut to it */
+            free_name( folder, name, L".lnk", dest );
+            ok = link_make( dest, path, NULL, NULL );
+        }
+        if (!ok) return FALSE;
+        CharLowerW( dest );
+        if (!(item = external_item( dest ))) return FALSE;
+    }
+    if (!items_is_pinned( item )) items_pin( item, TRUE );
+    return TRUE;
+}
+
+/* the taskbar's shortcut of an item's program, if it is pinned there */
+BOOL items_taskbar_pinned( struct item *item, WCHAR *link )
+{
+    WCHAR program[MAX_PATH];
+
+    return item_program( item, program, ARRAY_SIZE(program) ) && taskbar_pin_of( program, link );
+}
+
+void items_pin_taskbar( struct item *item, BOOL pin )
+{
+    WCHAR link[MAX_PATH];
+
+    if (!pin)
+    {
+        if (items_taskbar_pinned( item, link )) ArcticTaskbarUnpinFile( link );
+        return;
+    }
+    taskbar_pin_named( item->path, wcsicmp( path_extension( item->path ), L".lnk" ) ? item->name : NULL );
+}
+
+/* The classic menu (ReactOS's) shows what is in the Start Menu folder at its
+ * top, as Windows 2000 did: the same pins are kept there as shortcuts, both
+ * ways. ClassicCopies lists them, "file name|key" each: one gone from there
+ * was taken off the classic menu, one found there and not listed was put on
+ * it, a pin with none gets one. */
+#define CLASSIC_COPIES L"ClassicCopies"
+
+static BOOL copy_listed( const WCHAR *copies, const WCHAR *name, const WCHAR *key )
+{
+    for (const WCHAR *p = copies; p && *p; p += lstrlenW( p ) + 1)
+    {
+        const WCHAR *bar = wcschr( p, '|' );
+
+        if (!bar) continue;
+        if (name && (int)(bar - p) == lstrlenW( name ) && !wcsnicmp( p, name, bar - p )) return TRUE;
+        if (key && !wcscmp( bar + 1, key )) return TRUE;
+    }
+    return FALSE;
+}
+
+void items_sync_classic(void)
+{
+    static BOOL busy;
+    WCHAR menu[MAX_PATH], path[MAX_PATH], entry[2 * MAX_PATH + 2], pattern[MAX_PATH];
+    WCHAR *copies, *pins, *kept;
+    DWORD kept_size = 4096, used = 0;
+    WIN32_FIND_DATAW data;
+    HANDLE find;
+    BOOL present;
+
+    if (busy || FAILED(SHGetFolderPathW( NULL, CSIDL_STARTMENU, NULL, SHGFP_TYPE_CURRENT, menu ))) return;
+    if (!(kept = calloc( kept_size, sizeof(WCHAR) ))) return;
+    busy = TRUE;
+    copies = read_multi( CLASSIC_COPIES, &present );
+    pins = read_multi( L"Pinned", &present );
+    if (!present) pins = default_pins();
+
+#define KEEP( name, key ) \
+    do { \
+        swprintf( entry, ARRAY_SIZE(entry), L"%s|%s", (name), (key) ); \
+        if (used + lstrlenW( entry ) + 2 < kept_size) { lstrcpyW( kept + used, entry ); used += lstrlenW( entry ) + 1; } \
+    } while (0)
+
+    /* the copies made before */
+    for (const WCHAR *p = copies; p && *p; p += lstrlenW( p ) + 1)
+    {
+        const WCHAR *bar = wcschr( p, '|' );
+        WCHAR name[MAX_PATH];
+
+        if (!bar || bar - p >= MAX_PATH) continue;
+        lstrcpynW( name, p, bar - p + 1 );
+        swprintf( path, ARRAY_SIZE(path), L"%s\\%s", menu, name );
+        if (GetFileAttributesW( path ) == INVALID_FILE_ATTRIBUTES)
+        {
+            /* deleted from the classic menu: unpinned */
+            if (multi_has( pins, bar + 1 ))
+            {
+                pins_materialize();
+                multi_change( L"Pinned", bar + 1, FALSE );
+            }
+            continue;
+        }
+        if (!multi_has( pins, bar + 1 ))
+        {
+            /* unpinned from another menu */
+            DeleteFileW( path );
+            continue;
+        }
+        KEEP( name, bar + 1 );
+    }
+
+    /* put on the classic menu by hand: pinned */
+    swprintf( pattern, ARRAY_SIZE(pattern), L"%s\\*", menu );
+    if ((find = FindFirstFileW( pattern, &data )) != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            const WCHAR *ext = path_extension( data.cFileName );
+            WCHAR key[MAX_PATH];
+
+            if (data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) continue;
+            if (wcsicmp( ext, L".lnk" ) && wcsicmp( ext, L".url" ) && wcsicmp( ext, L".exe" )) continue;
+            if (copy_listed( kept, data.cFileName, NULL )) continue;
+            swprintf( key, ARRAY_SIZE(key), L"%s\\%s", menu, data.cFileName );
+            CharLowerW( key );
+            pins_materialize();
+            multi_change( L"Pinned", key, TRUE );
+            KEEP( data.cFileName, key );
+        } while (FindNextFileW( find, &data ));
+        FindClose( find );
+    }
+
+    /* the pins with no copy get one */
+    free( pins );
+    pins = read_multi( L"Pinned", &present );
+    if (!present) pins = default_pins();
+    for (const WCHAR *p = pins; p && *p; p += lstrlenW( p ) + 1)
+    {
+        struct item *item;
+        const WCHAR *ext;
+        BOOL ok;
+
+        if (copy_listed( kept, NULL, p ) || !(item = find_item( p ))) continue;
+        ext = path_extension( item->path );
+        if (!wcsicmp( ext, L".lnk" ) || !wcsicmp( ext, L".url" ))
+        {
+            free_name( menu, item->name, ext, path );
+            ok = CopyFileW( item->path, path, TRUE );
+        }
+        else
+        {
+            free_name( menu, item->name, L".lnk", path );
+            ok = link_make( path, item->path, item->args, item->icon_path );
+        }
+        if (ok) KEEP( wcsrchr( path, '\\' ) + 1, p );
+    }
+#undef KEEP
+
+    kept[used++] = 0;
+    write_multi( CLASSIC_COPIES, kept, used );
+    free( kept );
+    free( copies );
+    free( pins );
+    busy = FALSE;
 }
 
 /* taken out of the most used, until it is started again */

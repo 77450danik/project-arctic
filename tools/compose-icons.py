@@ -724,7 +724,7 @@ RECIPES = {
 NET_CONNECTION = PC2
 OTHERS = {
     # explorer.exe
-    "base/shell/explorer/res/ico/100.ico": FOLDER,                      # IDI_MAIN
+    # IDI_MAIN (100.ico), the program's own: Windows 11's look, tools/win11-app-icons
     "base/shell/explorer/res/ico/101.ico": FOLDER,                      # IDI_CABINET
     "base/shell/explorer/res/ico/102.ico": PRINTER,                     # IDI_PRINTER
     "base/shell/explorer/res/ico/103.ico": SCREEN,                      # IDI_DESKTOP

@@ -39,6 +39,7 @@
 #define NAV_BOTTOM_COLOR  (cp_dark() ? RGB( 0x20, 0x20, 0x20 ) : RGB( 0xf3, 0xf7, 0xfc ))
 
 #define TIMER_PAGE     1
+#define TIMER_REBUILD  2
 #define WM_APP_START_PAGE (WM_APP + 40)
 
 BOOL cp_start_page_take( UINT *page, DWORD *param );
@@ -47,7 +48,11 @@ BOOL cp_start_page_take( UINT *page, DWORD *param );
 #define IDS_CP_HOME     0xf000
 #define IDS_CP_SEE_ALSO 0xf001
 
-enum item_kind { ITEM_TEXT, ITEM_LINK, ITEM_SPACE, ITEM_GROUP, ITEM_CONTROL, ITEM_PAINT, ITEM_ROW_BEGIN, ITEM_ROW_END };
+enum item_kind { ITEM_TEXT, ITEM_LINK, ITEM_SPACE, ITEM_GROUP, ITEM_CONTROL, ITEM_PAINT, ITEM_ROW_BEGIN, ITEM_ROW_END,
+                 ITEM_HEADING, ITEM_SECTION, ITEM_CARD };
+
+/* a card's style: a row, or an area the page draws in and puts controls in */
+#define CARD_AREA 1
 
 struct item
 {
@@ -57,7 +62,10 @@ struct item
     BOOL single;             /* on a row: one line */
     BOOL right;              /* on the right edge */
     BOOL inside;             /* in the paint area before it, at x and height from its corner */
+    BOOL extra;              /* in the card before it, at its right, left of its controls */
+    int flow;                /* a card: its controls flow, this far apart */
     WCHAR *text;
+    WCHAR *sub;              /* a card's line under its title */
     HICON icon;
     link_proc proc;
     UINT_PTR param;
@@ -91,25 +99,30 @@ struct view
     struct nav_item nav[16];
     UINT nav_count;
     int scroll, content_height, hot, pressed, nav_hot;
+    int nav_x;                   /* where the task pane begins: on the right beside Explorer's own list */
+    HWND sheet, sheet_apply;     /* a property page of another module, and its Apply (view_sheet) */
+    BOOL sheet_changed;          /* it has changes not applied yet */
+    const NMHDR *notify;         /* the WM_NOTIFY the page is told of, while it is */
+    BOOL win11;                  /* drawn as Windows 11's Settings: cards on a grey page */
 };
+
+/* what the WM_NOTIFY given to the page's command carries (a list's column) */
+const NMHDR *view_notify( struct view *view )
+{
+    return view->notify;
+}
+
+/* File Explorer shows the Control Panel's items on the left (startui.dll):
+ * the task pane goes to the right then */
+static BOOL nav_on_right( struct view *view )
+{
+    HWND root = GetAncestor( view->hwnd, GA_ROOT );
+
+    return root && GetPropW( root, L"ArcticExplorerSide" ) != NULL;
+}
 
 static HFONT fonts[STYLE_COUNT];
 static HFONT font_link_hot;
-
-/* the page's colour, white or the dark mode's */
-static HBRUSH page_brush(void)
-{
-    static HBRUSH brush;
-    static COLORREF color;
-
-    if (!brush || color != COLOR_PAGE)
-    {
-        if (brush) DeleteObject( brush );
-        color = COLOR_PAGE;
-        brush = CreateSolidBrush( color );
-    }
-    return brush;
-}
 
 static inline struct view *impl_from_IShellView( IShellView *iface )
 {
@@ -256,7 +269,8 @@ int view_content_width( struct view *view )
     /* the scroll bar may come with the layout: room for it always */
     GetClientRect( view->content, &rect );
     if (!(GetWindowLongW( view->content, GWL_STYLE ) & WS_VSCROLL) || !rect.right) rect.right -= GetSystemMetrics( SM_CXVSCROLL );
-    return max( min( rect.right - 2 * CONTENT_PAD, CONTENT_MAX - 2 * CONTENT_PAD ), px( 200 ) );
+    /* Windows 11's cards stand wider */
+    return max( min( rect.right - 2 * CONTENT_PAD, (view->win11 ? px( 1000 ) : CONTENT_MAX) - 2 * CONTENT_PAD ), px( 200 ) );
 }
 
 /**********************************************************************
@@ -283,12 +297,19 @@ static struct item *add_item( struct view *view, enum item_kind kind )
 
 void view_clear( struct view *view )
 {
+    /* left with changes not applied: what Cancel of its dialog did (a
+     * preview of the taskbar's look goes back) */
+    if (view->sheet && view->sheet_changed) SendMessageW( view->sheet, PSM_PRESSBUTTON, PSBTN_CANCEL, 0 );
+    view->sheet = view->sheet_apply = NULL;
+    view->sheet_changed = FALSE;
     for (UINT i = 0; i < view->count; i++)
     {
         if (view->items[i].hwnd) DestroyWindow( view->items[i].hwnd );
         free( view->items[i].text );
+        free( view->items[i].sub );
     }
     view->count = 0;
+    view->win11 = FALSE;
     for (UINT i = 0; i < view->nav_count; i++) free( view->nav[i].text );
     view->nav_count = 0;
     view->hot = view->pressed = view->nav_hot = -1;
@@ -371,6 +392,765 @@ HWND view_control_beside( struct view *view, const WCHAR *cls, const WCHAR *text
 
     if (hwnd) view->items[view->count - 1].x = x;
     return hwnd;
+}
+
+/**********************************************************************
+ *          Windows 11's Settings: cards
+ *
+ * A page drawn as Windows 11's Settings: its title large, a heading over a
+ * few cards, each card a rounded row with a large icon (the module's own, so
+ * that the icon theme gives its picture: user32 takes it from the theme's
+ * folder), its name and a line under it, its control at its right edge; a
+ * card that goes to another page has a chevron instead and lights up under
+ * the pointer.
+ */
+
+static HFONT font_heading, font_section, font_card, font_card_sub, font_chevron;
+
+static void card_fonts(void)
+{
+    if (font_card) return;
+    font_heading = make_font( px( 28 ), FW_SEMIBOLD, FALSE );
+    font_section = make_font( px( 14 ), FW_SEMIBOLD, FALSE );
+    font_card = make_font( px( 14 ), FW_NORMAL, FALSE );
+    font_card_sub = make_font( px( 12 ), FW_NORMAL, FALSE );
+    font_chevron = make_font( px( 20 ), FW_NORMAL, FALSE );
+}
+
+static HBRUSH cached_brush( COLORREF color )
+{
+    static struct { COLORREF color; HBRUSH brush; } cache[8];
+    static int next;
+    HBRUSH brush;
+
+    for (int i = 0; i < ARRAY_SIZE(cache); i++)
+        if (cache[i].brush && cache[i].color == color) return cache[i].brush;
+    if (cache[next].brush) DeleteObject( cache[next].brush );
+    cache[next].color = color;
+    brush = cache[next].brush = CreateSolidBrush( color );
+    next = (next + 1) % ARRAY_SIZE(cache);
+    return brush;
+}
+
+static COLORREF back_color( struct view *view )
+{
+    return view && view->win11 ? COLOR_PAGE11 : COLOR_PAGE;
+}
+
+void view_heading( struct view *view, const WCHAR *text )
+{
+    struct item *item = add_item( view, ITEM_HEADING );
+
+    view->win11 = TRUE;
+    card_fonts();
+    if (item) item->text = wcsdup( text ? text : L"" );
+}
+
+void view_section( struct view *view, const WCHAR *text )
+{
+    struct item *item = add_item( view, ITEM_SECTION );
+
+    card_fonts();
+    if (item) item->text = wcsdup( text ? text : L"" );
+}
+
+static struct { UINT id; int size; HICON icon; } icon_cache[64];
+
+static BOOL icons_stale;
+
+/* the icons of the theme there was: those of the new one are loaded anew */
+static void icons_flush(void)
+{
+    for (int i = 0; i < ARRAY_SIZE(icon_cache); i++)
+    {
+        if (icon_cache[i].icon) DestroyIcon( icon_cache[i].icon );
+        icon_cache[i].icon = NULL;
+    }
+    icons_stale = FALSE;
+}
+
+HICON view_icon( UINT id )
+{
+    int size = px( 32 );
+    HICON icon;
+
+    for (int i = 0; i < ARRAY_SIZE(icon_cache); i++)
+        if (icon_cache[i].icon && icon_cache[i].id == id && icon_cache[i].size == size) return icon_cache[i].icon;
+    if (!(icon = LoadImageW( cp_instance, MAKEINTRESOURCEW( id ), IMAGE_ICON, size, size, LR_DEFAULTCOLOR ))) return NULL;
+    for (int i = 0; i < ARRAY_SIZE(icon_cache); i++)
+        if (!icon_cache[i].icon)
+        {
+            icon_cache[i].id = id;
+            icon_cache[i].size = size;
+            icon_cache[i].icon = icon;
+            break;
+        }
+    return icon;
+}
+
+static struct item *add_card( struct view *view, HICON icon, const WCHAR *title, const WCHAR *text )
+{
+    struct item *item = add_item( view, ITEM_CARD );
+
+    card_fonts();
+    if (!item) return NULL;
+    item->icon = icon;
+    item->text = wcsdup( title ? title : L"" );
+    item->sub = text && text[0] ? wcsdup( text ) : NULL;
+    return item;
+}
+
+HWND view_card( struct view *view, HICON icon, const WCHAR *title, const WCHAR *text, const WCHAR *cls,
+                const WCHAR *control_text, DWORD style, int width, int height, UINT id )
+{
+    struct item *item = add_card( view, icon, title, text );
+    HWND hwnd;
+
+    if (!item) return NULL;
+    if (!cls) return NULL;
+    hwnd = CreateWindowExW( 0, cls, control_text ? control_text : L"", WS_CHILD | WS_VISIBLE | style, 0, 0, width, height,
+                            view->content, (HMENU)(UINT_PTR)id, cp_instance, NULL );
+    SendMessageW( hwnd, WM_SETFONT, (WPARAM)view_font( STYLE_BODY ), FALSE );
+    item->hwnd = hwnd;
+    item->width = width;
+    item->height = height;
+    item->line = !wcsicmp( cls, WC_COMBOBOXW ) ? px( 23 ) : height;
+    return hwnd;
+}
+
+void view_card_link( struct view *view, HICON icon, const WCHAR *title, const WCHAR *text, link_proc proc, UINT_PTR param )
+{
+    struct item *item = add_card( view, icon, title, text );
+
+    if (!item) return;
+    item->proc = proc;
+    item->param = param;
+}
+
+void view_card_area( struct view *view, int height, paint_proc proc, UINT_PTR param )
+{
+    struct item *item = add_card( view, NULL, L"", NULL );
+
+    if (!item) return;
+    item->style = CARD_AREA;
+    item->paint = proc;
+    item->param = param;
+    item->height = height;
+}
+
+static void tile_register(void);
+
+/* a control laid out inside the last card area, at x, y from its inner corner */
+HWND view_card_control( struct view *view, const WCHAR *cls, const WCHAR *text, DWORD style, int x, int y, int width,
+                        int height, UINT id )
+{
+    struct item *item;
+    HWND hwnd;
+
+    /* a tile may be the first of the page */
+    if (!wcsicmp( cls, L"ArcticTile" )) tile_register();
+    if (!(item = add_item( view, ITEM_CONTROL ))) return NULL;
+    hwnd = CreateWindowExW( 0, cls, text ? text : L"", WS_CHILD | WS_VISIBLE | style, 0, 0, width, height, view->content,
+                            (HMENU)(UINT_PTR)id, cp_instance, NULL );
+    SendMessageW( hwnd, WM_SETFONT, (WPARAM)view_font( STYLE_BODY ), FALSE );
+    item->hwnd = hwnd;
+    item->width = width;
+    item->height = item->line = height;
+    item->inside = TRUE;
+    item->x = x;
+    item->indent = y;
+    return hwnd;
+}
+
+static struct item *last_card( struct view *view )
+{
+    for (UINT i = view->count; i > 0; i--)
+        if (view->items[i - 1].kind == ITEM_CARD) return &view->items[i - 1];
+    return NULL;
+}
+
+HWND view_card_extra( struct view *view, const WCHAR *cls, const WCHAR *text, DWORD style, int width, int height,
+                      UINT id )
+{
+    struct item *card = last_card( view );
+    HWND hwnd = card ? view_card_control( view, cls, text, style, 0, 0, width, height, id ) : NULL;
+
+    if (!hwnd) return NULL;
+    view->items[view->count - 1].extra = TRUE;
+    view->items[view->count - 1].line = !wcsicmp( cls, WC_COMBOBOXW ) ? px( 23 ) : height;
+    /* the card's words end before it (paint_card) */
+    card = last_card( view );
+    card->x += width + px( 8 );
+    return hwnd;
+}
+
+void view_card_flow( struct view *view, int gap )
+{
+    struct item *item = add_card( view, NULL, L"", NULL );
+
+    if (item) item->flow = max( gap, 1 );
+}
+
+HBRUSH view_brush( COLORREF color )
+{
+    return cached_brush( color );
+}
+
+COLORREF view_accent(void)
+{
+    static HRESULT (WINAPI *get_color)( DWORD *, BOOL * );
+    static BOOL loaded;
+    DWORD color;
+    BOOL opaque;
+
+    if (!loaded)
+    {
+        HMODULE dwmapi = LoadLibraryW( L"dwmapi.dll" );
+
+        if (dwmapi) get_color = (void *)GetProcAddress( dwmapi, "DwmGetColorizationColor" );
+        loaded = TRUE;
+    }
+    if (get_color && SUCCEEDED(get_color( &color, &opaque )) && (color & 0xffffff))
+        return RGB( (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff );
+    return RGB( 0x00, 0x78, 0xd4 );
+}
+
+/* the card a control stands in, for its colours */
+static const struct item *card_of( struct view *view, HWND hwnd )
+{
+    const struct item *card = NULL;
+
+    for (UINT i = 0; i < view->count; i++)
+    {
+        const struct item *item = &view->items[i];
+        BOOL in_card = item->kind == ITEM_CONTROL && item->inside;
+
+        if (item->kind == ITEM_CARD) card = item;
+        else if (!in_card) card = NULL;
+        if (item->hwnd == hwnd) return item->kind == ITEM_CARD || in_card ? card : NULL;
+    }
+    return NULL;
+}
+
+/**********************************************************************
+ *          The switch of Windows 11
+ *
+ * "Увімкнуто" or "Вимкнуто" and the switch at the right, as a check box: it
+ * answers BM_GETCHECK and BM_SETCHECK and says BN_CLICKED.
+ */
+
+#define TOGGLE_CLASS    L"ArcticToggle"
+#define IDS_CP_ON       0xf003
+#define IDS_CP_OFF      0xf004
+
+static LRESULT WINAPI toggle_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+{
+    BOOL on = GetWindowLongPtrW( hwnd, GWLP_USERDATA ) != 0;
+
+    switch (msg)
+    {
+    case BM_GETCHECK:
+        return on ? BST_CHECKED : BST_UNCHECKED;
+    case BM_SETCHECK:
+        SetWindowLongPtrW( hwnd, GWLP_USERDATA, wp == BST_CHECKED );
+        InvalidateRect( hwnd, NULL, FALSE );
+        return 0;
+    case WM_GETDLGCODE:
+        return DLGC_BUTTON;
+    case WM_LBUTTONDOWN:
+        SetFocus( hwnd );
+        SetCapture( hwnd );
+        return 0;
+    case WM_LBUTTONUP:
+        if (GetCapture() != hwnd) return 0;
+        ReleaseCapture();
+        if (IsWindowEnabled( hwnd ))
+        {
+            SetWindowLongPtrW( hwnd, GWLP_USERDATA, !on );
+            InvalidateRect( hwnd, NULL, FALSE );
+            SendMessageW( GetParent( hwnd ), WM_COMMAND, MAKEWPARAM( GetDlgCtrlID( hwnd ), BN_CLICKED ), (LPARAM)hwnd );
+        }
+        return 0;
+    case WM_KEYUP:
+        if (wp == VK_SPACE && IsWindowEnabled( hwnd ))
+        {
+            SetWindowLongPtrW( hwnd, GWLP_USERDATA, !on );
+            InvalidateRect( hwnd, NULL, FALSE );
+            SendMessageW( GetParent( hwnd ), WM_COMMAND, MAKEWPARAM( GetDlgCtrlID( hwnd ), BN_CLICKED ), (LPARAM)hwnd );
+        }
+        return 0;
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_ENABLE:
+        InvalidateRect( hwnd, NULL, FALSE );
+        break;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint( hwnd, &ps );
+        RECT client, label;
+        int w = px( 40 ), h = px( 20 ), x, y, knob;
+        BOOL enabled = IsWindowEnabled( hwnd );
+        COLORREF accent = view_accent(), ink = cp_dark() ? RGB( 0xcf, 0xcf, 0xcf ) : RGB( 0x5d, 0x5d, 0x5d );
+        HGDIOBJ old_brush, old_pen;
+        HPEN pen;
+
+        GetClientRect( hwnd, &client );
+        FillRect( hdc, &client, cached_brush( COLOR_CARD ) );
+        x = client.right - w - px( 2 );
+        y = (client.bottom - h) / 2;
+        label = client;
+        label.right = x - px( 10 );
+        SetBkMode( hdc, TRANSPARENT );
+        SetTextColor( hdc, enabled ? COLOR_TEXT : COLOR_GRAY );
+        SelectObject( hdc, font_card ? font_card : view_font( STYLE_BODY ) );
+        DrawTextW( hdc, load_string( on ? IDS_CP_ON : IDS_CP_OFF ), -1, &label, DT_RIGHT | DT_VCENTER | DT_SINGLELINE );
+
+        pen = CreatePen( PS_SOLID, 1, on && enabled ? accent : ink );
+        old_pen = SelectObject( hdc, pen );
+        old_brush = SelectObject( hdc, cached_brush( on && enabled ? accent : COLOR_CARD ) );
+        RoundRect( hdc, x, y, x + w, y + h, h, h );
+        knob = h - px( 8 );
+        SelectObject( hdc, cached_brush( on && enabled ? RGB( 0xff, 0xff, 0xff ) : ink ) );
+        SelectObject( hdc, GetStockObject( NULL_PEN ) );
+        {
+            int kx = on ? x + w - px( 4 ) - knob : x + px( 4 ), ky = y + px( 4 );
+            Ellipse( hdc, kx, ky, kx + knob + 1, ky + knob + 1 );
+        }
+        SelectObject( hdc, old_brush );
+        SelectObject( hdc, old_pen );
+        DeleteObject( pen );
+        if (GetFocus() == hwnd)
+        {
+            RECT focus = { x - px( 3 ), y - px( 3 ), x + w + px( 3 ), y + h + px( 3 ) };
+            DrawFocusRect( hdc, &focus );
+        }
+        EndPaint( hwnd, &ps );
+        return 0;
+    }
+    }
+    return DefWindowProcW( hwnd, msg, wp, lp );
+}
+
+HWND view_card_toggle( struct view *view, HICON icon, const WCHAR *title, const WCHAR *text, BOOL on, UINT id )
+{
+    static BOOL registered;
+    HWND hwnd;
+
+    if (!registered)
+    {
+        WNDCLASSW cls = { 0 };
+
+        cls.lpfnWndProc = toggle_proc;
+        cls.hInstance = cp_instance;
+        cls.hCursor = LoadCursorW( NULL, (const WCHAR *)IDC_ARROW );
+        cls.lpszClassName = TOGGLE_CLASS;
+        registered = RegisterClassW( &cls ) != 0;
+    }
+    hwnd = view_card( view, icon, title, text, TOGGLE_CLASS, L"", WS_TABSTOP, px( 130 ), px( 26 ), id );
+    if (hwnd) SetWindowLongPtrW( hwnd, GWLP_USERDATA, on );
+    return hwnd;
+}
+
+/**********************************************************************
+ *          A picture to choose
+ */
+
+#define TILE_CLASS      L"ArcticTile"
+
+struct tile
+{
+    HBITMAP bitmap;
+    HICON icon;
+    int icon_size;
+    COLORREF color;
+    BOOL has_color, selected, hot;
+    tile_paint_proc paint;
+    UINT_PTR param;
+};
+
+static void tile_click( HWND hwnd )
+{
+    SendMessageW( GetParent( hwnd ), WM_COMMAND, MAKEWPARAM( GetDlgCtrlID( hwnd ), BN_CLICKED ), (LPARAM)hwnd );
+}
+
+static void tile_paint( HWND hwnd, struct tile *tile, HDC hdc )
+{
+    RECT client, picture, label;
+    WCHAR text[128];
+    int radius = px( 6 ), ring = px( 2 ), gap = px( 3 );
+    COLORREF accent = view_accent();
+    HRGN region;
+
+    GetClientRect( hwnd, &client );
+    FillRect( hdc, &client, cached_brush( COLOR_CARD ) );
+    picture = client;
+    GetWindowTextW( hwnd, text, ARRAY_SIZE(text) );
+    if (text[0])
+    {
+        label = client;
+        label.top = client.bottom - px( 22 );
+        picture.bottom = label.top;
+        SetBkMode( hdc, TRANSPARENT );
+        SelectObject( hdc, font_card_sub ? font_card_sub : view_font( STYLE_BODY ) );
+        SetTextColor( hdc, COLOR_TEXT );
+        DrawTextW( hdc, text, -1, &label, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX );
+    }
+    /* the ring of the one chosen, or of the one under the pointer */
+    if (tile->selected || tile->hot || GetFocus() == hwnd)
+    {
+        HPEN pen = CreatePen( PS_INSIDEFRAME, ring, tile->selected ? accent : COLOR_GRAY );
+        HGDIOBJ old_pen = SelectObject( hdc, pen ), old_brush = SelectObject( hdc, GetStockObject( NULL_BRUSH ) );
+
+        RoundRect( hdc, picture.left, picture.top, picture.right, picture.bottom, radius + gap, radius + gap );
+        SelectObject( hdc, old_brush );
+        SelectObject( hdc, old_pen );
+        DeleteObject( pen );
+    }
+    InflateRect( &picture, -(ring + gap), -(ring + gap) );
+    if (tile->icon)
+    {
+        int size = tile->icon_size ? tile->icon_size : px( 32 );
+
+        DrawIconEx( hdc, (picture.left + picture.right - size) / 2, (picture.top + picture.bottom - size) / 2,
+                    tile->icon, size, size, 0, NULL, DI_NORMAL );
+        return;
+    }
+    /* the picture with round corners */
+    region = CreateRoundRectRgn( picture.left, picture.top, picture.right + 1, picture.bottom + 1, radius, radius );
+    SelectClipRgn( hdc, region );
+    if (tile->bitmap)
+    {
+        HDC mem = CreateCompatibleDC( hdc );
+        HGDIOBJ old = SelectObject( mem, tile->bitmap );
+        BITMAP bm;
+
+        GetObjectW( tile->bitmap, sizeof(bm), &bm );
+        SetStretchBltMode( hdc, HALFTONE );
+        SetBrushOrgEx( hdc, 0, 0, NULL );
+        StretchBlt( hdc, picture.left, picture.top, picture.right - picture.left, picture.bottom - picture.top, mem,
+                    0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY );
+        SelectObject( mem, old );
+        DeleteDC( mem );
+    }
+    else FillRect( hdc, &picture, cached_brush( tile->has_color ? tile->color : COLOR_CARD_BORDER ) );
+    if (tile->paint) tile->paint( hdc, &picture, tile->param );
+    SelectClipRgn( hdc, NULL );
+    DeleteObject( region );
+    /* a colour's edge, faint, so that one like the card's shows */
+    if (tile->has_color && !tile->bitmap)
+    {
+        HPEN pen = CreatePen( PS_SOLID, 1, COLOR_CARD_BORDER );
+        HGDIOBJ old_pen = SelectObject( hdc, pen ), old_brush = SelectObject( hdc, GetStockObject( NULL_BRUSH ) );
+
+        RoundRect( hdc, picture.left, picture.top, picture.right, picture.bottom, radius, radius );
+        SelectObject( hdc, old_brush );
+        SelectObject( hdc, old_pen );
+        DeleteObject( pen );
+    }
+}
+
+static LRESULT WINAPI tile_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+{
+    struct tile *tile = (struct tile *)GetWindowLongPtrW( hwnd, GWLP_USERDATA );
+
+    switch (msg)
+    {
+    case WM_NCCREATE:
+        if (!(tile = calloc( 1, sizeof(*tile) ))) return FALSE;
+        SetWindowLongPtrW( hwnd, GWLP_USERDATA, (LONG_PTR)tile );
+        break;
+    case WM_NCDESTROY:
+        free( tile );
+        SetWindowLongPtrW( hwnd, GWLP_USERDATA, 0 );
+        break;
+    case TM_SETBITMAP:
+        if (!tile) return 0;
+        tile->bitmap = (HBITMAP)wp;
+        InvalidateRect( hwnd, NULL, FALSE );
+        return 0;
+    case WM_GETDLGCODE:
+        return DLGC_BUTTON;
+    case WM_MOUSEMOVE:
+        if (tile && !tile->hot)
+        {
+            TRACKMOUSEEVENT track = { sizeof(track), TME_LEAVE, hwnd };
+
+            tile->hot = TRUE;
+            TrackMouseEvent( &track );
+            InvalidateRect( hwnd, NULL, FALSE );
+        }
+        return 0;
+    case WM_MOUSELEAVE:
+        if (tile)
+        {
+            tile->hot = FALSE;
+            InvalidateRect( hwnd, NULL, FALSE );
+        }
+        return 0;
+    case WM_LBUTTONDOWN:
+        SetFocus( hwnd );
+        SetCapture( hwnd );
+        return 0;
+    case WM_LBUTTONUP:
+    {
+        POINT pt = { (short)LOWORD( lp ), (short)HIWORD( lp ) };
+        RECT client;
+
+        if (GetCapture() != hwnd) return 0;
+        ReleaseCapture();
+        GetClientRect( hwnd, &client );
+        if (PtInRect( &client, pt ) && IsWindowEnabled( hwnd )) tile_click( hwnd );
+        return 0;
+    }
+    case WM_KEYUP:
+        if ((wp == VK_SPACE || wp == VK_RETURN) && IsWindowEnabled( hwnd )) tile_click( hwnd );
+        return 0;
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_SETTEXT:
+        InvalidateRect( hwnd, NULL, FALSE );
+        break;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint( hwnd, &ps ), mem = CreateCompatibleDC( hdc );
+        RECT client;
+        HBITMAP bitmap;
+
+        GetClientRect( hwnd, &client );
+        if (tile && (bitmap = CreateCompatibleBitmap( hdc, max( client.right, 1 ), max( client.bottom, 1 ) )))
+        {
+            HGDIOBJ old = SelectObject( mem, bitmap );
+
+            tile_paint( hwnd, tile, mem );
+            BitBlt( hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY );
+            SelectObject( mem, old );
+            DeleteObject( bitmap );
+        }
+        DeleteDC( mem );
+        EndPaint( hwnd, &ps );
+        return 0;
+    }
+    }
+    return DefWindowProcW( hwnd, msg, wp, lp );
+}
+
+static void tile_register(void)
+{
+    static BOOL registered;
+    WNDCLASSW cls = { 0 };
+
+    card_fonts();
+    if (registered) return;
+    cls.lpfnWndProc = tile_proc;
+    cls.hInstance = cp_instance;
+    cls.hCursor = LoadCursorW( NULL, (const WCHAR *)IDC_ARROW );
+    cls.lpszClassName = TILE_CLASS;
+    registered = RegisterClassW( &cls ) != 0;
+}
+
+HWND view_tile( struct view *view, int width, int height, const WCHAR *label, UINT id )
+{
+    return view_card_control( view, TILE_CLASS, label ? label : L"", WS_TABSTOP, 0, 0, width, height, id );
+}
+
+static struct tile *tile_of( HWND hwnd )
+{
+    return hwnd ? (struct tile *)GetWindowLongPtrW( hwnd, GWLP_USERDATA ) : NULL;
+}
+
+void tile_set_bitmap( HWND hwnd, HBITMAP bitmap )
+{
+    if (hwnd) SendMessageW( hwnd, TM_SETBITMAP, (WPARAM)bitmap, 0 );
+}
+
+void tile_set_icon( HWND hwnd, HICON icon, int size )
+{
+    struct tile *tile = tile_of( hwnd );
+
+    if (!tile) return;
+    tile->icon = icon;
+    tile->icon_size = size;
+    InvalidateRect( hwnd, NULL, FALSE );
+}
+
+void tile_set_color( HWND hwnd, COLORREF color )
+{
+    struct tile *tile = tile_of( hwnd );
+
+    if (!tile) return;
+    tile->color = color;
+    tile->has_color = TRUE;
+    InvalidateRect( hwnd, NULL, FALSE );
+}
+
+void tile_set_paint( HWND hwnd, tile_paint_proc proc, UINT_PTR param )
+{
+    struct tile *tile = tile_of( hwnd );
+
+    if (!tile) return;
+    tile->paint = proc;
+    tile->param = param;
+    InvalidateRect( hwnd, NULL, FALSE );
+}
+
+void tile_select( HWND hwnd, BOOL selected )
+{
+    struct tile *tile = tile_of( hwnd );
+
+    if (!tile) return;
+    tile->selected = selected;
+    InvalidateRect( hwnd, NULL, FALSE );
+}
+
+UINT_PTR tile_param( HWND hwnd )
+{
+    struct tile *tile = tile_of( hwnd );
+
+    return tile ? tile->param : 0;
+}
+
+HWND view_embed( struct view *view, HWND hwnd, int width, int height, int indent )
+{
+    struct item *item;
+
+    if (!hwnd || !(item = add_item( view, ITEM_CONTROL ))) return NULL;
+    item->hwnd = hwnd;
+    item->width = width;
+    item->height = item->line = height;
+    item->indent = indent;
+    return hwnd;
+}
+
+/**********************************************************************
+ *          A property page of another module
+ *
+ * comctl32's own property sheet, modeless and a child of the page: its
+ * template loses the caption and the frame before it is made (PSCB_PRECREATE),
+ * its tab and buttons are hidden, and the one page stands at its corner. So
+ * a page works as in its dialog, PSM_CHANGED, PSN_APPLY and PSN_RESET
+ * included, without anything of it written anew.
+ */
+
+#define ID_CP_APPLY         0xf0f0
+#define IDC_SHEET_APPLY     0x3021      /* comctl32's Apply */
+
+static int CALLBACK sheet_callback( HWND hwnd, UINT msg, LPARAM lparam )
+{
+    if (msg == PSCB_PRECREATE && lparam)
+    {
+        WORD *words = (WORD *)lparam;
+        DWORD *style, *ex_style;
+
+        /* DLGTEMPLATEEX: version, 0xffff, the help id, then the styles */
+        if (words[1] == 0xffff)
+        {
+            ex_style = (DWORD *)(words + 4);
+            style = (DWORD *)(words + 6);
+        }
+        else
+        {
+            style = (DWORD *)lparam;
+            ex_style = style + 1;
+        }
+        *style = (*style & ~(WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VISIBLE | DS_MODALFRAME |
+                             DS_CONTEXTHELP | DS_CENTER)) | WS_CHILD | WS_CLIPCHILDREN | DS_CONTROL;
+        *ex_style = (*ex_style & ~(WS_EX_DLGMODALFRAME | WS_EX_CONTEXTHELP | WS_EX_APPWINDOW | WS_EX_WINDOWEDGE)) |
+                    WS_EX_CONTROLPARENT;
+    }
+    return 0;
+}
+
+static LRESULT CALLBACK sheet_subclass( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data )
+{
+    struct view *view = (struct view *)data;
+    LRESULT ret = DefSubclassProc( hwnd, msg, wp, lp );
+
+    if (view->sheet != hwnd) return ret;
+    switch (msg)
+    {
+    case PSM_CHANGED:
+        view->sheet_changed = TRUE;
+        EnableWindow( view->sheet_apply, TRUE );
+        break;
+    case PSM_UNCHANGED:
+        view->sheet_changed = FALSE;
+        EnableWindow( view->sheet_apply, FALSE );
+        break;
+    case WM_NCDESTROY:
+        RemoveWindowSubclass( hwnd, sheet_subclass, id );
+        break;
+    }
+    return ret;
+}
+
+HWND view_sheet( struct view *view, HPROPSHEETPAGE page )
+{
+    static const UINT hidden[] = { IDOK, IDCANCEL, IDC_SHEET_APPLY, IDHELP };
+    PROPSHEETHEADERW header = { sizeof(header) };
+    HWND sheet, dialog;
+    RECT rect;
+    int width, height;
+
+    if (!page) return NULL;
+    header.dwFlags = PSH_MODELESS | PSH_USECALLBACK;
+    header.hwndParent = view->content;
+    header.hInstance = cp_instance;
+    header.nPages = 1;
+    header.phpage = &page;
+    header.pfnCallback = sheet_callback;
+    if (!(sheet = (HWND)PropertySheetW( &header ))) return NULL;
+
+    ShowWindow( (HWND)SendMessageW( sheet, PSM_GETTABCONTROL, 0, 0 ), SW_HIDE );
+    for (UINT i = 0; i < ARRAY_SIZE(hidden); i++)
+    {
+        HWND button = GetDlgItem( sheet, hidden[i] );
+
+        ShowWindow( button, SW_HIDE );
+        /* Enter or Esc must not end it as OK and Cancel did */
+        EnableWindow( button, FALSE );
+    }
+    /* the page at the sheet's corner, the sheet as large as the page */
+    if ((dialog = (HWND)SendMessageW( sheet, PSM_GETCURRENTPAGEHWND, 0, 0 )) && GetWindowRect( dialog, &rect ))
+    {
+        width = rect.right - rect.left;
+        height = rect.bottom - rect.top;
+        SetWindowPos( dialog, NULL, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE );
+    }
+    else
+    {
+        GetWindowRect( sheet, &rect );
+        width = rect.right - rect.left;
+        height = rect.bottom - rect.top;
+    }
+    SetWindowPos( sheet, NULL, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW );
+
+    view->sheet = sheet;
+    view->sheet_changed = FALSE;
+    SetWindowSubclass( sheet, sheet_subclass, 1, (DWORD_PTR)view );
+    view_embed( view, sheet, width, height, 0 );
+
+    /* "Застосувати" under its right edge, greyed until something changes */
+    view_space( view, px( 10 ) );
+    view->sheet_apply = view_control( view, L"BUTTON", load_string( IDS_CP_APPLY ), BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED,
+                                      px( 88 ), px( 24 ), max( width - px( 88 ), 0 ), ID_CP_APPLY );
+    return sheet;
+}
+
+static BOOL sheet_apply( struct view *view )
+{
+    if (!view->sheet) return FALSE;
+    if (SendMessageW( view->sheet, PSM_APPLY, 0, 0 ))
+    {
+        view->sheet_changed = FALSE;
+        EnableWindow( view->sheet_apply, FALSE );
+    }
+    return TRUE;
 }
 
 void view_paint_area( struct view *view, int height, paint_proc proc, UINT_PTR param )
@@ -464,9 +1244,9 @@ void view_nav_home( struct view *view )
 void view_layout( struct view *view )
 {
     HDC hdc;
-    int width, y = CONTENT_TOP, row_top = 0, row_height = 0, paint_top = 0;
+    int width, y = CONTENT_TOP, row_top = 0, row_height = 0, paint_top = 0, card_right = 0;
     BOOL in_row = FALSE;
-    RECT client;
+    RECT client, card = { 0 };
     SCROLLINFO info = { sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS };
 
     /* No window yet, or no more: nothing to lay out, and nothing may be
@@ -562,9 +1342,85 @@ void view_layout( struct view *view )
             int left = CONTENT_PAD + (in_row ? item->x : item->indent);
             int w = item->width ? item->width : width - item->indent;
 
+            /* in the card before it, at its right, in its middle */
+            if (item->inside && item->extra)
+            {
+                int cy = card.top + (card.bottom - card.top - item->line) / 2;
+
+                left = card_right - w;
+                card_right = left - px( 8 );
+                SetRect( &item->rect, left, cy, left + w, cy + item->line );
+                SetWindowPos( item->hwnd, NULL, left, cy - view->scroll, w, item->height, SWP_NOZORDER | SWP_NOACTIVATE );
+                continue;
+            }
+            /* in the card area before it, at x, y from its inner corner; as
+             * wide as the card inside without a width of its own */
+            if (item->inside)
+            {
+                if (!item->width) w = max( px( 20 ), card.right - card.left - px( 32 ) - item->x );
+                left = card.left + px( 16 ) + item->x;
+                SetRect( &item->rect, left, card.top + px( 16 ) + item->indent, left + w,
+                         card.top + px( 16 ) + item->indent + item->line );
+                SetWindowPos( item->hwnd, NULL, left, item->rect.top - view->scroll, w, item->height,
+                              SWP_NOZORDER | SWP_NOACTIVATE );
+                continue;
+            }
             height = item->line;
             SetRect( &item->rect, left, top, left + w, top + height );
             SetWindowPos( item->hwnd, NULL, left, top - view->scroll, w, item->height, SWP_NOZORDER | SWP_NOACTIVATE );
+            break;
+        }
+        case ITEM_HEADING:
+            height = text_height( hdc, item->text, font_heading, width, FALSE );
+            SetRect( &item->rect, CONTENT_PAD, top, CONTENT_PAD + width, top + height );
+            height += px( 18 );
+            break;
+        case ITEM_SECTION:
+            height = text_height( hdc, item->text, font_section, width, FALSE );
+            /* room above it, after the cards of the section before */
+            SetRect( &item->rect, CONTENT_PAD, top + px( 14 ), CONTENT_PAD + width, top + px( 14 ) + height );
+            height += px( 22 );
+            break;
+        case ITEM_CARD:
+        {
+            int h = item->style == CARD_AREA ? item->height + px( 32 ) : item->sub ? px( 68 ) : px( 56 );
+
+            /* its controls in rows, as many as the width needs */
+            if (item->flow)
+            {
+                int inner = width - px( 32 ), fx = 0, fy = 0, row = 0;
+
+                for (UINT k = i + 1; k < view->count && view->items[k].kind == ITEM_CONTROL && view->items[k].inside &&
+                                     !view->items[k].extra; k++)
+                {
+                    struct item *c = &view->items[k];
+
+                    if (fx && fx + c->width > inner)
+                    {
+                        fx = 0;
+                        fy += row + item->flow;
+                        row = 0;
+                    }
+                    c->x = fx;
+                    c->indent = fy;
+                    fx += c->width + item->flow;
+                    row = max( row, c->height );
+                }
+                h = fy + row + px( 32 );
+            }
+            SetRect( &item->rect, CONTENT_PAD, top, CONTENT_PAD + width, top + h );
+            card = item->rect;
+            card_right = item->rect.right - px( 16 ) - (item->hwnd ? item->width + px( 8 ) : 0);
+            if (item->hwnd)
+            {
+                int line = item->line ? item->line : item->height;
+                int x = item->rect.right - px( 16 ) - item->width, cy = top + (h - line) / 2;
+
+                SetWindowPos( item->hwnd, NULL, x, cy - view->scroll, item->width, item->height,
+                              SWP_NOZORDER | SWP_NOACTIVATE );
+            }
+            /* the cards a little apart */
+            height = h + px( 4 );
             break;
         }
         case ITEM_PAINT:
@@ -652,6 +1508,20 @@ void view_browse_control_panel( struct view *view )
     ILFree( pidl );
 }
 
+/* another item of the Control Panel, or one of its pages by its canonical
+ * name ("::{CLSID}\pageName"), in this window */
+void view_browse_item( struct view *view, const WCHAR *item )
+{
+    WCHAR path[300];
+    ITEMIDLIST *pidl;
+
+    swprintf( path, ARRAY_SIZE(path),
+              L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}\\%s", item );
+    if (!view->browser || FAILED(SHParseDisplayName( path, NULL, &pidl, 0, NULL ))) return;
+    IShellBrowser_BrowseObject( view->browser, pidl, SBSP_ABSOLUTE | SBSP_SAMEBROWSER );
+    ILFree( pidl );
+}
+
 void view_back( struct view *view )
 {
     if (view->browser) IShellBrowser_BrowseObject( view->browser, NULL, SBSP_NAVIGATEBACK | SBSP_SAMEBROWSER );
@@ -683,6 +1553,68 @@ static void draw_link( HDC hdc, const struct item *item, const RECT *where, BOOL
     SelectObject( hdc, old );
 }
 
+static void draw_line( HDC hdc, const WCHAR *text, HFONT font, COLORREF color, RECT *rect, UINT flags )
+{
+    HGDIOBJ old = SelectObject( hdc, font );
+
+    SetTextColor( hdc, color );
+    DrawTextW( hdc, text, -1, rect, DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | flags );
+    SelectObject( hdc, old );
+}
+
+static void paint_card( struct view *view, HDC hdc, const struct item *item, const RECT *where, BOOL hot )
+{
+    RECT rect = *where, text;
+    HPEN pen = CreatePen( PS_SOLID, 1, COLOR_CARD_BORDER );
+    HGDIOBJ old_brush = SelectObject( hdc, cached_brush( hot ? COLOR_CARD_HOT : COLOR_CARD ) ), old_pen = SelectObject( hdc, pen );
+    int left = rect.left + px( 16 ), size = px( 32 ), right = rect.right - px( 16 );
+
+    RoundRect( hdc, rect.left, rect.top, rect.right, rect.bottom, px( 8 ), px( 8 ) );
+    SelectObject( hdc, old_pen );
+    SelectObject( hdc, old_brush );
+    DeleteObject( pen );
+    if (item->style == CARD_AREA || item->flow)
+    {
+        RECT inner = rect;
+
+        InflateRect( &inner, -px( 16 ), -px( 16 ) );
+        if (item->paint) item->paint( view, hdc, &inner, item->param );
+        return;
+    }
+    if (item->icon)
+    {
+        DrawIconEx( hdc, left, rect.top + (rect.bottom - rect.top - size) / 2, item->icon, size, size, 0, NULL, DI_NORMAL );
+        left += size + px( 16 );
+    }
+    if (item->hwnd) right -= item->width + px( 16 );
+    else if (item->proc) right -= px( 28 );
+    /* the controls beside its own (view_card_extra) */
+    if (!item->flow) right -= item->x;
+    if (item->sub)
+    {
+        int title = text_height( hdc, item->text, font_card, 100, FALSE );
+        int sub = text_height( hdc, item->sub, font_card_sub, 100, FALSE );
+        int top = rect.top + (rect.bottom - rect.top - title - sub - px( 2 )) / 2;
+
+        SetRect( &text, left, top, right, top + title );
+        draw_line( hdc, item->text, font_card, COLOR_TEXT, &text, 0 );
+        SetRect( &text, left, top + title + px( 2 ), right, top + title + px( 2 ) + sub );
+        draw_line( hdc, item->sub, font_card_sub, COLOR_GRAY, &text, 0 );
+    }
+    else
+    {
+        SetRect( &text, left, rect.top, right, rect.bottom );
+        draw_line( hdc, item->text, font_card, COLOR_TEXT, &text, DT_VCENTER );
+    }
+    /* a card that goes somewhere */
+    if (item->proc && !item->hwnd)
+    {
+        RECT chevron = { rect.right - px( 40 ), rect.top, rect.right - px( 12 ), rect.bottom };
+
+        draw_line( hdc, L"\x203a", font_chevron, COLOR_GRAY, &chevron, DT_CENTER | DT_VCENTER );
+    }
+}
+
 static void paint_content( struct view *view, HDC hdc )
 {
     SetBkMode( hdc, TRANSPARENT );
@@ -694,6 +1626,15 @@ static void paint_content( struct view *view, HDC hdc )
         OffsetRect( &rect, 0, -view->scroll );
         switch (item->kind)
         {
+        case ITEM_HEADING:
+            draw_line( hdc, item->text, font_heading, COLOR_TEXT, &rect, 0 );
+            break;
+        case ITEM_SECTION:
+            draw_line( hdc, item->text, font_section, COLOR_TEXT, &rect, 0 );
+            break;
+        case ITEM_CARD:
+            paint_card( view, hdc, item, &rect, view->hot == (int)i && item->proc );
+            break;
         case ITEM_TEXT:
         {
             HGDIOBJ old = SelectObject( hdc, view_font( item->style ) );
@@ -754,7 +1695,7 @@ static void paint_nav( struct view *view, HDC hdc )
     for (UINT i = 0; i < view->nav_count; i++)
     {
         struct nav_item *item = &view->nav[i];
-        int left = NAV_LEFT, width = NAV_WIDTH - NAV_LEFT - px( 8 ), height;
+        int left = view->nav_x + NAV_LEFT, width = NAV_WIDTH - NAV_LEFT - px( 8 ), height;
 
         if (item->see_also && !see_also_shown)
         {
@@ -763,7 +1704,7 @@ static void paint_nav( struct view *view, HDC hdc )
                 bottom += text_height( hdc, view->nav[k].text, view_font( STYLE_BODY ), width, TRUE ) + px( 8 );
             y = max( y + px( 24 ), client.bottom - bottom - px( 40 ) );
             {
-                RECT rect = { NAV_LEFT, y, NAV_LEFT + width, y + px( 16 ) };
+                RECT rect = { left, y, left + width, y + px( 16 ) };
                 HGDIOBJ old = SelectObject( hdc, view_font( STYLE_BODY ) );
                 SetTextColor( hdc, COLOR_GROUP );
                 DrawTextW( hdc, load_string( IDS_CP_SEE_ALSO ), -1, &rect, DT_NOPREFIX | DT_SINGLELINE );
@@ -797,7 +1738,9 @@ static int link_at( struct view *view, POINT pt )
 {
     pt.y += view->scroll;
     for (UINT i = 0; i < view->count; i++)
-        if (view->items[i].kind == ITEM_LINK && PtInRect( &view->items[i].rect, pt )) return i;
+        if ((view->items[i].kind == ITEM_LINK || (view->items[i].kind == ITEM_CARD && view->items[i].proc)) &&
+            PtInRect( &view->items[i].rect, pt ))
+            return i;
     return -1;
 }
 
@@ -850,7 +1793,7 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         if ((bitmap = CreateCompatibleBitmap( hdc, max( client.right, 1 ), max( client.bottom, 1 ) )))
         {
             HGDIOBJ old = SelectObject( mem, bitmap );
-            FillRect( mem, &client, page_brush() );
+            FillRect( mem, &client, cached_brush( back_color( view ) ) );
             if (view) paint_content( view, mem );
             BitBlt( hdc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY );
             SelectObject( mem, old );
@@ -862,8 +1805,9 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     }
     case WM_THEMECHANGED:
     case WM_SYSCOLORCHANGE:
-        /* the programs' mode changed (desk.cpl, Personalization) */
-        InvalidateRect( hwnd, NULL, TRUE );
+        /* the programs' mode changed (desk.cpl, Personalization): the cards'
+         * own controls stand on the cards' colours too */
+        RedrawWindow( hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
         break;
     case WM_ERASEBKGND:
         return 1;
@@ -920,7 +1864,7 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         }
         return 0;
     case WM_SETCURSOR:
-        if (view && view->hot >= 0 && (HWND)wp == hwnd)
+        if (view && view->hot >= 0 && (HWND)wp == hwnd && view->items[view->hot].kind == ITEM_LINK)
         {
             SetCursor( LoadCursorW( NULL, (const WCHAR *)IDC_HAND ) );
             return TRUE;
@@ -946,13 +1890,21 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
     }
     case WM_COMMAND:
+        if (view && lp && LOWORD( wp ) == ID_CP_APPLY && HIWORD( wp ) == BN_CLICKED && sheet_apply( view )) return 0;
         if (view && lp) page_command( view, LOWORD( wp ), HIWORD( wp ), (HWND)lp );
         return 0;
     case WM_HSCROLL:
         if (view && lp) page_command( view, GetDlgCtrlID( (HWND)lp ), LOWORD( wp ), (HWND)lp );
         return 0;
     case WM_NOTIFY:
-        if (view) page_command( view, ((NMHDR *)lp)->idFrom, ((NMHDR *)lp)->code, ((NMHDR *)lp)->hwndFrom );
+        if (view)
+        {
+            const NMHDR *previous = view->notify;
+
+            view->notify = (const NMHDR *)lp;
+            page_command( view, ((NMHDR *)lp)->idFrom, ((NMHDR *)lp)->code, ((NMHDR *)lp)->hwndFrom );
+            view->notify = previous;
+        }
         return 0;
     case WM_TIMER:
         if (view && wp == TIMER_PAGE && view->state.page < cp_page_count && cp_pages[view->state.page].timer)
@@ -960,9 +1912,14 @@ static LRESULT WINAPI content_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
-        SetBkColor( (HDC)wp, COLOR_PAGE );
+    {
+        /* a control in a card stands on the card's colour */
+        COLORREF color = view && card_of( view, (HWND)lp ) ? COLOR_CARD : back_color( view );
+
+        SetBkColor( (HDC)wp, color );
         SetTextColor( (HDC)wp, COLOR_TEXT );
-        return (LRESULT)page_brush();
+        return (LRESULT)cached_brush( color );
+    }
     }
     return DefWindowProcW( hwnd, msg, wp, lp );
 }
@@ -989,8 +1946,10 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     case WM_SIZE:
         if (view && view->content)
         {
-            int left = min( NAV_WIDTH, LOWORD( lp ) / 3 );
-            MoveWindow( view->content, left, 0, max( LOWORD( lp ) - left, 0 ), HIWORD( lp ), TRUE );
+            int nav = min( NAV_WIDTH, LOWORD( lp ) / 3 ), width = max( LOWORD( lp ) - nav, 0 );
+
+            view->nav_x = nav_on_right( view ) ? width : 0;
+            MoveWindow( view->content, view->nav_x ? 0 : nav, 0, width, HIWORD( lp ), TRUE );
             InvalidateRect( hwnd, NULL, TRUE );
         }
         return 0;
@@ -1061,7 +2020,29 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         return 0;
     }
     case WM_SETTINGCHANGE:
-        if (view) view_rebuild( view );
+        /* A page of another module stays as it is: it says WM_SETTINGCHANGE
+         * itself while it applies (desk.cpl's wallpaper), and must not be
+         * made anew in the middle of that. The page is made anew after
+         * what changed has been said to everyone, once for several: a page
+         * that changes a setting hears of it while its control's handler
+         * still runs. The icons of another theme: user32 takes them after
+         * a moment (its folder is read again). */
+        if (!view || view->sheet) return 0;
+        if (lp && !IsBadStringPtrW( (const WCHAR *)lp, 64 ) && !wcsicmp( (const WCHAR *)lp, L"ArcticIcons" ))
+        {
+            icons_stale = TRUE;
+            SetTimer( hwnd, TIMER_REBUILD, 800, NULL );
+        }
+        else if (!icons_stale) SetTimer( hwnd, TIMER_REBUILD, 60, NULL );
+        return 0;
+    case WM_TIMER:
+        if (wp != TIMER_REBUILD) break;
+        KillTimer( hwnd, TIMER_REBUILD );
+        if (view && !view->sheet)
+        {
+            if (icons_stale) icons_flush();
+            view_rebuild( view );
+        }
         return 0;
     }
     return DefWindowProcW( hwnd, msg, wp, lp );
@@ -1127,6 +2108,13 @@ static HRESULT WINAPI view_TranslateAccelerator( IShellView *iface, MSG *msg )
 
     if (view->content && (msg->hwnd == view->content || IsChild( view->content, msg->hwnd )) &&
         msg->message == WM_KEYDOWN && (msg->wParam == VK_TAB || msg->wParam == VK_RETURN) &&
+        IsDialogMessageW( view->content, msg ))
+        return S_OK;
+    /* in a page of another module, all a dialog's keys: the arrows between
+     * its radio buttons, Alt and a letter */
+    if (view->sheet && IsChild( view->sheet, msg->hwnd ) &&
+        (msg->message == WM_KEYDOWN || msg->message == WM_SYSKEYDOWN || msg->message == WM_CHAR ||
+         msg->message == WM_SYSCHAR) &&
         IsDialogMessageW( view->content, msg ))
         return S_OK;
     return S_FALSE;

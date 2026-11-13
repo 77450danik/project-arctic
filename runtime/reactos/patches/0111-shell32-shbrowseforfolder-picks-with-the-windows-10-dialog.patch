@@ -1,0 +1,251 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Mon, 9 Nov 2026 18:00:00 +0200
+Subject: [PATCH] shell32: SHBrowseForFolder picks with the dialog of Windows 10.
+
+As in Arctic NT: the Open dialog choosing a folder (FOS_PICKFOLDERS) instead
+of the old tree; the program's BFFCALLBACK gets BFFM_INITIALIZED and
+BFFM_SELCHANGED and its BFFM_ messages are answered. The tree stays for
+files, computers and printers, which the dialog does not pick.
+---
+diff --git a/dll/win32/shell32/brfolder.cpp b/dll/win32/shell32/brfolder.cpp
+index a8ca8a8..8a66e31 100644
+--- a/dll/win32/shell32/brfolder.cpp
++++ b/dll/win32/shell32/brfolder.cpp
+@@ -1452,17 +1452,10 @@ SHBrowseForFolderA(LPBROWSEINFOA lpbi)
+     return pidl;
+ }
+ 
+-/*************************************************************************
+- * SHBrowseForFolderW [SHELL32.@]
+- */
+-EXTERN_C
+-LPITEMIDLIST WINAPI
+-SHBrowseForFolderW(LPBROWSEINFOW lpbi)
++/* The old tree of folders, for what the new dialog does not pick */
++static LPITEMIDLIST
++BrowseForFolderTree(LPBROWSEINFOW lpbi)
+ {
+-    TRACE("%p\n", lpbi);
+-
+-    // MSDN says the caller must initialize COM. We do it anyway in case the caller forgot.
+-    COleInit OleInit;
+     BrFolder info = { lpbi };
+ 
+     INT id = ((lpbi->ulFlags & BIF_USENEWUI) ? IDD_BROWSE_FOR_FOLDER_NEW : IDD_BROWSE_FOR_FOLDER);
+@@ -1483,6 +1476,214 @@ SHBrowseForFolderW(LPBROWSEINFOW lpbi)
+         ILFree(info.pidlRet);
+         return NULL;
+     }
+-
+     return info.pidlRet;
+ }
++
++/*
++ * Arctic, from Arctic NT:
++ * The folder picker of Windows 10: the Open dialog choosing a folder
++ * (FOS_PICKFOLDERS). The program's BFFCALLBACK is told BFFM_INITIALIZED
++ * and BFFM_SELCHANGED, and the BFFM_ messages it sends to the dialog are
++ * answered: the old tree dialog is no more.
++ */
++class CBrowseForFolderEvents :
++    public CComObjectRootEx<CComMultiThreadModelNoCS>,
++    public IFileDialogEvents
++{
++public:
++    LPBROWSEINFOW m_bi;
++    HWND m_hwnd;
++    IFileDialog *m_pfd;
++    BOOL m_initialized;
++
++    CBrowseForFolderEvents() : m_bi(NULL), m_hwnd(NULL), m_pfd(NULL), m_initialized(FALSE) { }
++
++    void Callback(UINT msg, LPARAM lParam)
++    {
++        if (m_bi->lpfn && m_hwnd)
++            m_bi->lpfn(m_hwnd, msg, lParam, m_bi->lParam);
++    }
++
++    void SelChanged(IFileDialog *pfd)
++    {
++        CComPtr<IShellItem> psi;
++        if (FAILED(pfd->GetCurrentSelection(&psi)) && FAILED(pfd->GetFolder(&psi)))
++            return;
++        CComHeapPtr<ITEMIDLIST> pidl;
++        if (SUCCEEDED(SHGetIDListFromObject(psi, &pidl)))
++            Callback(BFFM_SELCHANGED, (LPARAM)(LPITEMIDLIST)pidl);
++    }
++
++    static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data)
++    {
++        CBrowseForFolderEvents *This = (CBrowseForFolderEvents *)data;
++        switch (msg)
++        {
++        case BFFM_SETSELECTIONA:
++        case BFFM_SETSELECTIONW:
++        case BFFM_SETEXPANDED:
++        {
++            CComHeapPtr<ITEMIDLIST> pidl;
++            if (wParam && lParam)
++            {
++                WCHAR path[MAX_PATH];
++                if (msg == BFFM_SETSELECTIONA)
++                    SHAnsiToUnicode((LPCSTR)lParam, path, _countof(path));
++                else
++                    lstrcpynW(path, (LPCWSTR)lParam, _countof(path));
++                SHParseDisplayName(path, NULL, &pidl, 0, NULL);
++            }
++            else if (lParam)
++            {
++                pidl.Attach(ILClone((LPCITEMIDLIST)lParam));
++            }
++            CComPtr<IShellItem> psi;
++            if (pidl && SUCCEEDED(SHCreateItemFromIDList(pidl, IID_PPV_ARG(IShellItem, &psi))))
++                This->m_pfd->SetFolder(psi);
++            return TRUE;
++        }
++        case BFFM_ENABLEOK:
++            ::EnableWindow(::GetDlgItem(hwnd, IDOK), (BOOL)lParam);
++            return 0;
++        case BFFM_SETOKTEXT:
++            if (lParam)
++                ::SetDlgItemTextW(hwnd, IDOK, (LPCWSTR)lParam);
++            return 0;
++        case BFFM_SETSTATUSTEXTA:
++        case BFFM_SETSTATUSTEXTW:
++            return 0;
++        case WM_NCDESTROY:
++            RemoveWindowSubclass(hwnd, SubclassProc, id);
++            break;
++        }
++        return DefSubclassProc(hwnd, msg, wParam, lParam);
++    }
++
++    /* the dialog's window, the first time it says anything */
++    void Attach(IFileDialog *pfd)
++    {
++        if (m_initialized)
++            return;
++        CComPtr<IOleWindow> pow;
++        if (FAILED(pfd->QueryInterface(IID_PPV_ARG(IOleWindow, &pow))) || FAILED(pow->GetWindow(&m_hwnd)) || !m_hwnd)
++            return;
++        m_initialized = TRUE;
++        SetWindowSubclass(m_hwnd, SubclassProc, 0, (DWORD_PTR)this);
++        Callback(BFFM_INITIALIZED, 0);
++    }
++
++    STDMETHOD(OnFileOk)(IFileDialog *pfd) override { return S_OK; }
++    STDMETHOD(OnFolderChanging)(IFileDialog *pfd, IShellItem *psiFolder) override { return S_OK; }
++    STDMETHOD(OnFolderChange)(IFileDialog *pfd) override
++    {
++        Attach(pfd);
++        SelChanged(pfd);
++        return S_OK;
++    }
++    STDMETHOD(OnSelectionChange)(IFileDialog *pfd) override
++    {
++        Attach(pfd);
++        SelChanged(pfd);
++        return S_OK;
++    }
++    STDMETHOD(OnShareViolation)(IFileDialog *pfd, IShellItem *psi, FDE_SHAREVIOLATION_RESPONSE *pResponse) override { return E_NOTIMPL; }
++    STDMETHOD(OnTypeChange)(IFileDialog *pfd) override { return S_OK; }
++    STDMETHOD(OnOverwrite)(IFileDialog *pfd, IShellItem *psi, FDE_OVERWRITE_RESPONSE *pResponse) override { return E_NOTIMPL; }
++
++    BEGIN_COM_MAP(CBrowseForFolderEvents)
++        COM_INTERFACE_ENTRY_IID(IID_IFileDialogEvents, IFileDialogEvents)
++    END_COM_MAP()
++};
++
++/*************************************************************************
++ * SHBrowseForFolderW [SHELL32.@]
++ */
++EXTERN_C
++LPITEMIDLIST WINAPI
++SHBrowseForFolderW(LPBROWSEINFOW lpbi)
++{
++    TRACE("%p\n", lpbi);
++
++    // MSDN says the caller must initialize COM. We do it anyway in case the caller forgot.
++    COleInit OleInit;
++
++    /* Arctic: files, computers and printers are not folders the new dialog
++     * picks: the tree stays for them */
++    if (lpbi->ulFlags & (BIF_BROWSEINCLUDEFILES | BIF_BROWSEFORCOMPUTER | BIF_BROWSEFORPRINTER))
++        return BrowseForFolderTree(lpbi);
++
++    CComPtr<IFileDialog> pfd;
++    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARG(IFileDialog, &pfd));
++    if (FAILED(hr))
++    {
++        ERR("No file dialog to pick a folder with: 0x%08lx\n", hr);
++        return BrowseForFolderTree(lpbi);
++    }
++
++    FILEOPENDIALOGOPTIONS fos = FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR;
++    if (lpbi->ulFlags & BIF_RETURNONLYFSDIRS)
++        fos |= FOS_FORCEFILESYSTEM;
++    else
++        fos |= FOS_ALLNONSTORAGEITEMS;
++    pfd->SetOptions(fos);
++    if (lpbi->lpszTitle)
++        pfd->SetTitle(lpbi->lpszTitle);
++    if (lpbi->pidlRoot)
++    {
++        CComPtr<IShellItem> root;
++        if (SUCCEEDED(SHCreateItemFromIDList(lpbi->pidlRoot, IID_PPV_ARG(IShellItem, &root))))
++        {
++            CComPtr<IFileDialog2> pfd2;
++            if (SUCCEEDED(pfd->QueryInterface(IID_PPV_ARG(IFileDialog2, &pfd2))))
++                pfd2->SetNavigationRoot(root);
++            pfd->SetFolder(root);
++        }
++    }
++
++    CComObject<CBrowseForFolderEvents> *events;
++    DWORD cookie = 0;
++    if (SUCCEEDED(CComObject<CBrowseForFolderEvents>::CreateInstance(&events)))
++    {
++        events->AddRef();
++        events->m_bi = lpbi;
++        events->m_pfd = pfd;
++        pfd->Advise(events, &cookie);
++    }
++    else
++    {
++        events = NULL;
++    }
++
++    hr = pfd->Show(lpbi->hwndOwner);
++    if (events)
++    {
++        pfd->Unadvise(cookie);
++        events->Release();
++    }
++
++    CComPtr<IShellItem> psi;
++    LPITEMIDLIST pidl = NULL;
++    if (SUCCEEDED(hr) && SUCCEEDED(pfd->GetResult(&psi)) && SUCCEEDED(SHGetIDListFromObject(psi, &pidl)))
++    {
++        if (!(lpbi->ulFlags & BIF_NOTRANSLATETARGETS))
++        {
++            PIDLIST_ABSOLUTE pidlTarget;
++            if (SHELL_GetIDListTarget(pidl, &pidlTarget) == S_OK)
++            {
++                ILFree(pidl);
++                pidl = pidlTarget;
++            }
++        }
++        if (lpbi->pszDisplayName)
++        {
++            CComHeapPtr<WCHAR> name;
++            lpbi->pszDisplayName[0] = UNICODE_NULL;
++            if (SUCCEEDED(psi->GetDisplayName(SIGDN_NORMALDISPLAY, &name)))
++                lstrcpynW(lpbi->pszDisplayName, name, MAX_PATH);
++        }
++        SHFILEINFOW sfi;
++        if (SHGetFileInfoW((LPCWSTR)pidl, 0, &sfi, sizeof(sfi), SHGFI_PIDL | SHGFI_SYSICONINDEX))
++            lpbi->iImage = sfi.iIcon;
++    }
++    return pidl;
++}
+\ No newline at end of file

@@ -1,0 +1,2085 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Date: Mon, 9 Nov 2026 18:00:00 +0300
+Subject: [PATCH] comdlg32: one file dialog, the one of Windows 10.
+
+Programs had three dialogs: GetOpenFileName gave Windows 95's (Look in,
+the places bar), IFileDialog (Chrome's Open and Save) Wine's half-done one
+with a bare tree and three arrows, SHBrowseForFolder the old tree. Now all
+of them get the Common Item Dialog as Windows 10 has it, as Arctic NT's
+comdlg32 made it: back, forward and up, the address bar of folders with its
+refresh, the search box; Organize, New folder and the view; the tree and the
+files; the names and the buttons in a band at the bottom.
+
+- itemdlg.c: Arctic NT's layout and commands (the history of the arrows,
+  Organize's cut, copy, paste, select all, delete, rename, properties, New
+  folder named in place, the views, the search that narrows the folder, the
+  CDM_ messages of hooks, a hook's dialog in the band). Its parts are drawn
+  by itemdlg_chrome.c in the look of the system: dark when the windows are,
+  the round fields of Windows 11 when the visual style has that size,
+  everything at the window's own DPI (a program aware of the monitors, as
+  Chrome is, gets it sharp; WM_DPICHANGED moves it to another scale). The
+  keys of Windows' dialog: Alt+Left, Alt+Right, Alt+Up, Backspace, F5,
+  Alt+D, F4, Ctrl+E. SetFolder on a dialog on the screen goes there.
+- filedlgofn.c: GetOpenFileName and GetSaveFileName through it, the
+  OPENFILENAME in and out as documented; only Windows 3.1's look (a hook or
+  several files without OFN_EXPLORER) keeps the old dialog, as in Windows.
+- itemdlg_res.rc: its words in English, Ukrainian and Russian, in a block
+  of string IDs of their own (comdlg32.rc takes its words from the po files).
+- shell32/brsfolder.c: SHBrowseForFolder picks folders with it (32-bit
+  programs; ReactOS's shell32 does the same for 64-bit ones).
+- shell32/ebrowser.c: the roots of Windows 10's navigation pane: Desktop,
+  Downloads, Documents, Pictures, This PC open, Network; whole rows.
+- explorerframe/nstc.c: the tree takes the visual style's Explorer look, and the
+  user's folders the names This PC has for them.
+---
+diff --git a/dlls/comdlg32/cdlg.h b/dlls/comdlg32/cdlg.h
+index 79c951d..7388787 100644
+--- a/dlls/comdlg32/cdlg.h
++++ b/dlls/comdlg32/cdlg.h
+@@ -157,6 +157,39 @@ typedef struct {
+ #define IDS_SELECT_FOLDER 1206
+ #define IDS_FONT_SIZE_INPUT 1207
+ 
++/* Arctic: the Windows 10 file dialog's words (itemdlg_res.rc), in a block of
++ * IDs of their own: comdlg32.rc takes its translations from the po files */
++#define IDS_ITEMDLG_OPEN_BUTTON     3200
++#define IDS_ITEMDLG_OPEN_READONLY   3201
++#define IDS_ITEMDLG_SEARCH_IN       3202
++#define IDS_ITEMDLG_ORGANIZE        3203
++#define IDS_ITEMDLG_NEW_FOLDER      3204
++#define IDS_ITEMDLG_BACK_TIP        3205
++#define IDS_ITEMDLG_FORWARD_TIP     3206
++#define IDS_ITEMDLG_UP_TIP          3207
++#define IDS_ITEMDLG_VIEW_TIP        3208
++#define IDS_ITEMDLG_REFRESH_TIP     3209
++#define IDS_ITEMDLG_MENU_CUT        3210
++#define IDS_ITEMDLG_MENU_COPY       3211
++#define IDS_ITEMDLG_MENU_PASTE      3212
++#define IDS_ITEMDLG_MENU_SELECTALL  3213
++#define IDS_ITEMDLG_MENU_DELETE     3214
++#define IDS_ITEMDLG_MENU_RENAME     3215
++#define IDS_ITEMDLG_MENU_PROPERTIES 3216
++#define IDS_ITEMDLG_VIEW_XLARGE     3217
++#define IDS_ITEMDLG_VIEW_LARGE      3218
++#define IDS_ITEMDLG_VIEW_MEDIUM     3219
++#define IDS_ITEMDLG_VIEW_SMALL      3220
++#define IDS_ITEMDLG_VIEW_LIST       3221
++#define IDS_ITEMDLG_VIEW_DETAILS    3222
++#define IDS_ITEMDLG_VIEW_TILES      3223
++#define IDS_ITEMDLG_VIEW_CONTENT    3224
++#define IDS_ITEMDLG_NEW_FOLDER_NAME 3225
++#define IDS_ITEMDLG_SAVE_AS_TYPE    3226
++#define IDS_ITEMDLG_FILE_NAME       3227
++#define IDS_ITEMDLG_SELECT_FOLDER   3228
++#define IDS_ITEMDLG_FOLDER          3229
++
+ #define IDS_FAKEDOCTEXT  1300
+ 
+ #include "windef.h"
+@@ -172,6 +205,12 @@ typedef struct {
+ HRESULT FileOpenDialog_Constructor(IUnknown *pUnkOuter, REFIID riid, void **ppv);
+ HRESULT FileSaveDialog_Constructor(IUnknown *pUnkOuter, REFIID riid, void **ppv);
+ 
++/* Arctic: GetOpenFileName and GetSaveFileName through the Common Item Dialog
++ * (filedlgofn.c); an OPENFILENAME hook's dialog inside it (itemdlg.c) */
++BOOL FILEDLG_GetFileNameW(OPENFILENAMEW *ofn, BOOL save);
++BOOL FILEDLG_GetFileNameA(OPENFILENAMEA *ofn, BOOL save);
++void ITEMDLG_SetHookChild(HWND dlg, HWND child);
++
+ /* Shared helper functions */
+ void COMDLG32_GetCanonicalPath(PCIDLIST_ABSOLUTE pidlAbsCurrent, LPWSTR lpstrFile, LPWSTR lpstrPathAndFile);
+ int FILEDLG95_ValidatePathAction(LPWSTR lpstrPathAndFile, IShellFolder **ppsf,
+diff --git a/dlls/comdlg32/filedlg.c b/dlls/comdlg32/filedlg.c
+index 286b9f4..cf0d572 100644
+--- a/dlls/comdlg32/filedlg.c
++++ b/dlls/comdlg32/filedlg.c
+@@ -4174,13 +4174,9 @@ BOOL WINAPI GetOpenFileNameA(OPENFILENAMEA *ofn)
+ 
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31A(ofn, OPEN_DIALOG);
+-    else
+-    {
+-        FileOpenDlgInfos info;
+ 
+-        init_filedlg_infoA(ofn, &info);
+-        return GetFileDialog95(&info, OPEN_DIALOG);
+-    }
++    /* Arctic: the one Open dialog, Windows 10's (filedlgofn.c) */
++    return FILEDLG_GetFileNameA(ofn, FALSE);
+ }
+ 
+ /***********************************************************************
+@@ -4209,13 +4205,9 @@ BOOL WINAPI GetOpenFileNameW(OPENFILENAMEW *ofn)
+ 
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31W(ofn, OPEN_DIALOG);
+-    else
+-    {
+-        FileOpenDlgInfos info;
+ 
+-        init_filedlg_infoW(ofn, &info);
+-        return GetFileDialog95(&info, OPEN_DIALOG);
+-    }
++    /* Arctic: the one Open dialog, Windows 10's (filedlgofn.c) */
++    return FILEDLG_GetFileNameW(ofn, FALSE);
+ }
+ 
+ 
+@@ -4239,13 +4231,9 @@ BOOL WINAPI GetSaveFileNameA(OPENFILENAMEA *ofn)
+ 
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31A(ofn, SAVE_DIALOG);
+-    else
+-    {
+-        FileOpenDlgInfos info;
+ 
+-        init_filedlg_infoA(ofn, &info);
+-        return GetFileDialog95(&info, SAVE_DIALOG);
+-    }
++    /* Arctic: the one Save dialog, Windows 10's (filedlgofn.c) */
++    return FILEDLG_GetFileNameA(ofn, TRUE);
+ }
+ 
+ /***********************************************************************
+@@ -4269,13 +4257,9 @@ BOOL WINAPI GetSaveFileNameW(
+ 
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31W(ofn, SAVE_DIALOG);
+-    else
+-    {
+-        FileOpenDlgInfos info;
+ 
+-        init_filedlg_infoW(ofn, &info);
+-        return GetFileDialog95(&info, SAVE_DIALOG);
+-    }
++    /* Arctic: the one Save dialog, Windows 10's (filedlgofn.c) */
++    return FILEDLG_GetFileNameW(ofn, TRUE);
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/comdlg32/itemdlg.c b/dlls/comdlg32/itemdlg.c
+index f001bf8..e76bb81 100644
+--- a/dlls/comdlg32/itemdlg.c
++++ b/dlls/comdlg32/itemdlg.c
+@@ -31,6 +31,7 @@
+ #include "commdlg.h"
+ #include "cdlg.h"
+ #include "filedlgbrowser.h"
++#include "itemdlg_chrome.h"
+ 
+ #include "wine/debug.h"
+ #include "wine/list.h"
+@@ -39,6 +40,24 @@
+ #define IDC_NAVBACK          201
+ #define IDC_NAVFORWARD       202
+ #define IDC_NAVUP            203
++/* the Windows 10 dialog's parts: address bar, search box, command bar */
++#define IDC_ADDRESS          204
++#define IDC_SEARCH           205
++#define IDC_CMDBAR           206
++#define IDC_ORGANIZE         207
++#define IDC_NEWFOLDER        208
++#define IDC_VIEWBAR          209
++#define IDC_VIEWMODE         210
++#define TIMER_SEARCH         1
++#define TIMER_REDRAW         2
++#define IDM_CUT              0x100
++#define IDM_COPY             0x101
++#define IDM_PASTE            0x102
++#define IDM_SELECTALL        0x103
++#define IDM_DELETE           0x104
++#define IDM_RENAME           0x105
++#define IDM_PROPERTIES       0x106
++#define IDM_VIEW_FIRST       0x110
+ 
+ #include <initguid.h>
+ /* This seems to be another version of IID_IFileDialogCustomize. If
+@@ -147,6 +166,19 @@ typedef struct FileDialogImpl {
+     GUID client_guid;
+ 
+     HANDLE user_actctx;
++
++    /* Arctic: the Windows 10 dialog around the browser (itemdlg_chrome.c) */
++    HWND hwnd_address, hwnd_search;
++    HFONT chrome_font;              /* the font of the messages, at the window's DPI */
++    WCHAR search[256];
++    UINT nav_back, nav_forward;     /* places in the browser's history either way */
++    BOOL nav_by_history, nav_started;
++    int chrome_bottom;              /* where the rows over the browser end */
++    int band_top;                   /* where the band of the names and the buttons starts */
++    HBRUSH top_brush, band_brush;
++    COLORREF top_color, band_color, text_color;
++    HWND hook_child;                /* the dialog of an OPENFILENAME hook (filedlgofn.c) */
++    HHOOK key_hook;                 /* Alt+arrows, F5, Alt+D, Ctrl+E */
+ } FileDialogImpl;
+ 
+ /**************************************************************************
+@@ -1740,208 +1772,253 @@ static BOOL update_open_dropdown(FileDialogImpl *This)
+     return show;
+ }
+ 
+-static void update_layout(FileDialogImpl *This)
+-{
+-    HDWP hdwp;
+-    HWND hwnd;
+-    RECT dialog_rc;
+-    RECT cancel_rc, dropdown_rc, open_rc;
+-    RECT filetype_rc, filename_rc, filenamelabel_rc;
+-    RECT toolbar_rc, ebrowser_rc, customctrls_rc;
+-    static const UINT vspacing = 4, hspacing = 4;
+-    static const UINT min_width = 320, min_height = 200;
+-    BOOL show_dropdown;
++static int scale_dlg(FileDialogImpl *This, int px);
+ 
+-    if (!GetClientRect(This->dlg_hwnd, &dialog_rc))
+-    {
+-        TRACE("Invalid dialog window, not updating layout\n");
+-        return;
+-    }
+-
+-    if(dialog_rc.right < min_width || dialog_rc.bottom < min_height)
+-    {
+-        TRACE("Dialog size (%ld, %ld) too small, not updating layout\n", dialog_rc.right, dialog_rc.bottom);
+-        return;
+-    }
+-
+-    /****
+-     * Calculate the size of the dialog and all the parts.
+-     */
++static int window_width(HWND hwnd)
++{
++    RECT rc;
++    if (!hwnd || !GetWindowRect(hwnd, &rc))
++        return 0;
++    return rc.right - rc.left;
++}
+ 
+-    /* Cancel button */
+-    hwnd = GetDlgItem(This->dlg_hwnd, IDCANCEL);
+-    if(hwnd)
+-    {
+-        int cancel_width, cancel_height;
+-        GetWindowRect(hwnd, &cancel_rc);
+-        cancel_width = cancel_rc.right - cancel_rc.left;
+-        cancel_height = cancel_rc.bottom - cancel_rc.top;
++static int window_height(HWND hwnd)
++{
++    RECT rc;
++    if (!hwnd || !GetWindowRect(hwnd, &rc))
++        return 0;
++    return rc.bottom - rc.top;
++}
+ 
+-        cancel_rc.left = dialog_rc.right - cancel_width - hspacing;
+-        cancel_rc.top = dialog_rc.bottom - cancel_height - vspacing;
+-        cancel_rc.right = cancel_rc.left + cancel_width;
+-        cancel_rc.bottom = cancel_rc.top + cancel_height;
+-    }
++static void defer(HDWP *hdwp, HWND hwnd, int x, int y, int w, int h)
++{
++    if (*hdwp && hwnd)
++        *hdwp = DeferWindowPos(*hdwp, hwnd, NULL, x, y, max(0, w), max(0, h), SWP_NOZORDER | SWP_NOACTIVATE);
++}
+ 
+-    /* Open/Save dropdown */
+-    show_dropdown = update_open_dropdown(This);
++/* Arctic: a push button as wide as Windows 10 has them, 75 pixels at least,
++ * and as its text needs */
++static int button_width(HWND hwnd, UINT dpi)
++{
++    WCHAR text[64];
++    HFONT font;
++    HGDIOBJ old;
++    SIZE size = { 0 };
++    HDC hdc;
++    int width = window_width(hwnd);
+ 
+-    if(show_dropdown)
+-    {
+-        int dropdown_width, dropdown_height;
+-        hwnd = GetDlgItem(This->dlg_hwnd, psh1);
++    if (!hwnd) return 0;
++    GetWindowTextW(hwnd, text, ARRAY_SIZE(text));
++    font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
++    hdc = GetDC(hwnd);
++    old = SelectObject(hdc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
++    GetTextExtentPoint32W(hdc, text, lstrlenW(text), &size);
++    SelectObject(hdc, old);
++    ReleaseDC(hwnd, hdc);
++    return max(width, max(MulDiv(75, dpi, USER_DEFAULT_SCREEN_DPI), size.cx + MulDiv(24, dpi, USER_DEFAULT_SCREEN_DPI)));
++}
+ 
+-        GetWindowRect(hwnd, &dropdown_rc);
+-        dropdown_width = dropdown_rc.right - dropdown_rc.left;
+-        dropdown_height = dropdown_rc.bottom - dropdown_rc.top;
++/* Arctic: the colours of the look, the system's (itemdlg_chrome.c) */
++static void update_look(FileDialogImpl *This)
++{
++    struct chrome_look look;
+ 
+-        dropdown_rc.left = cancel_rc.left - dropdown_width - hspacing;
+-        dropdown_rc.top = cancel_rc.top;
+-        dropdown_rc.right = dropdown_rc.left + dropdown_width;
+-        dropdown_rc.bottom = dropdown_rc.top + dropdown_height;
+-    }
+-    else
++    chrome_get_look(&look, This->dlg_hwnd);
++    if (!This->top_brush || This->top_color != look.top)
+     {
+-        dropdown_rc.left = dropdown_rc.right = cancel_rc.left - hspacing;
+-        dropdown_rc.top = cancel_rc.top;
+-        dropdown_rc.bottom = cancel_rc.bottom;
++        if (This->top_brush) DeleteObject(This->top_brush);
++        This->top_brush = CreateSolidBrush(look.top);
++        This->top_color = look.top;
+     }
+-
+-    /* Open/Save button */
+-    hwnd = GetDlgItem(This->dlg_hwnd, IDOK);
+-    if(hwnd)
++    if (!This->band_brush || This->band_color != look.band)
+     {
+-        int open_width, open_height;
+-        GetWindowRect(hwnd, &open_rc);
+-        open_width = open_rc.right - open_rc.left;
+-        open_height = open_rc.bottom - open_rc.top;
+-
+-        open_rc.left = dropdown_rc.left - open_width;
+-        open_rc.top = dropdown_rc.top;
+-        open_rc.right = open_rc.left + open_width;
+-        open_rc.bottom = open_rc.top + open_height;
++        if (This->band_brush) DeleteObject(This->band_brush);
++        This->band_brush = CreateSolidBrush(look.band);
++        This->band_color = look.band;
+     }
++    This->text_color = GetSysColor(COLOR_BTNTEXT);
++}
+ 
+-    /* The filetype combobox. */
+-    hwnd = GetDlgItem(This->dlg_hwnd, IDC_FILETYPE);
+-    if(hwnd)
+-    {
+-        int filetype_width, filetype_height;
+-        GetWindowRect(hwnd, &filetype_rc);
+-
+-        filetype_width = filetype_rc.right - filetype_rc.left;
+-        filetype_height = filetype_rc.bottom - filetype_rc.top;
+-
+-        filetype_rc.right = cancel_rc.right;
+-
+-        filetype_rc.left = filetype_rc.right - filetype_width;
+-        filetype_rc.top = cancel_rc.top - filetype_height - vspacing;
+-        filetype_rc.bottom = filetype_rc.top + filetype_height;
+-
+-        if(!This->filterspec_count)
+-            filetype_rc.left = filetype_rc.right;
+-    }
+-
+-    /* Filename label. */
+-    hwnd = GetDlgItem(This->dlg_hwnd, IDC_FILENAMESTATIC);
+-    if(hwnd)
+-    {
+-        int filetypelabel_width, filetypelabel_height;
+-        GetWindowRect(hwnd, &filenamelabel_rc);
+-
+-        filetypelabel_width = filenamelabel_rc.right - filenamelabel_rc.left;
+-        filetypelabel_height = filenamelabel_rc.bottom - filenamelabel_rc.top;
+-
+-        filenamelabel_rc.left = 160; /* FIXME */
+-        filenamelabel_rc.top = filetype_rc.top;
+-        filenamelabel_rc.right = filenamelabel_rc.left + filetypelabel_width;
+-        filenamelabel_rc.bottom = filenamelabel_rc.top + filetypelabel_height;
+-    }
++/* Arctic: Windows 10's layout: the arrows, the address bar and the search box
++ * in a row; Organize, New folder and the view under them; the browser; the
++ * program's controls, the names and the buttons in a band at the bottom.
++ * Windows 11's is the same, roomier, its fields round. */
++static void update_layout(FileDialogImpl *This)
++{
++    struct chrome_look look;
++    HDWP hdwp;
++    HWND hwnd;
++    RECT rc, ebrowser_rc, customctrls_rc;
++    BOOL save = This->dlg_type == ITEMDLG_TYPE_SAVE;
++    BOOL show_dropdown;
++    int pad, gap, field, row1, row1h, row2, row2h, navh, cmdh;
++    int x, w, y, btnh, label_w, label_x, type_w, top;
++    int navw, viewbarw, searchw, ok_w, cancel_w, dropdown_w, cmdbar_w;
+ 
+-    /* Filename edit box. */
+-    hwnd = GetDlgItem(This->dlg_hwnd, IDC_FILENAME);
+-    if(hwnd)
+-    {
+-        int filename_width, filename_height;
+-        GetWindowRect(hwnd, &filename_rc);
++    if (!GetClientRect(This->dlg_hwnd, &rc) || rc.right < scale_dlg(This, 320) || rc.bottom < scale_dlg(This, 200))
++        return;
+ 
+-        filename_width = filetype_rc.left - filenamelabel_rc.right - hspacing*2;
+-        filename_height = filename_rc.bottom - filename_rc.top;
++    chrome_get_look(&look, This->dlg_hwnd);
++    pad = scale_dlg(This, look.win11 ? 10 : 8);
++    gap = scale_dlg(This, 6);
++    row1 = scale_dlg(This, look.win11 ? 6 : 4);
++    row1h = scale_dlg(This, look.win11 ? 42 : 34);
++    field = scale_dlg(This, look.win11 ? 32 : 24);
++    navh = scale_dlg(This, look.win11 ? 34 : 28);
++    row2h = scale_dlg(This, look.win11 ? 42 : 32);
++    cmdh = scale_dlg(This, look.win11 ? 36 : 26);
+ 
+-        filename_rc.left = filenamelabel_rc.right + hspacing;
+-        filename_rc.top = filetype_rc.top;
+-        filename_rc.right = filename_rc.left + filename_width;
+-        filename_rc.bottom = filename_rc.top + filename_height;
+-    }
++    hdwp = BeginDeferWindowPos(20);
+ 
++    /* the top row */
+     hwnd = GetDlgItem(This->dlg_hwnd, IDC_NAV_TOOLBAR);
+-    if(hwnd)
+-    {
+-        GetWindowRect(hwnd, &toolbar_rc);
+-        MapWindowPoints(NULL, This->dlg_hwnd, (POINT*)&toolbar_rc, 2);
++    navw = chrome_buttons_width(hwnd, navh);
++    defer(&hdwp, hwnd, pad / 2, row1 + (row1h - navh) / 2, navw, navh);
++    searchw = min(scale_dlg(This, 260), (int)rc.right / 4);
++    defer(&hdwp, This->hwnd_search, rc.right - pad - searchw, row1 + (row1h - field) / 2, searchw, field);
++    x = pad / 2 + navw + gap;
++    defer(&hdwp, This->hwnd_address, x, row1 + (row1h - field) / 2, rc.right - pad - searchw - gap - x, field);
++
++    /* the command bar */
++    row2 = row1 + row1h;
++    hwnd = GetDlgItem(This->dlg_hwnd, IDC_CMDBAR);
++    cmdbar_w = chrome_buttons_width(hwnd, cmdh);
++    defer(&hdwp, hwnd, pad / 2, row2 + (row2h - cmdh) / 2, cmdbar_w, cmdh);
++    hwnd = GetDlgItem(This->dlg_hwnd, IDC_VIEWBAR);
++    viewbarw = chrome_buttons_width(hwnd, cmdh);
++    defer(&hdwp, hwnd, rc.right - pad / 2 - viewbarw, row2 + (row2h - cmdh) / 2, viewbarw, cmdh);
++    This->chrome_bottom = row2 + row2h;
++
++    /* the buttons, at the bottom right */
++    btnh = window_height(GetDlgItem(This->dlg_hwnd, IDOK));
++    ok_w = button_width(GetDlgItem(This->dlg_hwnd, IDOK), This->dpi_x);
++    cancel_w = button_width(GetDlgItem(This->dlg_hwnd, IDCANCEL), This->dpi_x);
++    show_dropdown = update_open_dropdown(This);
++    dropdown_w = show_dropdown ? window_width(GetDlgItem(This->dlg_hwnd, psh1)) : 0;
++    y = rc.bottom - pad - btnh;
++    x = rc.right - pad - cancel_w;
++    defer(&hdwp, GetDlgItem(This->dlg_hwnd, IDCANCEL), x, y, cancel_w, btnh);
++    x -= gap + dropdown_w;
++    if (show_dropdown)
++        defer(&hdwp, GetDlgItem(This->dlg_hwnd, psh1), x, y, dropdown_w, btnh);
++    x -= ok_w;
++    defer(&hdwp, GetDlgItem(This->dlg_hwnd, IDOK), x, y, ok_w, btnh);
++
++    /* the name and the type: in one row in the Open dialog, two in Save */
++    field = max(scale_dlg(This, 23), window_height(GetDlgItem(This->dlg_hwnd, IDC_FILETYPE)));
++    label_w = max(window_width(GetDlgItem(This->dlg_hwnd, IDC_FILENAMESTATIC)),
++                  save ? window_width(GetDlgItem(This->dlg_hwnd, IDC_FILETYPESTATIC)) : 0);
++    label_x = save ? pad : max(pad, (int)rc.right / 5);
++    type_w = This->filterspec_count ? min(scale_dlg(This, 220), (int)rc.right / 3) : 0;
++    y -= pad + field;
++    if (save && This->filterspec_count)
++    {
++        defer(&hdwp, GetDlgItem(This->dlg_hwnd, IDC_FILETYPESTATIC), label_x, y + (field - window_height(GetDlgItem(This->dlg_hwnd, IDC_FILETYPESTATIC))) / 2,
++              label_w, window_height(GetDlgItem(This->dlg_hwnd, IDC_FILETYPESTATIC)));
++        defer(&hdwp, GetDlgItem(This->dlg_hwnd, IDC_FILETYPE), label_x + label_w + gap, y,
++              rc.right - pad - (label_x + label_w + gap), window_height(GetDlgItem(This->dlg_hwnd, IDC_FILETYPE)));
++        y -= gap + field;
++        w = rc.right - pad - (label_x + label_w + gap);
+     }
+-
+-    /* The custom controls */
+-    customctrls_rc.left = dialog_rc.left + hspacing;
+-    customctrls_rc.right = dialog_rc.right - hspacing;
+-    customctrls_rc.bottom = filename_rc.top - vspacing;
+-    customctrls_rc.top = customctrls_rc.bottom -
+-        ctrl_container_resize(This, customctrls_rc.right - customctrls_rc.left);
+-
+-    /* The ExplorerBrowser control. */
+-    ebrowser_rc.left = dialog_rc.left + hspacing;
+-    ebrowser_rc.top = toolbar_rc.bottom + vspacing;
+-    ebrowser_rc.right = dialog_rc.right - hspacing;
+-    ebrowser_rc.bottom = customctrls_rc.top - vspacing;
+-
+-    /****
+-     * Move everything to the right place.
+-     */
+-
+-    /* FIXME: The Save Dialog uses a slightly different layout. */
+-    hdwp = BeginDeferWindowPos(7);
+-
+-    if(hdwp && This->peb)
++    else
++    {
++        if (This->filterspec_count)
++            defer(&hdwp, GetDlgItem(This->dlg_hwnd, IDC_FILETYPE), rc.right - pad - type_w, y,
++                  type_w, window_height(GetDlgItem(This->dlg_hwnd, IDC_FILETYPE)));
++        w = rc.right - pad - (type_w ? type_w + gap : 0) - (label_x + label_w + gap);
++    }
++    defer(&hdwp, GetDlgItem(This->dlg_hwnd, IDC_FILENAMESTATIC), label_x,
++          y + (field - window_height(GetDlgItem(This->dlg_hwnd, IDC_FILENAMESTATIC))) / 2,
++          label_w, window_height(GetDlgItem(This->dlg_hwnd, IDC_FILENAMESTATIC)));
++    defer(&hdwp, GetDlgItem(This->dlg_hwnd, IDC_FILENAME), label_x + label_w + gap, y, w, field);
++    top = y;
++
++    /* an OPENFILENAME hook's own dialog, in the band over the names */
++    customctrls_rc.bottom = top - gap;
++    if (This->hook_child && IsWindow(This->hook_child))
++    {
++        RECT child;
++        GetWindowRect(This->hook_child, &child);
++        customctrls_rc.bottom -= child.bottom - child.top;
++        defer(&hdwp, This->hook_child, pad, customctrls_rc.bottom, min(child.right - child.left, (LONG)rc.right - 2 * pad),
++              child.bottom - child.top);
++        top = customctrls_rc.bottom;
++    }
++
++    /* the program's own controls, in the band too */
++    customctrls_rc.left = pad;
++    customctrls_rc.right = rc.right - pad;
++    customctrls_rc.top = customctrls_rc.bottom - ctrl_container_resize(This, customctrls_rc.right - customctrls_rc.left);
++    if (This->cctrls_hwnd)
++        defer(&hdwp, This->cctrls_hwnd, customctrls_rc.left, customctrls_rc.top,
++              customctrls_rc.right - customctrls_rc.left, customctrls_rc.bottom - customctrls_rc.top);
++    if (customctrls_rc.top < customctrls_rc.bottom)
++        top = customctrls_rc.top;
++    This->band_top = top - pad;
++
++    /* the browser between them, under a line */
++    ebrowser_rc.left = 0;
++    ebrowser_rc.top = This->chrome_bottom + 1;
++    ebrowser_rc.right = rc.right;
++    ebrowser_rc.bottom = This->band_top;
++    if (hdwp && This->peb)
+         IExplorerBrowser_SetRect(This->peb, &hdwp, ebrowser_rc);
+ 
+-    if(hdwp && This->cctrls_hwnd)
+-        DeferWindowPos(hdwp, This->cctrls_hwnd, NULL,
+-                       customctrls_rc.left, customctrls_rc.top,
+-                       customctrls_rc.right - customctrls_rc.left, customctrls_rc.bottom - customctrls_rc.top,
+-                       SWP_NOZORDER | SWP_NOACTIVATE);
+-
+-    /* The default controls */
+-    if(hdwp && (hwnd = GetDlgItem(This->dlg_hwnd, IDC_FILETYPE)) )
+-        DeferWindowPos(hdwp, hwnd, NULL, filetype_rc.left, filetype_rc.top, 0, 0,
+-                       SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+-
+-    if(hdwp && (hwnd = GetDlgItem(This->dlg_hwnd, IDC_FILENAME)) )
+-        DeferWindowPos(hdwp, hwnd, NULL, filename_rc.left, filename_rc.top,
+-                       filename_rc.right - filename_rc.left, filename_rc.bottom - filename_rc.top,
+-                       SWP_NOZORDER | SWP_NOACTIVATE);
+-
+-    if(hdwp && (hwnd = GetDlgItem(This->dlg_hwnd, IDC_FILENAMESTATIC)) )
+-        DeferWindowPos(hdwp, hwnd, NULL, filenamelabel_rc.left, filenamelabel_rc.top, 0, 0,
+-                       SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+-
+-    if(hdwp && (hwnd = GetDlgItem(This->dlg_hwnd, IDOK)) )
+-        DeferWindowPos(hdwp, hwnd, NULL, open_rc.left, open_rc.top, 0, 0,
+-                       SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+-
+-    if(hdwp && This->hmenu_opendropdown && (hwnd = GetDlgItem(This->dlg_hwnd, psh1)))
+-        DeferWindowPos(hdwp, hwnd, NULL, dropdown_rc.left, dropdown_rc.top, 0, 0,
+-                       SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+-
+-    if(hdwp && (hwnd = GetDlgItem(This->dlg_hwnd, IDCANCEL)) )
+-        DeferWindowPos(hdwp, hwnd, NULL, cancel_rc.left, cancel_rc.top, 0, 0,
+-                       SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+-
+-    if(hdwp)
++    if (hdwp)
+         EndDeferWindowPos(hdwp);
+     else
+         ERR("Failed to position dialog controls.\n");
++    /* the parts that moved, with the places they left: a window scaled for
++     * a program unaware of the DPI kept a row of where they had been */
++    RedrawWindow(This->dlg_hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
++}
++
++/* Arctic: the rows over the browser and the band under it, each in the
++ * colour of the look, a line between them and the browser */
++static LRESULT on_wm_erasebkgnd(FileDialogImpl *This, HDC hdc)
++{
++    struct chrome_look look;
++    RECT rc, part;
++    HBRUSH line;
++
++    chrome_get_look(&look, This->dlg_hwnd);
++    update_look(This);
++    GetClientRect(This->dlg_hwnd, &rc);
++    part = rc;
++    part.bottom = This->chrome_bottom;
++    FillRect(hdc, &part, This->top_brush);
++    part.top = This->chrome_bottom;
++    part.bottom = This->band_top;
++    FillRect(hdc, &part, GetSysColorBrush(COLOR_WINDOW));
++    part.top = This->band_top;
++    part.bottom = rc.bottom;
++    FillRect(hdc, &part, This->band_brush);
++
++    line = CreateSolidBrush(look.line);
++    SetRect(&part, 0, This->chrome_bottom, rc.right, This->chrome_bottom + 1);
++    FillRect(hdc, &part, line);
++    SetRect(&part, 0, This->band_top, rc.right, This->band_top + 1);
++    FillRect(hdc, &part, line);
++    DeleteObject(line);
++    return TRUE;
++}
+ 
+-    return;
++/* Arctic: the labels in the band take its colour, those over the browser the rows' */
++static LRESULT on_wm_ctlcolor(FileDialogImpl *This, HDC hdc, HWND ctrl)
++{
++    RECT rc;
++
++    update_look(This);
++    GetWindowRect(ctrl, &rc);
++    MapWindowPoints(NULL, This->dlg_hwnd, (POINT *)&rc, 2);
++    SetTextColor(hdc, This->text_color);
++    if (ctrl == This->dlg_hwnd || rc.top < This->chrome_bottom)
++    {
++        SetBkColor(hdc, This->top_color);
++        return (LRESULT)This->top_brush;
++    }
++    SetBkColor(hdc, This->band_color);
++    return (LRESULT)This->band_brush;
+ }
+ 
+ static HRESULT init_explorerbrowser(FileDialogImpl *This)
+@@ -1978,7 +2055,9 @@ static HRESULT init_explorerbrowser(FileDialogImpl *This)
+         ERR("Advise (ExplorerBrowser) failed.\n");
+ 
+     /* Get previous options? */
+-    fos.ViewMode = fos.fFlags = 0;
++    /* Details, as Windows 10's dialogs open */
++    fos.ViewMode = FVM_DETAILS;
++    fos.fFlags = 0;
+     if(!(This->options & FOS_ALLOWMULTISELECT))
+         fos.fFlags |= FWF_SINGLESEL;
+ 
+@@ -2000,50 +2079,175 @@ static HRESULT init_explorerbrowser(FileDialogImpl *This)
+     return S_OK;
+ }
+ 
++static int scale_dlg(FileDialogImpl *This, int px)
++{
++    return MulDiv(px, This->dpi_y, USER_DEFAULT_SCREEN_DPI);
++}
++
++static void load_text(UINT id, WCHAR *text, int count, const WCHAR *fallback)
++{
++    if (!LoadStringW(COMDLG32_hInstance, id, text, count))
++        lstrcpynW(text, fallback, count);
++}
++
++static IShellView *current_view(FileDialogImpl *This);
++
++/* the view button shows the view the folder is in */
++static void update_view_button(FileDialogImpl *This)
++{
++    IShellView *psv = current_view(This);
++    IFolderView *pfv = NULL;
++    UINT mode = FVM_DETAILS;
++    int glyph;
++
++    if (psv && SUCCEEDED(IShellView_QueryInterface(psv, &IID_IFolderView, (void **)&pfv)))
++    {
++        IFolderView_GetCurrentViewMode(pfv, &mode);
++        IFolderView_Release(pfv);
++    }
++    if (psv)
++        IShellView_Release(psv);
++    switch (mode)
++    {
++    case FVM_DETAILS: glyph = GLYPH_DETAILS; break;
++    case FVM_LIST:    glyph = GLYPH_LIST; break;
++    case FVM_TILE:
++    case FVM_CONTENT: glyph = GLYPH_TILES; break;
++    default:          glyph = GLYPH_ICONS; break;
++    }
++    chrome_buttons_set_glyph(GetDlgItem(This->dlg_hwnd, IDC_VIEWBAR), IDC_VIEWMODE, glyph);
++}
++
++/* Arctic: the rows over the browser, as Windows 10 has them: the arrows, the
++ * address bar and the search box; under them Organize, New folder, the view
++ * (itemdlg_chrome.c draws them in the look of the system) */
+ static void init_toolbar(FileDialogImpl *This, HWND hwnd)
+ {
+-    HWND htoolbar;
+-    TBADDBITMAP tbab;
+-    TBBUTTON button[3];
+-    int height;
+-    int navUpImgIndex;
+-
+-    htoolbar = CreateWindowExW(0, TOOLBARCLASSNAMEW, NULL, TBSTYLE_FLAT | WS_CHILD | WS_VISIBLE,
+-                               0, 0, 0, 0,
+-                               hwnd, (HMENU)IDC_NAV_TOOLBAR, NULL, NULL);
+-
+-    tbab.hInst = HINST_COMMCTRL;
+-    tbab.nID = IDB_HIST_LARGE_COLOR;
+-    SendMessageW(htoolbar, TB_ADDBITMAP, 0, (LPARAM)&tbab);
+-    tbab.nID = IDB_VIEW_LARGE_COLOR;
+-    navUpImgIndex = SendMessageW(htoolbar, TB_ADDBITMAP, 0, (LPARAM)&tbab);
+-    navUpImgIndex += VIEW_PARENTFOLDER;
+-
+-    button[0].iBitmap = HIST_BACK;
+-    button[0].idCommand = IDC_NAVBACK;
+-    button[0].fsState = TBSTATE_ENABLED;
+-    button[0].fsStyle = BTNS_BUTTON;
+-    button[0].dwData = 0;
+-    button[0].iString = 0;
+-
+-    button[1].iBitmap = HIST_FORWARD;
+-    button[1].idCommand = IDC_NAVFORWARD;
+-    button[1].fsState = TBSTATE_ENABLED;
+-    button[1].fsStyle = BTNS_BUTTON;
+-    button[1].dwData = 0;
+-    button[1].iString = 0;
+-
+-    button[2].iBitmap = navUpImgIndex;
+-    button[2].idCommand = IDC_NAVUP;
+-    button[2].fsState = TBSTATE_ENABLED;
+-    button[2].fsStyle = BTNS_BUTTON;
+-    button[2].dwData = 0;
+-    button[2].iString = 0;
+-
+-    SendMessageW(htoolbar, TB_ADDBUTTONSW, 3, (LPARAM)button);
+-    height = MulDiv(24, This->dpi_y, USER_DEFAULT_SCREEN_DPI);
+-    SendMessageW(htoolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(height, height));
+-    SendMessageW(htoolbar, TB_AUTOSIZE, 0, 0);
++    WCHAR text[64], tip[128];
++    HWND strip;
++
++    chrome_register();
++    update_look(This);
++    if (This->chrome_font)
++        DeleteObject(This->chrome_font);
++    This->chrome_font = chrome_font(This->dpi_y);
++
++    /* back, forward, up */
++    strip = chrome_create_buttons(hwnd, IDC_NAV_TOOLBAR);
++    SendMessageW(strip, WM_SETFONT, (WPARAM)This->chrome_font, FALSE);
++    load_text(IDS_ITEMDLG_BACK_TIP, tip, ARRAY_SIZE(tip), L"Back (Alt + Left Arrow)");
++    chrome_buttons_add(strip, IDC_NAVBACK, GLYPH_BACK, NULL, tip, 0);
++    load_text(IDS_ITEMDLG_FORWARD_TIP, tip, ARRAY_SIZE(tip), L"Forward (Alt + Right Arrow)");
++    chrome_buttons_add(strip, IDC_NAVFORWARD, GLYPH_FORWARD, NULL, tip, 0);
++    load_text(IDS_ITEMDLG_UP_TIP, tip, ARRAY_SIZE(tip), L"Up to the parent folder (Alt + Up Arrow)");
++    chrome_buttons_add(strip, IDC_NAVUP, GLYPH_UP, NULL, tip, 0);
++    chrome_buttons_enable(strip, IDC_NAVBACK, FALSE);
++    chrome_buttons_enable(strip, IDC_NAVFORWARD, FALSE);
++
++    This->hwnd_address = chrome_create_address(hwnd, IDC_ADDRESS);
++    SendMessageW(This->hwnd_address, WM_SETFONT, (WPARAM)This->chrome_font, FALSE);
++    This->hwnd_search = chrome_create_search(hwnd, IDC_SEARCH);
++    SendMessageW(This->hwnd_search, WM_SETFONT, (WPARAM)This->chrome_font, FALSE);
++
++    /* Organize, New folder */
++    strip = chrome_create_buttons(hwnd, IDC_CMDBAR);
++    SendMessageW(strip, WM_SETFONT, (WPARAM)This->chrome_font, FALSE);
++    load_text(IDS_ITEMDLG_ORGANIZE, text, ARRAY_SIZE(text), L"Organize");
++    chrome_buttons_add(strip, IDC_ORGANIZE, GLYPH_NONE, text, NULL, CHROME_BUTTON_MENU);
++    load_text(IDS_ITEMDLG_NEW_FOLDER, text, ARRAY_SIZE(text), L"New folder");
++    chrome_buttons_add(strip, IDC_NEWFOLDER, GLYPH_NONE, text, NULL, 0);
++
++    /* the view: the button steps through the views, its arrow lists them */
++    strip = chrome_create_buttons(hwnd, IDC_VIEWBAR);
++    SendMessageW(strip, WM_SETFONT, (WPARAM)This->chrome_font, FALSE);
++    load_text(IDS_ITEMDLG_VIEW_TIP, tip, ARRAY_SIZE(tip), L"Change your view");
++    chrome_buttons_add(strip, IDC_VIEWMODE, GLYPH_DETAILS, NULL, tip, CHROME_BUTTON_SPLIT);
++}
++
++/* The arrows as the browser's history allows */
++static void update_nav_buttons(FileDialogImpl *This)
++{
++    HWND strip = GetDlgItem(This->dlg_hwnd, IDC_NAV_TOOLBAR);
++    BOOL up = FALSE;
++    LPITEMIDLIST pidl;
++
++    if (!strip)
++        return;
++    if (This->psi_folder && SUCCEEDED(SHGetIDListFromObject((IUnknown *)This->psi_folder, &pidl)))
++    {
++        up = pidl->mkid.cb != 0;
++        ILFree(pidl);
++    }
++    chrome_buttons_enable(strip, IDC_NAVBACK, This->nav_back > 0);
++    chrome_buttons_enable(strip, IDC_NAVFORWARD, This->nav_forward > 0);
++    chrome_buttons_enable(strip, IDC_NAVUP, up);
++}
++
++static LRESULT on_browse_back(FileDialogImpl *This);
++static LRESULT on_browse_forward(FileDialogImpl *This);
++static LRESULT on_browse_up(FileDialogImpl *This);
++
++/* Arctic: the keys of Windows' dialog, whichever of its controls has the
++ * focus: Alt+Left, Alt+Right, Alt+Up, Backspace in the view, F5, Alt+D or F4
++ * for the address, Ctrl+E or Ctrl+F for the search */
++static BOOL dialog_key(FileDialogImpl *This, const MSG *msg)
++{
++    BOOL alt = msg->message == WM_SYSKEYDOWN, ctrl = GetKeyState(VK_CONTROL) < 0;
++    WCHAR cls[32] = L"";
++    IShellView *psv;
++
++    if (alt)
++    {
++        switch (msg->wParam)
++        {
++        case VK_LEFT:  on_browse_back(This); return TRUE;
++        case VK_RIGHT: on_browse_forward(This); return TRUE;
++        case VK_UP:    on_browse_up(This); return TRUE;
++        case 'D':      chrome_address_edit(This->hwnd_address); return TRUE;
++        }
++        return FALSE;
++    }
++    switch (msg->wParam)
++    {
++    case VK_F5:
++        if ((psv = current_view(This)))
++        {
++            IShellView_Refresh(psv);
++            IShellView_Release(psv);
++        }
++        return TRUE;
++    case VK_F4:
++        if (GetAncestor(msg->hwnd, GA_PARENT) == This->hwnd_address || msg->hwnd == This->hwnd_address)
++            return FALSE;
++        chrome_address_edit(This->hwnd_address);
++        return TRUE;
++    case 'E':
++    case 'F':
++        if (!ctrl) return FALSE;
++        chrome_search_focus(This->hwnd_search);
++        return TRUE;
++    case VK_BACK:
++        GetClassNameW(msg->hwnd, cls, ARRAY_SIZE(cls));
++        if (lstrcmpiW(cls, WC_LISTVIEWW)) return FALSE;
++        on_browse_back(This);
++        return TRUE;
++    }
++    return FALSE;
++}
++
++static LRESULT CALLBACK key_hook_proc(int code, WPARAM wparam, LPARAM lparam)
++{
++    MSG *msg = (MSG *)lparam;
++
++    if (code == HC_ACTION && wparam == PM_REMOVE && msg->hwnd &&
++        (msg->message == WM_KEYDOWN || msg->message == WM_SYSKEYDOWN))
++    {
++        FileDialogImpl *This = GetPropW(GetAncestor(msg->hwnd, GA_ROOT), L"itemdlg_keys");
++
++        if (This && This->dlg_hwnd && dialog_key(This, msg))
++            msg->message = WM_NULL;
++    }
++    return CallNextHookEx(NULL, code, wparam, lparam);
+ }
+ 
+ static void update_control_text(FileDialogImpl *This)
+@@ -2110,11 +2314,37 @@ static LRESULT on_wm_initdialog(HWND hwnd, LPARAM lParam)
+     SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LPARAM)This);
+     This->dlg_hwnd = hwnd;
+ 
++    /* Arctic: the DPI of the window, which is the monitor's in a program
++     * aware of the monitors (Chrome), the system's otherwise */
++    {
++        UINT dpi = GetDpiForWindow(hwnd);
++        if (dpi && dpi != This->dpi_y)
++        {
++            This->dpi_x = This->dpi_y = dpi;
++            This->cctrl_width = MulDiv(160, dpi, USER_DEFAULT_SCREEN_DPI);
++            This->cctrl_indent = MulDiv(100, dpi, USER_DEFAULT_SCREEN_DPI);
++            This->cctrl_def_height = MulDiv(23, dpi, USER_DEFAULT_SCREEN_DPI);
++        }
++    }
++    SetPropW(hwnd, L"itemdlg_keys", This);
++    This->key_hook = SetWindowsHookExW(WH_GETMESSAGE, key_hook_proc, NULL, GetCurrentThreadId());
++
+     hitem = GetDlgItem(This->dlg_hwnd, pshHelp);
+     if(hitem) ShowWindow(hitem, SW_HIDE);
+ 
++    /* the type has a label in the Save dialog only, as Windows 10's */
+     hitem = GetDlgItem(This->dlg_hwnd, IDC_FILETYPESTATIC);
+-    if(hitem) ShowWindow(hitem, SW_HIDE);
++    if(hitem && This->dlg_type == ITEMDLG_TYPE_SAVE && This->filterspec_count)
++    {
++        WCHAR label[64];
++        if (LoadStringW(COMDLG32_hInstance, IDS_ITEMDLG_SAVE_AS_TYPE, label, ARRAY_SIZE(label)))
++        {
++            SetWindowTextW(hitem, label);
++            ctrl_resize(hitem, 0, MulDiv(250, This->dpi_x, USER_DEFAULT_SCREEN_DPI), FALSE);
++        }
++    }
++    else if(hitem)
++        ShowWindow(hitem, SW_HIDE);
+ 
+     /* Fill filetypes combobox, or hide it. */
+     hitem = GetDlgItem(This->dlg_hwnd, IDC_FILETYPE);
+@@ -2184,10 +2414,27 @@ static LRESULT on_wm_initdialog(HWND hwnd, LPARAM lParam)
+     }
+ 
+     ctrl_container_reparent(This, This->dlg_hwnd);
+-    init_explorerbrowser(This);
+     init_toolbar(This, hwnd);
++    init_explorerbrowser(This);
+     update_control_text(This);
++
++    /* Windows 10's size, in the middle of the owner (or of the screen) */
++    {
++        RECT owner, work, rc;
++        HWND parent = GetWindow(hwnd, GW_OWNER);
++        int w = MulDiv(950, This->dpi_x, USER_DEFAULT_SCREEN_DPI), h = MulDiv(560, This->dpi_y, USER_DEFAULT_SCREEN_DPI);
++        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
++        w = min(w, work.right - work.left);
++        h = min(h, work.bottom - work.top);
++        if (!parent || !GetWindowRect(parent, &owner))
++            owner = work;
++        SetRect(&rc, (owner.left + owner.right - w) / 2, (owner.top + owner.bottom - h) / 2, 0, 0);
++        rc.left = max(work.left, min(rc.left, work.right - w));
++        rc.top = max(work.top, min(rc.top, work.bottom - h));
++        SetWindowPos(hwnd, NULL, rc.left, rc.top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
++    }
+     update_layout(This);
++    SetTimer(hwnd, TIMER_REDRAW, 300, NULL);
+ 
+     if(This->filterspec_count)
+         events_OnTypeChange(This);
+@@ -2204,14 +2451,38 @@ static LRESULT on_wm_size(FileDialogImpl *This)
+     return FALSE;
+ }
+ 
++/* Arctic: on a monitor of another scale, the dialog's parts take its DPI */
++static LRESULT on_wm_dpichanged(FileDialogImpl *This, WPARAM wparam, LPARAM lparam)
++{
++    const RECT *rc = (const RECT *)lparam;
++    HWND child;
++
++    This->dpi_x = This->dpi_y = HIWORD(wparam);
++    This->cctrl_width = MulDiv(160, This->dpi_x, USER_DEFAULT_SCREEN_DPI);
++    This->cctrl_indent = MulDiv(100, This->dpi_x, USER_DEFAULT_SCREEN_DPI);
++    This->cctrl_def_height = MulDiv(23, This->dpi_y, USER_DEFAULT_SCREEN_DPI);
++    if (This->chrome_font) DeleteObject(This->chrome_font);
++    This->chrome_font = chrome_font(This->dpi_y);
++    for (child = GetWindow(This->dlg_hwnd, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
++    {
++        UINT id = GetDlgCtrlID(child);
++        if (id == IDC_NAV_TOOLBAR || id == IDC_CMDBAR || id == IDC_VIEWBAR || id == IDC_ADDRESS || id == IDC_SEARCH)
++            SendMessageW(child, WM_SETFONT, (WPARAM)This->chrome_font, TRUE);
++    }
++    SetWindowPos(This->dlg_hwnd, NULL, rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top,
++                 SWP_NOZORDER | SWP_NOACTIVATE);
++    update_layout(This);
++    return FALSE;
++}
++
+ static LRESULT on_wm_getminmaxinfo(FileDialogImpl *This, LPARAM lparam)
+ {
+     MINMAXINFO *mmi = (MINMAXINFO*)lparam;
+     TRACE("%p (%p)\n", This, mmi);
+ 
+     /* FIXME */
+-    mmi->ptMinTrackSize.x = 640;
+-    mmi->ptMinTrackSize.y = 480;
++    mmi->ptMinTrackSize.x = MulDiv(500, This->dpi_x, USER_DEFAULT_SCREEN_DPI);
++    mmi->ptMinTrackSize.y = MulDiv(360, This->dpi_y, USER_DEFAULT_SCREEN_DPI);
+ 
+     return FALSE;
+ }
+@@ -2232,6 +2503,18 @@ static LRESULT on_wm_destroy(FileDialogImpl *This)
+ 
+     DeleteObject(This->hfont_opendropdown);
+     This->hfont_opendropdown = NULL;
++    if (This->key_hook) UnhookWindowsHookEx(This->key_hook);
++    This->key_hook = NULL;
++    if (This->chrome_font) DeleteObject(This->chrome_font);
++    This->chrome_font = NULL;
++    if (This->top_brush) DeleteObject(This->top_brush);
++    if (This->band_brush) DeleteObject(This->band_brush);
++    This->top_brush = This->band_brush = NULL;
++    This->hwnd_address = This->hwnd_search = NULL;
++    This->hook_child = NULL;
++    This->nav_back = This->nav_forward = 0;
++    This->nav_started = FALSE;
++    This->search[0] = 0;
+ 
+     return TRUE;
+ }
+@@ -2271,6 +2554,11 @@ static LRESULT on_command_opendropdown(FileDialogImpl *This, WPARAM wparam, LPAR
+ static LRESULT on_browse_back(FileDialogImpl *This)
+ {
+     TRACE("%p\n", This);
++    if (!This->nav_back)
++        return FALSE;
++    This->nav_back--;
++    This->nav_forward++;
++    This->nav_by_history = TRUE;
+     IExplorerBrowser_BrowseToIDList(This->peb, NULL, SBSP_NAVIGATEBACK);
+     return FALSE;
+ }
+@@ -2278,6 +2566,11 @@ static LRESULT on_browse_back(FileDialogImpl *This)
+ static LRESULT on_browse_forward(FileDialogImpl *This)
+ {
+     TRACE("%p\n", This);
++    if (!This->nav_forward)
++        return FALSE;
++    This->nav_forward--;
++    This->nav_back++;
++    This->nav_by_history = TRUE;
+     IExplorerBrowser_BrowseToIDList(This->peb, NULL, SBSP_NAVIGATEFORWARD);
+     return FALSE;
+ }
+@@ -2338,8 +2631,258 @@ static LRESULT on_browse_up(FileDialogImpl *This)
+     return FALSE;
+ }
+ 
++static IShellView *current_view(FileDialogImpl *This)
++{
++    IShellView *psv = NULL;
++    if (This->peb)
++        IExplorerBrowser_GetCurrentView(This->peb, &IID_IShellView, (void **)&psv);
++    return psv;
++}
++
++/* A verb of the selection's menu (or of the folder's, for Paste) */
++static void invoke_view_verb(FileDialogImpl *This, LPCSTR verb, BOOL background)
++{
++    IShellView *psv = current_view(This);
++    IContextMenu *pcm = NULL;
++    HMENU hmenu;
++
++    if (!psv)
++        return;
++    if (SUCCEEDED(IShellView_GetItemObject(psv, background ? SVGIO_BACKGROUND : SVGIO_SELECTION,
++                                           &IID_IContextMenu, (void **)&pcm)) && pcm)
++    {
++        hmenu = CreatePopupMenu();
++        if (hmenu && SUCCEEDED(IContextMenu_QueryContextMenu(pcm, hmenu, 0, 1, 0x7fff, CMF_NORMAL)))
++        {
++            CMINVOKECOMMANDINFO ici = { sizeof(ici) };
++            ici.hwnd = This->dlg_hwnd;
++            ici.lpVerb = verb;
++            ici.nShow = SW_SHOWNORMAL;
++            IContextMenu_InvokeCommand(pcm, &ici);
++        }
++        if (hmenu)
++            DestroyMenu(hmenu);
++        IContextMenu_Release(pcm);
++    }
++    IShellView_Release(psv);
++}
++
++static void select_all(FileDialogImpl *This, BOOL rename_focused)
++{
++    IShellView *psv = current_view(This);
++    IFolderView *pfv = NULL;
++    int count = 0, i;
++
++    if (!psv)
++        return;
++    if (SUCCEEDED(IShellView_QueryInterface(psv, &IID_IFolderView, (void **)&pfv)))
++    {
++        if (rename_focused)
++        {
++            int focused = -1;
++            LPITEMIDLIST pidl = NULL;
++            if (SUCCEEDED(IFolderView_GetFocusedItem(pfv, &focused)) && focused >= 0 &&
++                SUCCEEDED(IFolderView_Item(pfv, focused, &pidl)))
++            {
++                IShellView_SelectItem(psv, pidl, SVSI_EDIT | SVSI_SELECT | SVSI_DESELECTOTHERS | SVSI_ENSUREVISIBLE);
++                ILFree(pidl);
++            }
++        }
++        else if (SUCCEEDED(IFolderView_ItemCount(pfv, SVGIO_ALLVIEW, &count)))
++        {
++            for (i = 0; i < count; i++)
++                IFolderView_SelectItem(pfv, i, SVSI_SELECT);
++        }
++        IFolderView_Release(pfv);
++    }
++    IShellView_Release(psv);
++}
++
++static void show_organize_menu(FileDialogImpl *This, HWND htb, UINT id)
++{
++    static const struct { UINT id, text; } items[] =
++    {
++        { IDM_CUT, IDS_ITEMDLG_MENU_CUT }, { IDM_COPY, IDS_ITEMDLG_MENU_COPY }, { IDM_PASTE, IDS_ITEMDLG_MENU_PASTE }, { 0, 0 },
++        { IDM_SELECTALL, IDS_ITEMDLG_MENU_SELECTALL }, { 0, 0 },
++        { IDM_DELETE, IDS_ITEMDLG_MENU_DELETE }, { IDM_RENAME, IDS_ITEMDLG_MENU_RENAME }, { 0, 0 },
++        { IDM_PROPERTIES, IDS_ITEMDLG_MENU_PROPERTIES },
++    };
++    HMENU hmenu = CreatePopupMenu();
++    WCHAR text[64];
++    RECT rc;
++    UINT i, cmd;
++
++    for (i = 0; i < ARRAY_SIZE(items); i++)
++    {
++        if (!items[i].id)
++            AppendMenuW(hmenu, MF_SEPARATOR, 0, NULL);
++        else if (LoadStringW(COMDLG32_hInstance, items[i].text, text, ARRAY_SIZE(text)))
++            AppendMenuW(hmenu, MF_STRING, items[i].id, text);
++    }
++    if (!chrome_buttons_rect(htb, id, &rc))
++        GetWindowRect(htb, &rc);
++    cmd = TrackPopupMenu(hmenu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, This->dlg_hwnd, NULL);
++    DestroyMenu(hmenu);
++    switch (cmd)
++    {
++    case IDM_CUT:        invoke_view_verb(This, "cut", FALSE); break;
++    case IDM_COPY:       invoke_view_verb(This, "copy", FALSE); break;
++    case IDM_PASTE:      invoke_view_verb(This, "paste", TRUE); break;
++    case IDM_SELECTALL:  select_all(This, FALSE); break;
++    case IDM_DELETE:     invoke_view_verb(This, "delete", FALSE); break;
++    case IDM_RENAME:     select_all(This, TRUE); break;
++    case IDM_PROPERTIES: invoke_view_verb(This, "properties", FALSE); break;
++    }
++}
++
++static const struct { UINT text; UINT mode; int size; } view_modes[] =
++{
++    { IDS_ITEMDLG_VIEW_XLARGE, FVM_ICON, 256 }, { IDS_ITEMDLG_VIEW_LARGE, FVM_ICON, 96 }, { IDS_ITEMDLG_VIEW_MEDIUM, FVM_ICON, 48 },
++    { IDS_ITEMDLG_VIEW_SMALL, FVM_SMALLICON, 16 }, { IDS_ITEMDLG_VIEW_LIST, FVM_LIST, 16 }, { IDS_ITEMDLG_VIEW_DETAILS, FVM_DETAILS, 16 },
++    { IDS_ITEMDLG_VIEW_TILES, FVM_TILE, 48 }, { IDS_ITEMDLG_VIEW_CONTENT, FVM_CONTENT, 32 },
++};
++
++static void set_view_mode(FileDialogImpl *This, UINT index)
++{
++    IShellView *psv = current_view(This);
++    IFolderView2 *pfv2 = NULL;
++    IFolderView *pfv = NULL;
++
++    if (!psv || index >= ARRAY_SIZE(view_modes))
++    {
++        if (psv) IShellView_Release(psv);
++        return;
++    }
++    if (SUCCEEDED(IShellView_QueryInterface(psv, &IID_IFolderView2, (void **)&pfv2)) &&
++        SUCCEEDED(IFolderView2_SetViewModeAndIconSize(pfv2, view_modes[index].mode, view_modes[index].size)))
++    {
++    }
++    else if (SUCCEEDED(IShellView_QueryInterface(psv, &IID_IFolderView, (void **)&pfv)))
++    {
++        IFolderView_SetCurrentViewMode(pfv, view_modes[index].mode);
++    }
++    if (pfv2) IFolderView2_Release(pfv2);
++    if (pfv) IFolderView_Release(pfv);
++    IShellView_Release(psv);
++    update_view_button(This);
++}
++
++static void show_view_menu(FileDialogImpl *This, HWND htb, UINT id)
++{
++    IShellView *psv = current_view(This);
++    IFolderView *pfv = NULL;
++    UINT mode = FVM_DETAILS, i, cmd;
++    HMENU hmenu = CreatePopupMenu();
++    WCHAR text[64];
++    RECT rc;
++
++    if (psv && SUCCEEDED(IShellView_QueryInterface(psv, &IID_IFolderView, (void **)&pfv)))
++    {
++        IFolderView_GetCurrentViewMode(pfv, &mode);
++        IFolderView_Release(pfv);
++    }
++    if (psv)
++        IShellView_Release(psv);
++    for (i = 0; i < ARRAY_SIZE(view_modes); i++)
++    {
++        if (LoadStringW(COMDLG32_hInstance, view_modes[i].text, text, ARRAY_SIZE(text)))
++            AppendMenuW(hmenu, MF_STRING | (view_modes[i].mode == mode && (mode != FVM_ICON || view_modes[i].size == 48) ?
++                        MF_CHECKED : 0), IDM_VIEW_FIRST + i, text);
++    }
++    if (!chrome_buttons_rect(htb, id, &rc))
++        GetWindowRect(htb, &rc);
++    cmd = TrackPopupMenu(hmenu, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN, rc.right, rc.bottom, 0, This->dlg_hwnd, NULL);
++    DestroyMenu(hmenu);
++    if (cmd >= IDM_VIEW_FIRST)
++        set_view_mode(This, cmd - IDM_VIEW_FIRST);
++}
++
++/* New folder: made in the folder, then named in place */
++static void on_new_folder(FileDialogImpl *This)
++{
++    WCHAR *dir = NULL, name[MAX_PATH], path[MAX_PATH], base[64];
++    IShellView *psv;
++    LPITEMIDLIST pidl = NULL;
++    UINT n;
++
++    if (!This->psi_folder || FAILED(IShellItem_GetDisplayName(This->psi_folder, SIGDN_FILESYSPATH, &dir)))
++    {
++        MessageBeep(MB_ICONWARNING);
++        return;
++    }
++    if (!LoadStringW(COMDLG32_hInstance, IDS_ITEMDLG_NEW_FOLDER_NAME, base, ARRAY_SIZE(base)))
++        lstrcpyW(base, L"New folder");
++    lstrcpyW(name, base);
++    PathCombineW(path, dir, name);
++    for (n = 2; PathFileExistsW(path) && n < 1000; n++)
++    {
++        wsprintfW(name, L"%s (%u)", base, n);
++        PathCombineW(path, dir, name);
++    }
++    CoTaskMemFree(dir);
++    if (!CreateDirectoryW(path, NULL))
++    {
++        MessageBeep(MB_ICONWARNING);
++        return;
++    }
++    SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSH, path, NULL);
++    if ((psv = current_view(This)))
++    {
++        IShellView_Refresh(psv);
++        if (SUCCEEDED(SHParseDisplayName(path, NULL, &pidl, 0, NULL)) && pidl)
++        {
++            IShellView_SelectItem(psv, ILFindLastID(pidl),
++                                  SVSI_EDIT | SVSI_SELECT | SVSI_DESELECTOTHERS | SVSI_ENSUREVISIBLE | SVSI_FOCUSED);
++            ILFree(pidl);
++        }
++        IShellView_Release(psv);
++    }
++}
++
++static LRESULT on_command_address(FileDialogImpl *This, WPARAM wparam)
++{
++    IShellView *psv;
++    LPITEMIDLIST target;
++
++    if (HIWORD(wparam) == CHROME_NAVIGATE && This->peb && (target = chrome_address_target(This->hwnd_address)))
++    {
++        IExplorerBrowser_BrowseToIDList(This->peb, target, SBSP_ABSOLUTE);
++        ILFree(target);
++    }
++    else if (HIWORD(wparam) == CHROME_REFRESH && (psv = current_view(This)))
++    {
++        IShellView_Refresh(psv);
++        IShellView_Release(psv);
++    }
++    return FALSE;
++}
++
++/* What is typed in the search box narrows the view, after a pause */
++static LRESULT on_search_timer(FileDialogImpl *This)
++{
++    IShellView *psv;
++    KillTimer(This->dlg_hwnd, TIMER_SEARCH);
++    chrome_search_get(This->hwnd_search, This->search, ARRAY_SIZE(This->search));
++    if ((psv = current_view(This)))
++    {
++        IShellView_Refresh(psv);
++        IShellView_Release(psv);
++    }
++    return FALSE;
++}
++
+ static LRESULT on_wm_command(FileDialogImpl *This, WPARAM wparam, LPARAM lparam)
+ {
++    /* the menus of Organize and of the view's arrow */
++    if (HIWORD(wparam) == CHROME_DROPDOWN)
++    {
++        if (LOWORD(wparam) == IDC_ORGANIZE)
++            show_organize_menu(This, (HWND)lparam, IDC_ORGANIZE);
++        else if (LOWORD(wparam) == IDC_VIEWMODE)
++            show_view_menu(This, (HWND)lparam, IDC_VIEWMODE);
++        return FALSE;
++    }
++
+     switch(LOWORD(wparam))
+     {
+     case IDOK:                return on_idok(This);
+@@ -2349,11 +2892,155 @@ static LRESULT on_wm_command(FileDialogImpl *This, WPARAM wparam, LPARAM lparam)
+     case IDC_NAVFORWARD:      return on_browse_forward(This);
+     case IDC_FILETYPE:        return on_command_filetype(This, wparam, lparam);
+     case IDC_NAVUP:           return on_browse_up(This);
++    case IDC_ADDRESS:         return on_command_address(This, wparam);
++    case IDC_SEARCH:
++        if (HIWORD(wparam) == EN_CHANGE)
++            SetTimer(This->dlg_hwnd, TIMER_SEARCH, 300, NULL);
++        return FALSE;
++    case IDC_NEWFOLDER:       on_new_folder(This); return FALSE;
++    case IDC_VIEWMODE:
++    {
++        /* the button itself steps through the views, as Windows' does */
++        static const UINT order[] = { 5, 4, 3, 2, 1, 6, 7 };
++        IShellView *psv = current_view(This);
++        IFolderView *pfv = NULL;
++        UINT mode = FVM_DETAILS, i;
++        if (psv && SUCCEEDED(IShellView_QueryInterface(psv, &IID_IFolderView, (void **)&pfv)))
++        {
++            IFolderView_GetCurrentViewMode(pfv, &mode);
++            IFolderView_Release(pfv);
++        }
++        if (psv)
++            IShellView_Release(psv);
++        for (i = 0; i < ARRAY_SIZE(order); i++)
++            if (view_modes[order[i]].mode == mode)
++                break;
++        set_view_mode(This, order[(i + 1) % ARRAY_SIZE(order)]);
++        return FALSE;
++    }
+     default:                  TRACE("Unknown command.\n");
+     }
+     return FALSE;
+ }
+ 
++/* The dialog of an OPENFILENAME hook goes over the band (filedlgofn.c) */
++void ITEMDLG_SetHookChild(HWND dlg, HWND child)
++{
++    FileDialogImpl *This = (FileDialogImpl *)GetWindowLongPtrW(dlg, GWLP_USERDATA);
++    if (!This)
++        return;
++    This->hook_child = child;
++    update_layout(This);
++}
++
++/* The old dialog's control IDs, which hooks name, as this dialog's */
++static HWND cdm_control(FileDialogImpl *This, UINT id)
++{
++    switch (id)
++    {
++    case edt1: case cmb13: id = IDC_FILENAME; break;
++    case stc3:             id = IDC_FILENAMESTATIC; break;
++    case cmb1:             id = IDC_FILETYPE; break;
++    case stc2:             id = IDC_FILETYPESTATIC; break;
++    }
++    return GetDlgItem(This->dlg_hwnd, id);
++}
++
++static LRESULT cdm_copy(LPCWSTR text, WPARAM cch, LPARAM buf, BOOL ansi)
++{
++    int len = lstrlenW(text) + 1;
++    if (ansi)
++    {
++        int need = WideCharToMultiByte(CP_ACP, 0, text, -1, NULL, 0, NULL, NULL);
++        if (buf && (int)cch > 0)
++            WideCharToMultiByte(CP_ACP, 0, text, -1, (LPSTR)buf, cch, NULL, NULL);
++        return need;
++    }
++    if (buf && (int)cch > 0)
++        lstrcpynW((LPWSTR)buf, text, cch);
++    return len;
++}
++
++/* CDM_ messages a hook sends to the dialog, as the documentation has them */
++static LRESULT on_cdm_message(FileDialogImpl *This, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    /* the hook's structure says whether it speaks ANSI */
++    BOOL ansi = GetPropW(This->dlg_hwnd, L"itemdlg_ansi") != NULL;
++    LPWSTR name = NULL, folder = NULL;
++    WCHAR path[MAX_PATH * 2];
++    LRESULT ret = -1;
++
++    switch (msg)
++    {
++    case CDM_GETSPEC:
++        get_file_name(This, &name);
++        ret = cdm_copy(name ? name : L"", wparam, lparam, ansi);
++        break;
++    case CDM_GETFILEPATH:
++        get_file_name(This, &name);
++        if (This->psi_folder)
++            IShellItem_GetDisplayName(This->psi_folder, SIGDN_FILESYSPATH, &folder);
++        if (name && PathIsRelativeW(name) && folder)
++            PathCombineW(path, folder, name);
++        else
++            lstrcpynW(path, name ? name : L"", ARRAY_SIZE(path));
++        ret = cdm_copy(path, wparam, lparam, ansi);
++        break;
++    case CDM_GETFOLDERPATH:
++        if (This->psi_folder && SUCCEEDED(IShellItem_GetDisplayName(This->psi_folder, SIGDN_FILESYSPATH, &folder)))
++            ret = cdm_copy(folder, wparam, lparam, ansi);
++        break;
++    case CDM_GETFOLDERIDLIST:
++    {
++        LPITEMIDLIST pidl;
++        if (This->psi_folder && SUCCEEDED(SHGetIDListFromObject((IUnknown *)This->psi_folder, &pidl)))
++        {
++            UINT size = ILGetSize(pidl);
++            if (lparam && wparam >= size)
++                memcpy((void *)lparam, pidl, size);
++            ret = size;
++            ILFree(pidl);
++        }
++        break;
++    }
++    case CDM_SETCONTROLTEXT:
++    {
++        HWND ctrl = cdm_control(This, wparam);
++        if (ctrl)
++        {
++            if (ansi)
++                SetWindowTextA(ctrl, (LPCSTR)lparam);
++            else
++                SetWindowTextW(ctrl, (LPCWSTR)lparam);
++        }
++        ret = 0;
++        break;
++    }
++    case CDM_HIDECONTROL:
++    {
++        HWND ctrl = cdm_control(This, wparam);
++        if (ctrl)
++            ShowWindow(ctrl, SW_HIDE);
++        ret = 0;
++        break;
++    }
++    case CDM_SETDEFEXT:
++        if (lparam)
++        {
++            WCHAR ext[MAX_PATH];
++            if (ansi)
++                MultiByteToWideChar(CP_ACP, 0, (LPCSTR)lparam, -1, ext, ARRAY_SIZE(ext));
++            else
++                lstrcpynW(ext, (LPCWSTR)lparam, ARRAY_SIZE(ext));
++            IFileDialog2_SetDefaultExtension(&This->IFileDialog2_iface, ext);
++        }
++        ret = 0;
++        break;
++    }
++    CoTaskMemFree(name);
++    CoTaskMemFree(folder);
++    return ret;
++}
+ static INT_PTR CALLBACK itemdlg_dlgproc(HWND hwnd, UINT umessage, WPARAM wparam, LPARAM lparam)
+ {
+     FileDialogImpl *This = (FileDialogImpl*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+@@ -2365,6 +3052,39 @@ static INT_PTR CALLBACK itemdlg_dlgproc(HWND hwnd, UINT umessage, WPARAM wparam,
+     case WM_SIZE:             return on_wm_size(This);
+     case WM_GETMINMAXINFO:    return on_wm_getminmaxinfo(This, lparam);
+     case WM_DESTROY:          return on_wm_destroy(This);
++    case WM_DPICHANGED:       return This ? on_wm_dpichanged(This, wparam, lparam) : FALSE;
++    case WM_SYSCOLORCHANGE:
++    case WM_THEMECHANGED:
++    case WM_SETTINGCHANGE:
++        /* the light or the dark mode, the look of Windows 10 or 11 */
++        if (!This || !This->dlg_hwnd) return FALSE;
++        update_look(This);
++        update_layout(This);
++        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
++        return FALSE;
++    case CDM_GETSPEC: case CDM_GETFILEPATH: case CDM_GETFOLDERPATH: case CDM_GETFOLDERIDLIST:
++    case CDM_SETCONTROLTEXT: case CDM_HIDECONTROL: case CDM_SETDEFEXT:
++        if (!This) return FALSE;
++        SetWindowLongPtrW(hwnd, DWLP_MSGRESULT, on_cdm_message(This, umessage, wparam, lparam));
++        return TRUE;
++    case WM_TIMER:
++        if (This && wparam == TIMER_SEARCH) return on_search_timer(This);
++        if (wparam == TIMER_REDRAW)
++        {
++            /* Arctic: once more, all of it, when the folder has come */
++            KillTimer(hwnd, TIMER_REDRAW);
++            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
++        }
++        return FALSE;
++    case WM_ERASEBKGND:
++        if (!This) return FALSE;
++        SetWindowLongPtrW(hwnd, DWLP_MSGRESULT, on_wm_erasebkgnd(This, (HDC)wparam));
++        return TRUE;
++    case WM_CTLCOLORSTATIC:
++    case WM_CTLCOLORBTN:
++    case WM_CTLCOLORDLG:
++        if (!This) return FALSE;
++        return on_wm_ctlcolor(This, (HDC)wparam, umessage == WM_CTLCOLORDLG ? hwnd : (HWND)lparam);
+     }
+ 
+     return FALSE;
+@@ -2681,9 +3401,16 @@ static HRESULT WINAPI IFileDialog2_fnSetOptions(IFileDialog2 *iface, FILEOPENDIA
+ 
+     if( !(This->options & FOS_PICKFOLDERS) && (fos & FOS_PICKFOLDERS) )
+     {
+-        WCHAR buf[30];
+-        LoadStringW(COMDLG32_hInstance, IDS_SELECT_FOLDER, buf, ARRAY_SIZE(buf));
++        /* Arctic: Windows 10's folder picker: its title, its button and
++         * "Folder:" for the name */
++        WCHAR buf[64];
++        if (!LoadStringW(COMDLG32_hInstance, IDS_ITEMDLG_SELECT_FOLDER, buf, ARRAY_SIZE(buf)))
++            LoadStringW(COMDLG32_hInstance, IDS_SELECT_FOLDER, buf, ARRAY_SIZE(buf));
+         IFileDialog2_SetTitle(iface, buf);
++        IFileDialog2_SetOkButtonLabel(iface, buf);
++        if (!This->custom_filenamelabel &&
++            LoadStringW(COMDLG32_hInstance, IDS_ITEMDLG_FOLDER, buf, ARRAY_SIZE(buf)))
++            IFileDialog2_SetFileNameLabel(iface, buf);
+     }
+ 
+     This->options = fos;
+@@ -2731,6 +3458,11 @@ static HRESULT WINAPI IFileDialog2_fnSetFolder(IFileDialog2 *iface, IShellItem *
+     if(This->psi_setfolder)
+         IShellItem_AddRef(This->psi_setfolder);
+ 
++    /* Arctic: the dialog on the screen goes there, as Windows' does (a
++     * folder picker's BFFM_SETSELECTION, filedlgofn.c's hooks) */
++    if(psi && This->dlg_hwnd && This->peb)
++        IExplorerBrowser_BrowseToObject(This->peb, (IUnknown*)psi, SBSP_ABSOLUTE);
++
+     return S_OK;
+ }
+ 
+@@ -3542,6 +4274,33 @@ static HRESULT WINAPI IExplorerBrowserEvents_fnOnNavigationComplete(IExplorerBro
+         This->psi_folder = NULL;
+     }
+ 
++    /* the history: a new place puts the last one behind, as Back and Forward walk it */
++    if (!This->nav_by_history && This->nav_started)
++    {
++        This->nav_back++;
++        This->nav_forward = 0;
++    }
++    This->nav_by_history = FALSE;
++    This->nav_started = TRUE;
++    if (This->hwnd_address)
++    {
++        WCHAR *name = NULL;
++        chrome_address_set(This->hwnd_address, pidlFolder);
++        if (This->psi_folder && SUCCEEDED(IShellItem_GetDisplayName(This->psi_folder, SIGDN_NORMALDISPLAY, &name)))
++        {
++            chrome_search_set_cue(This->hwnd_search, name);
++            CoTaskMemFree(name);
++        }
++    }
++    if (This->search[0])
++    {
++        /* a new folder: no search in it yet */
++        This->search[0] = 0;
++        chrome_search_clear(This->hwnd_search);
++    }
++    update_nav_buttons(This);
++    update_view_button(This);
++
+     events_OnFolderChange(This);
+ 
+     return S_OK;
+@@ -3719,6 +4478,25 @@ static HRESULT WINAPI ICommDlgBrowser3_fnIncludeObject(ICommDlgBrowser3 *iface,
+     ULONG attr;
+     TRACE("%p (%p, %p)\n", This, shv, pidl);
+ 
++    /* the search box: only the items whose names have the text */
++    if (This->search[0])
++    {
++        STRRET str;
++        WCHAR name[MAX_PATH];
++        IShellFolder *psf = NULL;
++        IFolderView *pfv = NULL;
++        BOOL keep = TRUE;
++        if (SUCCEEDED(IShellView_QueryInterface(shv, &IID_IFolderView, (void **)&pfv)) &&
++            SUCCEEDED(IFolderView_GetFolder(pfv, &IID_IShellFolder, (void **)&psf)) &&
++            SUCCEEDED(IShellFolder_GetDisplayNameOf(psf, pidl, SHGDN_INFOLDER, &str)) &&
++            SUCCEEDED(StrRetToBufW(&str, pidl, name, ARRAY_SIZE(name))))
++            keep = StrStrIW(name, This->search) != NULL;
++        if (psf) IShellFolder_Release(psf);
++        if (pfv) IFolderView_Release(pfv);
++        if (!keep)
++            return S_FALSE;
++    }
++
+     if(!This->current_filter && !(This->options & FOS_PICKFOLDERS))
+         return S_OK;
+ 
+diff --git a/dlls/comdlg32/Makefile.in b/dlls/comdlg32/Makefile.in
+index 4de12ae..582fc57 100644
+--- a/dlls/comdlg32/Makefile.in
++++ b/dlls/comdlg32/Makefile.in
+@@ -15,9 +15,12 @@ SOURCES = \
+ 	filedlg.c \
+ 	filedlg31.c \
+ 	filedlgbrowser.c \
++	filedlgofn.c \
+ 	finddlg.c \
+ 	fontdlg.c \
+ 	itemdlg.c \
++	itemdlg_chrome.c \
++	itemdlg_res.rc \
+ 	pd32_collate.svg \
+ 	pd32_landscape.svg \
+ 	pd32_nocollate.svg \
+diff --git a/dlls/explorerframe/Makefile.in b/dlls/explorerframe/Makefile.in
+index 112d4ab..ea11c7f 100644
+--- a/dlls/explorerframe/Makefile.in
++++ b/dlls/explorerframe/Makefile.in
+@@ -1,5 +1,5 @@
+ MODULE    = explorerframe.dll
+-IMPORTS   = uuid ole32 comctl32 shell32 user32 gdi32
++IMPORTS   = uuid ole32 comctl32 shell32 user32 gdi32 uxtheme
+ 
+ VER_PRODUCTVERSION  = 6,1,7601,16666
+ VER_OLESELFREGISTER = 1
+diff --git a/dlls/explorerframe/nstc.c b/dlls/explorerframe/nstc.c
+index 1ef5888..2794383 100644
+--- a/dlls/explorerframe/nstc.c
++++ b/dlls/explorerframe/nstc.c
+@@ -28,6 +28,8 @@
+ #include "shellapi.h"
+ #include "commctrl.h"
+ #include "commoncontrols.h"
++#include "uxtheme.h"
++#include "shlobj.h"
+ 
+ #include "wine/list.h"
+ #include "wine/debug.h"
+@@ -478,6 +480,10 @@ static LRESULT create_namespacetree(HWND hWnd, CREATESTRUCTW *crs)
+         return HRESULT_FROM_WIN32(GetLastError());
+     }
+ 
++    /* Arctic: the tree of File Explorer, as Windows' control has it: the
++     * visual style's Explorer look, hot rows, no lines */
++    SetWindowTheme(This->hwnd_tv, L"Explorer", NULL);
++
+     treeview_ex_style = TVS_EX_DRAWIMAGEASYNC | TVS_EX_RICHTOOLTIP |
+         TVS_EX_DOUBLEBUFFER | TVS_EX_NOSINGLECOLLAPSE;
+ 
+@@ -553,6 +559,51 @@ static LRESULT on_tvn_deleteitemw(NSTC2Impl *This, LPARAM lParam)
+     return TRUE;
+ }
+ 
++/* Arctic: the user's folders go by the names This PC has for them, in the
++ * language of the system, as Windows shows them */
++static BOOL user_folder_name(IShellItem *psi, WCHAR *name, int count)
++{
++    static const struct { int csidl; const WCHAR *sub, *clsid; } folders[] =
++    {
++        { CSIDL_DESKTOPDIRECTORY, NULL, L"B4BFCC3A-DB2C-424C-B029-7FE99A87C641" },
++        { CSIDL_PROFILE, L"\\Downloads", L"088E3905-0323-4B02-9826-5D99428E115F" },
++        { CSIDL_PERSONAL, NULL, L"D3162B92-9365-467A-956B-92703ACA08AF" },
++        { CSIDL_MYPICTURES, NULL, L"24AD3AD4-A569-4530-98E1-AB02F9417AA8" },
++    };
++    WCHAR *path, known[MAX_PATH + 16], parsing[128];
++    BOOL found = FALSE;
++    unsigned int i;
++
++    if (FAILED(IShellItem_GetDisplayName(psi, SIGDN_FILESYSPATH, &path)))
++        return FALSE;
++    for (i = 0; i < ARRAY_SIZE(folders); i++)
++    {
++        LPITEMIDLIST pidl = NULL;
++        WCHAR *display = NULL;
++
++        if (FAILED(SHGetFolderPathW(NULL, folders[i].csidl, NULL, SHGFP_TYPE_CURRENT, known)))
++            continue;
++        if (folders[i].sub)
++            lstrcatW(known, folders[i].sub);
++        if (lstrcmpiW(path, known))
++            continue;
++        wsprintfW(parsing, L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{%s}", folders[i].clsid);
++        if (SUCCEEDED(SHParseDisplayName(parsing, NULL, &pidl, 0, NULL)) && pidl)
++        {
++            if (SUCCEEDED(SHGetNameFromIDList(pidl, SIGDN_NORMALDISPLAY, &display)))
++            {
++                lstrcpynW(name, display, count);
++                CoTaskMemFree(display);
++                found = TRUE;
++            }
++            ILFree(pidl);
++        }
++        break;
++    }
++    CoTaskMemFree(path);
++    return found;
++}
++
+ static LRESULT on_tvn_getdispinfow(NSTC2Impl *This, LPARAM lParam)
+ {
+     NMTVDISPINFOW *dispinfo = (NMTVDISPINFOW*)lParam;
+@@ -598,6 +649,12 @@ static LRESULT on_tvn_getdispinfow(NSTC2Impl *This, LPARAM lParam)
+     {
+         LPWSTR display_name;
+ 
++        if(user_folder_name(psi, item->pszText, MAX_PATH))
++        {
++            item->mask |= TVIF_DI_SETITEM;
++            return TRUE;
++        }
++
+         hr = IShellItem_GetDisplayName(psi, SIGDN_NORMALDISPLAY, &display_name);
+         if(SUCCEEDED(hr))
+         {
+diff --git a/dlls/shell32/brsfolder.c b/dlls/shell32/brsfolder.c
+index 36607ca..5f15aba 100644
+--- a/dlls/shell32/brsfolder.c
++++ b/dlls/shell32/brsfolder.c
+@@ -1197,6 +1197,273 @@ LPITEMIDLIST WINAPI SHBrowseForFolderA (LPBROWSEINFOA lpbi)
+ }
+ 
+ 
++/*
++ * Arctic: the folder picker of Windows 10, as Arctic NT's shell32 has it: the
++ * Open dialog choosing a folder (FOS_PICKFOLDERS). The program's BFFCALLBACK
++ * is told BFFM_INITIALIZED and BFFM_SELCHANGED, and the BFFM_ messages it
++ * sends to the dialog are answered. The tree stays for files, computers and
++ * printers, which the dialog does not pick.
++ */
++struct pick_events
++{
++    IFileDialogEvents IFileDialogEvents_iface;
++    LONG ref;
++    BROWSEINFOW *bi;
++    IFileDialog *pfd;
++    HWND hwnd;
++};
++
++static inline struct pick_events *impl_from_pick_events(IFileDialogEvents *iface)
++{
++    return CONTAINING_RECORD(iface, struct pick_events, IFileDialogEvents_iface);
++}
++
++static HRESULT WINAPI pick_QueryInterface(IFileDialogEvents *iface, REFIID riid, void **ppv)
++{
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IFileDialogEvents))
++    {
++        *ppv = iface;
++        IFileDialogEvents_AddRef(iface);
++        return S_OK;
++    }
++    *ppv = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI pick_AddRef(IFileDialogEvents *iface)
++{
++    return InterlockedIncrement(&impl_from_pick_events(iface)->ref);
++}
++
++static ULONG WINAPI pick_Release(IFileDialogEvents *iface)
++{
++    struct pick_events *This = impl_from_pick_events(iface);
++    LONG ref = InterlockedDecrement(&This->ref);
++
++    if (!ref) free(This);
++    return ref;
++}
++
++static void pick_callback(struct pick_events *This, UINT msg, LPARAM lparam)
++{
++    if (This->bi->lpfn && This->hwnd)
++        This->bi->lpfn(This->hwnd, msg, lparam, This->bi->lParam);
++}
++
++static void pick_selchanged(struct pick_events *This, IFileDialog *pfd)
++{
++    IShellItem *psi = NULL;
++    LPITEMIDLIST pidl;
++
++    if (FAILED(IFileDialog_GetCurrentSelection(pfd, &psi)) || !psi)
++    {
++        psi = NULL;
++        if (FAILED(IFileDialog_GetFolder(pfd, &psi)) || !psi) return;
++    }
++    if (SUCCEEDED(SHGetIDListFromObject((IUnknown *)psi, &pidl)))
++    {
++        pick_callback(This, BFFM_SELCHANGED, (LPARAM)pidl);
++        ILFree(pidl);
++    }
++    IShellItem_Release(psi);
++}
++
++static LRESULT CALLBACK pick_subclass(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR id, DWORD_PTR data)
++{
++    struct pick_events *This = (struct pick_events *)data;
++
++    switch (msg)
++    {
++    case BFFM_SETSELECTIONA:
++    case BFFM_SETSELECTIONW:
++    case BFFM_SETEXPANDED:
++    {
++        LPITEMIDLIST pidl = NULL;
++        IShellItem *psi;
++
++        if (wparam && lparam)
++        {
++            WCHAR path[MAX_PATH];
++
++            if (msg == BFFM_SETSELECTIONA)
++                MultiByteToWideChar(CP_ACP, 0, (LPCSTR)lparam, -1, path, MAX_PATH);
++            else
++                lstrcpynW(path, (LPCWSTR)lparam, MAX_PATH);
++            SHParseDisplayName(path, NULL, &pidl, 0, NULL);
++        }
++        else if (lparam)
++            pidl = ILClone((LPCITEMIDLIST)lparam);
++        if (pidl && SUCCEEDED(SHCreateItemFromIDList(pidl, &IID_IShellItem, (void **)&psi)))
++        {
++            IFileDialog_SetFolder(This->pfd, psi);
++            IShellItem_Release(psi);
++        }
++        ILFree(pidl);
++        return TRUE;
++    }
++    case BFFM_ENABLEOK:
++        EnableWindow(GetDlgItem(hwnd, IDOK), (BOOL)lparam);
++        return 0;
++    case BFFM_SETOKTEXT:
++        if (lparam) SetDlgItemTextW(hwnd, IDOK, (LPCWSTR)lparam);
++        return 0;
++    case BFFM_SETSTATUSTEXTA:
++    case BFFM_SETSTATUSTEXTW:
++        return 0;
++    case WM_NCDESTROY:
++        RemoveWindowSubclass(hwnd, pick_subclass, id);
++        break;
++    }
++    return DefSubclassProc(hwnd, msg, wparam, lparam);
++}
++
++/* the dialog's window, the first time it says anything */
++static void pick_attach(struct pick_events *This, IFileDialog *pfd)
++{
++    IOleWindow *pow;
++
++    if (This->hwnd || FAILED(IFileDialog_QueryInterface(pfd, &IID_IOleWindow, (void **)&pow)))
++        return;
++    IOleWindow_GetWindow(pow, &This->hwnd);
++    IOleWindow_Release(pow);
++    if (!This->hwnd) return;
++    SetWindowSubclass(This->hwnd, pick_subclass, 0, (DWORD_PTR)This);
++    pick_callback(This, BFFM_INITIALIZED, 0);
++}
++
++static HRESULT WINAPI pick_OnFileOk(IFileDialogEvents *iface, IFileDialog *pfd)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI pick_OnFolderChanging(IFileDialogEvents *iface, IFileDialog *pfd, IShellItem *psi)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI pick_OnFolderChange(IFileDialogEvents *iface, IFileDialog *pfd)
++{
++    struct pick_events *This = impl_from_pick_events(iface);
++
++    pick_attach(This, pfd);
++    pick_selchanged(This, pfd);
++    return S_OK;
++}
++
++static HRESULT WINAPI pick_OnSelectionChange(IFileDialogEvents *iface, IFileDialog *pfd)
++{
++    struct pick_events *This = impl_from_pick_events(iface);
++
++    pick_attach(This, pfd);
++    pick_selchanged(This, pfd);
++    return S_OK;
++}
++
++static HRESULT WINAPI pick_OnShareViolation(IFileDialogEvents *iface, IFileDialog *pfd, IShellItem *psi,
++                                            FDE_SHAREVIOLATION_RESPONSE *response)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI pick_OnTypeChange(IFileDialogEvents *iface, IFileDialog *pfd)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI pick_OnOverwrite(IFileDialogEvents *iface, IFileDialog *pfd, IShellItem *psi,
++                                       FDE_OVERWRITE_RESPONSE *response)
++{
++    return E_NOTIMPL;
++}
++
++static const IFileDialogEventsVtbl pick_events_vtbl =
++{
++    pick_QueryInterface, pick_AddRef, pick_Release,
++    pick_OnFileOk, pick_OnFolderChanging, pick_OnFolderChange, pick_OnSelectionChange,
++    pick_OnShareViolation, pick_OnTypeChange, pick_OnOverwrite,
++};
++
++/* TRUE when the dialog was shown: *ret is what was picked, or NULL */
++static BOOL pick_folder(BROWSEINFOW *lpbi, LPITEMIDLIST *ret)
++{
++    struct pick_events *events;
++    IFileDialog *pfd = NULL;
++    IShellItem *psi = NULL;
++    LPITEMIDLIST pidl = NULL, root = NULL;
++    DWORD cookie = 0;
++    HRESULT hr, init;
++
++    *ret = NULL;
++    init = OleInitialize(NULL);
++    hr = CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileDialog, (void **)&pfd);
++    if (FAILED(hr))
++    {
++        ERR("No file dialog to pick a folder with: %#lx\n", hr);
++        if (SUCCEEDED(init)) OleUninitialize();
++        return FALSE;
++    }
++
++    IFileDialog_SetOptions(pfd, FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR |
++                           ((lpbi->ulFlags & BIF_RETURNONLYFSDIRS) ? FOS_FORCEFILESYSTEM : FOS_ALLNONSTORAGEITEMS));
++    if (lpbi->lpszTitle)
++        IFileDialog_SetTitle(pfd, lpbi->lpszTitle);
++    if (lpbi->pidlRoot && IS_INTRESOURCE(lpbi->pidlRoot))
++        SHGetFolderLocation(NULL, LOWORD(lpbi->pidlRoot), NULL, 0, &root);
++    else if (lpbi->pidlRoot)
++        root = ILClone(lpbi->pidlRoot);
++    if (root && root->mkid.cb && SUCCEEDED(SHCreateItemFromIDList(root, &IID_IShellItem, (void **)&psi)))
++    {
++        IFileDialog_SetFolder(pfd, psi);
++        IShellItem_Release(psi);
++        psi = NULL;
++    }
++    ILFree(root);
++
++    if ((events = calloc(1, sizeof(*events))))
++    {
++        events->IFileDialogEvents_iface.lpVtbl = &pick_events_vtbl;
++        events->ref = 1;
++        events->bi = lpbi;
++        events->pfd = pfd;
++        if (FAILED(IFileDialog_Advise(pfd, &events->IFileDialogEvents_iface, &cookie)))
++        {
++            IFileDialogEvents_Release(&events->IFileDialogEvents_iface);
++            events = NULL;
++        }
++    }
++
++    hr = IFileDialog_Show(pfd, lpbi->hwndOwner);
++    if (events)
++    {
++        IFileDialog_Unadvise(pfd, cookie);
++        IFileDialogEvents_Release(&events->IFileDialogEvents_iface);
++    }
++
++    if (SUCCEEDED(hr) && SUCCEEDED(IFileDialog_GetResult(pfd, &psi)) &&
++        SUCCEEDED(SHGetIDListFromObject((IUnknown *)psi, &pidl)))
++    {
++        SHFILEINFOW sfi;
++        WCHAR *name;
++
++        if (lpbi->pszDisplayName)
++        {
++            lpbi->pszDisplayName[0] = 0;
++            if (SUCCEEDED(IShellItem_GetDisplayName(psi, SIGDN_NORMALDISPLAY, &name)))
++            {
++                lstrcpynW(lpbi->pszDisplayName, name, MAX_PATH);
++                CoTaskMemFree(name);
++            }
++        }
++        if (SHGetFileInfoW((LPCWSTR)pidl, 0, &sfi, sizeof(sfi), SHGFI_PIDL | SHGFI_SYSICONINDEX))
++            lpbi->iImage = sfi.iIcon;
++    }
++    if (psi) IShellItem_Release(psi);
++    IFileDialog_Release(pfd);
++    if (SUCCEEDED(init)) OleUninitialize();
++    *ret = pidl;
++    return TRUE;
++}
++
+ /*************************************************************************
+  * SHBrowseForFolderW [SHELL32.@]
+  *
+@@ -1210,6 +1477,12 @@ LPITEMIDLIST WINAPI SHBrowseForFolderW (LPBROWSEINFOW lpbi)
+     HRESULT hr;
+     const WCHAR * templateName;
+     INITCOMMONCONTROLSEX icex;
++    LPITEMIDLIST picked;
++
++    /* Arctic: the folder picker of Windows 10 */
++    if (!(lpbi->ulFlags & (BIF_BROWSEINCLUDEFILES | BIF_BROWSEFORCOMPUTER | BIF_BROWSEFORPRINTER)) &&
++        pick_folder(lpbi, &picked))
++        return picked;
+ 
+     info.hWnd = 0;
+     info.pidlRet = NULL;
+diff --git a/dlls/shell32/ebrowser.c b/dlls/shell32/ebrowser.c
+index 8ae09d4..53439d6 100644
+--- a/dlls/shell32/ebrowser.c
++++ b/dlls/shell32/ebrowser.c
+@@ -28,6 +28,7 @@
+ #include "wine/list.h"
+ #include "wine/debug.h"
+ #include "debughlp.h"
++#include "shlwapi.h"
+ 
+ #include "shell32_main.h"
+ #include "pidl.h"
+@@ -563,7 +564,9 @@ static LRESULT navpane_on_wm_create(HWND hwnd, CREATESTRUCTW *crs)
+ 
+     if(SUCCEEDED(hr))
+     {
+-        style = NSTCS_HASEXPANDOS | NSTCS_ROOTHASEXPANDO | NSTCS_SHOWSELECTIONALWAYS;
++        /* Arctic: whole rows, as Windows 10's pane has them */
++        style = NSTCS_HASEXPANDOS | NSTCS_ROOTHASEXPANDO | NSTCS_SHOWSELECTIONALWAYS | NSTCS_FULLROWSELECT |
++                NSTCS_FADEINOUTEXPANDOS;
+         hr = INameSpaceTreeControl2_Initialize(pnstc2, GetParent(hwnd), NULL, style);
+         if(SUCCEEDED(hr))
+         {
+@@ -594,28 +597,60 @@ static LRESULT navpane_on_wm_create(HWND hwnd, CREATESTRUCTW *crs)
+ 
+             /*
+              * Add the default roots
++             *
++             * Arctic: those of Windows 10's navigation pane: the folders
++             * Quick access keeps (Desktop, Downloads, Documents, Pictures),
++             * This PC open, the network.
+              */
+-
+-            /* TODO: This should be FOLDERID_Links */
+-            hr = SHGetSpecialFolderLocation(NULL, CSIDL_FAVORITES, &pidl);
+-            if(SUCCEEDED(hr))
+             {
+-                hr = SHCreateShellItem(NULL, NULL, pidl, &psi);
+-                if(SUCCEEDED(hr))
++                static const int user_folders[] = { CSIDL_DESKTOPDIRECTORY, -1, CSIDL_PERSONAL, CSIDL_MYPICTURES };
++                WCHAR path[MAX_PATH];
++                unsigned int i;
++
++                for (i = 0; i < sizeof(user_folders) / sizeof(user_folders[0]); i++)
+                 {
+-                    hr = INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_NONFOLDERS, NSTCRS_VISIBLE, NULL);
+-                    IShellItem_Release(psi);
++                    pidl = NULL;
++                    if (user_folders[i] >= 0)
++                    {
++                        if (FAILED(SHGetFolderPathW(NULL, user_folders[i], NULL, SHGFP_TYPE_CURRENT, path)))
++                            continue;
++                    }
++                    else
++                    {
++                        /* Downloads, where Windows keeps it */
++                        if (FAILED(SHGetFolderPathW(NULL, CSIDL_PROFILE, NULL, SHGFP_TYPE_CURRENT, path)) ||
++                            !PathAppendW(path, L"Downloads") || !PathIsDirectoryW(path))
++                            continue;
++                    }
++                    if (FAILED(SHParseDisplayName(path, NULL, &pidl, 0, NULL)) || !pidl)
++                        continue;
++                    if (SUCCEEDED(SHCreateShellItem(NULL, NULL, pidl, &psi)))
++                    {
++                        INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_FOLDERS, NSTCRS_VISIBLE, NULL);
++                        IShellItem_Release(psi);
++                    }
++                    ILFree(pidl);
+                 }
+-                ILFree(pidl);
+-            }
+ 
+-            SHGetDesktopFolder(&psfdesktop);
+-            hr = SHGetItemFromObject((IUnknown*)psfdesktop, &IID_IShellItem, (void**)&psi);
+-            IShellFolder_Release(psfdesktop);
+-            if(SUCCEEDED(hr))
+-            {
+-                hr = INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_FOLDERS, NSTCRS_EXPANDED, NULL);
+-                IShellItem_Release(psi);
++                if (SUCCEEDED(SHGetFolderLocation(NULL, CSIDL_DRIVES, NULL, 0, &pidl)))
++                {
++                    if (SUCCEEDED(SHCreateShellItem(NULL, NULL, pidl, &psi)))
++                    {
++                        INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_FOLDERS, NSTCRS_EXPANDED, NULL);
++                        IShellItem_Release(psi);
++                    }
++                    ILFree(pidl);
++                }
++                if (SUCCEEDED(SHGetFolderLocation(NULL, CSIDL_NETWORK, NULL, 0, &pidl)))
++                {
++                    if (SUCCEEDED(SHCreateShellItem(NULL, NULL, pidl, &psi)))
++                    {
++                        INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_FOLDERS, NSTCRS_VISIBLE, NULL);
++                        IShellItem_Release(psi);
++                    }
++                    ILFree(pidl);
++                }
++                (void)psfdesktop;
+             }
+ 
+             /* TODO:

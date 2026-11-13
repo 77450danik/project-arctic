@@ -1,0 +1,57 @@
+diff --git a/dlls/ole32/datacache.c b/dlls/ole32/datacache.c
+index 0a7aaf1a..36734743 100644
+--- a/dlls/ole32/datacache.c
++++ b/dlls/ole32/datacache.c
+@@ -2134,6 +2134,31 @@ static HRESULT WINAPI DataCache_Draw(
+           GlobalUnlock( cache_entry->stgmedium.hGlobal );
+           return S_OK;
+       }
++      case CF_ENHMETAFILE:
++      {
++          RECT rect = { lprcBounds->left, lprcBounds->top, lprcBounds->right, lprcBounds->bottom };
++
++          if (cache_entry->stgmedium.tymed != TYMED_ENHMF || !cache_entry->stgmedium.hEnhMetaFile)
++              continue;
++          PlayEnhMetaFile( hdcDraw, cache_entry->stgmedium.hEnhMetaFile, &rect );
++          return S_OK;
++      }
++      case CF_BITMAP:
++      {
++          BITMAP bm;
++          HGDIOBJ old;
++          HDC mem;
++
++          if (cache_entry->stgmedium.tymed != TYMED_GDI || !cache_entry->stgmedium.hBitmap ||
++              !GetObjectW( cache_entry->stgmedium.hBitmap, sizeof(bm), &bm ) || !(mem = CreateCompatibleDC( hdcDraw )))
++              continue;
++          old = SelectObject( mem, cache_entry->stgmedium.hBitmap );
++          StretchBlt( hdcDraw, lprcBounds->left, lprcBounds->top, lprcBounds->right - lprcBounds->left,
++                      lprcBounds->bottom - lprcBounds->top, mem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY );
++          SelectObject( mem, old );
++          DeleteDC( mem );
++          return S_OK;
++      }
+     }
+   }
+ 
+diff --git a/dlls/riched20/richole.c b/dlls/riched20/richole.c
+index 856f1582..200abf17 100644
+--- a/dlls/riched20/richole.c
++++ b/dlls/riched20/richole.c
+@@ -5820,13 +5820,10 @@ void draw_ole( ME_Context *c, int x, int y, ME_Run *run, BOOL selected )
+     bounds.bottom = y;
+ 
+     hr = IViewObject_Draw(ivo, DVASPECT_CONTENT, -1, 0, 0, 0, c->hDC, &bounds, NULL, NULL, 0);
+-    if (FAILED(hr))
+-    {
+-      WARN("failed to draw object: %#08lx\n", hr);
+-    }
+-
+     IViewObject_Release(ivo);
+-    return;
++    if (SUCCEEDED(hr)) return;
++    /* a cache that cannot draw its data: the picture is drawn from the data */
++    WARN("failed to draw object: %#08lx\n", hr);
+   }
+ 
+   if (IOleObject_QueryInterface(run->reobj->obj.poleobj, &IID_IDataObject, (void**)&ido) != S_OK)

@@ -176,7 +176,8 @@ struct window_state
     struct window_image snapshot;            /* the last thing it showed, at its size */
     RECT                snapshot_rect;       /* where it showed it */
     bool                snapshot_valid;
-    struct window_image scratch;             /* what it shows now, while it animates */
+    uint64_t            snapshot_time;       /* µs: when a frame of another size last took it */
+    struct window_image scratch;            /* what it shows now, while it animates */
 };
 
 /* compositor.c */

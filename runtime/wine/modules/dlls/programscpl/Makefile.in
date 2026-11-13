@@ -1,0 +1,15 @@
+MODULE    = programscpl.dll
+IMPORTS   = uuid comctl32 comdlg32 shell32 shlwapi user32 gdi32 advapi32 ole32 uxtheme
+
+VER_FILEDESCRIPTION_STR = "Programs and Features Control Panel"
+
+PARENTSRC = ../systemcpl
+
+SOURCES = \
+	cpanel.c \
+	cpfolder.c \
+	details.c \
+	main.c \
+	page.c \
+	programs.c \
+	programscpl.rc

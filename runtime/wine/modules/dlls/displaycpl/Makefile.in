@@ -1,0 +1,23 @@
+MODULE    = displaycpl.dll
+IMPORTS   = uuid comctl32 comdlg32 shell32 shlwapi user32 gdi32 advapi32 ole32 windowscodecs powrprof
+
+VER_FILEDESCRIPTION_STR = "Display Control Panel"
+
+PARENTSRC = ../systemcpl
+
+SOURCES = \
+	confirm.c \
+	cpanel.c \
+	cpfolder.c \
+	displaycpl.rc \
+	layout.c \
+	main.c \
+	monitors.c \
+	page_advanced.c \
+	page_background.c \
+	page_desktop.c \
+	page_display.c \
+	page_personalize.c \
+	page_screensaver.c \
+	picture.c \
+	wallpaper.c

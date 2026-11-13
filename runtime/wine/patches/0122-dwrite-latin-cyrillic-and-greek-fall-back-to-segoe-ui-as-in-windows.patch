@@ -1,0 +1,33 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 11 Nov 2026 14:00:00 +0200
+Subject: [PATCH] dwrite: Latin, Cyrillic and Greek fall back to Segoe UI, as in Windows.
+
+The system fallback gave Tahoma for Latin and Cyrillic, and nothing for
+Greek: text a page's fonts lack (Cyrillic in a font of Latin only) came
+out in Wine's Tahoma, which Chrome drew as Windows XP did. Windows falls
+back to Segoe UI; Arctic makes that a family of its UI font (Personalization
+writes Fonts\Replacements), Tahoma stays after it.
+---
+diff --git a/dlls/dwrite/analyzer.c b/dlls/dwrite/analyzer.c
+--- a/dlls/dwrite/analyzer.c
++++ b/dlls/dwrite/analyzer.c
+@@ -232,12 +232,16 @@
+ }
+ system_fallback_config[] =
+ {
+-    /* Latin, Combining Diacritical Marks */
++    /* Latin, Combining Diacritical Marks: Segoe UI, as in Windows (Arctic
++       makes it a family of its UI font, Fonts\Replacements) */
+     { "0000-007F, 0080-00FF, 0100-017F, 0180-024F, "
+-      "0250-02AF, 02B0-02FF, 0300-036F", L"Tahoma" },
++      "0250-02AF, 02B0-02FF, 0300-036F", L"Segoe UI, Tahoma" },
++
++    /* Greek and Coptic, Greek Extended */
++    { "0370-03FF, 1F00-1FFF",   L"Segoe UI, Tahoma" },
+ 
+     /* Cyrillic, Cyrillic Supplement */
+-    { "0400-052F",              L"Tahoma" },
++    { "0400-052F",              L"Segoe UI, Tahoma" },
+ 
+     { "0530-058F, FB10-FB1C",   L"Noto Sans Armenian" },
+ 

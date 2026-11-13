@@ -1,0 +1,27 @@
+REGEDIT4
+
+; Taskbar and Start Menu: a shell folder of taskbarcpl.dll, its tabs as
+; pages of the Control Panel inside File Explorer, not the dialog that
+; shell32's Options_RunDLL 1 opened (the tray opens the page instead)
+[HKEY_CLASSES_ROOT\CLSID\{0DF44EAA-FF21-4412-828E-260A8728E7F1}]
+@="Taskbar and Start Menu"
+"LocalizedString"="@C:\\Windows\\System32\\taskbarcpl.dll,-1"
+"InfoTip"="@C:\\Windows\\System32\\taskbarcpl.dll,-2"
+"System.ApplicationName"="Microsoft.TaskbarAndStartMenu"
+"System.ControlPanel.Category"="1"
+
+[-HKEY_CLASSES_ROOT\CLSID\{0DF44EAA-FF21-4412-828E-260A8728E7F1}\Shell]
+
+[HKEY_CLASSES_ROOT\CLSID\{0DF44EAA-FF21-4412-828E-260A8728E7F1}\InProcServer32]
+@="C:\\Windows\\System32\\taskbarcpl.dll"
+"ThreadingModel"="Apartment"
+
+; its picture: the taskbar of the Windows 11 icon theme, the icon theme's when it has one
+[HKEY_CLASSES_ROOT\CLSID\{0DF44EAA-FF21-4412-828E-260A8728E7F1}\DefaultIcon]
+@="C:\\Windows\\System32\\taskbarcpl.dll,-101"
+
+[HKEY_CLASSES_ROOT\CLSID\{0DF44EAA-FF21-4412-828E-260A8728E7F1}\ShellFolder]
+"Attributes"=dword:28000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{0DF44EAA-FF21-4412-828E-260A8728E7F1}]
+@="Taskbar and Start Menu"

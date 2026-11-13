@@ -1,0 +1,24 @@
+From: Arctic <arctic@localhost>
+Subject: [PATCH] comctl32: LoadIconMetric and LoadIconWithScaleDown at Windows' ordinals.
+
+Windows exports them as ordinals 380 and 381 too, and programs import them
+by ordinal (Spotify delay-loads 380 and quit at once with c06d007f).
+---
+diff -ruN a/dll/win32/comctl32/comctl32.spec b/dll/win32/comctl32/comctl32.spec
+--- a/dll/win32/comctl32/comctl32.spec	2026-11-12 16:15:35.316540300 +0100
++++ b/dll/win32/comctl32/comctl32.spec	2026-11-12 16:15:43.197541000 +0100
+@@ -154,6 +154,8 @@
+ 375 stdcall -noname -private StrCSpnIW(wstr wstr)
+ 376 stdcall -noname -private IntlStrEqWorkerA(long str str long)
+ 377 stdcall -noname -private IntlStrEqWorkerW(long wstr wstr long)
++380 stdcall -ordinal LoadIconMetric(long wstr long long)
++381 stdcall -ordinal LoadIconWithScaleDown(long wstr long long long)
+ 382 stdcall -noname SmoothScrollWindow(ptr)
+ 383 stdcall -noname DoReaderMode(ptr)
+ 384 stdcall -noname SetPathWordBreakProc(ptr long)
+@@ -183,5 +185,3 @@
+ 
+ ; Exported in v6 but not v5
+ @ stdcall DrawShadowText(long wstr long ptr long long long long long)
+-@ stdcall -version=0x600+ LoadIconWithScaleDown(long wstr long long long)
+-@ stdcall -version=0x600+ LoadIconMetric(long wstr long long)

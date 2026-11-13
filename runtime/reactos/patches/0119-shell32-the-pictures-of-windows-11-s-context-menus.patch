@@ -1,0 +1,380 @@
+From: Arctic <arctic@localhost>
+Subject: [PATCH] shell32: The pictures of Windows 11's context menus.
+
+With the visual style's size "Windows 11" every item the system puts in a
+context menu has the picture Windows 11 gives it (menuicons.cpp, drawn by
+tools/menu-icons.py): the verbs by their name, the default part, the
+background's View, Sort by, Refresh, Paste and the views, New, Send to,
+the folders' own Properties, Format and Eject, shortcuts and the Recycle
+Bin. Open and Edit show the program that does it, a verb's Icon value is
+shown as Windows shows it. New's and Send to's icons sit where win32u puts
+pictures. ArcticSetMenuIcon gives the same pictures to other modules.
+---
+diff -ruN a/dll/win32/shell32/CDefaultContextMenu.cpp b/dll/win32/shell32/CDefaultContextMenu.cpp
+--- a/dll/win32/shell32/CDefaultContextMenu.cpp	2026-11-11 17:40:34.971592800 +0100
++++ b/dll/win32/shell32/CDefaultContextMenu.cpp	2026-11-11 17:49:29.066579300 +0100
+@@ -320,6 +320,8 @@
+         void AddStaticEntry(const HKEY hkeyClass, const WCHAR *szVerb, UINT uFlags);
+         void AddStaticEntriesForKey(HKEY hKey, UINT uFlags);
+         void TryPickDefault(HMENU hMenu, UINT idCmdFirst, UINT DfltOffset, UINT uFlags);
++        void ArcticSetIcons(HMENU hMenu, UINT idCmdFirst, UINT cIds);
++        BOOL ArcticSetStaticIcon(HMENU hMenu, UINT uPos, const StaticShellEntry &Entry);
+         BOOL IsShellExtensionAlreadyLoaded(REFCLSID clsid);
+         HRESULT LoadDynamicContextMenuHandler(HKEY hKey, REFCLSID clsid);
+         BOOL EnumerateDynamicContextHandlerForKey(HKEY hRootKey);
+@@ -1141,6 +1143,9 @@
+ 
+     TryPickDefault(hMenu, idCmdFirst, idDefaultOffset, uFlags);
+ 
++    /* Arctic: the pictures of Windows 11's context menus */
++    ArcticSetIcons(hMenu, idCmdFirst, cIds);
++
+     // TODO: DFM_MERGECONTEXTMENU_TOP
+ 
+     // TODO: Remove duplicate verbs. This will be easier when the static items handling
+@@ -1151,6 +1156,126 @@
+     return MAKE_HRESULT(SEVERITY_SUCCESS, 0, cIds);
+ }
+ 
++/* Arctic: a static verb's picture. The system's verbs have ours; then a
++   verb's own Icon value, as Windows shows it since 7; Open and Edit show the
++   program that does it, as in Windows 11 (a folder's is File Explorer) */
++BOOL CDefaultContextMenu::ArcticSetStaticIcon(HMENU hMenu, UINT uPos, const StaticShellEntry &Entry)
++{
++    LPCSTR pszPicture = SHELL_MenuPictureOfVerb(Entry.Verb);
++    if (pszPicture && _wcsicmp(Entry.Verb, L"open") && _wcsicmp(Entry.Verb, L"edit"))
++        return SHELL_SetMenuIcon(hMenu, uPos, TRUE, pszPicture);
++
++    CStringW strKey = L"shell\\" + Entry.Verb;
++    WCHAR szValue[MAX_PATH * 2];
++    DWORD cb = sizeof(szValue);
++    if (RegGetValueW(Entry.hkClass, strKey, L"Icon", RRF_RT_REG_SZ, NULL, szValue, &cb) == ERROR_SUCCESS &&
++        SHELL_SetMenuIconLocation(hMenu, uPos, TRUE, szValue))
++    {
++        return TRUE;
++    }
++
++    BOOL bOpen = !_wcsicmp(Entry.Verb, L"open"), bEdit = !_wcsicmp(Entry.Verb, L"edit");
++    if (!bOpen && !bEdit && _wcsicmp(Entry.Verb, L"play"))
++        return FALSE;
++
++    WCHAR szExe[MAX_PATH] = L"";
++    cb = sizeof(szValue);
++    if (RegGetValueW(Entry.hkClass, strKey + L"\\command", NULL, RRF_RT_REG_SZ, NULL, szValue, &cb) == ERROR_SUCCESS)
++    {
++        LPCWSTR p = szValue;
++        while (*p == L' ')
++            p++;
++        /* the item runs itself ("%1"): its own icon */
++        if ((!wcsncmp(p, L"\"%1\"", 4) || !wcsncmp(p, L"%1", 2)) && m_cidl == 1)
++        {
++            STRRET strret;
++            if (SUCCEEDED(m_psf->GetDisplayNameOf(m_apidl[0], SHGDN_FORPARSING, &strret)) &&
++                SUCCEEDED(StrRetToBufW(&strret, m_apidl[0], szExe, _countof(szExe))) &&
++                SHELL_SetMenuIconFile(hMenu, uPos, TRUE, szExe, 0))
++            {
++                return TRUE;
++            }
++            szExe[0] = 0;
++        }
++        else
++        {
++            SHELL_ProgramOfCommand(szValue, szExe, _countof(szExe));
++        }
++    }
++    if (!szExe[0] && bOpen && m_cidl)
++    {
++        SFGAOF att = SFGAO_FOLDER;
++        if (SUCCEEDED(m_psf->GetAttributesOf(1, m_apidl, &att)) && (att & SFGAO_FOLDER))
++            if (GetWindowsDirectoryW(szExe, _countof(szExe)))
++                PathAppendW(szExe, L"explorer.exe");
++    }
++    /* what File Explorer opens shows a folder */
++    if (szExe[0] && !_wcsicmp(PathFindFileNameW(szExe), L"explorer.exe"))
++        return SHELL_SetMenuIcon(hMenu, uPos, TRUE, "folder");
++    if (szExe[0] && SHELL_SetMenuIconFile(hMenu, uPos, TRUE, szExe, 0))
++        return TRUE;
++    return SHELL_SetMenuIcon(hMenu, uPos, TRUE, bEdit ? "edit" : "open");
++}
++
++/* Arctic: every item of the system gets the picture Windows 11 gives it:
++   static verbs by their name, the handlers' items by theirs (Copy as path,
++   Move to...), the default part (Cut, Copy...) by its own, and the folder's
++   own items (Properties, Format, Eject) by their text */
++void CDefaultContextMenu::ArcticSetIcons(HMENU hMenu, UINT idCmdFirst, UINT cIds)
++{
++    if (!SHELL_MenuIconsWanted())
++        return;
++
++    static const struct { UINT ids; LPCSTR pszPicture; } CallbackItems[] =
++    {
++        { IDS_PROPERTIES,  "properties" },
++        { IDS_FORMATDRIVE, "format" },
++        { IDS_EJECT,       "eject" },
++        { IDS_DISCONNECT,  "unmapdrive" },
++    };
++
++    int count = GetMenuItemCount(hMenu);
++    for (int pos = 0; pos < count; pos++)
++    {
++        UINT id = GetMenuItemID(hMenu, pos);
++        if (id == (UINT)-1 || id < idCmdFirst || id - idCmdFirst >= cIds)
++            continue;
++        UINT offset = id - idCmdFirst;
++
++        if (!m_StaticEntries.IsEmpty() && offset >= m_iIdSCMFirst && offset < m_iIdSCMLast)
++        {
++            POSITION it = m_StaticEntries.FindIndex(offset - m_iIdSCMFirst);
++            if (it)
++                ArcticSetStaticIcon(hMenu, pos, m_StaticEntries.GetAt(it));
++            continue;
++        }
++
++        if (m_iIdCBFirst != m_iIdCBLast && offset >= m_iIdCBFirst && offset < m_iIdCBLast)
++        {
++            WCHAR szText[128], szItem[128];
++            if (!GetMenuStringW(hMenu, pos, szItem, _countof(szItem), MF_BYPOSITION))
++                continue;
++            for (UINT i = 0; i < _countof(CallbackItems); i++)
++            {
++                if (LoadStringW(shell32_hInstance, CallbackItems[i].ids, szText, _countof(szText)) &&
++                    !wcscmp(szText, szItem))
++                {
++                    SHELL_SetMenuIcon(hMenu, pos, TRUE, CallbackItems[i].pszPicture);
++                    break;
++                }
++            }
++            continue;
++        }
++
++        WCHAR szVerb[MAX_VERB] = L"";
++        if (SUCCEEDED(GetCommandString(offset, GCS_VERBW, NULL, (LPSTR)szVerb, _countof(szVerb))) && szVerb[0])
++        {
++            if (LPCSTR pszPicture = SHELL_MenuPictureOfVerb(szVerb))
++                SHELL_SetMenuIcon(hMenu, pos, TRUE, pszPicture);
++        }
++    }
++}
++
+ HRESULT CDefaultContextMenu::DoPaste(LPCMINVOKECOMMANDINFOEX lpcmi, BOOL bLink)
+ {
+     HRESULT hr = _DoInvokeCommandCallback(lpcmi, DFM_CMD_PASTE);
+diff -ruN a/dll/win32/shell32/CDefViewBckgrndMenu.cpp b/dll/win32/shell32/CDefViewBckgrndMenu.cpp
+--- a/dll/win32/shell32/CDefViewBckgrndMenu.cpp	2026-11-11 17:40:35.051592800 +0100
++++ b/dll/win32/shell32/CDefViewBckgrndMenu.cpp	2026-11-11 17:49:29.068579300 +0100
+@@ -254,6 +254,29 @@
+         /* merge general background context menu in */
+         Shell_MergeMenus(hMenu, GetSubMenu(hMenuPart, 0), indexMenu, 0, idCmdLast, MM_DONTREMOVESEPS | MM_SUBMENUSHAVEIDS | MM_ADDSEPARATOR);
+         DestroyMenu(hMenuPart);
++
++        /* Arctic: the pictures of Windows 11's background menus */
++        static const struct { UINT id; LPCSTR pszPicture; } Pictures[] =
++        {
++            { FCIDM_SHVIEW_VIEW,            "view" },
++            { FCIDM_SHVIEW_ARRANGE,         "sort" },
++            { FCIDM_SHVIEW_REFRESH,         "refresh" },
++            { FCIDM_SHVIEW_INSERT,          "paste" },
++            { FCIDM_SHVIEW_INSERTLINK,      "pastelink" },
++            { FCIDM_SHVIEW_UNDO,            "undo" },
++            { FCIDM_SHVIEW_BIGICON,         "viewlarge" },
++            { FCIDM_SHVIEW_SMALLICON,       "viewsmall" },
++            { FCIDM_SHVIEW_LISTVIEW,        "viewlist" },
++            { FCIDM_SHVIEW_REPORTVIEW,      "viewdetails" },
++            { FCIDM_SHVIEW_TILEVIEW,        "viewtiles" },
++            { FCIDM_SHVIEW_DESKICON_LARGE,  "viewlarge" },
++            { FCIDM_SHVIEW_DESKICON_MEDIUM, "viewmedium" },
++            { FCIDM_SHVIEW_DESKICON_SMALL,  "viewsmall" },
++            { FCIDM_SHVIEW_AUTOARRANGE,     "autoarrange" },
++            { FCIDM_SHVIEW_ALIGNTOGRID,     "aligngrid" },
++        };
++        for (UINT i = 0; i < _countof(Pictures); i++)
++            SHELL_SetMenuIcon(hMenu, Pictures[i].id, FALSE, Pictures[i].pszPicture);
+     }
+     else
+     {
+diff -ruN a/dll/win32/shell32/CMakeLists.txt b/dll/win32/shell32/CMakeLists.txt
+--- a/dll/win32/shell32/CMakeLists.txt	2026-11-11 17:40:35.395592800 +0100
++++ b/dll/win32/shell32/CMakeLists.txt	2026-11-11 17:49:29.058579300 +0100
+@@ -84,6 +84,7 @@
+     COpenWithMenu.cpp
+     CNewMenu.cpp
+     CSendToMenu.cpp
++    menuicons.cpp
+     CCopyMoveToMenu.cpp
+     CCopyAsPathMenu.cpp
+     CShellDispatch.cpp
+diff -ruN a/dll/win32/shell32/CNewMenu.cpp b/dll/win32/shell32/CNewMenu.cpp
+--- a/dll/win32/shell32/CNewMenu.cpp	2026-11-11 17:40:35.118592800 +0100
++++ b/dll/win32/shell32/CNewMenu.cpp	2026-11-11 17:49:29.069579300 +0100
+@@ -674,6 +674,7 @@
+ 
+     if (!InsertMenuItemW(hMenu, indexMenu, TRUE, &mii))
+         return E_FAIL;
++    SHELL_SetMenuIcon(hMenu, indexMenu, TRUE, "new"); /* Arctic: Windows 11's picture */
+ 
+     return MAKE_HRESULT(SEVERITY_SUCCESS, 0, cItems);
+ }
+@@ -732,6 +733,12 @@
+             if (!lpmis || lpmis->CtlType != ODT_MENU)
+                 break;
+ 
++            /* Arctic: the size of small icons, as Windows 11's menus have them */
++            if (SHELL_MenuIconsWanted())
++            {
++                lpmis->itemWidth = GetSystemMetrics(SM_CXSMICON);
++                lpmis->itemHeight = GetSystemMetrics(SM_CYSMICON);
++            }
+             if (lpmis->itemWidth < (UINT)GetSystemMetrics(SM_CXMENUCHECK))
+                 lpmis->itemWidth = GetSystemMetrics(SM_CXMENUCHECK);
+             if (lpmis->itemHeight < 16)
+@@ -767,6 +774,16 @@
+             if (!hIcon)
+                 break;
+ 
++            /* Arctic: in Windows 11's menus, at the size of small icons in
++               the place win32u gives the picture */
++            if (SHELL_MenuIconsWanted())
++            {
++                INT cx = GetSystemMetrics(SM_CXSMICON), cy = GetSystemMetrics(SM_CYSMICON);
++                const RECT &rc = lpdis->rcItem;
++                DrawIconEx(lpdis->hDC, rc.left + (rc.right - rc.left - cx) / 2, rc.top + (rc.bottom - rc.top - cy) / 2,
++                           hIcon, cx, cy, 0, NULL, DI_NORMAL);
++            }
++            else
+             DrawIconEx(lpdis->hDC,
+                        2,
+                        lpdis->rcItem.top + (lpdis->rcItem.bottom - lpdis->rcItem.top - 16) / 2,
+diff -ruN a/dll/win32/shell32/CSendToMenu.cpp b/dll/win32/shell32/CSendToMenu.cpp
+--- a/dll/win32/shell32/CSendToMenu.cpp	2026-11-11 17:40:35.189592800 +0100
++++ b/dll/win32/shell32/CSendToMenu.cpp	2026-11-11 17:49:29.071579300 +0100
+@@ -315,6 +315,7 @@
+         ERR("InsertMenuItemW: %ld\n", GetLastError());
+         return E_FAIL;
+     }
++    SHELL_SetMenuIcon(hMenu, indexMenu, TRUE, "sendto"); /* Arctic: Windows 11's picture */
+ 
+     HMENU hOldSubMenu = m_hSubMenu;
+     m_hSubMenu = hSubMenu;
+@@ -376,6 +377,12 @@
+                 break;
+ 
+             UINT cxMenuCheck = GetSystemMetrics(SM_CXMENUCHECK);
++            /* Arctic: the size of small icons, as Windows 11's menus have them */
++            if (SHELL_MenuIconsWanted())
++            {
++                lpmis->itemWidth = cxSmall;
++                lpmis->itemHeight = cySmall;
++            }
+             if (lpmis->itemWidth < cxMenuCheck)
+                 lpmis->itemWidth = cxMenuCheck;
+             if (lpmis->itemHeight < cySmall)
+@@ -402,6 +409,9 @@
+             INT x = 4;
+             INT y = lpdis->rcItem.top;
+             y += (rcItem.bottom - rcItem.top - cySmall) / 2;
++            /* Arctic: in Windows 11's menus, where win32u puts the picture */
++            if (SHELL_MenuIconsWanted())
++                x = rcItem.left + (INT)(rcItem.right - rcItem.left - cxSmall) / 2;
+             DrawIconEx(lpdis->hDC, x, y, hIcon, cxSmall, cySmall,
+                        0, NULL, DI_NORMAL);
+ 
+diff -ruN a/dll/win32/shell32/CShellLink.cpp b/dll/win32/shell32/CShellLink.cpp
+--- a/dll/win32/shell32/CShellLink.cpp	2026-11-11 17:40:35.256592800 +0100
++++ b/dll/win32/shell32/CShellLink.cpp	2026-11-11 17:49:29.073579300 +0100
+@@ -2562,6 +2562,22 @@
+     if (!InsertMenuItemW(hMenu, indexMenu++, TRUE, &mii))
+         return E_FAIL;
+ 
++    /* Arctic: Open shows the picture of what the shortcut opens, as in Windows 11 */
++    if (SHELL_MenuIconsWanted())
++    {
++        WCHAR szIcon[MAX_PATH] = L"";
++        INT iIcon = 0;
++        if (m_sIcoPath && *m_sIcoPath)
++        {
++            StringCchCopyW(szIcon, _countof(szIcon), m_sIcoPath);
++            iIcon = m_Header.nIconIndex;
++        }
++        else if (m_sPath && *m_sPath)
++            StringCchCopyW(szIcon, _countof(szIcon), m_sPath);
++        if (!szIcon[0] || !SHELL_SetMenuIconFile(hMenu, indexMenu - 1, TRUE, szIcon, iIcon))
++            SHELL_SetMenuIcon(hMenu, indexMenu - 1, TRUE, "open");
++    }
++
+     mii.fMask = MIIM_TYPE | MIIM_ID | MIIM_STATE;
+     mii.dwTypeData = strOpenFileLoc.GetBuffer();
+     mii.cch = wcslen(mii.dwTypeData);
+@@ -2570,6 +2586,7 @@
+     mii.fType = MFT_STRING;
+     if (!InsertMenuItemW(hMenu, indexMenu++, TRUE, &mii))
+         return E_FAIL;
++    SHELL_SetMenuIcon(hMenu, indexMenu - 1, TRUE, "folder");
+ 
+     return MAKE_HRESULT(SEVERITY_SUCCESS, 0, id);
+ }
+diff -ruN a/dll/win32/shell32/folders/CRecycleBin.cpp b/dll/win32/shell32/folders/CRecycleBin.cpp
+--- a/dll/win32/shell32/folders/CRecycleBin.cpp	2026-11-11 17:40:35.324592800 +0100
++++ b/dll/win32/shell32/folders/CRecycleBin.cpp	2026-11-11 17:49:29.076579300 +0100
+@@ -461,6 +461,11 @@
+         if (_InsertMenuItemW(hMenu, indexMenu++, TRUE, -1, MFT_SEPARATOR, NULL, 0))
+             indexMenu++;
+     }
++    /* Arctic: the pictures of Windows 11's menus */
++    SHELL_SetMenuIcon(hMenu, idCmdFirst + IDC_BB_RESTORE, FALSE, "undo");
++    SHELL_SetMenuIcon(hMenu, idCmdFirst + IDC_BB_CUT, FALSE, "cut");
++    SHELL_SetMenuIcon(hMenu, idCmdFirst + IDC_BB_DELETE, FALSE, "delete");
++    SHELL_SetMenuIcon(hMenu, idCmdFirst + IDC_BB_PROPERTIES, FALSE, "properties");
+     return idHigh ? MAKE_HRESULT(SEVERITY_SUCCESS, 0, idHigh - idCmdFirst + 1) : S_OK;
+ }
+ 
+@@ -1089,6 +1094,9 @@
+             }
+         }
+     }
++    /* Arctic: the pictures of Windows 11's menus */
++    SHELL_SetMenuIcon(hMenu, idCmdFirst + IDC_EMPTYRECYCLEBIN, FALSE, "delete");
++    SHELL_SetMenuIcon(hMenu, idCmdFirst + IDC_PROPERTIES, FALSE, "properties");
+     return idHigh ? MAKE_HRESULT(SEVERITY_SUCCESS, 0, idHigh - idCmdFirst + 1) : S_OK;
+ }
+ 
+diff -ruN a/dll/win32/shell32/precomp.h b/dll/win32/shell32/precomp.h
+--- a/dll/win32/shell32/precomp.h	2026-11-11 17:40:35.600592800 +0100
++++ b/dll/win32/shell32/precomp.h	2026-11-11 17:49:29.063579300 +0100
+@@ -359,4 +359,14 @@
+ int SHELL32_FileOperation(LPSHFILEOPSTRUCTW lpFileOp, FILEOPCALLBACK Callback, void *CallerData);
+ HRESULT SHELL_SingleFileOperation(HWND hWnd, UINT Op, PCWSTR Src, PCWSTR Dest, UINT Flags, PWSTR *ppNewName);
+ 
++/* Arctic: menuicons.cpp, the pictures of Windows 11's menu items */
++EXTERN_C BOOL SHELL_MenuIconsWanted(void);
++EXTERN_C HBITMAP SHELL_GetMenuPicture(LPCSTR pszName);
++EXTERN_C HBITMAP SHELL_GetMenuPictureOfFile(LPCWSTR pszPath, INT iIndex);
++EXTERN_C BOOL SHELL_SetMenuIcon(HMENU hMenu, UINT uItem, BOOL fByPos, LPCSTR pszName);
++EXTERN_C BOOL SHELL_SetMenuIconFile(HMENU hMenu, UINT uItem, BOOL fByPos, LPCWSTR pszPath, INT iIndex);
++EXTERN_C BOOL SHELL_SetMenuIconLocation(HMENU hMenu, UINT uItem, BOOL fByPos, LPCWSTR pszLocation);
++EXTERN_C LPCSTR SHELL_MenuPictureOfVerb(LPCWSTR pszVerb);
++EXTERN_C BOOL SHELL_ProgramOfCommand(LPCWSTR pszCommand, LPWSTR pszExe, UINT cchExe);
++
+ #endif /* _PRECOMP_H__ */
+diff -ruN a/dll/win32/shell32/shell32.rc b/dll/win32/shell32/shell32.rc
+--- a/dll/win32/shell32/shell32.rc	2026-11-11 17:40:35.462592800 +0100
++++ b/dll/win32/shell32/shell32.rc	2026-11-11 17:49:29.062579300 +0100
+@@ -75,6 +75,9 @@
+ #include "icon_res.rc"
+ #include "bitmap_res.rc"
+ #include "avi_res.rc"
++
++/* Arctic: the pictures of menu items, drawn by tools/menu-icons.py */
++MENUICONS RCDATA "res/menuicons.bin"
+ #include "rgs_res.rc"
+ 
+ #include <reactos/manifest_dll.rc>
+diff -ruN a/dll/win32/shell32/shell32.spec b/dll/win32/shell32/shell32.spec
+--- a/dll/win32/shell32/shell32.spec	2026-11-11 17:40:35.530592800 +0100
++++ b/dll/win32/shell32/shell32.spec	2026-11-11 17:49:29.060579300 +0100
+@@ -663,3 +663,6 @@
+ 
+ @ stdcall GetCurrentProcessExplicitAppUserModelID(ptr)
+ @ stdcall SetCurrentProcessExplicitAppUserModelID(wstr)
++
++; Arctic: the pictures of Windows 11's menus (menuicons.cpp)
++@ stdcall ArcticSetMenuIcon(ptr long long str)

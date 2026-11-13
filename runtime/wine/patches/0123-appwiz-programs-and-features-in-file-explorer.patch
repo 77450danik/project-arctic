@@ -1,0 +1,31 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 11 Nov 2026 16:00:00 +0200
+Subject: [PATCH] appwiz.cpl: Programs and Features in File Explorer.
+
+Programs and Features is a page of the Control Panel inside File Explorer
+(programscpl.dll), as in Windows 7: the applet opens it there and keeps its
+dialog for where the page cannot open. Installing Wine Gecko and Mono stays
+as it is.
+---
+diff --git a/dlls/appwiz.cpl/appwiz.c b/dlls/appwiz.cpl/appwiz.c
+--- a/dlls/appwiz.cpl/appwiz.c
++++ b/dlls/appwiz.cpl/appwiz.c
+@@ -1007,8 +1007,18 @@
+         }
+ 
+         case CPL_DBLCLK:
++        {
++            /* Arctic: Programs and Features is a page of the Control Panel
++             * inside File Explorer (programscpl.dll); the dialog where it
++             * cannot open */
++            HMODULE programs = LoadLibraryW(L"programscpl.dll");
++            BOOL (WINAPI *open_page)(UINT) = programs ? (void *)GetProcAddress(programs, "ArcticProgramsOpen") : NULL;
++
++            if (open_page && open_page(0))
++                break;
+             StartApplet(hwndCPL);
+             break;
++        }
+     }
+ 
+     return FALSE;

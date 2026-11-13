@@ -1,0 +1,278 @@
+/*
+ * Taskbar and Start Menu of the Control Panel: resources
+ *
+ * The Ukrainian texts follow Windows 11's Settings, Personalization, Taskbar.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "taskbarcpl.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                  "Control Panel Home"
+    0xf001                  "See also"
+    0xf002                  "Apply"
+    0xf003                  "On"
+    0xf004                  "Off"
+    IDS_NAME                "Taskbar and Start Menu"
+    IDS_TIP                 "Customize the Start menu and taskbar, such as the types of items to be displayed and how they should appear."
+    IDS_TASKBAR             "Taskbar"
+    IDS_LOOK                "Appearance"
+    IDS_BUTTONS             "Buttons"
+    IDS_START               "Start Menu"
+    IDS_NOTIFY              "Notification Area"
+    IDS_NO_TASKBAR          "The taskbar is not running."
+    IDS_PERSONALIZE         "Personalization"
+    IDS_DISPLAY             "Display"
+    IDS_RELATED             "Related settings"
+    IDS_TASKBAR_HINT        "Locking, hiding, combining buttons"
+    IDS_LOOK_HINT           "Color, transparency, blur"
+    IDS_BUTTONS_HINT        "Style, alignment, the Start button, widgets"
+    IDS_START_HINT          "The menu's style, its items, its look"
+    IDS_NOTIFY_HINT         "The clock, Show desktop"
+    IDS_BEHAVIOR            "Taskbar behaviors"
+    IDS_LOCK                "Lock the taskbar"
+    IDS_AUTOHIDE            "Automatically hide the taskbar"
+    IDS_ONTOP               "Keep the taskbar on top of other windows"
+    IDS_SMALL               "Use small taskbar buttons"
+    IDS_COMBINE             "Combine taskbar buttons"
+    IDS_GLOM_ALWAYS         "Always, hide labels"
+    IDS_GLOM_FULL           "When taskbar is full"
+    IDS_GLOM_NEVER          "Never"
+    IDS_PRESET              "Style"
+    IDS_PRESET_HINT         "The taskbar, Start and the flyouts"
+    IDS_LOOK_DETAILS        "Effect and color"
+    IDS_EFFECT              "Effect"
+    IDS_COLOR               "Color"
+    IDS_OPACITY             "Opacity"
+    IDS_BLUR                "Blur"
+    IDS_TEXT                "Text"
+    IDS_PERCENT             "%1!u!%%"
+    IDS_NUMBER              "%1!u!"
+    IDS_BUTTON_STYLE        "Taskbar buttons"
+    IDS_ALIGNMENT           "Taskbar alignment"
+    IDS_ALIGN_LEFT          "Left"
+    IDS_ALIGN_CENTER        "Center"
+    IDS_START_BUTTON        "Start button"
+    IDS_START_STANDARD      "Standard"
+    IDS_START_IMAGE         "Picture"
+    IDS_START_PICTURE       "The button's picture"
+    IDS_BROWSE              "Browse"
+    IDS_WIDGETS             "Widgets on the taskbar"
+    IDS_WIDGETS_BOTH        "Weather and icon"
+    IDS_WIDGETS_ICON        "Icon only"
+    IDS_WIDGETS_OFF         "Hidden"
+    IDS_IMAGES              "Pictures"
+    IDS_START_STYLE         "Start menu style"
+    IDS_STYLE_STANDARD      "Standard"
+    IDS_STYLE_WIN10         "Windows 10"
+    IDS_STYLE_WIN11         "Windows 11"
+    IDS_STYLE_CLASSIC       "Classic"
+    IDS_START_CONTENT       "The menu's items"
+    IDS_START_CONTENT_HINT  "What the menu shows and how"
+    IDS_CUSTOMIZE           "Customize"
+    IDS_MENU_LOOK           "The menu's look"
+    IDS_INHERIT             "As the taskbar"
+    IDS_INHERIT_HINT        "The menu takes the taskbar's look"
+    IDS_CLOCK               "Clock"
+    IDS_SECONDS             "Seconds on the clock"
+    IDS_DESKTOP_BUTTON      "Show desktop button"
+    IDS_DESKTOP_HINT        "At the far corner of the taskbar"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                  "Домашня сторінка панелі керування"
+    0xf001                  "Див. також"
+    0xf002                  "Застосувати"
+    0xf003                  "Увімкнуто"
+    0xf004                  "Вимкнуто"
+    IDS_NAME                "Панель задач і меню ""Пуск"""
+    IDS_TIP                 "Налаштування меню ""Пуск"" і панелі задач: які елементи показувати та як вони мають виглядати."
+    IDS_TASKBAR             "Панель задач"
+    IDS_LOOK                "Оформлення"
+    IDS_BUTTONS             "Кнопки"
+    IDS_START               "Меню ""Пуск"""
+    IDS_NOTIFY              "Область сповіщень"
+    IDS_NO_TASKBAR          "Панель задач не запущена."
+    IDS_PERSONALIZE         "Персоналізація"
+    IDS_DISPLAY             "Екран"
+    IDS_RELATED             "Пов'язані параметри"
+    IDS_TASKBAR_HINT        "Закріплення, приховування, групування кнопок"
+    IDS_LOOK_HINT           "Колір, прозорість, розмиття"
+    IDS_BUTTONS_HINT        "Стиль, вирівнювання, кнопка ""Пуск"", віджети"
+    IDS_START_HINT          "Стиль меню, його елементи, оформлення"
+    IDS_NOTIFY_HINT         "Годинник, кнопка робочого стола"
+    IDS_BEHAVIOR            "Поведінка панелі задач"
+    IDS_LOCK                "Закріпити панель задач"
+    IDS_AUTOHIDE            "Автоматично приховувати панель задач"
+    IDS_ONTOP               "Відображати панель задач поверх інших вікон"
+    IDS_SMALL               "Малі кнопки панелі задач"
+    IDS_COMBINE             "Групувати кнопки панелі задач"
+    IDS_GLOM_ALWAYS         "Завжди, приховувати підписи"
+    IDS_GLOM_FULL           "Коли панель задач заповнена"
+    IDS_GLOM_NEVER          "Ніколи"
+    IDS_PRESET              "Стиль"
+    IDS_PRESET_HINT         "Панель задач, меню ""Пуск"" і спливаючі вікна"
+    IDS_LOOK_DETAILS        "Ефект і колір"
+    IDS_EFFECT              "Ефект"
+    IDS_COLOR               "Колір"
+    IDS_OPACITY             "Непрозорість"
+    IDS_BLUR                "Розмиття"
+    IDS_TEXT                "Текст"
+    IDS_PERCENT             "%1!u!%%"
+    IDS_NUMBER              "%1!u!"
+    IDS_BUTTON_STYLE        "Кнопки панелі задач"
+    IDS_ALIGNMENT           "Вирівнювання панелі задач"
+    IDS_ALIGN_LEFT          "Ліворуч"
+    IDS_ALIGN_CENTER        "По центру"
+    IDS_START_BUTTON        "Кнопка ""Пуск"""
+    IDS_START_STANDARD      "Стандартна"
+    IDS_START_IMAGE         "Зображення"
+    IDS_START_PICTURE       "Зображення кнопки"
+    IDS_BROWSE              "Огляд"
+    IDS_WIDGETS             "Віджети на панелі задач"
+    IDS_WIDGETS_BOTH        "Погода і значок"
+    IDS_WIDGETS_ICON        "Лише значок"
+    IDS_WIDGETS_OFF         "Не показувати"
+    IDS_IMAGES              "Зображення"
+    IDS_START_STYLE         "Стиль меню ""Пуск"""
+    IDS_STYLE_STANDARD      "Стандартне"
+    IDS_STYLE_WIN10         "Windows 10"
+    IDS_STYLE_WIN11         "Windows 11"
+    IDS_STYLE_CLASSIC       "Класичне"
+    IDS_START_CONTENT       "Елементи меню"
+    IDS_START_CONTENT_HINT  "Що показує меню і як"
+    IDS_CUSTOMIZE           "Налаштувати"
+    IDS_MENU_LOOK           "Оформлення меню"
+    IDS_INHERIT             "Як у панелі задач"
+    IDS_INHERIT_HINT        "Меню бере оформлення панелі задач"
+    IDS_CLOCK               "Годинник"
+    IDS_SECONDS             "Секунди на годиннику"
+    IDS_DESKTOP_BUTTON      "Кнопка ""Показати робочий стіл"""
+    IDS_DESKTOP_HINT        "У дальньому куті панелі задач"
+}
+
+LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000                  "Панель управления — домашняя страница"
+    0xf001                  "См. также"
+    0xf002                  "Применить"
+    0xf003                  "Вкл."
+    0xf004                  "Откл."
+    IDS_NAME                "Панель задач и меню ""Пуск"""
+    IDS_TIP                 "Настройка меню ""Пуск"" и панели задач: какие элементы показывать и как они должны выглядеть."
+    IDS_TASKBAR             "Панель задач"
+    IDS_LOOK                "Оформление"
+    IDS_BUTTONS             "Кнопки"
+    IDS_START               "Меню ""Пуск"""
+    IDS_NOTIFY              "Область уведомлений"
+    IDS_NO_TASKBAR          "Панель задач не запущена."
+    IDS_PERSONALIZE         "Персонализация"
+    IDS_DISPLAY             "Экран"
+    IDS_RELATED             "Сопутствующие параметры"
+    IDS_TASKBAR_HINT        "Закрепление, скрытие, группировка кнопок"
+    IDS_LOOK_HINT           "Цвет, прозрачность, размытие"
+    IDS_BUTTONS_HINT        "Стиль, выравнивание, кнопка ""Пуск"", виджеты"
+    IDS_START_HINT          "Стиль меню, его элементы, оформление"
+    IDS_NOTIFY_HINT         "Часы, кнопка рабочего стола"
+    IDS_BEHAVIOR            "Поведение панели задач"
+    IDS_LOCK                "Закрепить панель задач"
+    IDS_AUTOHIDE            "Автоматически скрывать панель задач"
+    IDS_ONTOP               "Отображать панель задач поверх других окон"
+    IDS_SMALL               "Маленькие кнопки панели задач"
+    IDS_COMBINE             "Группировать кнопки на панели задач"
+    IDS_GLOM_ALWAYS         "Всегда, скрывать метки"
+    IDS_GLOM_FULL           "При заполнении панели задач"
+    IDS_GLOM_NEVER          "Никогда"
+    IDS_PRESET              "Стиль"
+    IDS_PRESET_HINT         "Панель задач, меню ""Пуск"" и всплывающие окна"
+    IDS_LOOK_DETAILS        "Эффект и цвет"
+    IDS_EFFECT              "Эффект"
+    IDS_COLOR               "Цвет"
+    IDS_OPACITY             "Непрозрачность"
+    IDS_BLUR                "Размытие"
+    IDS_TEXT                "Текст"
+    IDS_PERCENT             "%1!u!%%"
+    IDS_NUMBER              "%1!u!"
+    IDS_BUTTON_STYLE        "Кнопки панели задач"
+    IDS_ALIGNMENT           "Выравнивание панели задач"
+    IDS_ALIGN_LEFT          "Слева"
+    IDS_ALIGN_CENTER        "По центру"
+    IDS_START_BUTTON        "Кнопка ""Пуск"""
+    IDS_START_STANDARD      "Стандартная"
+    IDS_START_IMAGE         "Изображение"
+    IDS_START_PICTURE       "Изображение кнопки"
+    IDS_BROWSE              "Обзор"
+    IDS_WIDGETS             "Виджеты на панели задач"
+    IDS_WIDGETS_BOTH        "Погода и значок"
+    IDS_WIDGETS_ICON        "Только значок"
+    IDS_WIDGETS_OFF         "Не показывать"
+    IDS_IMAGES              "Изображения"
+    IDS_START_STYLE         "Стиль меню ""Пуск"""
+    IDS_STYLE_STANDARD      "Стандартное"
+    IDS_STYLE_WIN10         "Windows 10"
+    IDS_STYLE_WIN11         "Windows 11"
+    IDS_STYLE_CLASSIC       "Классическое"
+    IDS_START_CONTENT       "Элементы меню"
+    IDS_START_CONTENT_HINT  "Что показывает меню и как"
+    IDS_CUSTOMIZE           "Настроить"
+    IDS_MENU_LOOK           "Оформление меню"
+    IDS_INHERIT             "Как у панели задач"
+    IDS_INHERIT_HINT        "Меню берет оформление панели задач"
+    IDS_CLOCK               "Часы"
+    IDS_SECONDS             "Секунды на часах"
+    IDS_DESKTOP_BUTTON      "Кнопка ""Показать рабочий стол"""
+    IDS_DESKTOP_HINT        "В дальнем углу панели задач"
+}
+
+/* the cards' pictures: Windows 11's settings, from the Windows 11 icon theme
+ * (GPL-3.0, tools/make-we10x-icons.py); an icon theme gives its own */
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+/* @makedep: card_101.ico */
+101 ICON card_101.ico
+/* @makedep: card_102.ico */
+102 ICON card_102.ico
+/* @makedep: card_103.ico */
+103 ICON card_103.ico
+/* @makedep: card_104.ico */
+104 ICON card_104.ico
+/* @makedep: card_105.ico */
+105 ICON card_105.ico
+/* @makedep: card_106.ico */
+106 ICON card_106.ico
+/* @makedep: card_107.ico */
+107 ICON card_107.ico
+/* @makedep: card_108.ico */
+108 ICON card_108.ico
+/* @makedep: card_109.ico */
+109 ICON card_109.ico
+/* @makedep: card_110.ico */
+110 ICON card_110.ico
+/* @makedep: card_111.ico */
+111 ICON card_111.ico
+/* @makedep: card_112.ico */
+112 ICON card_112.ico
+/* @makedep: card_113.ico */
+113 ICON card_113.ico
+/* @makedep: card_114.ico */
+114 ICON card_114.ico
+/* @makedep: card_115.ico */
+115 ICON card_115.ico

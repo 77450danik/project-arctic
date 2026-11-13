@@ -1,0 +1,28 @@
+REGEDIT4
+
+; Programs and Features: Windows' item {7b81be6a-...}, a shell folder of
+; programscpl.dll, a page of the Control Panel inside File Explorer
+[HKEY_CLASSES_ROOT\CLSID\{7b81be6a-ce2b-4676-a29e-eb907a5126c5}]
+@="Programs and Features"
+"LocalizedString"="@C:\\Windows\\System32\\programscpl.dll,-1"
+"InfoTip"="@C:\\Windows\\System32\\programscpl.dll,-2"
+"System.ApplicationName"="Microsoft.ProgramsAndFeatures"
+"System.ControlPanel.Category"="8"
+
+[HKEY_CLASSES_ROOT\CLSID\{7b81be6a-ce2b-4676-a29e-eb907a5126c5}\DefaultIcon]
+@="C:\\Windows\\System32\\appwiz.cpl,-1"
+
+[HKEY_CLASSES_ROOT\CLSID\{7b81be6a-ce2b-4676-a29e-eb907a5126c5}\InProcServer32]
+@="C:\\Windows\\System32\\programscpl.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\CLSID\{7b81be6a-ce2b-4676-a29e-eb907a5126c5}\ShellFolder]
+"Attributes"=dword:28000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace\{7b81be6a-ce2b-4676-a29e-eb907a5126c5}]
+@="Programs and Features"
+
+; "control appwiz.cpl" opens the item; Wine Gecko and Mono go through the
+; applet as before. The Control Panel lists the item, not the applet as well
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\don't load]
+"appwiz.cpl"="no"

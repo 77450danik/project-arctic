@@ -400,17 +400,35 @@ void fill_alpha( HDC hdc, const RECT *rect, COLORREF color, BYTE alpha )
 
 void fill_round_rect( HDC hdc, const RECT *rect, float radius, COLORREF color, BYTE alpha )
 {
-    int width = rect->right - rect->left, height = rect->bottom - rect->top;
+    int width = rect->right - rect->left, height = rect->bottom - rect->top, corner = (int)ceilf( radius );
+    UINT32 full = ((UINT32)alpha << 24) | ((GetRValue( color ) * alpha / 255) << 16) |
+                  ((GetGValue( color ) * alpha / 255) << 8) | (GetBValue( color ) * alpha / 255);
     UINT32 *pixels;
 
-    if (width <= 0 || height <= 0 || !(pixels = malloc( width * height * sizeof(*pixels) ))) return;
+    if (width <= 0 || height <= 0) return;
+    /* square, it is one colour, which GDI stretches */
+    if (corner <= 0)
+    {
+        fill_alpha( hdc, rect, color, alpha );
+        return;
+    }
+    if (!(pixels = malloc( width * height * sizeof(*pixels) ))) return;
     for (int py = 0; py < height; py++)
     {
+        BOOL row_inside = py >= corner && py < height - corner;
+
         for (int px_ = 0; px_ < width; px_++)
         {
             int hits = 0;
             UINT32 a;
 
+            /* only the corners are rounded: the rest is covered whole
+             * (the address field of Explorer took 16 samples a pixel) */
+            if (row_inside || (px_ >= corner && px_ < width - corner))
+            {
+                pixels[py * width + px_] = full;
+                continue;
+            }
             for (int j = 0; j < SUPERSAMPLE; j++)
             {
                 for (int i = 0; i < SUPERSAMPLE; i++)

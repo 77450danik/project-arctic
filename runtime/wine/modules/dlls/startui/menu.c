@@ -1030,6 +1030,13 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     return DefWindowProcW( hwnd, msg, wparam, lparam );
 }
 
+/* a shortcut dragged onto the menu was pinned */
+static void dropped( HWND hwnd )
+{
+    if (mode == MODE_HOME) load_home();
+    InvalidateRect( menu, NULL, FALSE );
+}
+
 static BOOL create_menu(void)
 {
     DWORD transition = ARCTIC_TRANSITION_SLIDE_UP, corner = 2 /* DWMWCP_ROUND */;
@@ -1045,6 +1052,7 @@ static BOOL create_menu(void)
     menu = CreateWindowExW( WS_EX_TOOLWINDOW | WS_EX_TOPMOST, cls.lpszClassName, L"", WS_POPUP,
                             0, 0, MENU_WIDTH, MENU_HEIGHT, NULL, NULL, startui_instance, NULL );
     if (!menu) return FALSE;
+    pins_drop_register( menu, PIN_START, dropped );
     DwmSetWindowAttribute( menu, DWMWA_ARCTIC_TRANSITION, &transition, sizeof(transition) );
     DwmSetWindowAttribute( menu, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner) );
     font_item = shell_font( px( 14 ), FW_NORMAL );

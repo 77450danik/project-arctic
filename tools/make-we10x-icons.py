@@ -7,9 +7,15 @@ Personalization). The folders of the user are We10X's "special" colours, the
 Windows-like ones.
 
 We10X: https://github.com/yeyushengfan258/We10X-icon-theme (GPL-3.0).
-Needs rsvg-convert (librsvg2-bin). Run where the theme is unpacked:
+The folders of the user, the plain folder and This PC are the same author's
+Windows 11 ones instead, as colourful as Windows 11's own:
+https://github.com/yeyushengfan258/Win11-icon-theme (GPL-3.0).
+Needs rsvg-convert (librsvg2-bin). Run where the themes are unpacked:
 
-    python3 tools/make-we10x-icons.py <We10X-icon-theme-master> runtime/icons/We10X
+    python3 tools/make-we10x-icons.py <We10X-icon-theme-master> runtime/icons/We10X <Win11-icon-theme>
+
+With "-" for We10X the icons made before stay, and only the Windows 11 ones
+are written again.
 """
 
 import os
@@ -181,6 +187,101 @@ MODULES = {
     "sndvol": {1: SOUND, 2: SPEAKERS, 3: ["devices/audio-headphones"], 5: ["devices/video-display"]},
 }
 
+# The cards of Arctic's pages drawn as Windows 11's Settings (displaycpl,
+# taskbarcpl, programscpl): the pictures of Windows 11's own settings, from
+# the Windows 11 theme. The same files are the modules' own icons too (copied
+# next to their sources), so that the Standard theme shows these.
+CARDS = {
+    "displaycpl": {
+        101: "preferences/preferences-desktop-display-color",   # Display
+        102: "preferences/preferences-desktop-display-nightcolor",  # brightness
+        103: "preferences/preferences-desktop-virtual",          # scale
+        104: "preferences/preferences-desktop-display",          # resolution
+        105: "apps/panel",                                       # orientation
+        106: "apps/xfce4-taskbar",                               # smaller modes
+        107: "preferences/preferences-desktop-workspaces",       # multiple displays
+        108: "apps/system-software-update",                     # detect
+        109: "preferences/preferences-advanced",                 # advanced display
+        110: "preferences/preferences-desktop-gaming",           # graphics
+        111: "preferences/preferences-desktop-theme-global",     # Personalization
+        112: "preferences/preferences-desktop-wallpaper",        # background
+        113: "preferences/preferences-desktop-screensaver",      # screen saver
+        114: "preferences/preferences-desktop-theme-applications",  # the mode
+        115: "preferences/preferences-desktop-color",            # colours
+        116: "preferences/preferences-desktop-icons",            # icon theme
+        117: "apps/preferences-desktop-display",                 # the desktop
+        118: "preferences/preferences-desktop-effects",          # the controls' style
+        119: "apps/preferences-system-windows",                  # title bars
+        120: "apps/gnome-software",                              # widgets
+        121: "apps/preferences-desktop-theme-global",            # the desktop's icons
+        122: "apps/preferences-desktop-icons",                   # their size
+        123: "preferences/cs-panel",                             # taskbar
+        124: "preferences/preferences-desktop-menu-edit",        # Start
+        125: "apps/utilities-energy-monitor",                    # power
+        126: "apps/preferences-system-time",                     # wait
+        127: "preferences/preferences-desktop-screensaver",      # sign in on resume
+        128: "preferences/preferences-desktop",                  # settings of a screen saver
+    },
+    "taskbarcpl": {
+        101: "preferences/cs-panel",                             # taskbar
+        102: "preferences/preferences-desktop-color",            # appearance
+        103: "preferences/preferences-desktop-virtual",          # buttons
+        104: "preferences/preferences-desktop-menu-edit",        # Start
+        105: "preferences/preferences-desktop-notification-bell",  # notification area
+        106: "preferences/preferences-desktop-screensaver",      # lock
+        107: "apps/xfce4-taskbar",                               # hide
+        108: "apps/preferences-desktop-icons",                   # small buttons
+        109: "preferences/preferences-desktop-workspaces",       # combine
+        110: "apps/preferences-system-time",                     # clock
+        111: "apps/preferences-desktop-display",                 # show desktop
+        112: "preferences/preferences-desktop-icons",            # icons
+        113: "preferences/preferences-desktop",                  # on top, customize
+        114: "preferences/preferences-desktop-effects",          # effect
+        115: "preferences/preferences-desktop-theme-global",     # the menu's look
+    },
+    "programscpl": {
+        101: "apps/softwarecenter",                              # programs
+        102: "apps/system-software-install",                     # install
+        103: "apps/system-software-update",                      # updates
+    },
+}
+
+for _module, _table in CARDS.items():
+    MODULES.setdefault(_module, {}).update({_id: [_name] for _id, _name in _table.items()})
+
+
+# what the Windows 11 theme draws instead: (module, icon group) -> its drawing
+WIN11 = {
+    ("shell32", 4): "places/folder",
+    ("shell32", 5): "places/folder-open",
+    ("shell32", 319): "places/folder",
+    ("shell32", 16): "devices/computer",
+    ("shell32", 35): "places/user-desktop",
+    ("shell32", 181): "places/user-desktop",
+    ("shell32", 235): "places/folder-documents",
+    ("shell32", 236): "places/folder-images",
+    ("shell32", 237): "places/folder-music",
+    ("shell32", 238): "places/folder-videos",
+    ("shell32", 16801): "places/folder-download",
+    ("shell32", 267): "places/folder-public",
+    ("imageres", 149): "devices/computer",
+    ("netcenter", 6): "devices/computer",
+    ("systemcpl", 1): "devices/computer",
+}
+
+
+for _module, _table in CARDS.items():
+    WIN11.update({(_module, _id): _name for _id, _name in _table.items()})
+
+
+def find_svg11(win11, name):
+    category, base = name.split("/")
+    if category == "preferences":
+        path = os.path.join(win11, "src", "preferences", "32", base + ".svg")
+    else:
+        path = os.path.join(win11, "src", category, "scalable", base + ".svg")
+    return path if os.path.exists(path) else None
+
 
 def find_svg(src, name, size):
     """The scalable drawing at every size: the theme's small ones are of
@@ -208,37 +309,51 @@ def write_ico(path, pngs):
         f.write(header + entries + data)
 
 
+def make_ico(work, path, svg, tag):
+    pngs = []
+    for size in SIZES:
+        png = os.path.join(work, "%s-%d.png" % (tag, size))
+        subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size), "-o", png, svg], check=True)
+        with open(png, "rb") as f:
+            pngs.append((size, f.read()))
+    write_ico(path, pngs)
+
+
 def main():
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     theme, out = sys.argv[1], sys.argv[2]
-    src = os.path.join(theme, "src")
+    win11 = sys.argv[3] if len(sys.argv) == 4 else None
     work = tempfile.mkdtemp()
     made = missing = 0
     for module, table in sorted(MODULES.items()):
         dest = os.path.join(out, module)
-        shutil.rmtree(dest, ignore_errors=True)
-        os.makedirs(dest)
+        if theme != "-":
+            shutil.rmtree(dest, ignore_errors=True)
+        os.makedirs(dest, exist_ok=True)
         for icon_id, names in sorted(table.items()):
+            tag = "%s-%d" % (module, icon_id)
+            svg11 = find_svg11(win11, WIN11[(module, icon_id)]) if win11 and (module, icon_id) in WIN11 else None
+            if svg11:
+                make_ico(work, os.path.join(dest, "%d.ico" % icon_id), svg11, tag)
+                made += 1
+                continue
+            if theme == "-":
+                continue
+            src = os.path.join(theme, "src")
             name = next((n for n in names if find_svg(src, n, 256)), None)
             if not name:
                 print("no drawing for %s %d (%s)" % (module, icon_id, ", ".join(names)))
                 missing += 1
                 continue
-            pngs = []
-            for size in SIZES:
-                png = os.path.join(work, "%s-%d-%d.png" % (module, icon_id, size))
-                subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size), "-o", png, find_svg(src, name, size)],
-                               check=True)
-                with open(png, "rb") as f:
-                    pngs.append((size, f.read()))
-            write_ico(os.path.join(dest, "%d.ico" % icon_id), pngs)
+            make_ico(work, os.path.join(dest, "%d.ico" % icon_id), find_svg(src, name, 256), tag)
             made += 1
     shutil.rmtree(work)
-    for license_name in ("COPYING", "LICENSE"):
-        if os.path.exists(os.path.join(theme, license_name)):
-            shutil.copy(os.path.join(theme, license_name), os.path.join(out, "COPYING"))
-            break
+    if theme != "-":
+        for license_name in ("COPYING", "LICENSE"):
+            if os.path.exists(os.path.join(theme, license_name)):
+                shutil.copy(os.path.join(theme, license_name), os.path.join(out, "COPYING"))
+                break
     print("%d icons, %d without a drawing" % (made, missing))
 
 

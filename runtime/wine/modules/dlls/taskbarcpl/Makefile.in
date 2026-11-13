@@ -1,0 +1,12 @@
+MODULE    = taskbarcpl.dll
+IMPORTS   = uuid comctl32 comdlg32 shell32 shlwapi user32 gdi32 advapi32 ole32
+
+VER_FILEDESCRIPTION_STR = "Taskbar and Start Menu Control Panel"
+
+PARENTSRC = ../systemcpl
+
+SOURCES = \
+	cpanel.c \
+	cpfolder.c \
+	main.c \
+	taskbarcpl.rc

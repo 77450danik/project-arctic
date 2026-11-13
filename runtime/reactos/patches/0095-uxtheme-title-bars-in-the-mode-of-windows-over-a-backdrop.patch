@@ -112,8 +112,8 @@ dark scheme. That theme is opened anew on WM_THEMECHANGED.
 +        return &CaptionLook;
 +    RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0,
 +                  KEY_READ, &hKey);
-+    /* Windows 10's default: Windows dark, programs light */
-+    look.SystemLight = ReadCaptionDword(hKey, L"SystemUsesLightTheme", &dwValue) && dwValue;
++    /* Windows 11's default: both light */
++    look.SystemLight = !ReadCaptionDword(hKey, L"SystemUsesLightTheme", &dwValue) || dwValue;
 +    look.AppsLight = !ReadCaptionDword(hKey, L"AppsUseLightTheme", &dwValue) || dwValue;
 +    if (hKey)
 +        RegCloseKey(hKey);
@@ -522,7 +522,7 @@ dark scheme. That theme is opened anew on WM_THEMECHANGED.
 +/* ordinal 138; Windows 10's default: Windows dark, programs light */
 +BOOLEAN WINAPI ShouldSystemUseDarkMode(void)
 +{
-+    return !ReadPersonalizeValue(L"SystemUsesLightTheme", 0);
++    return !ReadPersonalizeValue(L"SystemUsesLightTheme", 1);
 +}
 +
 +/* ordinal 132 */

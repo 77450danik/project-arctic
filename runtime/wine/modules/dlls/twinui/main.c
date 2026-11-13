@@ -99,15 +99,26 @@ struct arctic_taskbar_shared *get_taskbar_shared(void)
                                         ARCTIC_TASKBAR_SECTION )))
         return NULL;
     view = MapViewOfFile( mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(*view) );
-    CloseHandle( mapping );
-    if (!view) return NULL;
+    if (!view)
+    {
+        CloseHandle( mapping );
+        return NULL;
+    }
+    /* the handle stays open: in Wine the section's name goes with its last
+     * handle, and the programs' explorerframe made sections of their own,
+     * so no button, progress or overlay of theirs reached the taskbar */
     InterlockedCompareExchange( (LONG *)&view->version, ARCTIC_TASKBAR_VERSION, 0 );
     if (view->version != ARCTIC_TASKBAR_VERSION)
     {
         UnmapViewOfFile( view );
+        CloseHandle( mapping );
         return NULL;
     }
-    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL )) UnmapViewOfFile( view );
+    if (InterlockedCompareExchangePointer( (void **)&shared, view, NULL ))
+    {
+        UnmapViewOfFile( view );
+        CloseHandle( mapping );
+    }
     return shared;
 }
 

@@ -162,8 +162,8 @@ void look_load_taskbar( struct look *look )
     HKEY key = NULL;
 
     RegOpenKeyExW( HKEY_CURRENT_USER, REG_KEY, 0, KEY_READ, &key );
-    look->preset = read_dword( key, L"Preset", PRESET_WIN10 );
-    if (look->preset >= PRESET_COUNT) look->preset = PRESET_WIN10;
+    look->preset = read_dword( key, L"Preset", PRESET_WIN11 );
+    if (look->preset >= PRESET_COUNT) look->preset = PRESET_WIN11;
     preset_look( look );
     if (look->preset == PRESET_CUSTOM)
     {
@@ -698,6 +698,112 @@ static UINT CALLBACK page_callback( HWND hwnd, UINT msg, PROPSHEETPAGEW *psp )
         free( page );
     }
     return 1;
+}
+
+/**********************************************************************
+ *          For the Control Panel's pages of the taskbar (taskbarcpl.dll)
+ *
+ * A look as values: [0] the preset, [1] the effect (ARCTIC_ACCENT_*), [2]
+ * the colour, [3] the opacity, [4] the blur, [5] the text, [6] whether a
+ * style of Start takes the taskbar's. which: -1 the taskbar, else a style
+ * of Start (enum start_style), its own look. Each change shows at once and
+ * is kept, as Windows 11's Settings do.
+ */
+
+static void look_from_values( struct look *look, const DWORD *v )
+{
+    look->preset = v[0] < PRESET_COUNT ? v[0] : PRESET_CUSTOM;
+    look->effect = v[1];
+    if (look->effect < ARCTIC_ACCENT_ENABLE_GRADIENT || look->effect > ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND)
+        look->effect = ARCTIC_ACCENT_ENABLE_ACRYLICBLURBEHIND;
+    look->color = v[2] & 0xffffff;
+    look->opacity = min( v[3], 100 );
+    look->blur = max( 1, min( v[4], 100 ) );
+    look->text = v[5] < TEXT_COUNT ? v[5] : TEXT_AUTO;
+}
+
+static void look_to_values( const struct look *look, DWORD *v )
+{
+    v[0] = look->preset;
+    v[1] = look->effect;
+    v[2] = look->color;
+    v[3] = look->opacity;
+    v[4] = look->blur;
+    v[5] = look->text;
+}
+
+void WINAPI ArcticLookGet( int which, DWORD *values )
+{
+    struct look look;
+
+    if (which < 0 || which >= STYLE_COUNT)
+    {
+        look_load_taskbar( &look );
+        look_to_values( &look, values );
+        values[6] = FALSE;
+        return;
+    }
+    start_look_load_own( which, &look );
+    look_to_values( &look, values );
+    values[0] = PRESET_CUSTOM;
+    values[6] = start_look_inherits( which );
+}
+
+/* what a preset stands for, the text kept */
+void WINAPI ArcticLookPreset( DWORD *values )
+{
+    struct look look;
+    DWORD text = values[5];
+
+    look_from_values( &look, values );
+    if (look.preset == PRESET_CUSTOM) return;
+    preset_look( &look );
+    look.text = text < TEXT_COUNT ? text : TEXT_AUTO;
+    look_to_values( &look, values );
+}
+
+void WINAPI ArcticLookSet( HWND tray, int which, const DWORD *values )
+{
+    struct look look;
+
+    look_from_values( &look, values );
+    if (which < 0 || which >= STYLE_COUNT)
+    {
+        save_taskbar_look( &look );
+        if (tray) ArcticApplyTaskbarLook( tray );
+    }
+    else start_look_save( which, values[6] != 0, &look );
+    /* the flyouts, Start and the taskbar's text take it */
+    PostMessageW( HWND_BROADCAST, RegisterWindowMessageW( L"ArcticShellLookChanged" ), 0, 0 );
+}
+
+/* the choices' names: kind 0 the presets, 1 the effects (value: ARCTIC_ACCENT_*), 2 the text */
+BOOL WINAPI ArcticLookChoice( UINT kind, UINT index, DWORD *value, WCHAR *name, UINT count )
+{
+    UINT id;
+
+    switch (kind)
+    {
+    case 0:
+        if (index >= PRESET_COUNT) return FALSE;
+        id = preset_names[index];
+        *value = index;
+        break;
+    case 1:
+        if (index >= LOOK_EFFECT_COUNT) return FALSE;
+        id = look_effects[index].name;
+        *value = look_effects[index].effect;
+        break;
+    case 2:
+        if (index >= TEXT_COUNT) return FALSE;
+        id = look_text_names[index];
+        *value = index;
+        break;
+    default:
+        return FALSE;
+    }
+    if (name && count) lstrcpynW( name, load_string( id ), count );
+    return TRUE;
 }
 
 /* an empty page the size of explorer's own (DLUs); its controls are made at run time */

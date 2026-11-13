@@ -1168,6 +1168,13 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     return DefWindowProcW( hwnd, msg, wparam, lparam );
 }
 
+/* a shortcut dragged onto the menu was pinned */
+static void dropped( HWND hwnd )
+{
+    load_pins();
+    refresh();
+}
+
 static BOOL create_menu(void)
 {
     /* Windows 11 rounds its Start menu by 8 */
@@ -1184,6 +1191,7 @@ static BOOL create_menu(void)
     menu = CreateWindowExW( WS_EX_TOOLWINDOW | WS_EX_TOPMOST, cls.lpszClassName, L"", WS_POPUP,
                             0, 0, WIDTH, px( 700 ), NULL, NULL, startui_instance, NULL );
     if (!menu) return FALSE;
+    pins_drop_register( menu, PIN_START, dropped );
     DwmSetWindowAttribute( menu, DWMWA_ARCTIC_TRANSITION, &transition, sizeof(transition) );
     DwmSetWindowAttribute( menu, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner) );
     font_title = shell_font( px( 14 ), FW_SEMIBOLD );

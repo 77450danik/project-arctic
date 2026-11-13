@@ -1,0 +1,22 @@
+MODULE    = wordpad.exe
+IMPORTS   = $(ZLIB_PE_LIBS) windowscodecs uuid ole32 oleaut32 shell32 shlwapi comctl32 comdlg32 dwmapi imm32 user32 gdi32 advapi32
+EXTRAINCL = $(ZLIB_PE_CFLAGS)
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Arctic WordPad"
+
+SOURCES = \
+	backstage.c \
+	dialogs.c \
+	docx.c \
+	draw.c \
+	image.c \
+	insert.c \
+	main.c \
+	popups.c \
+	print.c \
+	ribbon.c \
+	styles.c \
+	view.c \
+	wordpad.rc \
+	zip.c

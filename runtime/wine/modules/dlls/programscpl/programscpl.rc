@@ -1,0 +1,164 @@
+/*
+ * Programs and Features of the Control Panel: resources
+ *
+ * The Ukrainian texts follow Windows 7's Programs and Features.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "programscpl.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000              "Control Panel Home"
+    0xf001              "See also"
+    0xf002              "Apply"
+    IDS_NAME            "Programs and Features"
+    IDS_INSTALL_HINT    "From an installer on a disk or a flash drive"
+    IDS_BROWSE_INSTALL  "Browse"
+    IDS_TIP             "Uninstall or change programs on your computer."
+    IDS_TITLE           "Uninstall or change a program"
+    IDS_UPDATES_TITLE   "Uninstall an update"
+    IDS_UNINSTALL       "Uninstall"
+    IDS_CHANGE          "Change"
+    IDS_REPAIR          "Repair"
+    IDS_COL_NAME        "Name"
+    IDS_COL_PUBLISHER   "Publisher"
+    IDS_COL_DATE        "Installed On"
+    IDS_COL_SIZE        "Size"
+    IDS_COL_VERSION     "Version"
+    IDS_UPDATES         "View installed updates"
+    IDS_INSTALL         "Install a program"
+    IDS_INSTALL_TITLE   "Install a program"
+    IDS_FILTER_INSTALLS "Installation programs"
+    IDS_FILTER_PROGRAMS "Programs"
+    IDS_FILTER_ALL      "All files"
+    IDS_RUN_FAILED      "Execution of ""%1"" failed. The program may be gone. Remove its entry from the list?"
+    IDS_TOTAL           "Programs installed: %1!u!. Total size: %2"
+    IDS_NONE            "No programs here."
+    IDS_PROGRAMS        "Programs and Features"
+    IDS_PUBLISHER       "Publisher:"
+    IDS_VERSION         "Product version:"
+    IDS_SUPPORT_LINK    "Support link:"
+    IDS_HELP_LINK       "Help link:"
+    IDS_UPDATE_LINK     "Update information:"
+    IDS_SIZE            "Size:"
+    IDS_CONTACT         "Contact:"
+    IDS_PHONE           "Support phone:"
+    IDS_README          "Readme:"
+    IDS_COMMENTS        "Comments:"
+    IDS_LOCATION        "Location:"
+    IDS_INSTALLED_ON    "Installed on:"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000              "Домашня сторінка панелі керування"
+    0xf001              "Див. також"
+    0xf002              "Застосувати"
+    IDS_NAME            "Програми та засоби"
+    IDS_INSTALL_HINT    "З інсталятора на диску або флешці"
+    IDS_BROWSE_INSTALL  "Огляд"
+    IDS_TIP             "Видалення або змінення програм на цьому комп'ютері."
+    IDS_TITLE           "Видалення або змінення програми"
+    IDS_UPDATES_TITLE   "Видалення оновлення"
+    IDS_UNINSTALL       "Видалити"
+    IDS_CHANGE          "Змінити"
+    IDS_REPAIR          "Відновити"
+    IDS_COL_NAME        "Ім'я"
+    IDS_COL_PUBLISHER   "Видавець"
+    IDS_COL_DATE        "Дата встановлення"
+    IDS_COL_SIZE        "Розмір"
+    IDS_COL_VERSION     "Версія"
+    IDS_UPDATES         "Переглянути встановлені оновлення"
+    IDS_INSTALL         "Установити програму"
+    IDS_INSTALL_TITLE   "Установлення програми"
+    IDS_FILTER_INSTALLS "Програми встановлення"
+    IDS_FILTER_PROGRAMS "Програми"
+    IDS_FILTER_ALL      "Усі файли"
+    IDS_RUN_FAILED      "Не вдалося запустити «%1». Можливо, програми вже немає. Видалити її запис зі списку?"
+    IDS_TOTAL           "Установлено програм: %1!u!. Загальний розмір: %2"
+    IDS_NONE            "Тут немає програм."
+    IDS_PROGRAMS        "Програми та засоби"
+    IDS_PUBLISHER       "Видавець:"
+    IDS_VERSION         "Версія продукту:"
+    IDS_SUPPORT_LINK    "Посилання на підтримку:"
+    IDS_HELP_LINK       "Посилання на довідку:"
+    IDS_UPDATE_LINK     "Відомості про оновлення:"
+    IDS_SIZE            "Розмір:"
+    IDS_CONTACT         "Контактна особа:"
+    IDS_PHONE           "Телефон підтримки:"
+    IDS_README          "Readme:"
+    IDS_COMMENTS        "Примітки:"
+    IDS_LOCATION        "Розташування:"
+    IDS_INSTALLED_ON    "Дата встановлення:"
+}
+
+LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    0xf000              "Панель управления — домашняя страница"
+    0xf001              "См. также"
+    0xf002              "Применить"
+    IDS_NAME            "Программы и компоненты"
+    IDS_INSTALL_HINT    "С установщика на диске или флешке"
+    IDS_BROWSE_INSTALL  "Обзор"
+    IDS_TIP             "Удаление или изменение программ на этом компьютере."
+    IDS_TITLE           "Удаление или изменение программы"
+    IDS_UPDATES_TITLE   "Удаление обновления"
+    IDS_UNINSTALL       "Удалить"
+    IDS_CHANGE          "Изменить"
+    IDS_REPAIR          "Восстановить"
+    IDS_COL_NAME        "Имя"
+    IDS_COL_PUBLISHER   "Издатель"
+    IDS_COL_DATE        "Установлено"
+    IDS_COL_SIZE        "Размер"
+    IDS_COL_VERSION     "Версия"
+    IDS_UPDATES         "Просмотр установленных обновлений"
+    IDS_INSTALL         "Установить программу"
+    IDS_INSTALL_TITLE   "Установка программы"
+    IDS_FILTER_INSTALLS "Программы установки"
+    IDS_FILTER_PROGRAMS "Программы"
+    IDS_FILTER_ALL      "Все файлы"
+    IDS_RUN_FAILED      "Не удалось запустить «%1». Возможно, программы уже нет. Удалить её запись из списка?"
+    IDS_TOTAL           "Установлено программ: %1!u!. Общий размер: %2"
+    IDS_NONE            "Здесь нет программ."
+    IDS_PROGRAMS        "Программы и компоненты"
+    IDS_PUBLISHER       "Издатель:"
+    IDS_VERSION         "Версия продукта:"
+    IDS_SUPPORT_LINK    "Ссылка на поддержку:"
+    IDS_HELP_LINK       "Ссылка на справку:"
+    IDS_UPDATE_LINK     "Сведения об обновлении:"
+    IDS_SIZE            "Размер:"
+    IDS_CONTACT         "Контактное лицо:"
+    IDS_PHONE           "Телефон поддержки:"
+    IDS_README          "Readme:"
+    IDS_COMMENTS        "Комментарии:"
+    IDS_LOCATION        "Расположение:"
+    IDS_INSTALLED_ON    "Дата установки:"
+}
+
+/* the cards' pictures: Windows 11's, from the Windows 11 icon theme (GPL-3.0,
+ * tools/make-we10x-icons.py); an icon theme gives its own */
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+
+/* @makedep: card_101.ico */
+101 ICON card_101.ico
+/* @makedep: card_102.ico */
+102 ICON card_102.ico
+/* @makedep: card_103.ico */
+103 ICON card_103.ico

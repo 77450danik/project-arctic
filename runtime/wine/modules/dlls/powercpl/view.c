@@ -85,9 +85,19 @@ struct view
     UINT nav_count;
     int scroll, content_height, hot, pressed, nav_hot;
     BOOL in_row;
+    int nav_x;                   /* where the task pane begins: on the right beside Explorer's own list */
 };
 
 #define WM_APP_START_PAGE (WM_APP + 40)
+
+/* File Explorer shows the Control Panel's items on the left (startui.dll):
+ * the task pane goes to the right then */
+static BOOL nav_on_right( struct view *view )
+{
+    HWND root = GetAncestor( view->hwnd, GA_ROOT );
+
+    return root && GetPropW( root, L"ArcticExplorerSide" ) != NULL;
+}
 
 static HFONT fonts[STYLE_BIG + 1];
 static HFONT font_link_hot;
@@ -602,7 +612,7 @@ static void paint_nav( struct view *view, HDC hdc )
     for (UINT i = 0; i < view->nav_count; i++)
     {
         struct nav_item *item = &view->nav[i];
-        int width = NAV_WIDTH - NAV_LEFT - px( 8 ), height;
+        int width = NAV_WIDTH - NAV_LEFT - px( 8 ), height, left = view->nav_x + NAV_LEFT;
 
         if (item->see_also && !see_also_shown)
         {
@@ -611,7 +621,7 @@ static void paint_nav( struct view *view, HDC hdc )
                 bottom += text_height( hdc, view->nav[k].text, view_font( STYLE_BODY ), width, TRUE ) + px( 8 );
             y = max( y + px( 24 ), client.bottom - bottom - px( 40 ) );
             {
-                RECT rect = { NAV_LEFT, y, NAV_LEFT + width, y + px( 16 ) };
+                RECT rect = { left, y, left + width, y + px( 16 ) };
                 HGDIOBJ old = SelectObject( hdc, view_font( STYLE_BODY ) );
                 SetTextColor( hdc, COLOR_GRAY );
                 DrawTextW( hdc, load_string( IDS_SEE_ALSO ), -1, &rect, DT_NOPREFIX | DT_SINGLELINE );
@@ -621,7 +631,7 @@ static void paint_nav( struct view *view, HDC hdc )
             see_also_shown = TRUE;
         }
         height = text_height( hdc, item->text, view_font( STYLE_BODY ), width, TRUE );
-        SetRect( &item->rect, NAV_LEFT, y, NAV_LEFT + width, y + height );
+        SetRect( &item->rect, left, y, left + width, y + height );
         {
             BOOL hot = view->nav_hot == (int)i;
             RECT rect = item->rect;
@@ -836,8 +846,10 @@ static LRESULT WINAPI view_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     case WM_SIZE:
         if (view && view->content)
         {
-            int left = min( NAV_WIDTH, LOWORD( lp ) / 3 );
-            MoveWindow( view->content, left, 0, max( LOWORD( lp ) - left, 0 ), HIWORD( lp ), TRUE );
+            int nav = min( NAV_WIDTH, LOWORD( lp ) / 3 ), width = max( LOWORD( lp ) - nav, 0 );
+
+            view->nav_x = nav_on_right( view ) ? width : 0;
+            MoveWindow( view->content, view->nav_x ? 0 : nav, 0, width, HIWORD( lp ), TRUE );
             InvalidateRect( hwnd, NULL, TRUE );
         }
         return 0;

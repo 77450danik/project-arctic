@@ -60,9 +60,10 @@ const GUID wic_format_pbgra = { 0x6fddc324, 0x4e03, 0x4bfe, { 0xb1, 0x85, 0x3d, 
 
 BOOL WINAPI ArcticTaskbarIsLight(void);
 
+/* ButtonStyle and Alignment: as Windows 11 has them until the user says otherwise */
 static DWORD read_option( const WCHAR *name )
 {
-    DWORD value = 0, size = sizeof(value);
+    DWORD value = 1, size = sizeof(value);
 
     RegGetValueW( HKEY_CURRENT_USER, REG_KEY, name, RRF_RT_REG_DWORD, NULL, &value, &size );
     return value;
@@ -334,7 +335,7 @@ BOOL WINAPI ArcticStartButtonImagePaint( HDC hdc, const RECT *button, DWORD flag
 /* What a right click on a button shows */
 
 /* the name a program gives itself, or that of its file */
-static void program_name( const WCHAR *path, WCHAR *name, int size )
+void program_name( const WCHAR *path, WCHAR *name, int size )
 {
     DWORD handle, length = GetFileVersionInfoSizeW( path, &handle );
     const WCHAR *file = wcsrchr( path, '\\' );
@@ -363,11 +364,12 @@ static void program_name( const WCHAR *path, WCHAR *name, int size )
 
 BOOL WINAPI ArcticTaskbarJumpList( HWND owner, const HWND *windows, UINT count, const RECT *button )
 {
-    struct popup_item items[2];
+    struct popup_item items[3];
     struct look look;
     MONITORINFO info = { sizeof(info) };
-    WCHAR path[MAX_PATH] = L"", name[MAX_PATH] = L"";
+    WCHAR path[MAX_PATH] = L"", name[MAX_PATH] = L"", link[MAX_PATH] = L"";
     HWND previous = GetForegroundWindow(), root = GetAncestor( owner, GA_ROOT );
+    BOOL pinned = FALSE;
     HBITMAP icon = NULL;
     DWORD pid = 0, size = ARRAY_SIZE(path);
     HANDLE process;
@@ -393,6 +395,10 @@ BOOL WINAPI ArcticTaskbarJumpList( HWND owner, const HWND *windows, UINT count, 
             DestroyIcon( file.hIcon );
         }
         items[n++] = (struct popup_item){ .id = 1, .text = name, .glyph = GLYPH_NONE, .icon = icon };
+        /* as Windows 11's: pin the program, or unpin it */
+        pinned = taskbar_pin_of( path, link );
+        items[n++] = (struct popup_item){ .id = 3, .text = load_string( pinned ? IDS_UNPIN_TASKBAR : IDS_PIN_TASKBAR ),
+                                          .glyph = pinned ? GLYPH_UNPIN : GLYPH_PIN };
     }
     items[n++] = (struct popup_item){ .id = 2, .text = load_string( count > 1 ? IDS_CLOSE_ALL_WINDOWS : IDS_CLOSE_WINDOW ),
                                       .glyph = GLYPH_CLOSE };
@@ -415,6 +421,8 @@ BOOL WINAPI ArcticTaskbarJumpList( HWND owner, const HWND *windows, UINT count, 
     if (chosen == 1) ShellExecuteW( NULL, NULL, path, NULL, NULL, SW_SHOWNORMAL );
     else if (chosen == 2)
         for (UINT i = 0; i < count; i++) PostMessageW( windows[i], WM_SYSCOMMAND, SC_CLOSE, 0 );
+    else if (chosen == 3 && pinned) ArcticTaskbarUnpinFile( link );
+    else if (chosen == 3) taskbar_pin_named( path, NULL );
     return TRUE;
 }
 
@@ -601,6 +609,8 @@ static void apply_page( HWND dialog, struct page *page )
     }
     ArcticWidgetSetShow( 2 - SendDlgItemMessageW( dialog, ID_WIDGET, CB_GETCURSEL, 0, 0 ) );
     if (page->tray) SendMessageW( page->tray, RegisterWindowMessageW( L"ArcticTaskbarOptionsChanged" ), 0, 0 );
+    /* the icons of the notification area and the flyouts follow the buttons' style */
+    PostMessageW( HWND_BROADCAST, RegisterWindowMessageW( L"ArcticShellLookChanged" ), 0, 0 );
 }
 
 static INT_PTR WINAPI page_proc( HWND dialog, UINT msg, WPARAM wparam, LPARAM lparam )
@@ -648,6 +658,39 @@ static UINT CALLBACK page_callback( HWND hwnd, UINT msg, PROPSHEETPAGEW *psp )
 {
     if (msg == PSPCB_RELEASE) free( (struct page *)psp->lParam );
     return 1;
+}
+
+/* For the Control Panel's page (taskbarcpl.dll): [0] the buttons of Windows
+ * 11, [1] in the middle, [2] the widgets on the taskbar (0 none, 1 the icon,
+ * 2 the weather too); the Start button's picture, "" for the standard one */
+void WINAPI ArcticTaskbarButtonsGet( DWORD *values, WCHAR *image, UINT count )
+{
+    DWORD size = count * sizeof(WCHAR);
+
+    values[0] = read_option( L"ButtonStyle" ) == 1;
+    values[1] = read_option( L"Alignment" ) == 1;
+    values[2] = min( ArcticWidgetShow(), 2 );
+    if (!image || !count) return;
+    image[0] = 0;
+    RegGetValueW( HKEY_CURRENT_USER, REG_KEY, L"StartImage", RRF_RT_REG_SZ, NULL, image, &size );
+}
+
+void WINAPI ArcticTaskbarButtonsSet( HWND tray, const DWORD *values, const WCHAR *image )
+{
+    DWORD style = values[0] != 0, alignment = values[1] != 0;
+    HKEY key;
+
+    if (!image) image = L"";
+    if (!RegCreateKeyExW( HKEY_CURRENT_USER, REG_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL ))
+    {
+        RegSetValueExW( key, L"ButtonStyle", 0, REG_DWORD, (const BYTE *)&style, sizeof(style) );
+        RegSetValueExW( key, L"Alignment", 0, REG_DWORD, (const BYTE *)&alignment, sizeof(alignment) );
+        RegSetValueExW( key, L"StartImage", 0, REG_SZ, (const BYTE *)image, (lstrlenW( image ) + 1) * sizeof(WCHAR) );
+        RegCloseKey( key );
+    }
+    if (values[2] != min( ArcticWidgetShow(), 2 )) ArcticWidgetSetShow( min( values[2], 2 ) );
+    if (tray) SendMessageW( tray, RegisterWindowMessageW( L"ArcticTaskbarOptionsChanged" ), 0, 0 );
+    PostMessageW( HWND_BROADCAST, RegisterWindowMessageW( L"ArcticShellLookChanged" ), 0, 0 );
 }
 
 /* the page "Кнопки" of the taskbar's properties, for explorer to add */

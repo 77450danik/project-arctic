@@ -113,7 +113,7 @@ static void set_dword( HKEY key, const WCHAR *name, DWORD value )
 /* the mode of Windows: the taskbar, Start, the flyouts and the title bars */
 BOOL system_mode_light(void)
 {
-    return reg_dword( HKEY_CURRENT_USER, PERSONALIZE_KEY, L"SystemUsesLightTheme", 0, NULL ) != 0;
+    return reg_dword( HKEY_CURRENT_USER, PERSONALIZE_KEY, L"SystemUsesLightTheme", 1, NULL ) != 0;
 }
 
 static BOOL apps_mode_light(void)
@@ -352,6 +352,34 @@ static void set_ui_fonts( BOOL win11 )
     }
 }
 
+/* Windows' own UI font, which programs and web pages ask for by name and
+ * DirectWrite falls back to for Latin, Cyrillic and Greek: a family of
+ * that name made of the style's font (GDI and DirectWrite both read
+ * Fonts\Replacements). Without it Chrome drew Cyrillic in Tahoma. */
+#define REPLACEMENTS_KEY L"Software\\Arctic\\Runtime\\Fonts\\Replacements"
+
+static void set_segoe_replacements( BOOL win11 )
+{
+    static const WCHAR inter[] = L"Inter\0", source[] = L"Source Sans Pro\0";
+    static const WCHAR inter_semibold[] = L"Inter SemiBold\0Inter\0", source_semibold[] = L"Source Sans Pro Semibold\0Source Sans Pro\0";
+    static const WCHAR inter_light[] = L"Inter Light\0Inter\0";
+    static const struct { const WCHAR *name; const WCHAR *win11, *win10; DWORD size11, size10; } names[] =
+    {
+        { L"Segoe UI", inter, source, sizeof(inter), sizeof(source) },
+        { L"Segoe UI Variable", inter, source, sizeof(inter), sizeof(source) },
+        { L"Segoe UI Variable Text", inter, source, sizeof(inter), sizeof(source) },
+        { L"Segoe UI Variable Display", inter, source, sizeof(inter), sizeof(source) },
+        { L"Segoe UI Variable Small", inter, source, sizeof(inter), sizeof(source) },
+        { L"Segoe UI Semibold", inter_semibold, source_semibold, sizeof(inter_semibold), sizeof(source_semibold) },
+        { L"Segoe UI Light", inter_light, source, sizeof(inter_light), sizeof(source) },
+        { L"Segoe UI Semilight", inter_light, source, sizeof(inter_light), sizeof(source) },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(names); i++)
+        RegSetKeyValueW( HKEY_CURRENT_USER, REPLACEMENTS_KEY, names[i].name, REG_MULTI_SZ,
+                         win11 ? names[i].win11 : names[i].win10, win11 ? names[i].size11 : names[i].size10 );
+}
+
 /* the fonts are what the style wants: an update puts the registry's defaults back */
 static BOOL ui_fonts_right( BOOL win11 )
 {
@@ -363,6 +391,11 @@ static BOOL ui_fonts_right( BOOL win11 )
     if (!SystemParametersInfoW( SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0 )) return TRUE;
     /* GDI gives the full name back: Inter Regular */
     if (_wcsnicmp( metrics.lfMessageFont.lfFaceName, face, lstrlenW( face ) )) return FALSE;
+    /* Segoe UI came later than the rest */
+    if (RegGetValueW( HKEY_CURRENT_USER, REPLACEMENTS_KEY, L"Segoe UI", RRF_RT_REG_MULTI_SZ, NULL, value, &size ) ||
+        lstrcmpiW( value, face ))
+        return FALSE;
+    size = sizeof(value);
     return RegGetValueW( HKEY_LOCAL_MACHINE, FONT_SUBST_KEY, L"MS Shell Dlg", RRF_RT_REG_SZ, NULL, value, &size ) ||
            !lstrcmpiW( value, dialogs );
 }
@@ -384,6 +417,7 @@ static void apply_style( BOOL win11 )
         set_dword( key, L"Style", win11 );
         RegCloseKey( key );
     }
+    set_segoe_replacements( win11 );
     set_ui_fonts( win11 );
     set_scheme( !scheme_is_dark(), win11 ? SIZE_WIN11 : SIZE_WIN10 );
     set_colors( apps_mode_light() );
@@ -430,19 +464,20 @@ void personalize_sync(void)
     HKEY key;
 
     if (InterlockedExchange( &done, 1 )) return;
-    /* Windows 10's defaults, written as there: programs that choose the
-     * colour of their notification area icons read them */
-    reg_dword( HKEY_CURRENT_USER, PERSONALIZE_KEY, L"SystemUsesLightTheme", 0, &found );
+    /* Windows 11's defaults, the light mode, written as there: programs that
+     * choose the colour of their notification area icons read them */
+    reg_dword( HKEY_CURRENT_USER, PERSONALIZE_KEY, L"SystemUsesLightTheme", 1, &found );
     if (!found && !RegCreateKeyExW( HKEY_CURRENT_USER, PERSONALIZE_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL ))
     {
-        set_dword( key, L"SystemUsesLightTheme", 0 );
+        set_dword( key, L"SystemUsesLightTheme", 1 );
         set_dword( key, L"AppsUseLightTheme", apps_mode_light() );
         RegCloseKey( key );
     }
     light = apps_mode_light();
     if (colors_are_dark() == light || scheme_is_dark() == light || (light && colors_are_mixed())) what |= CHANGE_APPS | CHANGE_SETTING;
-    /* the look of the controls the user chose: an update has put the defaults back */
-    style11 = reg_dword( HKEY_CURRENT_USER, SAVED_KEY, L"Style", style_is_11(), NULL ) != 0;
+    /* the look of the controls the user chose, which an update has put back to
+     * the defaults; Windows 11's when nothing was chosen */
+    style11 = reg_dword( HKEY_CURRENT_USER, SAVED_KEY, L"Style", 1, NULL ) != 0;
     if (style11 != style_is_11() || !ui_fonts_right( style11 )) what |= (style11 ? CHANGE_STYLE11 : CHANGE_STYLE10) | CHANGE_SETTING;
     /* the menus' colour of the style, from before there was one */
     if ((GetSysColor( COLOR_MENU ) == menu_color_11( light )) != style11 && (style11 || !light))
@@ -843,9 +878,9 @@ static BOOL icons_we10x(void)
     return !lstrcmpiW( name, ICONS_WE10X );
 }
 
-static void set_icons( BOOL we10x )
+/* a folder of %WINDIR%\Resources\Icons, "" for the system's own */
+static void set_icon_theme( const WCHAR *name )
 {
-    const WCHAR *name = we10x ? ICONS_WE10X : L"";
     HKEY key;
 
     if (RegCreateKeyExW( HKEY_CURRENT_USER, ICONS_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL )) return;
@@ -853,6 +888,11 @@ static void set_icons( BOOL we10x )
     RegCloseKey( key );
     SendMessageTimeoutW( HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)ICONS_CHANGED, SMTO_ABORTIFHUNG, 2000, NULL );
     SHChangeNotify( SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL );
+}
+
+static void set_icons( BOOL we10x )
+{
+    set_icon_theme( we10x ? ICONS_WE10X : L"" );
 }
 
 static void init_page( HWND dialog, struct page *page )
@@ -1025,6 +1065,70 @@ static const struct page_template personalize_template =
     { DS_SETFONT | WS_CHILD | WS_CAPTION | DS_3DLOOK | DS_CONTROL, 0, 0, 0, 0, 252, 250 },
     0, 0, 0, 8, L"MS Shell Dlg",
 };
+
+/**********************************************************************
+ *          For the Control Panel's Personalization (displaycpl.dll)
+ *
+ * Its page is drawn as Windows 11's and changes what this page changes,
+ * the same way: the modes, the look of the controls, the icon theme, and
+ * the window of the title bars.
+ */
+
+/* 1 Windows light, 2 programs light, 4 the controls of Windows 11 */
+DWORD WINAPI ArcticPersonalizeGet(void)
+{
+    return (system_mode_light() ? 1 : 0) | (apps_mode_light() ? 2 : 0) |
+           (reg_dword( HKEY_CURRENT_USER, SAVED_KEY, L"Style", 1, NULL ) ? 4 : 0);
+}
+
+void WINAPI ArcticPersonalizeSetModes( BOOL system_light, BOOL apps_light )
+{
+    system_light = system_light != 0;
+    apps_light = apps_light != 0;
+    if (system_light == system_mode_light() && apps_light == apps_mode_light()) return;
+    set_modes( system_light, apps_light );
+}
+
+void WINAPI ArcticPersonalizeSetStyle( BOOL win11 )
+{
+    HKEY key;
+
+    win11 = win11 != 0;
+    if (win11 == (reg_dword( HKEY_CURRENT_USER, SAVED_KEY, L"Style", 1, NULL ) != 0) && win11 == style_is_11()) return;
+    /* written now, so that the page shows it before the thread has applied it */
+    if (!RegCreateKeyExW( HKEY_CURRENT_USER, SAVED_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL ))
+    {
+        set_dword( key, L"Style", win11 );
+        RegCloseKey( key );
+    }
+    changes( (win11 ? CHANGE_STYLE11 : CHANGE_STYLE10) | CHANGE_SETTING );
+}
+
+void WINAPI ArcticPersonalizeSetIconTheme( const WCHAR *name )
+{
+    WCHAR current[64] = ICONS_WE10X;
+    DWORD size = sizeof(current);
+
+    if (!name) name = L"";
+    RegGetValueW( HKEY_CURRENT_USER, ICONS_KEY, L"Theme", RRF_RT_REG_SZ, NULL, current, &size );
+    if (!lstrcmpiW( current, name )) return;
+    set_icon_theme( name );
+}
+
+/* the window of the title bars, over the page */
+void WINAPI ArcticPersonalizeCaptions( HWND owner )
+{
+    struct page *page = calloc( 1, sizeof(*page) );
+
+    if (!page) return;
+    page->system_light = system_mode_light();
+    page->apps_light = apps_mode_light();
+    page->mode = mode_of( page->system_light, page->apps_light );
+    page->style11 = style_is_11();
+    caption_load( &page->cap );
+    DialogBoxIndirectParamW( startui_instance, &captions_template.header, owner, captions_proc, (LPARAM)page );
+    free( page );
+}
 
 /* the page "Персоналізація", for desk.cpl to show instead of its old appearance */
 HPROPSHEETPAGE WINAPI ArcticPersonalizePage(void)

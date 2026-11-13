@@ -1,0 +1,11 @@
+MODULE    = photos.exe
+IMPORTS   = windowscodecs uuid ole32 oleaut32 shell32 shlwapi comctl32 comdlg32 dwmapi user32 gdi32 advapi32
+EXTRADLLFLAGS = -mwindows -municode
+
+VER_FILEDESCRIPTION_STR = "Photos"
+
+SOURCES = \
+	draw.c \
+	loader.c \
+	main.c \
+	photos.rc

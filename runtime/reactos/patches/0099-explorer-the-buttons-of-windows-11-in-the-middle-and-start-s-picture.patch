@@ -86,7 +86,7 @@ index 9559c58..53b407b 100644
 +{
 +    DWORD cb = sizeof(DWORD);
 +
-+    s_dwTaskbarStyle = s_dwTaskbarAlignment = 0;
++    s_dwTaskbarStyle = s_dwTaskbarAlignment = 1;
 +    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Arctic\\Taskbar", L"ButtonStyle", RRF_RT_REG_DWORD, NULL,
 +                 &s_dwTaskbarStyle, &cb);
 +    cb = sizeof(DWORD);

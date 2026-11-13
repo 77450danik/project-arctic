@@ -1,0 +1,28 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 10 Nov 2026 12:00:00 +0200
+Subject: [PATCH] shell32: The desktop shows a new wallpaper at once.
+
+The desktop kept the old wallpaper until something else had it drawn
+again: neither a new picture (WM_SETTINGCHANGE SPI_SETDESKWALLPAPER) nor a
+new colour (WM_SYSCOLORCHANGE) made it draw itself. It is drawn again
+then, whoever changed it; user32 fades the new background in (Wine patch
+0124).
+---
+diff --git a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+index ac1d9ec..ac90205 100644
+--- a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
++++ b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+@@ -469,6 +469,13 @@ LRESULT CDesktopBrowser::OnSettingChange(UINT uMsg, WPARAM wParam, LPARAM lParam
+         _Resize();
+     }
+ 
++    /* Arctic: a new wallpaper, its fit or the desktop's colour shows at once,
++     * whoever set it; user32 fades it in over the old one */
++    if ((uMsg == WM_SETTINGCHANGE && wParam == SPI_SETDESKWALLPAPER) || uMsg == WM_SYSCOLORCHANGE)
++    {
++        ::RedrawWindow(m_hWnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
++    }
++
+     return 0;
+ }
+ 

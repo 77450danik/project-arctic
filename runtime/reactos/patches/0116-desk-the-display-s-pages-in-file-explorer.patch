@@ -1,0 +1,158 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 10 Nov 2026 12:00:00 +0200
+Subject: [PATCH] desk: The display's pages in File Explorer.
+
+The display's settings are pages of the Control Panel inside File Explorer
+(displaycpl.dll), as in Windows 7: desk.cpl gives its background and screen
+saver pages one by one (ArcticDeskPage) and the adapter's own properties
+(ArcticDisplayAdapterProperties), and opens the page there itself, by the
+number or the name of its old tab. An action on a theme file stays as it was.
+---
+diff --git a/dll/cpl/desk/desk.c b/dll/cpl/desk/desk.c
+index 4aea612..0d7512e 100644
+--- a/dll/cpl/desk/desk.c
++++ b/dll/cpl/desk/desk.c
+@@ -148,6 +148,121 @@ PropSheetProc(HWND hwndDlg, UINT uMsg, LPARAM lParam)
+     return 0;
+ }
+ 
++/* Arctic: the display's settings are pages of the Control Panel inside File
++ * Explorer (displaycpl.dll), as Windows 7 has them: the display itself drawn
++ * as Windows 11's, the background, the screen saver and the personalization
++ * as these pages, each one by itself on a page there. */
++
++/* what the pages share, made once for the process they are shown in */
++static VOID
++ArcticInitGlobalData(VOID)
++{
++    static BOOL bDone;
++    BITMAP bitmap;
++
++    if (bDone)
++        return;
++    bDone = TRUE;
++    g_GlobalData.desktop_color = GetSysColor(COLOR_DESKTOP);
++    g_GlobalData.hMonitorBitmap = LoadBitmapW(hApplet, MAKEINTRESOURCEW(IDC_MONITOR));
++    if (g_GlobalData.hMonitorBitmap != NULL && GetObjectW(g_GlobalData.hMonitorBitmap, sizeof(bitmap), &bitmap))
++    {
++        g_GlobalData.bmMonWidth = bitmap.bmWidth;
++        g_GlobalData.bmMonHeight = bitmap.bmHeight;
++    }
++}
++
++/* 0 the desktop's background, 1 the screen saver */
++HPROPSHEETPAGE WINAPI
++ArcticDeskPage(UINT uPage)
++{
++    PROPSHEETPAGEW psp;
++
++    ArcticInitGlobalData();
++    ZeroMemory(&psp, sizeof(psp));
++    psp.dwSize = sizeof(psp);
++    psp.dwFlags = PSP_DEFAULT;
++    psp.hInstance = hApplet;
++    switch (uPage)
++    {
++        case 0:
++            psp.pszTemplate = MAKEINTRESOURCEW(IDD_BACKGROUND);
++            psp.pfnDlgProc = BackgroundPageProc;
++            break;
++        case 1:
++            psp.pszTemplate = MAKEINTRESOURCEW(IDD_SCREENSAVER);
++            psp.pfnDlgProc = ScreenSaverPageProc;
++            break;
++        default:
++            return NULL;
++    }
++    return CreatePropertySheetPageW(&psp);
++}
++
++/* the adapter's and the monitor's own properties ("Додатково..." of the old
++ * Settings page): Windows 11 opens them from Advanced display as a dialog */
++BOOL WINAPI
++ArcticDisplayAdapterProperties(HWND hwndOwner, LPCWSTR pszDevice)
++{
++    DISPLAY_DEVICEW device;
++    DISPLAY_DEVICE_ENTRY entry;
++    DWORD i;
++
++    for (i = 0; ; i++)
++    {
++        device.cb = sizeof(device);
++        if (!EnumDisplayDevicesW(NULL, i, &device, EDD_GET_DEVICE_INTERFACE_NAME))
++            return FALSE;
++        if (pszDevice == NULL || _wcsicmp(device.DeviceName, pszDevice) == 0)
++            break;
++    }
++    ZeroMemory(&entry, sizeof(entry));
++    entry.DeviceDescription = device.DeviceString;
++    entry.DeviceName = device.DeviceName;
++    entry.DeviceKey = device.DeviceKey;
++    entry.DeviceID = device.DeviceID;
++    entry.DeviceStateFlags = device.StateFlags;
++    return DisplayAdvancedSettings(hwndOwner, &entry);
++}
++
++/* desk.cpl and its pages by number or name open the page in File Explorer:
++ * the Control Panel's item, the desktop's menu, the screen savers' install */
++static BOOL
++ArcticOpenDisplayPage(INT nPage, LPCWSTR pwszSelectedTab)
++{
++    typedef BOOL (WINAPI *PFN_OPEN)(LPCWSTR);
++    static const struct { LPCWSTR Name; LPCWSTR Page; } Pages[] =
++    {
++        { L"Desktop", L"background" },
++        { L"Screen Saver", L"screensaver" },
++        { L"ScreenSaver", L"screensaver" },
++        { L"Appearance", L"personalize" },
++        { L"Themes", L"personalize" },
++        { L"Settings", L"display" },
++    };
++    /* the old tabs by number: Desktop, Screen Saver, Appearance, Settings */
++    static const LPCWSTR ByNumber[] = { L"background", L"screensaver", L"personalize", L"display" };
++    HMODULE hModule = LoadLibraryW(L"displaycpl.dll");
++    PFN_OPEN pOpen = hModule ? (PFN_OPEN)GetProcAddress(hModule, "ArcticDisplayOpen") : NULL;
++    LPCWSTR pwszPage = L"display";
++    UINT i;
++
++    if (pOpen == NULL)
++        return FALSE;
++    if (pwszSelectedTab)
++    {
++        for (i = 0; i < _countof(Pages); i++)
++            if (_wcsicmp(pwszSelectedTab, Pages[i].Name) == 0)
++                pwszPage = Pages[i].Page;
++    }
++    else if (nPage >= 0 && nPage < (INT)_countof(ByNumber))
++    {
++        pwszPage = ByNumber[nPage];
++    }
++    /* without a page named, the display, as desk.cpl opens in Windows 10 */
++    return pOpen(pwszPage);
++}
++
+ /* Display Applet */
+ static LONG APIENTRY
+ DisplayApplet(HWND hwnd, UINT uMsg, LPARAM wParam, LPARAM lParam)
+@@ -196,6 +311,11 @@ DisplayApplet(HWND hwnd, UINT uMsg, LPARAM wParam, LPARAM lParam)
+         goto cleanup;
+     }
+ 
++    /* Arctic: the page in File Explorer, unless an action on a file is asked */
++    if (!pwszAction &&
++        ArcticOpenDisplayPage((uMsg == CPL_STARTWPARMSW && lParam && *(PWSTR)lParam) ? nPage : -1, pwszSelectedTab))
++        goto cleanup;
++
+     g_GlobalData.pwszFile = pwszFile;
+     g_GlobalData.pwszAction = pwszAction;
+     g_GlobalData.desktop_color = GetSysColor(COLOR_DESKTOP);
+diff --git a/dll/cpl/desk/desk.spec b/dll/cpl/desk/desk.spec
+index b108c44..8af724a 100644
+--- a/dll/cpl/desk/desk.spec
++++ b/dll/cpl/desk/desk.spec
+@@ -5,3 +5,5 @@
+ @ stdcall InstallScreenSaverA(ptr ptr str long)
+ @ stdcall InstallScreenSaverW(ptr ptr wstr long)
+ @ stdcall MonitorClassInstaller(long ptr ptr)
++@ stdcall ArcticDeskPage(long)
++@ stdcall ArcticDisplayAdapterProperties(ptr wstr)

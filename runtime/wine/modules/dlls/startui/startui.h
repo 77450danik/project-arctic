@@ -270,6 +270,14 @@
 #define IDS_DW_ON_BATTERY       372
 #define IDS_ICONS               373
 #define IDS_ICONS_STANDARD      374
+#define IDS_PIN_TASKBAR         375
+#define IDS_UNPIN_TASKBAR       376
+#define IDS_EX_NAV_PANE         377
+#define IDS_EX_SHOW             378
+#define IDS_EX_PANES            379
+#define IDS_EX_ADD_DEVICE       380
+#define IDS_EX_BLUETOOTH_DEVICE 381
+#define IDS_EX_PRINTER          382
 #define IDS_WX_STORM            291
 
 extern HINSTANCE startui_instance;
@@ -551,6 +559,30 @@ void describe_age( const FILETIME *time, WCHAR *text, int size );
 /* taskbtn.c: the taskbar's buttons */
 BOOL taskbar_centered(void);
 BOOL taskbar_style11(void);
+void program_name( const WCHAR *path, WCHAR *name, int size );
+
+/* pins.c: the taskbar's pins, and what is dropped to be pinned */
+#define PIN_TASKBAR       1
+#define PIN_START         2
+#define PIN_START_BUTTON  3
+const WCHAR *path_extension( const WCHAR *path );
+BOOL pinned_folder( const WCHAR *name, WCHAR *path );
+BOOL link_target( const WCHAR *link, WCHAR *target, int size );
+BOOL link_make( const WCHAR *link, const WCHAR *target, const WCHAR *args, const WCHAR *icon );
+void free_name( const WCHAR *folder, const WCHAR *base, const WCHAR *ext, WCHAR *path );
+BOOL taskbar_pin_of( const WCHAR *program, WCHAR *link );
+BOOL taskbar_pin_named( const WCHAR *path, const WCHAR *name );
+BOOL WINAPI ArcticTaskbarPinFile( LPCWSTR path );
+BOOL WINAPI ArcticTaskbarUnpinFile( LPCWSTR link );
+BOOL WINAPI ArcticStartMenuVisible(void);
+BOOL pins_drop_register( HWND hwnd, DWORD where, void (*dropped)( HWND hwnd ) );
+
+/* items.c: what pinning takes from the Start menu's programs */
+BOOL items_shortcut_of( const WCHAR *program, WCHAR *link );
+BOOL items_pin_file( const WCHAR *path );
+BOOL items_taskbar_pinned( struct item *item, WCHAR *link );
+void items_pin_taskbar( struct item *item, BOOL pin );
+void items_sync_classic(void);
 extern const GUID wic_factory_clsid, wic_factory_iid, wic_format_pbgra;
 
 /* startpage.c: the page "Меню «Пуск»" of the taskbar's properties */

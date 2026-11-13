@@ -576,7 +576,9 @@ static LRESULT navpane_on_wm_create(HWND hwnd, CREATESTRUCTW *crs)
 
     if(SUCCEEDED(hr))
     {
-        style = NSTCS_HASEXPANDOS | NSTCS_ROOTHASEXPANDO | NSTCS_SHOWSELECTIONALWAYS;
+        /* Arctic: whole rows, as Windows 10's pane has them */
+        style = NSTCS_HASEXPANDOS | NSTCS_ROOTHASEXPANDO | NSTCS_SHOWSELECTIONALWAYS | NSTCS_FULLROWSELECT |
+                NSTCS_FADEINOUTEXPANDOS;
         hr = INameSpaceTreeControl2_Initialize(pnstc2, GetParent(hwnd), NULL, style);
         if(SUCCEEDED(hr))
         {
@@ -607,28 +609,63 @@ static LRESULT navpane_on_wm_create(HWND hwnd, CREATESTRUCTW *crs)
 
             /*
              * Add the default roots
+             *
+             * Arctic: those of Windows 10's navigation pane: the folders
+             * Quick access keeps (Desktop, Downloads, Documents, Pictures),
+             * This PC open, the network.
              */
-
-            /* TODO: This should be FOLDERID_Links */
-            hr = SHGetSpecialFolderLocation(NULL, CSIDL_FAVORITES, &pidl);
-            if(SUCCEEDED(hr))
             {
-                hr = SHCreateShellItem(NULL, NULL, pidl, &psi);
-                if(SUCCEEDED(hr))
+                static const int user_folders[] = { CSIDL_DESKTOPDIRECTORY, -1, CSIDL_PERSONAL, CSIDL_MYPICTURES };
+                WCHAR path[MAX_PATH];
+                unsigned int i;
+
+                /* by their paths: This PC's items of these folders answer
+                 * SIGDN_FILESYSPATH with ::{CLSID}, no use to a program that
+                 * picks one; the tree gives them their names (nstc.c) */
+                for (i = 0; i < sizeof(user_folders) / sizeof(user_folders[0]); i++)
                 {
-                    hr = INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_NONFOLDERS, NSTCRS_VISIBLE, NULL);
-                    IShellItem_Release(psi);
+                    pidl = NULL;
+                    if (user_folders[i] >= 0)
+                    {
+                        if (FAILED(SHGetFolderPathW(NULL, user_folders[i], NULL, SHGFP_TYPE_CURRENT, path)))
+                            continue;
+                    }
+                    else
+                    {
+                        /* Downloads, where Windows keeps it */
+                        if (FAILED(SHGetFolderPathW(NULL, CSIDL_PROFILE, NULL, SHGFP_TYPE_CURRENT, path)) ||
+                            !PathAppendW(path, L"Downloads") || !PathIsDirectoryW(path))
+                            continue;
+                    }
+                    if (FAILED(SHParseDisplayName(path, NULL, &pidl, 0, NULL)) || !pidl)
+                        continue;
+                    if (SUCCEEDED(SHCreateShellItem(NULL, NULL, pidl, &psi)))
+                    {
+                        INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_FOLDERS, NSTCRS_VISIBLE, NULL);
+                        IShellItem_Release(psi);
+                    }
+                    ILFree(pidl);
                 }
-                ILFree(pidl);
-            }
 
-            SHGetDesktopFolder(&psfdesktop);
-            hr = SHGetItemFromObject((IUnknown*)psfdesktop, &IID_IShellItem, (void**)&psi);
-            IShellFolder_Release(psfdesktop);
-            if(SUCCEEDED(hr))
-            {
-                hr = INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_FOLDERS, NSTCRS_EXPANDED, NULL);
-                IShellItem_Release(psi);
+                if (SUCCEEDED(SHGetFolderLocation(NULL, CSIDL_DRIVES, NULL, 0, &pidl)))
+                {
+                    if (SUCCEEDED(SHCreateShellItem(NULL, NULL, pidl, &psi)))
+                    {
+                        INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_FOLDERS, NSTCRS_EXPANDED, NULL);
+                        IShellItem_Release(psi);
+                    }
+                    ILFree(pidl);
+                }
+                if (SUCCEEDED(SHGetFolderLocation(NULL, CSIDL_NETWORK, NULL, 0, &pidl)))
+                {
+                    if (SUCCEEDED(SHCreateShellItem(NULL, NULL, pidl, &psi)))
+                    {
+                        INameSpaceTreeControl2_AppendRoot(pnstc2, psi, SHCONTF_FOLDERS, NSTCRS_VISIBLE, NULL);
+                        IShellItem_Release(psi);
+                    }
+                    ILFree(pidl);
+                }
+                (void)psfdesktop;
             }
 
             /* TODO:

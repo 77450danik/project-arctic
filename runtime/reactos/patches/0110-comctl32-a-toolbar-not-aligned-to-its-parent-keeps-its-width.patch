@@ -1,0 +1,37 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Mon, 9 Nov 2026 12:00:00 +0200
+Subject: [PATCH] comctl32: A toolbar not aligned to its parent keeps its width.
+
+With CCS_NOPARENTALIGN and no CCS_NORESIZE, Windows sizes only the height of
+a toolbar to its buttons; the place and the width stay what the program set.
+Auto-sizing made it as wide as the parent: Rufus's row of four icons covered
+its Start and Close buttons, and clicks on them went to the toolbar.
+---
+--- a/dll/win32/comctl32/toolbar.c
++++ b/dll/win32/comctl32/toolbar.c
+@@ -3279,7 +3279,7 @@
+ 
+         if (infoPtr->dwStyle & CCS_NOPARENTALIGN)
+             uPosFlags |= SWP_NOMOVE;
+-    
++
+         if (!(infoPtr->dwStyle & CCS_NODIVIDER))
+             cy += GetSystemMetrics(SM_CYEDGE);
+ 
+@@ -3289,6 +3289,16 @@
+             cy += 2 * GetSystemMetrics(SM_CYBORDER);
+         }
+ 
++        /* Not aligned to the parent: only the height follows the buttons, the
++         * place and the width stay what the program gave (Rufus puts a short
++         * toolbar on the row of its Start button). The window's width already
++         * has its border. */
++        if (infoPtr->dwStyle & CCS_NOPARENTALIGN)
++        {
++            GetWindowRect(infoPtr->hwndSelf, &window_rect);
++            cx = window_rect.right - window_rect.left;
++        }
++
+         SetWindowPos(infoPtr->hwndSelf, NULL, x, y, cx, cy, uPosFlags);
+     }
+ 

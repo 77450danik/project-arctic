@@ -165,6 +165,20 @@ static ULONG WINAPI menu_Release( IContextMenu *iface )
     return init_Release( &impl_from_IContextMenu( iface )->IShellExtInit_iface );
 }
 
+/* the pictures of Windows 11's menus, from shell32 (which gives them only
+ * with the style of Windows 11) */
+static void set_picture( HMENU menu, UINT item, BOOL by_position, const char *name )
+{
+    static BOOL (WINAPI *set_icon)( HMENU, UINT, BOOL, const char * );
+
+    if (!set_icon)
+    {
+        HMODULE shell32 = GetModuleHandleW( L"shell32.dll" );
+        if (shell32) set_icon = (void *)GetProcAddress( shell32, "ArcticSetMenuIcon" );
+    }
+    if (set_icon) set_icon( menu, item, by_position, name );
+}
+
 /* "Give access to": Remove access, Specific people... */
 static HRESULT WINAPI menu_QueryContextMenu( IContextMenu *iface, HMENU menu, UINT index, UINT first, UINT last,
                                              UINT flags )
@@ -185,6 +199,9 @@ static HRESULT WINAPI menu_QueryContextMenu( IContextMenu *iface, HMENU menu, UI
     item.hSubMenu = sub;
     item.dwTypeData = load_text( IDS_GIVE_ACCESS );
     InsertMenuItemW( menu, index, TRUE, &item );
+    set_picture( sub, first + VERB_STOP, FALSE, "lock" );
+    set_picture( sub, first + VERB_PEOPLE, FALSE, "people" );
+    set_picture( menu, index, TRUE, "people" );
     return MAKE_HRESULT( SEVERITY_SUCCESS, 0, VERB_COUNT + 1 );
 }
 

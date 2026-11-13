@@ -1,0 +1,127 @@
+/*
+ * The words of the Windows 10 file dialog: its buttons, menus and tips
+ *
+ * Apart from comdlg32.rc, which takes its translations from Wine's po files:
+ * these are in a block of string IDs of their own (cdlg.h).
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#pragma code_page(65001)
+
+#include "windef.h"
+#include "winbase.h"
+#include "winuser.h"
+#include "winnls.h"
+#include "cdlg.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_ITEMDLG_OPEN_BUTTON     "&Open"
+    IDS_ITEMDLG_OPEN_READONLY   "Open as &read-only"
+    IDS_ITEMDLG_SEARCH_IN       "Search %s"
+    IDS_ITEMDLG_ORGANIZE        "Organize"
+    IDS_ITEMDLG_NEW_FOLDER      "New folder"
+    IDS_ITEMDLG_BACK_TIP        "Back (Alt + Left Arrow)"
+    IDS_ITEMDLG_FORWARD_TIP     "Forward (Alt + Right Arrow)"
+    IDS_ITEMDLG_UP_TIP          "Up to the parent folder (Alt + Up Arrow)"
+    IDS_ITEMDLG_VIEW_TIP        "Change your view"
+    IDS_ITEMDLG_REFRESH_TIP     "Refresh (F5)"
+    IDS_ITEMDLG_MENU_CUT        "Cu&t"
+    IDS_ITEMDLG_MENU_COPY       "&Copy"
+    IDS_ITEMDLG_MENU_PASTE      "&Paste"
+    IDS_ITEMDLG_MENU_SELECTALL  "Select &all"
+    IDS_ITEMDLG_MENU_DELETE     "&Delete"
+    IDS_ITEMDLG_MENU_RENAME     "Rena&me"
+    IDS_ITEMDLG_MENU_PROPERTIES "P&roperties"
+    IDS_ITEMDLG_VIEW_XLARGE     "E&xtra large icons"
+    IDS_ITEMDLG_VIEW_LARGE      "Lar&ge icons"
+    IDS_ITEMDLG_VIEW_MEDIUM     "Medi&um icons"
+    IDS_ITEMDLG_VIEW_SMALL      "&Small icons"
+    IDS_ITEMDLG_VIEW_LIST       "&List"
+    IDS_ITEMDLG_VIEW_DETAILS    "&Details"
+    IDS_ITEMDLG_VIEW_TILES      "T&iles"
+    IDS_ITEMDLG_VIEW_CONTENT    "Co&ntent"
+    IDS_ITEMDLG_NEW_FOLDER_NAME "New folder"
+    IDS_ITEMDLG_SAVE_AS_TYPE    "Save as &type:"
+    IDS_ITEMDLG_FILE_NAME       "File &name:"
+    IDS_ITEMDLG_SELECT_FOLDER   "Select folder"
+    IDS_ITEMDLG_FOLDER          "Folder:"
+}
+
+LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_ITEMDLG_OPEN_BUTTON     "&Відкрити"
+    IDS_ITEMDLG_OPEN_READONLY   "Відкрити лише для &читання"
+    IDS_ITEMDLG_SEARCH_IN       "Пошук: %s"
+    IDS_ITEMDLG_ORGANIZE        "Упорядкувати"
+    IDS_ITEMDLG_NEW_FOLDER      "Створити папку"
+    IDS_ITEMDLG_BACK_TIP        "Назад (Alt + стрілка вліво)"
+    IDS_ITEMDLG_FORWARD_TIP     "Вперед (Alt + стрілка вправо)"
+    IDS_ITEMDLG_UP_TIP          "На рівень вище (Alt + стрілка вгору)"
+    IDS_ITEMDLG_VIEW_TIP        "Змінити вигляд"
+    IDS_ITEMDLG_REFRESH_TIP     "Оновити (F5)"
+    IDS_ITEMDLG_MENU_CUT        "Ви&різати"
+    IDS_ITEMDLG_MENU_COPY       "&Копіювати"
+    IDS_ITEMDLG_MENU_PASTE      "Вст&авити"
+    IDS_ITEMDLG_MENU_SELECTALL  "Виді&лити все"
+    IDS_ITEMDLG_MENU_DELETE     "Ви&далити"
+    IDS_ITEMDLG_MENU_RENAME     "Перей&менувати"
+    IDS_ITEMDLG_MENU_PROPERTIES "Власт&ивості"
+    IDS_ITEMDLG_VIEW_XLARGE     "Ду&же великі значки"
+    IDS_ITEMDLG_VIEW_LARGE      "&Великі значки"
+    IDS_ITEMDLG_VIEW_MEDIUM     "&Звичайні значки"
+    IDS_ITEMDLG_VIEW_SMALL      "&Дрібні значки"
+    IDS_ITEMDLG_VIEW_LIST       "&Список"
+    IDS_ITEMDLG_VIEW_DETAILS    "&Таблиця"
+    IDS_ITEMDLG_VIEW_TILES      "&Плитки"
+    IDS_ITEMDLG_VIEW_CONTENT    "В&міст"
+    IDS_ITEMDLG_NEW_FOLDER_NAME "Нова папка"
+    IDS_ITEMDLG_SAVE_AS_TYPE    "&Тип файлу:"
+    IDS_ITEMDLG_FILE_NAME       "&Ім'я файлу:"
+    IDS_ITEMDLG_SELECT_FOLDER   "Вибрати папку"
+    IDS_ITEMDLG_FOLDER          "Папка:"
+}
+
+LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT
+
+STRINGTABLE
+{
+    IDS_ITEMDLG_OPEN_BUTTON     "&Открыть"
+    IDS_ITEMDLG_OPEN_READONLY   "Открыть только для &чтения"
+    IDS_ITEMDLG_SEARCH_IN       "Поиск: %s"
+    IDS_ITEMDLG_ORGANIZE        "Упорядочить"
+    IDS_ITEMDLG_NEW_FOLDER      "Новая папка"
+    IDS_ITEMDLG_BACK_TIP        "Назад (Alt + стрелка влево)"
+    IDS_ITEMDLG_FORWARD_TIP     "Вперёд (Alt + стрелка вправо)"
+    IDS_ITEMDLG_UP_TIP          "На уровень выше (Alt + стрелка вверх)"
+    IDS_ITEMDLG_VIEW_TIP        "Изменить представление"
+    IDS_ITEMDLG_REFRESH_TIP     "Обновить (F5)"
+    IDS_ITEMDLG_MENU_CUT        "Выре&зать"
+    IDS_ITEMDLG_MENU_COPY       "&Копировать"
+    IDS_ITEMDLG_MENU_PASTE      "Вст&авить"
+    IDS_ITEMDLG_MENU_SELECTALL  "Выделить &всё"
+    IDS_ITEMDLG_MENU_DELETE     "&Удалить"
+    IDS_ITEMDLG_MENU_RENAME     "Переи&меновать"
+    IDS_ITEMDLG_MENU_PROPERTIES "Сво&йства"
+    IDS_ITEMDLG_VIEW_XLARGE     "&Огромные значки"
+    IDS_ITEMDLG_VIEW_LARGE      "&Крупные значки"
+    IDS_ITEMDLG_VIEW_MEDIUM     "&Обычные значки"
+    IDS_ITEMDLG_VIEW_SMALL      "&Мелкие значки"
+    IDS_ITEMDLG_VIEW_LIST       "&Список"
+    IDS_ITEMDLG_VIEW_DETAILS    "&Таблица"
+    IDS_ITEMDLG_VIEW_TILES      "&Плитки"
+    IDS_ITEMDLG_VIEW_CONTENT    "Сод&ержимое"
+    IDS_ITEMDLG_NEW_FOLDER_NAME "Новая папка"
+    IDS_ITEMDLG_SAVE_AS_TYPE    "&Тип файла:"
+    IDS_ITEMDLG_FILE_NAME       "&Имя файла:"
+    IDS_ITEMDLG_SELECT_FOLDER   "Выбор папки"
+    IDS_ITEMDLG_FOLDER          "Папка:"
+}

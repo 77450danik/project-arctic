@@ -380,17 +380,22 @@ void user_popup( HWND owner, POINT pt, UINT align, BOOL *in_popup, void (*hide)(
 enum item_action item_popup( HWND owner, struct item *item, POINT pt, BOOL removable, BOOL *in_popup,
                              void (*hide)(void), int popup_style, const struct look *look )
 {
-    struct popup_item items[6];
+    struct popup_item items[7];
     UINT count = 0, cmd;
-    BOOL pinned;
+    WCHAR link[MAX_PATH];
+    BOOL pinned, on_taskbar;
 
     if (!item || item->kind != ITEM_PROGRAM) return ACTION_NONE;
     pinned = items_is_pinned( item );
+    on_taskbar = items_taskbar_pinned( item, link );
     memset( items, 0, sizeof(items) );
     items[count++] = (struct popup_item){ 1, load_string( IDS_OPEN ), GLYPH_NONE };
     if (!item->args[0]) items[count++] = (struct popup_item){ 4, load_string( IDS_OPEN_LOCATION ), GLYPH_FOLDER };
     items[count++] = (struct popup_item){ 0 };
     items[count++] = (struct popup_item){ 2, load_string( pinned ? IDS_UNPIN : IDS_PIN ), pinned ? GLYPH_UNPIN : GLYPH_PIN };
+    if (!item->args[0])
+        items[count++] = (struct popup_item){ 5, load_string( on_taskbar ? IDS_UNPIN_TASKBAR : IDS_PIN_TASKBAR ),
+                                              on_taskbar ? GLYPH_UNPIN : GLYPH_PIN };
     if (removable) items[count++] = (struct popup_item){ 3, load_string( IDS_REMOVE_FROM_LIST ), GLYPH_NONE };
     *in_popup = TRUE;
     cmd = popup_track( owner, pt, TPM_LEFTALIGN | TPM_TOPALIGN, items, count, popup_style, look );
@@ -406,6 +411,9 @@ enum item_action item_popup( HWND owner, struct item *item, POINT pt, BOOL remov
         return ACTION_CHANGED;
     case 3:
         items_forget( item );
+        return ACTION_CHANGED;
+    case 5:
+        items_pin_taskbar( item, !on_taskbar );
         return ACTION_CHANGED;
     case 4:
         hide();
@@ -437,10 +445,12 @@ static DWORD read_dword( const WCHAR *name, DWORD def )
 /* Style, or Classic as the taskbar's properties wrote it before there were four */
 int start_style_load(void)
 {
-    DWORD style = read_dword( L"Style", STYLE_COUNT );
+    DWORD style = read_dword( L"Style", STYLE_COUNT ), classic;
 
     if (style < STYLE_COUNT) return style;
-    return read_dword( L"Classic", 0 ) ? STYLE_CLASSIC : STYLE_STANDARD;
+    /* nothing chosen yet: Windows 11's */
+    if ((classic = read_dword( L"Classic", 2 )) == 2) return STYLE_WIN11;
+    return classic ? STYLE_CLASSIC : STYLE_STANDARD;
 }
 
 void start_style_save( int style )

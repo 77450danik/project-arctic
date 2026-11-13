@@ -852,15 +852,17 @@ static void activate( struct target t )
  * with its four sizes, More with Open file location */
 #define CMD_PIN       1
 #define CMD_LOCATION  2
+#define CMD_TASKBAR   3
 #define CMD_SIZE      10   /* + enum tile_size */
 
 static void context_menu( struct target t, POINT pt )
 {
     static const UINT size_names[TILE_SIZES] = { IDS_TILE_SMALL, IDS_TILE_MEDIUM, IDS_TILE_WIDE, IDS_TILE_LARGE };
-    struct popup_item sizes[TILE_SIZES], more[1], items[3];
+    struct popup_item sizes[TILE_SIZES], more[2], items[3];
     struct item *item = NULL;
-    BOOL tile = t.kind == K_TILE, pinned;
-    UINT count = 0, cmd;
+    BOOL tile = t.kind == K_TILE, pinned, on_taskbar;
+    WCHAR link[MAX_PATH];
+    UINT count = 0, cmd, more_count = 1;
 
     if (tile) item = pins[t.index];
     else if (t.kind == K_ROW) item = rows[t.index].item;
@@ -876,12 +878,16 @@ static void context_menu( struct target t, POINT pt )
         sizes[i].glyph = GLYPH_NONE;
         sizes[i].checked = tile && pin_size[t.index] == i;
     }
-    more[0] = (struct popup_item){ CMD_LOCATION, load_string( IDS_OPEN_LOCATION ), GLYPH_FOLDER };
-    more[0].disabled = item->args[0] != 0;
+    on_taskbar = items_taskbar_pinned( item, link );
+    more[0] = (struct popup_item){ CMD_TASKBAR, load_string( on_taskbar ? IDS_UNPIN_TASKBAR : IDS_PIN_TASKBAR ),
+                                   on_taskbar ? GLYPH_UNPIN : GLYPH_PIN };
+    if (!item->args[0]) more_count = 2;
+    else more[0].disabled = TRUE;
+    more[1] = (struct popup_item){ CMD_LOCATION, load_string( IDS_OPEN_LOCATION ), GLYPH_FOLDER };
     items[count++] = (struct popup_item){ CMD_PIN, load_string( pinned ? IDS_UNPIN_START10 : IDS_PIN_START10 ),
                                           pinned ? GLYPH_UNPIN : GLYPH_PIN };
     if (tile) items[count++] = (struct popup_item){ 0, load_string( IDS_RESIZE ), GLYPH_RESIZE, FALSE, FALSE, sizes, TILE_SIZES };
-    items[count++] = (struct popup_item){ 0, load_string( IDS_MORE_ACTIONS ), GLYPH_MORE, FALSE, FALSE, more, 1 };
+    items[count++] = (struct popup_item){ 0, load_string( IDS_MORE_ACTIONS ), GLYPH_MORE, FALSE, FALSE, more, more_count };
 
     ClientToScreen( menu, &pt );
     in_popup = TRUE;
@@ -891,6 +897,9 @@ static void context_menu( struct target t, POINT pt )
     {
     case CMD_PIN:
         items_pin( item, !pinned );
+        break;
+    case CMD_TASKBAR:
+        items_pin_taskbar( item, !on_taskbar );
         break;
     case CMD_LOCATION:
         menu10_hide();
@@ -1142,6 +1151,14 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     return DefWindowProcW( hwnd, msg, wparam, lparam );
 }
 
+/* a shortcut dragged onto the menu was pinned: a tile for it */
+static void dropped( HWND hwnd )
+{
+    load_pins();
+    if (mode == MODE_HOME) load_rows();
+    refresh();
+}
+
 static BOOL create_menu(void)
 {
     DWORD transition = ARCTIC_TRANSITION_START10, corner = 1 /* DWMWCP_DONOTROUND */;
@@ -1157,6 +1174,7 @@ static BOOL create_menu(void)
     menu = CreateWindowExW( WS_EX_TOOLWINDOW | WS_EX_TOPMOST, cls.lpszClassName, L"", WS_POPUP,
                             0, 0, px( 668 ), MENU_HEIGHT, NULL, NULL, startui_instance, NULL );
     if (!menu) return FALSE;
+    pins_drop_register( menu, PIN_START, dropped );
     DwmSetWindowAttribute( menu, DWMWA_ARCTIC_TRANSITION, &transition, sizeof(transition) );
     DwmSetWindowAttribute( menu, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner) );
     font_item = shell_font( px( 14 ), FW_NORMAL );

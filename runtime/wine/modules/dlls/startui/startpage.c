@@ -196,6 +196,37 @@ static UINT CALLBACK page_callback( HWND hwnd, UINT msg, PROPSHEETPAGEW *psp )
     return 1;
 }
 
+/* For the Control Panel's page (taskbarcpl.dll): the style Start opens */
+int WINAPI ArcticStartStyleGet(void)
+{
+    return start_style_load();
+}
+
+void WINAPI ArcticStartStyleSet( int style )
+{
+    void (WINAPI *set_settings)( SHELLSTATE *, DWORD, BOOL );
+    SHELLSTATE state = { 0 };
+
+    if (style < 0 || style >= STYLE_COUNT) return;
+    start_style_save( style );
+    /* SHGetSetSettings, exported by ordinal only */
+    set_settings = (void *)GetProcAddress( GetModuleHandleW( L"shell32.dll" ), (const char *)68 );
+    state.fStartPanelOn = style != STYLE_CLASSIC;
+    if (set_settings) set_settings( &state, 0x00400000 /* SSF_STARTPANELON */, TRUE );
+    PostMessageW( HWND_BROADCAST, RegisterWindowMessageW( L"ArcticShellLookChanged" ), 0, 0 );
+}
+
+/* what a style shows, its own dialog; the classic menu's is explorer's */
+void WINAPI ArcticStartCustomize( HWND owner, int style )
+{
+    switch (style)
+    {
+    case STYLE_STANDARD: customize_dialog( owner ); break;
+    case STYLE_WIN10:
+    case STYLE_WIN11: modern_customize_dialog( owner, style ); break;
+    }
+}
+
 /* the page "Меню «Пуск»", for explorer to add in place of its own; the
  * classic menu's Customize is explorer's */
 HPROPSHEETPAGE WINAPI ArcticStartMenuPage( HWND tray, void (WINAPI *classic_customize)( HWND ) )

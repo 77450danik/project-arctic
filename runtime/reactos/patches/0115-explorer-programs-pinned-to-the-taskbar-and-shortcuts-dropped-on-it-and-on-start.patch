@@ -1,0 +1,610 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Tue, 10 Nov 2026 12:00:00 +0200
+Subject: [PATCH] explorer: programs pinned to the taskbar, and shortcuts dropped on it and on Start.
+
+The taskbar has the programs pinned to it, as Windows 7 and later: a button
+for each, in the order startui.dll keeps them (User Pinned\TaskBar). The
+first window of a pinned program takes its button where it stands, the last
+one closed leaves it to the pin, which a click starts; its menu unpins it.
+A shortcut or a program dragged onto the taskbar is pinned there; a button
+held under something dragged brings up its window. Dropped on Start, it is
+pinned to the Start menu, which opens when it is held over Start.
+---
+diff --git a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+index f440abf..18afffb 100644
+--- a/base/shell/explorer/precomp.h
++++ b/base/shell/explorer/precomp.h
+@@ -142,6 +142,12 @@ VOID ArcticTaskbarPaintButton(IN HDC hdc, IN const RECT *prc, IN DWORD dwFlags);
+ BOOL ArcticStartButtonImageSize(IN INT cyButton, OUT SIZE *pSize);
+ BOOL ArcticStartButtonImagePaint(IN HDC hdc, IN const RECT *prc, IN DWORD dwFlags);
+ BOOL ArcticTaskbarJumpList(IN HWND hwndOwner, IN const HWND *phwnd, IN UINT cCount, IN const RECT *prcButton);
++/* Arctic: the programs pinned to the taskbar and what is dropped to be pinned (startui.dll) */
++#define ARCTIC_PIN_TASKBAR       1
++#define ARCTIC_PIN_START_BUTTON  3
++LPWSTR ArcticTaskbarPinList(VOID);
++BOOL ArcticTaskbarPinMenu(IN HWND hwndOwner, IN LPCWSTR pszLink, IN const RECT *prcButton);
++BOOL ArcticPinDropRegister(IN HWND hWnd, IN DWORD dwWhere);
+ BOOL ArcticTrackTaskbarMenu(IN HMENU hMenu, IN HWND hwndOwner, IN const POINT *ppt, OUT UINT *puCommand);
+ /* Arctic: Windows 11's notification center and calendar (startui.dll) */
+ BOOL ArcticClockFlyoutToggle(IN HWND hwndTray, IN const RECT *prcClock);
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+index 94a413b..7a7a87b 100644
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -22,6 +22,9 @@
+ /* Arctic: the task buttons are to be made anew, once the current message is done */
+ #define TSWM_ARCTIC_REBUILD (WM_APP + 0x3A)
+ #define TSWM_ARCTIC_RESIZE  (WM_APP + 0x3B)
++/* Arctic: a button held over while something is dragged brings its window up */
++#define TIMER_ID_DRAG_HOVER 8
++#define DRAG_HOVER_DELAY    600
+ /* the narrowest a labelled button gets before the windows of a program combine */
+ #define MIN_LABELLED_BUTTON ArcticDpiScale(100)
+ #define TASK_ITEM_ARRAY_ALLOC   64
+@@ -197,6 +200,12 @@ typedef struct _TASK_GROUP
+     DWORD dwProcessId;
+     /* Arctic: windows of one program share a group, as in Windows */
+     WCHAR szExePath[MAX_PATH];
++    /* Arctic: a program pinned to the taskbar: its shortcut (startui.dll
++       keeps them), whose button stays when no window of it is open */
++    BOOL bPinned;
++    BOOL bPinSeen;
++    WCHAR szPinLink[MAX_PATH];
++    HICON hPinIcon;
+     INT Index;
+     union
+     {
+@@ -499,6 +508,11 @@ class CTaskSwitchWnd :
+     INT m_Indent;
+     DWORD m_dwHeightFixed;
+ 
++    /* Arctic: the pins changed (startui.dll); something dragged over a button */
++    UINT m_uPinsChangedMsg;
++    UINT m_uDragHoverMsg;
++    INT m_iDragHoverButton;
++
+ public:
+     CTaskSwitchWnd() :
+         m_ShellHookMsg(NULL),
+@@ -521,9 +535,12 @@ public:
+         m_hwndForeground(NULL),
+         m_GroupWidth(-2),
+         m_Indent(0),
+-        m_dwHeightFixed(0)
++        m_dwHeightFixed(0),
++        m_iDragHoverButton(-1)
+     {
+         ZeroMemory(&m_ButtonSize, sizeof(m_ButtonSize));
++        m_uPinsChangedMsg = RegisterWindowMessageW(L"ArcticTaskbarPinsChanged");
++        m_uDragHoverMsg = RegisterWindowMessageW(L"ArcticTaskbarDragHover");
+         m_uHardErrorMsg = RegisterWindowMessageW(L"HardError");
+         m_uButtonCreatedMsg = RegisterWindowMessageW(L"TaskbarButtonCreated");
+         m_uTaskbarChangedMsg = RegisterWindowMessageW(L"ArcticTaskbarChanged");
+@@ -765,6 +782,251 @@ public:
+         }
+     }
+ 
++    /* Arctic: the button of a pinned program none of whose windows is open */
++    static BOOL IsPinOnly(IN const TASK_ITEM *TaskItem)
++    {
++        return TaskItem->hWnd == NULL && TaskItem->Group != NULL && TaskItem->Group->bPinned;
++    }
++
++    HICON PinIcon(IN PTASK_GROUP TaskGroup)
++    {
++        if (!TaskGroup->hPinIcon && TaskGroup->szPinLink[0])
++        {
++            SHFILEINFOW info = { 0 };
++
++            if (SHGetFileInfoW(TaskGroup->szPinLink, 0, &info, sizeof(info),
++                               SHGFI_ICON | (g_TaskbarSettings.bSmallIcons ? SHGFI_SMALLICON : SHGFI_LARGEICON)))
++                TaskGroup->hPinIcon = info.hIcon;
++        }
++        return TaskGroup->hPinIcon;
++    }
++
++    /* how wide a button without a label is, as in Windows 10 and 11 */
++    static INT IconButtonWidth()
++    {
++        return ArcticDpiScale(g_TaskbarSettings.bSmallIcons ? 40 : ArcticTaskbarStyle11() ? 44 : 48);
++    }
++
++    INT LastButtonOfGroup(IN PTASK_GROUP TaskGroup)
++    {
++        INT iLast = -1;
++
++        for (PTASK_ITEM TaskItem = m_TaskItems; TaskItem != m_TaskItems + m_TaskItemCount; TaskItem++)
++        {
++            if (TaskItem->Group == TaskGroup && TaskItem->Index > iLast)
++                iLast = TaskItem->Index;
++        }
++        return iLast;
++    }
++
++    INT AddPinButton(IN OUT PTASK_ITEM TaskItem, IN INT iIndex)
++    {
++        TBBUTTON tbBtn = { 0 };
++
++        TaskItem->IconIndex = -1;
++        SetTaskIcon(TaskItem, PinIcon(TaskItem->Group));
++        tbBtn.iBitmap = I_IMAGENONE;
++        tbBtn.fsState = TBSTATE_ENABLED | TBSTATE_ELLIPSES;
++        tbBtn.fsStyle = BTNS_CHECK | BTNS_NOPREFIX | BTNS_SHOWTEXT;
++        tbBtn.idCommand = iIndex;
++
++        m_TaskBar.BeginUpdate();
++        if (m_TaskBar.InsertButton(iIndex, &tbBtn))
++        {
++            UpdateIndexesAfter(iIndex, TRUE);
++            TaskItem->Index = iIndex;
++            m_ButtonCount++;
++            UpdateButtonsSize(TRUE);
++            return iIndex;
++        }
++        m_TaskBar.EndUpdate();
++        return -1;
++    }
++
++    /* the first window of a pinned program takes the pin's button, where it is */
++    PTASK_ITEM TakePinButton(IN HWND hWnd)
++    {
++        WCHAR szExePath[MAX_PATH];
++        DWORD dwProcessId = 0;
++
++        if (!SHELL_GetWindowExePath(hWnd, szExePath, _countof(szExePath)) || !*szExePath)
++            return NULL;
++        ::GetWindowThreadProcessId(hWnd, &dwProcessId);
++        for (PTASK_ITEM TaskItem = m_TaskItems; TaskItem != m_TaskItems + m_TaskItemCount; TaskItem++)
++        {
++            if (!IsPinOnly(TaskItem) || _wcsicmp(TaskItem->Group->szExePath, szExePath))
++                continue;
++            TaskItem->hWnd = hWnd;
++            TaskItem->dwFlags = 0;
++            TaskItem->Group->dwProcessId = dwProcessId;
++            if (TaskItem->Index >= 0)
++                UpdateTaskItemButton(TaskItem);
++            UpdateButtonsSize(FALSE);
++            ::PostMessageW(hWnd, m_uButtonCreatedMsg, 0, 0);
++            CheckFull();
++            return TaskItem;
++        }
++        return NULL;
++    }
++
++    /* the last window of a pinned program leaves its button to the pin */
++    BOOL LeaveToPin(IN OUT PTASK_ITEM TaskItem)
++    {
++        PTASK_GROUP TaskGroup = TaskItem->Group;
++
++        if (m_IsDestroying || m_bRebuilding || TaskGroup == NULL || !TaskGroup->bPinned ||
++            TaskGroup->dwTaskCount != 1 || TaskItem->Index < 0)
++            return FALSE;
++        if (m_ActiveTaskItem == TaskItem)
++            m_ActiveTaskItem = NULL;
++        TaskItem->hWnd = NULL;
++        TaskItem->dwFlags = 0;
++        TaskGroup->dwProcessId = 0;
++        UpdateTaskItemButton(TaskItem);
++        UpdateButtonsSize(FALSE);
++        return TRUE;
++    }
++
++    /* the pins startui.dll keeps: a button of its own for each program with
++       no window open, the button of its windows for the others; one unpinned
++       loses its button only when no window of it is open */
++    VOID SyncPins()
++    {
++        LPWSTR pszList = ArcticTaskbarPinList();
++        INT iInsert = 0;
++
++        if (!pszList)
++            return;
++        for (PTASK_GROUP Group = m_TaskGroups; Group != NULL; Group = Group->Next)
++            Group->bPinSeen = FALSE;
++        for (LPCWSTR p = pszList; *p; p += wcslen(p) + 1)
++        {
++            WCHAR szLink[MAX_PATH];
++            LPCWSTR pszBar = wcschr(p, L'|');
++            PTASK_GROUP TaskGroup = NULL;
++
++            if (!pszBar || pszBar - p >= MAX_PATH)
++                continue;
++            StringCchCopyNW(szLink, _countof(szLink), p, pszBar - p);
++            for (PTASK_GROUP Group = m_TaskGroups; Group != NULL && TaskGroup == NULL; Group = Group->Next)
++            {
++                if ((Group->bPinned && !_wcsicmp(Group->szPinLink, szLink)) ||
++                    (pszBar[1] && !_wcsicmp(Group->szExePath, pszBar + 1)))
++                    TaskGroup = Group;
++            }
++            if (TaskGroup != NULL)
++            {
++                if (_wcsicmp(TaskGroup->szPinLink, szLink))
++                {
++                    if (TaskGroup->hPinIcon)
++                        DestroyIcon(TaskGroup->hPinIcon);
++                    TaskGroup->hPinIcon = NULL;
++                    StringCchCopyW(TaskGroup->szPinLink, _countof(TaskGroup->szPinLink), szLink);
++                }
++                TaskGroup->bPinned = TaskGroup->bPinSeen = TRUE;
++                iInsert = max(iInsert, LastButtonOfGroup(TaskGroup) + 1);
++                continue;
++            }
++            if (!pszBar[1])
++                continue;
++
++            TaskGroup = (PTASK_GROUP)HeapAlloc(hProcessHeap, HEAP_ZERO_MEMORY, sizeof(*TaskGroup));
++            if (TaskGroup == NULL)
++                break;
++            TaskGroup->dwTaskCount = 1;
++            TaskGroup->Index = -1;
++            TaskGroup->bPinned = TaskGroup->bPinSeen = TRUE;
++            StringCchCopyW(TaskGroup->szExePath, _countof(TaskGroup->szExePath), pszBar + 1);
++            StringCchCopyW(TaskGroup->szPinLink, _countof(TaskGroup->szPinLink), szLink);
++            PTASK_GROUP *ppLink = &m_TaskGroups;
++            while (*ppLink != NULL)
++                ppLink = &(*ppLink)->Next;
++            *ppLink = TaskGroup;
++
++            PTASK_ITEM TaskItem = AllocTaskItem();
++            if (TaskItem == NULL)
++            {
++                *ppLink = NULL;
++                HeapFree(hProcessHeap, 0, TaskGroup);
++                break;
++            }
++            ZeroMemory(TaskItem, sizeof(*TaskItem));
++            TaskItem->Index = -1;
++            TaskItem->IconIndex = -1;
++            TaskItem->Group = TaskGroup;
++            INT iIndex = AddPinButton(TaskItem, min(iInsert, (INT)m_ButtonCount));
++            if (iIndex >= 0)
++                iInsert = iIndex + 1;
++        }
++        LocalFree(pszList);
++
++        for (BOOL bAgain = TRUE; bAgain; )
++        {
++            bAgain = FALSE;
++            for (PTASK_GROUP Group = m_TaskGroups; Group != NULL; Group = Group->Next)
++            {
++                if (!Group->bPinned || Group->bPinSeen)
++                    continue;
++                Group->bPinned = FALSE;
++                Group->szPinLink[0] = UNICODE_NULL;
++                for (PTASK_ITEM TaskItem = m_TaskItems; TaskItem != m_TaskItems + m_TaskItemCount; TaskItem++)
++                {
++                    if (TaskItem->Group != Group || TaskItem->hWnd != NULL)
++                        continue;
++                    /* the group goes with it: the list is gone through again */
++                    DeleteTaskItem(TaskItem);
++                    bAgain = TRUE;
++                    break;
++                }
++                if (bAgain)
++                    break;
++            }
++        }
++        UpdateButtonsSize(FALSE);
++    }
++
++    LRESULT OnPinsChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        SyncPins();
++        return 0;
++    }
++
++    /* something is dragged over the taskbar (startui.dll's drop target): the
++       window of a button held under it a moment comes up, as in Windows */
++    LRESULT OnDragHover(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
++    {
++        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
++        INT iButton = -1;
++
++        if (wParam)
++        {
++            m_TaskBar.ScreenToClient(&pt);
++            iButton = m_TaskBar.HitTest(&pt);
++        }
++        if (iButton != m_iDragHoverButton)
++        {
++            m_iDragHoverButton = iButton;
++            KillTimer(TIMER_ID_DRAG_HOVER);
++            if (iButton >= 0)
++                SetTimer(TIMER_ID_DRAG_HOVER, DRAG_HOVER_DELAY, NULL);
++        }
++        return 0;
++    }
++
++    VOID DragHoverElapsed()
++    {
++        KillTimer(TIMER_ID_DRAG_HOVER);
++        if (m_iDragHoverButton < 0)
++            return;
++
++        TBBUTTON tbb = { 0 };
++        if (!m_TaskBar.SendMessageW(TB_GETBUTTON, m_iDragHoverButton, (LPARAM)&tbb))
++            return;
++        PTASK_ITEM TaskItem = FindTaskItemByIndex(tbb.idCommand);
++        if (TaskItem != NULL && ::IsWindow(TaskItem->hWnd))
++            ::SwitchToThisWindow(TaskItem->hWnd, TRUE);
++    }
++
+     INT GetIconSize()
+     {
+         /* the large taskbar of Windows 10 has icons of 24 pixels */
+@@ -859,7 +1121,8 @@ public:
+             tbbi.pszText = windowText;
+         }
+ 
+-        icon = GetWndIcon(TaskItem->hWnd);
++        /* Arctic: a pin without a window shows its shortcut's icon */
++        icon = IsPinOnly(TaskItem) ? PinIcon(TaskItem->Group) : GetWndIcon(TaskItem->hWnd);
+         if (!icon)
+             icon = static_cast<HICON>(LoadImageW(NULL, MAKEINTRESOURCEW(OIC_SAMPLE), IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE));
+         SetTaskIcon(TaskItem, icon);
+@@ -1179,6 +1442,8 @@ public:
+                 *PrevLink = TaskGroup->Next;
+ 
+                 /* Free the task group */
++                if (TaskGroup->hPinIcon)
++                    DestroyIcon(TaskGroup->hPinIcon);
+                 HeapFree(hProcessHeap,
+                     0,
+                     TaskGroup);
+@@ -1452,6 +1717,9 @@ public:
+         {
+             TRACE("Add window 0x%p\n", hWnd);
+             m_nIconRetries = 0;
++            /* Arctic: a pinned program's first window takes its button */
++            if (!m_IsDestroying && TakePinButton(hWnd) != NULL)
++                return TRUE;
+             TaskItem = AllocTaskItem();
+             if (TaskItem != NULL)
+             {
+@@ -1547,8 +1815,14 @@ public:
+         if (TaskItem != NULL)
+         {
+             TRACE("Delete window 0x%p on button %d\n", hWnd, TaskItem->Index);
++            /* Arctic: a pinned program keeps its button */
++            if (LeaveToPin(TaskItem))
++                return TRUE;
++            BOOL bPinned = TaskItem->Group != NULL && TaskItem->Group->bPinned;
+             DeleteTaskItem(TaskItem);
+             CheckFull();
++            if (bPinned)
++                PostMessageW(m_uPinsChangedMsg, 0, 0);
+             return TRUE;
+         }
+         //else
+@@ -1568,10 +1842,15 @@ public:
+ 
+         for (PTASK_ITEM TaskItem = m_TaskItems + m_TaskItemCount; TaskItem != m_TaskItems; )
+         {
+-            if (::IsWindow((--TaskItem)->hWnd))
++            /* Arctic: a pin's button has no window */
++            if (IsPinOnly(--TaskItem) || ::IsWindow(TaskItem->hWnd))
+                 continue;
+             ArcticLog("arctic-taskbar: button %d of window %p, which is gone, goes too\n",
+                       TaskItem->Index, TaskItem->hWnd);
++            if (LeaveToPin(TaskItem))
++                continue;
++            if (TaskItem->Group != NULL && TaskItem->Group->bPinned)
++                PostMessageW(m_uPinsChangedMsg, 0, 0);
+             DeleteTaskItem(TaskItem);
+             bDeleted = TRUE;
+         }
+@@ -1768,9 +2047,13 @@ public:
+                 for (ui = 0; ui != m_ButtonCount; ui++)
+                 {
+                     TBBUTTONINFOW tbbi = { 0 };
++                    PTASK_ITEM ButtonItem = FindTaskItemByIndex((INT)ui);
+                     tbbi.cbSize = sizeof(tbbi);
+                     tbbi.dwMask = TBIF_BYINDEX | TBIF_SIZE | TBIF_STATE;
+                     tbbi.cx = (INT) NewBtnSize;
++                    /* Arctic: a pin without a window has no label */
++                    if (Horizontal && ButtonItem != NULL && IsPinOnly(ButtonItem))
++                        tbbi.cx = min((INT)NewBtnSize, IconButtonWidth());
+                     tbbi.fsState = TBSTATE_ENABLED;
+ 
+                     /* Check if we're updating a button that is the last one in the
+@@ -1787,7 +2070,6 @@ public:
+ 
+                     /* Arctic: a combined button is checked for any of its
+                        windows, and it keeps flashing */
+-                    PTASK_ITEM ButtonItem = FindTaskItemByIndex((INT)ui);
+                     if (ButtonItem != NULL && IsButtonActive(ButtonItem))
+                         tbbi.fsState |= TBSTATE_CHECKED;
+                     if (ButtonItem != NULL && IsButtonFlashing(ButtonItem))
+@@ -1846,10 +2128,16 @@ public:
+             if (m_Tray->IsHorizontal() && m_ButtonsPerLine >= m_ButtonCount)
+             {
+                 TBMETRICS tbm = { 0 };
++                RECT rcFirst, rcLast;
+                 tbm.cbSize = sizeof(tbm);
+                 tbm.dwMask = TBMF_BUTTONSPACING;
+                 m_TaskBar.GetMetrics(&tbm);
+                 cx = m_ButtonCount * (m_ButtonSize.cx + tbm.cxButtonSpacing) - tbm.cxButtonSpacing;
++                /* Arctic: the pins without a window are narrower */
++                if (m_TaskBar.SendMessageW(TB_GETITEMRECT, 0, (LPARAM)&rcFirst) &&
++                    m_TaskBar.SendMessageW(TB_GETITEMRECT, m_ButtonCount - 1, (LPARAM)&rcLast) &&
++                    rcLast.top == rcFirst.top && rcLast.right > rcFirst.left)
++                    cx = rcLast.right - rcFirst.left;
+             }
+             else
+                 cx = -1;
+@@ -1961,8 +2249,13 @@ public:
+ 
+         RegisterShellHook(m_hWnd, 3); /* 1 if no NT! We're targeting NT so we don't care! */
+ 
++        /* Arctic: the pinned programs first, their windows join them */
++        SyncPins();
+         RefreshWindowList();
+ 
++        /* Arctic: what is dragged here is pinned (startui.dll) */
++        ArcticPinDropRegister(m_hWnd, ARCTIC_PIN_TASKBAR);
++
+         /* Recalculate the button size */
+         UpdateButtonsSize(FALSE);
+ 
+@@ -1985,6 +2278,8 @@ public:
+ 
+         KillTimer(TIMER_ID_VALIDATE_RUDE_APP);
+         KillTimer(TIMER_ID_FOREGROUND);
++        KillTimer(TIMER_ID_DRAG_HOVER);
++        RevokeDragDrop(m_hWnd);
+ 
+         /* Unregister the shell hook */
+         RegisterShellHook(m_hWnd, FALSE);
+@@ -2306,6 +2601,14 @@ public:
+         }
+ 
+         TaskItem = FindTaskItemByIndex((INT) wIndex);
++        if (TaskItem != NULL && IsPinOnly(TaskItem))
++        {
++            /* Arctic: a pinned program with no window: started */
++            ArcticTaskbarHover(NULL, NULL, 1);
++            UpdateTaskItemButton(TaskItem);
++            ::ShellExecuteW(NULL, NULL, TaskItem->Group->szPinLink, NULL, NULL, SW_SHOWNORMAL);
++            return TRUE;
++        }
+         if (TaskItem != NULL)
+         {
+             /* Arctic: a combined button of several windows shows them all;
+@@ -2340,6 +2643,24 @@ public:
+     {
+         POINT pt;
+ 
++        /* Arctic: a pin with no window: start it, or unpin it */
++        if (IsPinOnly(TaskItem))
++        {
++            RECT rc;
++
++            if (m_TaskBar.SendMessageW(TB_GETITEMRECT, TaskItem->Index, (LPARAM)&rc))
++            {
++                WCHAR szLink[MAX_PATH];
++
++                m_TaskBar.MapWindowPoints(NULL, (LPPOINT)&rc, 2);
++                ArcticTaskbarHover(NULL, NULL, 1);
++                /* the menu may unpin it, and its item go */
++                StringCchCopyW(szLink, _countof(szLink), TaskItem->Group->szPinLink);
++                ArcticTaskbarPinMenu(m_hWnd, szLink, &rc);
++            }
++            return;
++        }
++
+         /* Arctic: as in Windows 10 and 11, the button's own menu, which needs
+            nothing of the window; with Shift, the menu of the window */
+         if (GetKeyState(VK_SHIFT) >= 0)
+@@ -2492,8 +2813,8 @@ public:
+             ArcticFillAlpha(hdc, &rcEdge, RGB(255, 255, 255), 0x30);
+         }
+ 
+-        INT x = g_TaskbarSettings.bHideLabels ? (prc->left + prc->right - cxIcon) / 2
+-                                              : prc->left + GetSystemMetrics(SM_CXEDGE) + 2;
++        INT x = g_TaskbarSettings.bHideLabels || IsPinOnly(TaskItem) ? (prc->left + prc->right - cxIcon) / 2
++                                                                      : prc->left + GetSystemMetrics(SM_CXEDGE) + 2;
+         INT y = (prc->top + prc->bottom - cxIcon) / 2;
+         if (TaskItem->IconIndex >= 0)
+             ImageList_Draw(m_ImageList, TaskItem->IconIndex, hdc, x, y, ILD_TRANSPARENT);
+@@ -2518,6 +2839,23 @@ public:
+                active one stays where it is, as in Windows 10 */
+             Ret |= CDRF_NOTIFYPOSTPAINT | TBCDRF_NOOFFSET;
+ 
++            /* Arctic: a pin with no window: no line of a running program,
++               only the pointer's state over it */
++            if (IsPinOnly(TaskItem))
++            {
++                UINT state = nmtbcd->nmcd.uItemState;
++                BOOL bPressed = (state & CDIS_SELECTED) != 0, bHot = (state & CDIS_HOT) != 0;
++
++                if (ArcticTaskbarStyle11())
++                    ArcticTaskbarPaintButton(nmtbcd->nmcd.hdc, &nmtbcd->nmcd.rc, ARCTIC_BUTTON_START |
++                                             (bPressed ? ARCTIC_BUTTON_PRESSED : 0) | (bHot ? ARCTIC_BUTTON_HOT : 0));
++                else if (bPressed || bHot)
++                    ArcticFillAlpha(nmtbcd->nmcd.hdc, &nmtbcd->nmcd.rc,
++                                    ArcticTaskbarLight() ? RGB(0, 0, 0) : RGB(255, 255, 255),
++                                    bPressed ? 0x26 : 0x1a);
++                return Ret | TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES;
++            }
++
+             /* Arctic: the buttons of Windows 11 are drawn by startui.dll */
+             if (ArcticTaskbarStyle11())
+             {
+@@ -2903,6 +3241,7 @@ public:
+         HWND hwndActive = m_ActiveTaskItem ? m_ActiveTaskItem->hWnd : NULL;
+         m_bRebuilding = TRUE;
+         DeleteAllTasks();
++        SyncPins();
+         RefreshWindowList();
+         m_bRebuilding = FALSE;
+         UpdateButtonsSize(FALSE);
+@@ -2998,6 +3337,9 @@ public:
+                     FollowForeground(hwndForeground);
+                 break;
+             }
++            case TIMER_ID_DRAG_HOVER:
++                DragHoverElapsed();
++                break;
+             case TIMER_ID_ICON_RETRY:
+             {
+                 KillTimer(wParam);
+@@ -3098,6 +3440,8 @@ public:
+         MESSAGE_HANDLER(m_uTaskbarChangedMsg, OnArcticTaskbarChanged)
+         MESSAGE_HANDLER(m_uTaskbarTabMsg, OnArcticTaskbarTab)
+         MESSAGE_HANDLER(m_uTaskbarOptionsMsg, OnArcticTaskbarOptions)
++        MESSAGE_HANDLER(m_uPinsChangedMsg, OnPinsChanged)
++        MESSAGE_HANDLER(m_uDragHoverMsg, OnDragHover)
+         MESSAGE_HANDLER(TSWM_ARCTICINDENT, OnArcticIndent)
+         MESSAGE_HANDLER(TSWM_ARCTIC_REBUILD, OnRebuildButtons)
+         MESSAGE_HANDLER(TSWM_ARCTIC_RESIZE, OnArcticResize)
+diff --git a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+index 9c02308..7a5e5bd 100644
+--- a/base/shell/explorer/traywnd.cpp
++++ b/base/shell/explorer/traywnd.cpp
+@@ -2773,6 +2773,8 @@ ChangePos:
+ 
+         /* Create the Start button */
+         m_StartButton.Create(m_hWnd);
++        /* Arctic: a shortcut dropped on it is pinned to Start; held over it, the menu opens */
++        ArcticPinDropRegister(m_StartButton.m_hWnd, ARCTIC_PIN_START_BUTTON);
+ 
+         /* Load the saved tray window settings */
+         RegLoadSettings();
+diff --git a/base/shell/explorer/util.cpp b/base/shell/explorer/util.cpp
+index 7d84735..f001b48 100644
+--- a/base/shell/explorer/util.cpp
++++ b/base/shell/explorer/util.cpp
+@@ -163,6 +163,33 @@ BOOL ArcticTaskbarJumpList(IN HWND hwndOwner, IN const HWND *phwnd, IN UINT cCou
+     return pJumpList && pJumpList(hwndOwner, phwnd, cCount, prcButton);
+ }
+ 
++/* Arctic: the programs pinned to the taskbar, "shortcut|program" each (startui.dll); LocalFree it */
++LPWSTR ArcticTaskbarPinList(VOID)
++{
++    typedef LPWSTR (WINAPI *PFN_LIST)(VOID);
++    PFN_LIST pList = (PFN_LIST)ArcticProc(L"startui.dll", "ArcticTaskbarPinList");
++
++    return pList ? pList() : NULL;
++}
++
++/* the menu of a pin with no window: start it, unpin it */
++BOOL ArcticTaskbarPinMenu(IN HWND hwndOwner, IN LPCWSTR pszLink, IN const RECT *prcButton)
++{
++    typedef BOOL (WINAPI *PFN_MENU)(HWND, LPCWSTR, const RECT *);
++    PFN_MENU pMenu = (PFN_MENU)ArcticProc(L"startui.dll", "ArcticTaskbarPinMenu");
++
++    return pMenu && pMenu(hwndOwner, pszLink, prcButton);
++}
++
++/* what is dragged onto the window is pinned: to the taskbar or to Start */
++BOOL ArcticPinDropRegister(IN HWND hWnd, IN DWORD dwWhere)
++{
++    typedef BOOL (WINAPI *PFN_REGISTER)(HWND, DWORD);
++    PFN_REGISTER pRegister = (PFN_REGISTER)ArcticProc(L"startui.dll", "ArcticPinDropRegister");
++
++    return pRegister && pRegister(hWnd, dwWhere);
++}
++
+ /* the taskbar's own menu, its items as they are, drawn as the taskbar's style has it */
+ BOOL ArcticTrackTaskbarMenu(IN HMENU hMenu, IN HWND hwndOwner, IN const POINT *ppt, OUT UINT *puCommand)
+ {

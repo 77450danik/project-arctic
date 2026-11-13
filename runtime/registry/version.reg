@@ -25,5 +25,26 @@ REGEDIT4
 ; module of runtime/powershell is there)
 "PSModulePath"="C:\\Program Files\\WindowsPowerShell\\Modules;C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules"
 
+; Windows PowerShell 5.1, as Windows 11 lists it: installers and scripts
+; look for it here, and pwsh's Import-Module -UseWindowsPowerShell starts
+; powershell.exe only once it finds 5.1 (programs/powershell runs pwsh)
+[HKEY_LOCAL_MACHINE\Software\Microsoft\PowerShell\1]
+"Install"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\PowerShell\1\PowerShellEngine]
+"ApplicationBase"="C:\\Windows\\System32\\WindowsPowerShell\\v1.0"
+"PSCompatibleVersion"="1.0, 2.0"
+"RuntimeVersion"="v2.0.50727"
+"PowerShellVersion"="2.0"
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\PowerShell\3]
+"Install"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\PowerShell\3\PowerShellEngine]
+"ApplicationBase"="C:\\Windows\\System32\\WindowsPowerShell\\v1.0"
+"PSCompatibleVersion"="1.0, 2.0, 3.0, 4.0, 5.0, 5.1"
+"RuntimeVersion"="v4.0.30319"
+"PowerShellVersion"="5.1.22000.588"
+
 [HKEY_CURRENT_USER\Software\Arctic\Runtime]
 "Version"=-

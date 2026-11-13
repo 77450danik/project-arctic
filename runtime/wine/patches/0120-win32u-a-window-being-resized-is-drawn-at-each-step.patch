@@ -1,0 +1,29 @@
+From: 77450danik <dnsystems@email.ua>
+Date: Wed, 11 Nov 2026 12:00:00 +0200
+Subject: [PATCH] win32u: A window being resized is drawn and shown at each step.
+
+Dragging an edge, the loop of the move took the next WM_MOUSEMOVE before
+the window's WM_PAINT, which waited until the pointer stopped, and what
+was drawn reached dwm.exe only every 50 ms (flush_window_surfaces when
+not idle). Explorer, whose layout and drawing take a while, fell behind
+the pointer more the further it was dragged. Each step now paints the
+window at once and hands it to the compositor, as Windows does with DWM.
+---
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -1125,6 +1125,14 @@
+                     NtUserSetWindowPos( hwnd, 0, rect.left, rect.top,
+                                         rect.right - rect.left, rect.bottom - rect.top,
+                                         hittest == HTCAPTION ? SWP_NOSIZE : 0 );
++                    /* Resized, the window is drawn and shown at once, as with
++                     * DWM: its WM_PAINT would wait until the pointer stops,
++                     * and what it drew reach the screen every 50 ms at most */
++                    if (hittest != HTCAPTION)
++                    {
++                        NtUserRedrawWindow( hwnd, NULL, 0, RDW_UPDATENOW | RDW_ALLCHILDREN );
++                        flush_window_surfaces( TRUE );
++                    }
+                 }
+             }
+         }

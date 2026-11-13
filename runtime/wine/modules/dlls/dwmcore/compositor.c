@@ -2363,7 +2363,13 @@ static void keep_last_frame( struct surface *s, struct dmabuf *buffer )
         height = wl_shm_buffer_get_height( shm );
     }
     if (width == s->width && height == s->height) return;
+    /* A window resized by its edge sends a frame of a new size every
+     * refresh: the GPU is not stopped for a snapshot of each, which kept dwm
+     * behind the window: one a tenth of a second at most. A minimize or a
+     * hide comes later than that after a drag, and is taken as before. */
+    if (width && height && ws->snapshot_valid && kms_now() - ws->snapshot_time < 100000) return;
     gpu_snapshot( ws, &ws->last );
+    ws->snapshot_time = kms_now();
 }
 
 static void surface_commit( struct wl_client *client, struct wl_resource *resource )

@@ -1,0 +1,206 @@
+From: Arctic <arctic@localhost>
+Subject: [PATCH] win32u: Pictures of menu items in the columns of Windows 11.
+
+A picture of 32 bits with alpha is blended over its item, as Windows does
+since Vista: not inverted under the pointer, faded when the item is grayed.
+A Windows 11 popup whose items have pictures lays them out as Windows 11's
+context menus do: a column for check marks only while one is checked, the
+pictures centred in a column of their own, the text after them.
+---
+--- a/dlls/win32u/menu.c	2026-11-11 17:29:09.363610100 +0100
++++ b/dlls/win32u/menu.c	2026-11-11 17:29:09.495610100 +0100
+@@ -75,6 +75,12 @@
+     ULONG_PTR   dwMenuData;     /* application defined value */
+     HMENU       hSysMenuOwner;  /* handle to the dummy sys menu holder */
+     WORD        textOffset;     /* offset of text when items have both bitmaps and text */
++    /* Arctic: the columns of a Windows 11 popup whose items have pictures,
++     * from the left of an item; col_text is 0 in any other menu */
++    WORD        col_check;      /* centre of the check mark, 0 without one */
++    WORD        col_icon;       /* left of the pictures */
++    WORD        col_icon_width;
++    WORD        col_text;
+ };
+ 
+ /* the accelerator user object */
+@@ -2072,7 +2078,22 @@
+     item_height = 0;
+     item->xTab = 0;
+ 
+-    if (!menu_bar)
++    if (!menu_bar && menu->col_text)
++    {
++        /* Arctic: Windows 11's columns, set by set_columns_11 */
++        if (item->hbmpItem)
++        {
++            SIZE size;
++
++            get_bitmap_item_size( item, &size, owner );
++            item->bmpsize = size;
++            item_height = size.cy + 2;
++        }
++        item->rect.right += menu->col_text;
++        item->xTab = item->rect.right;
++        item->rect.right += arrow_bitmap_width;
++    }
++    else if (!menu_bar)
+     {
+         if (item->hbmpItem)
+         {
+@@ -2260,6 +2281,23 @@
+     NtGdiDeleteObjectApp( mem_hdc );
+ }
+ 
++/* Arctic: a picture of 32 bits that has alpha is blended over the item, as
++ * Windows has done since Vista (the shell's pictures of Windows 11's menus);
++ * one whose alpha is all 0 is an old opaque picture and is copied */
++static BOOL bitmap_has_alpha( HBITMAP bmp )
++{
++    DIBSECTION dib;
++    const DWORD *bits;
++    size_t i, n;
++
++    if (NtGdiExtGetObjectW( bmp, sizeof(dib), &dib ) != sizeof(dib)) return FALSE;
++    if (dib.dsBm.bmBitsPixel != 32 || !dib.dsBm.bmBits) return FALSE;
++    bits = dib.dsBm.bmBits;
++    n = (size_t)dib.dsBm.bmWidthBytes / 4 * abs( dib.dsBm.bmHeight );
++    for (i = 0; i < n; i++) if (bits[i] >> 24) return TRUE;
++    return FALSE;
++}
++
+ static void draw_bitmap_item( HWND hwnd, HDC hdc, struct menu_item *item, const RECT *rect,
+                               struct menu *menu, HWND owner, UINT odaction )
+ {
+@@ -2390,6 +2428,17 @@
+     /* handle fontsize > bitmap_height */
+     top = (h>bm.bmHeight) ? rect->top + (h - bm.bmHeight) / 2 : rect->top;
+     left=rect->left;
++    if (!IS_MAGIC_BITMAP( bmp_to_draw ) && bitmap_has_alpha( bmp ))
++    {
++        /* not inverted under the pointer; faded when the item is grayed */
++        int cx = min( w, bm.bmWidth - bmp_xoffset ), cy = min( h, bm.bmHeight );
++        BYTE alpha = (item->fState & MF_GRAYED) ? 0x60 : 0xff;
++
++        NtGdiAlphaBlend( hdc, left, top, cx, cy, mem_hdc, bmp_xoffset, 0, cx, cy,
++                         MAKEFOURCC( AC_SRC_OVER, 0, alpha, AC_SRC_ALPHA ), 0 );
++        NtGdiDeleteObjectApp( mem_hdc );
++        return;
++    }
+     rop= ((item->fState & MF_HILITE) && !IS_MAGIC_BITMAP(bmp_to_draw)) ? NOTSRCCOPY : SRCCOPY;
+     if ((item->fState & MF_HILITE) && item->hbmpItem)
+         NtGdiGetAndSetDCDword( hdc, NtGdiSetBkColor, get_sys_color( COLOR_HIGHLIGHT ), NULL );
+@@ -2639,6 +2688,12 @@
+         else
+             bmprc.top = (rect.bottom - rect.top - item->bmpsize.cy) / 2;
+         bmprc.bottom = bmprc.top + item->bmpsize.cy;
++        /* Arctic: Windows 11's column of pictures, each centred in it */
++        if (!menu_bar && menu->col_text)
++        {
++            bmprc.left = menu->col_icon + ((int)menu->col_icon_width - item->bmpsize.cx) / 2;
++            bmprc.right = bmprc.left + item->bmpsize.cx;
++        }
+     }
+ 
+     if (!menu_bar)
+@@ -2648,9 +2703,11 @@
+         BOOL checked = FALSE;
+         UINT check_bitmap_width = get_system_metrics( SM_CXMENUCHECK );
+         UINT check_bitmap_height = get_system_metrics( SM_CYMENUCHECK );
++        /* Arctic: in Windows 11's columns the check mark is centred in its own */
++        INT check_x = menu->col_text ? rect.left + menu->col_check - (INT)check_bitmap_width / 2 : rect.left;
+ 
+         /* Draw the check mark */
+-        if (!(menu->dwStyle & MNS_NOCHECK))
++        if (!(menu->dwStyle & MNS_NOCHECK) && (!menu->col_text || menu->col_check))
+         {
+             bm = (item->fState & MF_CHECKED) ? item->hCheckBit :
+                 item->hUnCheckBit;
+@@ -2659,7 +2716,7 @@
+                 HDC mem_hdc = NtGdiCreateCompatibleDC( hdc );
+ 
+                 NtGdiSelectBitmap( mem_hdc, bm );
+-                NtGdiBitBlt( hdc, rect.left, (y - check_bitmap_height) / 2,
++                NtGdiBitBlt( hdc, check_x, (y - check_bitmap_height) / 2,
+                              check_bitmap_width, check_bitmap_height,
+                              mem_hdc, 0, 0, SRCCOPY, 0, 0 );
+                 NtGdiDeleteObjectApp( mem_hdc );
+@@ -2676,7 +2733,7 @@
+                 SetRect( &r, 0, 0, check_bitmap_width, check_bitmap_height);
+                 draw_frame_menu( mem_hdc, &r,
+                                  (item->fType & MFT_RADIOCHECK) ? DFCS_MENUBULLET : DFCS_MENUCHECK );
+-                NtGdiBitBlt( hdc, rect.left, (y - r.bottom) / 2, r.right, r.bottom,
++                NtGdiBitBlt( hdc, check_x, (y - r.bottom) / 2, r.right, r.bottom,
+                              mem_hdc, 0, 0, SRCCOPY, 0, 0 );
+                 NtGdiDeleteObjectApp( mem_hdc );
+                 NtGdiDeleteObjectApp( bm );
+@@ -2694,9 +2751,14 @@
+         /* Draw the popup-menu arrow */
+         if (item->fType & MF_POPUP)
+             draw_popup_arrow( hdc, rect, arrow_width, arrow_height);
+-        rect.left += 4;
+-        if (!(menu->dwStyle & MNS_NOCHECK))
+-            rect.left += check_bitmap_width;
++        if (menu->col_text)
++            rect.left += menu->col_text;
++        else
++        {
++            rect.left += 4;
++            if (!(menu->dwStyle & MNS_NOCHECK))
++                rect.left += check_bitmap_width;
++        }
+         rect.right -= arrow_width;
+     }
+     else if (item->hbmpItem)
+@@ -3027,6 +3089,45 @@
+ }
+ 
+ /* Calculate the size of a popup menu */
++/* Arctic: a popup of the Windows 11 style whose items have pictures lays
++ * them out as Windows 11 does: [check mark] [picture] text, with a column
++ * for check marks only while an item is checked, every picture centred in a
++ * column 16 pixels wide at 100 % (or as wide as the widest picture) */
++static void set_columns_11( struct menu *menu )
++{
++    UINT dpi = get_system_dpi(), i;
++    BOOL check = FALSE, picture = FALSE;
++    int width = 16 * dpi / 96;
++
++    menu->col_check = menu->col_icon = menu->col_icon_width = menu->col_text = 0;
++    if ((menu->dwStyle & (MNS_CHECKORBMP | MNS_NOCHECK)) || !menu_style_11()) return;
++    for (i = 0; i < menu->nItems; i++)
++    {
++        struct menu_item *item = &menu->items[i];
++
++        if (item->fType & (MF_SEPARATOR | MF_OWNERDRAW | MF_SYSMENU)) continue;
++        if ((item->fState & MF_CHECKED) || item->hCheckBit || item->hUnCheckBit) check = TRUE;
++        if (item->hbmpItem == HBMMENU_CALLBACK || (item->hbmpItem && !IS_MAGIC_BITMAP( item->hbmpItem )))
++        {
++            RECT rect = item->rect;
++            SIZE size;
++
++            /* measured as calc_menu_item_size does, from an empty rectangle */
++            SetRectEmpty( &item->rect );
++            get_bitmap_item_size( item, &size, menu->hwndOwner );
++            item->rect = rect;
++            if (size.cx <= 0) continue;
++            picture = TRUE;
++            width = max( width, size.cx );
++        }
++    }
++    if (!picture) return;
++    menu->col_check = check ? 16 * dpi / 96 : 0;
++    menu->col_icon = (check ? 38 : 11) * dpi / 96;
++    menu->col_icon_width = width;
++    menu->col_text = menu->col_icon + width + 11 * dpi / 96;
++}
++
+ static void calc_popup_menu_size( struct menu *menu, UINT max_height )
+ {
+     BOOL textandbmp = FALSE, multi_col = FALSE;
+@@ -3046,6 +3147,7 @@
+ 
+     start = 0;
+     menu->textOffset = 0;
++    set_columns_11( menu );
+ 
+     while (start < menu->nItems)
+     {

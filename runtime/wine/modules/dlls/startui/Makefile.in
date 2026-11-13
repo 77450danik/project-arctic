@@ -16,6 +16,7 @@ SOURCES = \
 	menu10.c \
 	menu11.c \
 	personalize.c \
+	pins.c \
 	popup.c \
 	settings.c \
 	startpage.c \

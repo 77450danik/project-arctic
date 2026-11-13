@@ -1,0 +1,118 @@
+REGEDIT4
+
+; Arctic WordPad (runtime/wine/modules/programs/wordpad): Word's documents,
+; RTF and OpenDocument text open in it, with its pictures (from We10X).
+; Imported after filetypes.reg, so rtffile's icon and name are its own.
+
+[HKEY_LOCAL_MACHINE\Software\Classes\.docx]
+@="Arctic.WordPad.Docx"
+"Content Type"="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+"PerceivedType"="document"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\.docx\OpenWithProgids]
+"Arctic.WordPad.Docx"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\.docx\ShellNew]
+"NullFile"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\.docm]
+@="Arctic.WordPad.Docx"
+"Content Type"="application/vnd.ms-word.document.macroEnabled.12"
+"PerceivedType"="document"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\.dotx]
+@="Arctic.WordPad.Docx"
+"Content Type"="application/vnd.openxmlformats-officedocument.wordprocessingml.template"
+"PerceivedType"="document"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\.odt]
+@="Arctic.WordPad.Odt"
+"Content Type"="application/vnd.oasis.opendocument.text"
+"PerceivedType"="document"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\.rtf]
+@="rtffile"
+"Content Type"="application/rtf"
+"PerceivedType"="document"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Arctic.WordPad.Docx]
+@="Word Document"
+"FriendlyTypeName"="@C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-161"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Arctic.WordPad.Docx\DefaultIcon]
+@="C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-2"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Arctic.WordPad.Docx\shell]
+@="open"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Arctic.WordPad.Docx\shell\open\command]
+@="\"C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe\" \"%1\""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Arctic.WordPad.Docx\shell\print\command]
+@="\"C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe\" /p \"%1\""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Arctic.WordPad.Odt]
+@="OpenDocument Text"
+"FriendlyTypeName"="@C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-164"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Arctic.WordPad.Odt\DefaultIcon]
+@="C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-2"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Arctic.WordPad.Odt\shell\open\command]
+@="\"C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe\" \"%1\""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\rtffile]
+@="Rich Text Document"
+"FriendlyTypeName"="@C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-162"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\rtffile\DefaultIcon]
+@="C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-3"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\rtffile\shell\open\command]
+@="\"C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe\" \"%1\""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\rtffile\shell\print\command]
+@="\"C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe\" /p \"%1\""
+
+; Open with, and the program's own name there
+[HKEY_LOCAL_MACHINE\Software\Classes\Applications\wordpad.exe]
+"FriendlyAppName"="@C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-100"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Applications\wordpad.exe\SupportedTypes]
+".docx"=""
+".docm"=""
+".dotx"=""
+".rtf"=""
+".odt"=""
+".txt"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Applications\wordpad.exe\shell\open\command]
+@="\"C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe\" \"%1\""
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\wordpad.exe]
+@="C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe"
+
+[HKEY_LOCAL_MACHINE\Software\Arctic\WordPad\Capabilities]
+"ApplicationName"="@C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-100"
+"ApplicationDescription"="@C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe,-137"
+
+[HKEY_LOCAL_MACHINE\Software\Arctic\WordPad\Capabilities\FileAssociations]
+".docx"="Arctic.WordPad.Docx"
+".docm"="Arctic.WordPad.Docx"
+".dotx"="Arctic.WordPad.Docx"
+".odt"="Arctic.WordPad.Odt"
+".rtf"="rtffile"
+
+[HKEY_LOCAL_MACHINE\Software\RegisteredApplications]
+"Arctic WordPad"="Software\\Arctic\\WordPad\\Capabilities"
+
+; The fonts of Word's documents: Carlito and Caladea (runtime/fonts, OFL)
+; have Calibri's and Cambria's measures, so a document's lines break where
+; Word breaks them. Aptos has no free twin; Arial is nearest in width.
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes]
+"Calibri"="Carlito"
+"Calibri Light"="Carlito"
+"Cambria"="Caladea"
+"Aptos"="Arial"
+"Aptos Display"="Arial"
+"Aptos Narrow"="Arial"
