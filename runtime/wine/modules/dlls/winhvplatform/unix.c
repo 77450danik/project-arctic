@@ -64,6 +64,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(winhvplatform);
 
 #ifdef __x86_64__
 
+#define SYNC_GROUPS (KVM_SYNC_X86_REGS | KVM_SYNC_X86_SREGS | KVM_SYNC_X86_EVENTS)
+
 #define MAX_VPS    256
 #define MAX_SLOTS  256
 #define MAX_CPUID  256
@@ -103,6 +105,11 @@ struct vp
     size_t             run_size;
     UINT32             apic_id;
     BOOL               ran;              /* KVM_RUN once: the CPUID table is fixed */
+    /* KVM_CAP_SYNC_REGS: KVM leaves the general and segment registers and the
+     * events in kvm_run at every exit. "fresh" while nothing changed them
+     * since: the exit and the program's first look at the registers then
+     * take them from there instead of three ioctls each */
+    BOOL               sync, fresh;
     volatile LONG      cancel;
     volatile pid_t     tid;              /* the thread in WHvRunVirtualProcessor */
     WHV_X64_DELIVERABILITY_NOTIFICATIONS_REGISTER notify;
@@ -1059,6 +1066,7 @@ static NTSTATUS create_vp( void *args )
         return STATUS_SUCCESS;
     }
     vp->run_size = size;
+    vp->sync = (ioctl( kvm, KVM_CHECK_EXTENSION, KVM_CAP_SYNC_REGS ) & SYNC_GROUPS) == SYNC_GROUPS;
     if (!set_cpuid( partition, vp ))
     {
         params->hr = E_FAIL;
@@ -1270,6 +1278,14 @@ static BOOL fetch_state( struct vp *vp, struct state *state, UINT32 groups, cons
                          UINT32 count )
 {
     groups &= ~state->have;
+    if (vp->fresh)  /* what KVM left in kvm_run at the exit: nothing changed it since */
+    {
+        if (groups & GROUP_REGS) state->regs = vp->run->s.regs.regs;
+        if (groups & GROUP_SREGS) state->sregs = vp->run->s.regs.sregs;
+        if (groups & GROUP_EVENTS) state->events = vp->run->s.regs.events;
+        state->have |= groups & (GROUP_REGS | GROUP_SREGS | GROUP_EVENTS);
+        groups &= ~(GROUP_REGS | GROUP_SREGS | GROUP_EVENTS);
+    }
     if ((groups & GROUP_REGS) && ioctl( vp->fd, KVM_GET_REGS, &state->regs ) < 0) return FALSE;
     if ((groups & GROUP_SREGS) && ioctl( vp->fd, KVM_GET_SREGS, &state->sregs ) < 0) return FALSE;
     if ((groups & GROUP_FPU) && ioctl( vp->fd, KVM_GET_FPU, &state->fpu ) < 0) return FALSE;
@@ -1561,6 +1577,8 @@ static BOOL write_state( struct partition *partition, struct vp *vp, struct stat
 {
     UINT32 dirty = state->dirty;
 
+    /* the copy in kvm_run is the vCPU's no more */
+    if (dirty || state->inject_irq || state->inject_nmi) vp->fresh = FALSE;
     if ((dirty & GROUP_REGS) && ioctl( vp->fd, KVM_SET_REGS, &state->regs ) < 0) return FALSE;
     if (dirty & GROUP_SREGS)
     {
@@ -1821,8 +1839,14 @@ static HRESULT exit_with_state( struct partition *partition, struct vp *vp, WHV_
     UINT32 count, length = 0;
     UINT64 data = 0;
 
-    if (ioctl( vp->fd, KVM_GET_REGS, &regs ) < 0 || ioctl( vp->fd, KVM_GET_SREGS, &sregs ) < 0 ||
-        ioctl( vp->fd, KVM_GET_VCPU_EVENTS, &events ) < 0)
+    if (vp->fresh)
+    {
+        regs = run->s.regs.regs;
+        sregs = run->s.regs.sregs;
+        events = run->s.regs.events;
+    }
+    else if (ioctl( vp->fd, KVM_GET_REGS, &regs ) < 0 || ioctl( vp->fd, KVM_GET_SREGS, &sregs ) < 0 ||
+             ioctl( vp->fd, KVM_GET_VCPU_EVENTS, &events ) < 0)
         return hr_errno( errno );
 
     ctx->ExitReason = reason;
@@ -2089,6 +2113,10 @@ static NTSTATUS run_vp( void *args )
         }
         run->request_interrupt_window = want_window( vp );
         run->immediate_exit = 0;
+        /* the registers come back in kvm_run; none go in through it */
+        run->kvm_valid_regs = vp->sync ? SYNC_GROUPS : 0;
+        run->kvm_dirty_regs = 0;
+        vp->fresh = FALSE;
         __sync_synchronize();
         if (vp->cancel) run->immediate_exit = 1;
 
@@ -2101,6 +2129,7 @@ static NTSTATUS run_vp( void *args )
             return STATUS_SUCCESS;
         }
         vp->ran = TRUE;
+        vp->fresh = vp->sync;
 
         switch (run->exit_reason)
         {

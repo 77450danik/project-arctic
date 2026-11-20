@@ -1,0 +1,145 @@
+From: Project Arctic
+Subject: ntdll: a name missing on a nocase volume is not looked for in the directory.
+
+C: and every NTFS volume Arctic mounts are mounted with nocase: the
+kernel driver finds a name in any case by itself. Wine did not know the
+driver does that (it only knows ext4's casefold and ciopfs), so every name it
+did not find was looked for again through the whole directory, entry by
+entry: a missing file in a directory of 1000 files took 434 us instead of 1,
+LoadLibrary of a DLL that is not there 2.5 ms, as it misses in each directory
+of the search path. Names that fit 8.3 were always looked for that way, for
+short names, and most DLL names fit 8.3.
+
+When fstatat() said ENOENT and the directory is on NTFS or ntfs3 mounted
+nocase (/proc/self/mountinfo, remembered by device and mount id), the name is
+not there. A name with a '~' may still be a short name and is looked for as
+before.
+---
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index d3050fb..7152db9 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -43,6 +43,9 @@
+ #endif
+ #include <poll.h>
+ #include <sys/stat.h>
++#ifdef __linux__
++#include <sys/sysmacros.h>  /* makedev, for is_nocase_mount */
++#endif
+ #ifdef HAVE_SYS_STATVFS_H
+ # include <sys/statvfs.h>
+ #endif
+@@ -2971,6 +2974,83 @@ NTSTATUS WINAPI NtQueryDirectoryFile( HANDLE handle, HANDLE event, PIO_APC_ROUTI
+ }
+ 
+ 
++static BOOLEAN has_tilde( const WCHAR *name, int length )
++{
++    while (length--) if (*name++ == '~') return TRUE;
++    return FALSE;
++}
++
++/***********************************************************************
++ *           is_nocase_mount
++ *
++ * Arctic: whether the directory is on NTFS mounted with "nocase" (C: and
++ * every NTFS volume arctic-volume mounts): its driver finds a name in any
++ * case by itself. Known mounts are remembered by device and mount id; a new
++ * one is looked up in /proc/self/mountinfo once.
++ */
++static BOOLEAN is_nocase_mount( int root_fd, const char *dir )
++{
++    static struct { dev_t dev; unsigned long long mnt; BOOLEAN nocase; } mounts[32];
++    static unsigned int count;
++    static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
++    unsigned long long mnt = 0;
++    BOOLEAN nocase = FALSE;
++    char line[4096];
++    unsigned int i;
++    dev_t dev;
++    FILE *f;
++#if defined(__linux__) && defined(STATX_MNT_ID)
++    struct statx stx;
++
++    if (statx( root_fd, *dir ? dir : ".", 0, STATX_MNT_ID, &stx ) || !(stx.stx_mask & STATX_MNT_ID))
++        return FALSE;
++    dev = makedev( stx.stx_dev_major, stx.stx_dev_minor );
++    mnt = stx.stx_mnt_id;
++#else
++    return FALSE;
++#endif
++
++    mutex_lock( &mutex );
++    for (i = 0; i < count; i++)
++    {
++        if (mounts[i].dev != dev || mounts[i].mnt != mnt) continue;
++        nocase = mounts[i].nocase;
++        mutex_unlock( &mutex );
++        return nocase;
++    }
++    /* "36 35 98:0 /root /mnt rw,noatime shared:1 - ntfs /dev/sda1 rw,nocase,..." */
++    if ((f = fopen( "/proc/self/mountinfo", "r" )))
++    {
++        while (fgets( line, sizeof(line), f ))
++        {
++            char *sep, *fstype, *opts, *p, *save;
++
++            if (strtoull( line, NULL, 10 ) != mnt) continue;
++            if (!(sep = strstr( line, " - " ))) break;
++            fstype = sep + 3;
++            if (!(p = strchr( fstype, ' ' ))) break;
++            *p++ = 0;
++            if (!(opts = strchr( p, ' ' ))) break;  /* skip the source */
++            opts++;
++            if ((p = strpbrk( opts, " \n" ))) *p = 0;
++            if (strcmp( fstype, "ntfs" ) && strcmp( fstype, "ntfs3" )) break;
++            for (p = strtok_r( opts, ",", &save ); p; p = strtok_r( NULL, ",", &save ))
++                if (!strcmp( p, "nocase" )) nocase = TRUE;
++            break;
++        }
++        fclose( f );
++    }
++    if (count == ARRAY_SIZE(mounts)) count = 0;  /* start over: mounts come and go */
++    mounts[count].dev = dev;
++    mounts[count].mnt = mnt;
++    mounts[count].nocase = nocase;
++    count++;
++    mutex_unlock( &mutex );
++    TRACE( "%s: mount %llu %s\n", debugstr_a(dir), mnt, nocase ? "nocase" : "case sensitive" );
++    return nocase;
++}
++
++
+ /***********************************************************************
+  *           find_file_in_dir
+  *
+@@ -2988,6 +3068,8 @@ static NTSTATUS find_file_in_dir( int root_fd, char *unix_name, int pos, const W
+     struct stat st;
+     int fd, ret;
+ 
++    BOOLEAN looked_up = FALSE;
++
+     /* try a shortcut for this directory */
+ 
+     unix_name[pos++] = '/';
+@@ -2996,12 +3078,20 @@ static NTSTATUS find_file_in_dir( int root_fd, char *unix_name, int pos, const W
+     {
+         unix_name[pos + ret] = 0;
+         if (!fstatat( root_fd, unix_name, &st, 0 )) return STATUS_SUCCESS;
++        looked_up = (errno == ENOENT);
+     }
+     if (check_case) goto not_found;  /* we want an exact match */
+ 
+     if (pos > 1) unix_name[pos - 1] = 0;
+     else unix_name[1] = 0;  /* keep the initial slash */
+ 
++    /* Arctic: on a volume whose kernel driver looks names up without regard
++     * to case (NTFS mounted nocase) the lookup above was already the
++     * case-insensitive one: the name is not there in any case. Only a short
++     * name (which has a '~') can still match, through the directory. */
++    if (looked_up && !has_tilde( name, length ) && is_nocase_mount( root_fd, unix_name ))
++        goto not_found;
++
+     /* check if it fits in 8.3 so that we don't look for short names if we won't need them */
+ 
+     is_name_8_dot_3 = is_legal_8dot3_name( name, length );

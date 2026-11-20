@@ -151,9 +151,14 @@ SYSTEM = ["apps/preferences-system", "preferences/applications-system"]
 
 MODULES = {
     "shell32": SHELL32,
+    # the shield of User Account Control: IDI_SHIELD of user32 (consent.exe,
+    # buttons that ask for the administrator) and imageres' 78, Windows' own
+    # number for it; Win11-icon-theme's, as Windows 11 draws its own
+    "user32": {32518: ["preferences/preferences-security"]},
     # by Windows' numbers: the Control Panel's own items
     "imageres": {
         51: ["devices/printer"],
+        78: ["preferences/preferences-security"],   # the UAC shield (Win11-icon-theme's, see WIN11)
         77: ["apps/fonts", "preferences/preferences-desktop-font"],
         80: SYSTEM,
         87: ["apps/system-software-install"],
@@ -265,6 +270,8 @@ WIN11 = {
     ("shell32", 16801): "places/folder-download",
     ("shell32", 267): "places/folder-public",
     ("imageres", 149): "devices/computer",
+    ("imageres", 78): "preferences/preferences-security",
+    ("user32", 32518): "preferences/preferences-security",
     ("netcenter", 6): "devices/computer",
     ("systemcpl", 1): "devices/computer",
 }

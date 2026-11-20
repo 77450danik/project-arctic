@@ -66,6 +66,11 @@
 
 #define TIMER_CARET     1
 #define TIMER_SMOOTH    2
+#define TIMER_UNCLOAK   3
+
+#ifndef DWMWA_CLOAK
+#define DWMWA_CLOAK 13
+#endif
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
@@ -1128,6 +1133,14 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
 
     case WM_TIMER:
+        if (wparam == TIMER_UNCLOAK)
+        {
+            DWORD off = 0;
+
+            KillTimer( hwnd, TIMER_UNCLOAK );
+            DwmSetWindowAttribute( hwnd, DWMWA_CLOAK, &off, sizeof(off) );
+            return 0;
+        }
         if (wparam == TIMER_SMOOTH)
         {
             smooth_scroll_step( &smooth, hwnd, TIMER_SMOOTH );
@@ -1216,6 +1229,7 @@ void menu11_hide(void)
 {
     if (!menu11_visible()) return;
     KillTimer( menu, TIMER_CARET );
+    KillTimer( menu, TIMER_UNCLOAK );
     smooth_scroll_stop( &smooth, menu, TIMER_SMOOTH );
     ShowWindow( menu, SW_HIDE );
     hidden_at = GetTickCount();
@@ -1270,7 +1284,18 @@ void menu11_toggle( HWND tray_window, const RECT *button_rect, BOOL click )
     start_look_load( STYLE_WIN11, &look );
     palette_init( &pal, look_apply( menu, &look ) );
     InvalidateRect( menu, NULL, FALSE );
-    ShowWindow( menu, SW_SHOW );
+    {
+        /* Shown cloaked, drawn, and uncloaked a frame later: dwm starts the
+         * slide with the menu as it is drawn. Shown at once, its first frame
+         * was the window's empty surface, a white flash at the start of the
+         * slide (2026-11-18). */
+        DWORD on = 1;
+
+        DwmSetWindowAttribute( menu, DWMWA_CLOAK, &on, sizeof(on) );
+        ShowWindow( menu, SW_SHOW );
+        UpdateWindow( menu );
+        SetTimer( menu, TIMER_UNCLOAK, 16, NULL );
+    }
     SetForegroundWindow( menu );
     SetFocus( menu );
     search_active = FALSE;

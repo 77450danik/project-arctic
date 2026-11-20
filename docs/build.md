@@ -31,7 +31,7 @@
 | Wine | `wsl -d arctic-build -- bash tools/wsl/build-wine.sh` | `/root/arctic/out/wine` |
 | Ядро | `wsl -d arctic-build -- bash tools/wsl/build-kernel.sh` | `/root/arctic/out/kernel` |
 | ReactOS | `wsl -d arctic-ros -u root -- bash tools/wsl/build-reactos.sh` | `out/reactos` |
-| Образ | `wsl -d arctic-build -- bash tools/wsl/build-image.sh` | `out/arctic-local.iso`, `out/arctic-usb.img` |
+| Образ | `hamam -d arctic-build -- bash tools/wsl/build-image.sh` (root на хості: `pacstrap`, `arch-chroot`, FUSE; `docs/linux-gate.md`) | `out/arctic-local.iso`, `out/arctic-usb.img` |
 
 - Wine: дерево збірки `/root/arctic/wine` лишається між збірками, файли
   синхронізуються за вмістом, плюс ccache `/root/arctic/ccache`.
@@ -57,19 +57,57 @@
 | `Software\Wine\Time Zones\TZ Mapping` (kernelbase.rgs; за нею ntdll називає пояс хоста, сторінка «Дата й час» іде у зворотний бік) | `Software\Arctic\Runtime\Time Zones\TZ Mapping` |
 | ProgID `WINEDBROWPRX.*`, `WINEDBRSTPRX.*` (msdaps) | `DBROWPRX.*`, `DBRSTPRX.*` |
 | `winecfg.exe` і його IFEO в `dpi.reg` | прибрано; версію Windows 11 пише `runtime/registry/version.reg` |
+| драйвери `winebus.sys`, `winehid.sys`, `winebth.sys`, `winexinput.sys`, `wineusb.sys`, їхні служби, процес `winedevice.exe` | `winbus.sys`, `winhid.sys`, `winbth.sys`, `winxinput.sys`, `windowsusb.sys` (`winusb.sys` — це WinUSB Windows), служби з тими самими іменами, `windevice.exe` |
+| шини й пристрої `WINEBUS\…`, `WINEBTH\…`, `WINEXINPUT\…`, `ROOT\WINE\…`, сумісні ID `WINE_COMP_*`, група `WinePlugPlay` | `WINBUS\…`, `WINBTH\…`, `WINXINPUT\…`, `ROOT\WIN\…`, `WIN_COMP_*`, `WinPlugPlay` |
+| програми й бібліотеки `wineboot`, `winedbg`, `winebrowser`, `winefile`, `winemine`, `winepath`, `winemenubuilder`, `wineconsole`, `winemsibuilder`, `wined3d`, `winevulkan` (і `winevulkan.json` ICD), `winewayland.drv`, `winedmo`, `winemapi` | `winboot.exe`, `windowsdbg.exe` (`windbg` — налагоджувач Microsoft), `winbrowser.exe`, `winfile.exe`, `winmine.exe` (так їх і звала Windows), `winpath.exe`, `winmenubuilder.exe`, `winconsole.exe`, `winmsibuilder.exe`, `wind3d.dll`, `winvulkan.dll` + `winvulkan.json`, `winwayland.drv`, `windmo.dll`, `winmapi.dll`; ім'я графічного драйвера, яке робочий стіл складає з частин (`"wine%s.drv"` у explorer і winsrv), — `"win%s.drv"` |
 
 - Реєстр, зроблений раніше: arctic-init (`rename_wine_keys`) переносить ключі
   в тексті кущів до старту wineserver, один раз, коли реєстр відстає від
   wine.inf. Кущ, яким він був, лишається в `config\RegBack\<кущ>.wine`.
 - Копірайт («the Wine project authors») лишається: код їхній.
-- Не перейменовано те, чого програма не показує і за чим частини
-  знаходять одна одну: файли `winebus.sys` тощо, шина `WINEBUS`, група
-  `WinePlugPlay`, інтерфейси `IWine*`, `/usr/share/wine` на боці Linux.
-  Так само ключі, названі іменами файлів драйверів: служби `winebus`,
-  `winehid`, `wineusb`, `winebth`, їхні пристрої `ROOT\WINE\…` і
-  `WINEBUS\…`, процесор друку `wineps`, `Drivers\winealsa.drv` (GUID
-  аудіопристроїв). Перейменувати їх — перейменувати самі драйвери: миша,
-  клавіатура, геймпади і звук ризикують більше, ніж варте ім'я.
+- Модулі перейменовано цілком: каталоги й файли, а потім кожна згадка в
+  дереві, у регістрі, як було написано (`winebus` → `winbus`, `WineBus` →
+  `WinBus`, `WINEBUS` → `WINBUS`), і так само імена, записані масивами
+  символів (`{'w','i','n','e','b','o','o','t',…}` — так ntdll запускає
+  wineboot і називає його подію). Окремо виправлено те, що рахувало довжину
+  старого імені: префікс `WINXINPUT\` у hidclass (10 символів замість 7),
+  довжина ID у winbus (24 замість 25), кореневі пристрої в winboot
+  (`root\win\…`). Ім'я каналу налагодження вміщує 14 символів: довший після
+  перейменування губить префікс (каналів журналу людина не бачить).
+  Змінна `WINEBOOTSTRAPMODE` теж стала `WINBOOTSTRAPMODE` — усюди однаково.
+- Реєстр наявної системи arctic-init перейменовує в тому самому проході
+  (`driver_names`, після старих правил для ключів: ключі, значення, `str(7)`
+  з HardwareID, шляхи інтерфейсів `##?#WINBTH#…`), тож пристрої й служби
+  лишаються, якими були. Ключі спарювання Bluetooth лежать у
+  `Services\BTHPORT` і не змінюються. Старі файли (`drivers\wine*.sys`,
+  `wine*.exe`/`.dll`/`.drv`, `inf\wine*.inf`, `winevulkan.json`) оновлення
+  видаляє (`make-update.sh`, список `delete`). Журнал Bluetooth тепер пише
+  `winbth:`.
+- DXVK і vkd3d-proton шукають спершу `winevulkan.dll`, а не знайшовши —
+  `vulkan-1.dll`, як на Windows; той веде у `winvulkan.dll`.
+- З 16.11.2026 імена NT і в Linux-частині (кінець `ci/wine-names.pl`,
+  установка в `ci/build-wine.sh`):
+
+  | Було | Стало |
+  |---|---|
+  | `/usr/bin/wineserver` (процес сервера, синій екран `CRITICAL_PROCESS_DIED`) | `/usr/bin/ntexec` |
+  | `/usr/bin/wine`, `…/x86_64-unix/wine`, `wine-preloader` | `ntloader`, `ntloader-preloader` |
+  | `/usr/lib/wine`, `/usr/share/wine`, `wine.inf` | `/usr/lib/nt`, `/usr/share/nt`, `nt.inf` |
+  | `/tmp/.wine-<uid>` (сокет сервера) | `/tmp/.nt-<uid>` |
+  | змінні `WINEPREFIX`, `WINEDEBUG`, `WINEDLLOVERRIDES`, `WINELOADER`, `WINEDATADIR`, `WINECONFIGDIR`, `WINEHOMEDIR`, `WINEDLLDIRn`, `WINEUSERNAME`, `WINEUSERLOCALE`, `WINEUNIXCP`…, `WINE_HOST_*` (їх бачить кожна програма в `set`) | `NTPREFIX`, `NTDEBUG`, `NTDLLOVERRIDES`, `NTLOADER`, … , `NT_HOST_*` |
+  | `WINE_LAZY_FLUSH`, `WINE_REGISTRY_SAVE_PERIOD`, `WINE_IMAGE_CACHE` | `NT_…` |
+  | `winevdm.exe` (16-бітні програми) | `ntvdm.exe`, як у Windows |
+  | `rosbrand.dll`; «ReactOS Project», «ReactOS Operating System» у версії файлів ReactOS | `basebrd.dll`; як у модулів Wine (ReactOS `0123`) |
+
+  Збірка Wine лишається зі своїм розкладом (`make install` дає `lib/wine`),
+  `build-wine.sh` перейменовує встановлене; `wine-names.pl` міняє лише
+  рядки, за якими код шукає ці файли під час роботи. Що лишилося з іменем
+  wine, збірка виводить рядками `still named wine:`.
+- Не перейменовано те, чого програма не показує: інтерфейси `IWine*`
+  (за ними знаходить себе 32/64-бітний маршалінг), інструменти збірки
+  (`winebuild`, `winegcc`, `wrc`, обгортка `tools/wine` у дереві збірки),
+  процесор друку `wineps`, `winealsa.drv` (`Drivers\winealsa.drv` — GUID
+  аудіопристроїв; ім'я звукового драйвера mmdevapi складає з частин).
 - ReactOS: патч `0085` (опис comctl32, browseui, shdocvw, CompanyName без
   «Wine Team»).
 - Патч `0098`: ntdll більше не експортує `wine_get_version` (і

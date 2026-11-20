@@ -330,7 +330,7 @@ static DWORD WINAPI action_thread( void *arg )
         break;
     case ACTION_SHUT_DOWN:
         TRACE( "power: shut down\n" );
-        ExitWindowsEx( EWX_SHUTDOWN | EWX_POWEROFF, SHTDN_REASON_MAJOR_POWER | SHTDN_REASON_FLAG_PLANNED );
+        end_session_from_thread( EWX_SHUTDOWN | EWX_POWEROFF );
         break;
     default:
         break;

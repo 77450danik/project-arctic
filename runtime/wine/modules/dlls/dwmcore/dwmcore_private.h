@@ -27,6 +27,12 @@ struct kms_mode
     /* the size of the screen: the timings' own, or smaller for a mode the
      * card scales up to them, as Windows drivers offer every common size */
     uint32_t                 width, height;
+    /* a refresh rate the user made (Advanced display): timings of the
+     * native mode at a higher pixel clock, kept or still on trial; alt are
+     * the same with a short horizontal blank, tried when the card refuses
+     * the first ones (the link carries fewer pixels per second) */
+    bool                     custom, confirmed, has_alt;
+    struct drm_mode_modeinfo alt;
 };
 
 /* a dumb buffer the CRTC scans out */
@@ -50,6 +56,7 @@ struct kms_output
     uint32_t         edid_len;
     struct kms_mode *modes;                /* one per size and whole Hz */
     uint32_t         mode_count;
+    uint32_t         base_count;           /* the monitor's own and the scaled ones; custom ones follow */
     uint32_t         preferred;            /* index into modes */
     uint32_t         possible_crtcs;       /* bit per CRTC of the card */
     bool             vrr_capable;          /* the monitor and the link take a variable refresh */
@@ -126,6 +133,15 @@ enum kms_event kms_hotplug_event( int fd );  /* reads one */
 void kms_close(void);
 bool kms_reopen(void);                /* the best card there is now, once */
 struct kms_mode *kms_find_mode( struct kms_output *output, uint32_t width, uint32_t height, uint32_t refresh );
+
+/* Custom refresh rates (mHz) of the monitor on a connector: those kept and
+ * one on trial. kms_custom_leaving says first whether the mode it shows goes
+ * away with them, and which one to show instead; kms_set_custom then remakes
+ * its list of modes, true if it changed. */
+bool kms_custom_leaving( uint32_t connector, const uint32_t *rates, uint32_t count, uint32_t trial,
+                         struct dwm_output_config *instead );
+bool kms_set_custom( uint32_t connector, const uint32_t *rates, uint32_t count, uint32_t trial );
+bool kms_link_bad( const struct kms_output *output );  /* the driver says the link failed */
 
 /* Frames. kms_present queues a flip to fb, showing src_width x src_height of
  * it over the whole mode, with variable refresh on or off; buffer is what the

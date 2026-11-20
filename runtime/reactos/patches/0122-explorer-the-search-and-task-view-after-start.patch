@@ -1,0 +1,202 @@
+From: Arctic <arctic@localhost>
+Subject: [PATCH] explorer: The search and Task View after Start.
+
+As in Windows 11, the search box (or its icon) and the Task View button of
+startui.dll stand right after Start, in the middle with the task buttons
+or at the left before them, as wide as they say they are. Win+Tab opens
+Task View (twinui.dll), which ReactOS left to nothing.
+---
+diff -ruN a/base/shell/explorer/precomp.h b/base/shell/explorer/precomp.h
+--- a/base/shell/explorer/precomp.h	2026-11-15 23:31:01.455483900 +0100
++++ b/base/shell/explorer/precomp.h	2026-11-15 23:31:21.814483400 +0100
+@@ -133,6 +133,13 @@
+ /* the weather on the taskbar (startui.dll, widgets.c) */
+ HWND ArcticWidgetCreate(IN HWND hwndTray);
+ INT ArcticWidgetWidth(VOID);
++/* Arctic: the search box and the Task View button, right after Start, as in
++ * Windows 11 (startui.dll, search.c), and Task View itself (twinui.dll) */
++HWND ArcticSearchCreate(IN HWND hwndTray);
++INT ArcticSearchWidth(VOID);
++HWND ArcticTaskViewCreate(IN HWND hwndTray);
++INT ArcticTaskViewWidth(VOID);
++VOID ArcticTaskViewToggle(VOID);
+ #define ARCTIC_BUTTON_HOT       1
+ #define ARCTIC_BUTTON_PRESSED   2
+ #define ARCTIC_BUTTON_ACTIVE    4
+diff -ruN a/base/shell/explorer/traywnd.cpp b/base/shell/explorer/traywnd.cpp
+--- a/base/shell/explorer/traywnd.cpp	2026-11-15 23:31:01.461483900 +0100
++++ b/base/shell/explorer/traywnd.cpp	2026-11-15 23:32:08.988482200 +0100
+@@ -483,6 +483,9 @@
+     LONG m_TasksWidth;
+     INT m_StartX;
+     HWND m_ArcticWidget;
++    /* Arctic: the search box and the Task View button, right after Start */
++    HWND m_ArcticSearch;
++    HWND m_ArcticTaskView;
+     CTrayShowDesktopButton* m_pShowDesktopButton;
+ 
+     CComPtr<IMenuBand>  m_StartMenuBand;
+@@ -542,6 +545,8 @@
+         m_TasksWidth(-1),
+         m_StartX(0),
+         m_ArcticWidget(NULL),
++        m_ArcticSearch(NULL),
++        m_ArcticTaskView(NULL),
+         m_pShowDesktopButton(NULL),
+         m_Theme(NULL),
+         m_Font(NULL),
+@@ -961,8 +966,9 @@
+             ShellExecuteW(m_hWnd, NULL, L"rundll32.exe", L"systemcpl.dll,ShowSystem", NULL, SW_NORMAL);
+             break;
+         case IDHK_NEXT_TASK:
+-            break;
+         case IDHK_PREV_TASK:
++            /* Arctic: Win+Tab opens Task View, as in Windows 10 and 11 */
++            ArcticTaskViewToggle();
+             break;
+         case IDHK_MINIMIZE_ALL:
+             MinimizeAll();
+@@ -2031,6 +2037,9 @@
+             SIZE szRebar;
+             /* Arctic: the weather beside the tray; in the middle's taskbar it is at the left, over nothing */
+             INT cxWidget = Horizontal && m_ArcticWidget && !ArcticTaskbarCentered() ? ArcticWidgetWidth() : 0;
++            /* ... and the search and Task View after Start: the buttons of a
++               taskbar at the left start after them */
++            INT cxExtras = Horizontal && !ArcticTaskbarCentered() ? ArcticExtrasWidth() : 0;
+ 
+             SetWindowStyle(m_Rebar, CCS_VERT, Horizontal ? 0 : CCS_VERT);
+ 
+@@ -2040,7 +2049,7 @@
+ 
+             if (Horizontal)
+             {
+-                ptRebar.x = StartSize.cx + (bGap ? GetSystemMetrics(SM_CXSIZEFRAME) : 0);
++                ptRebar.x = StartSize.cx + cxExtras + (bGap ? GetSystemMetrics(SM_CXSIZEFRAME) : 0);
+                 szRebar.cx = ptTrayNotify.x - ptRebar.x - cxWidget;
+                 szRebar.cy = rcClient.bottom;
+             }
+@@ -2083,9 +2092,11 @@
+ 
+         if (!m_StartButton.m_hWnd || !m_TaskSwitch || !GetClientRect(&rcClient))
+             return;
++        INT cxExtras = ArcticExtrasWidth();
++
+         if (ArcticTaskbarCentered() && IsPosHorizontal() && m_TasksWidth >= 0)
+         {
+-            LONG total = StartSize.cx + m_TasksWidth;
++            LONG total = StartSize.cx + cxExtras + m_TasksWidth;
+             LONG limit = rcClient.right;
+ 
+             if (m_TrayNotify && ::GetWindowRect(m_TrayNotify, &rcTray))
+@@ -2107,11 +2118,47 @@
+         if (::GetWindowRect(m_TaskSwitch, &rcTasks))
+         {
+             ::MapWindowPoints(NULL, m_hWnd, (LPPOINT)&rcTasks, 2);
+-            SendMessage(m_TaskSwitch, TSWM_ARCTICINDENT, max(0, (INT)(x + StartSize.cx - rcTasks.left)), 0);
++            SendMessage(m_TaskSwitch, TSWM_ARCTICINDENT, max(0, (INT)(x + StartSize.cx + cxExtras - rcTasks.left)), 0);
+         }
++        ArcticPlaceExtras(x + StartSize.cx, StartSize.cy);
+         ArcticPlaceWidget(x);
+     }
+ 
++    /* Arctic: how wide the search and the Task View button are together */
++    INT ArcticExtrasWidth()
++    {
++        if (!IsPosHorizontal())
++            return 0;
++        return (m_ArcticSearch ? ArcticSearchWidth() : 0) + (m_ArcticTaskView ? ArcticTaskViewWidth() : 0);
++    }
++
++    /* Arctic: the search, then Task View, from where Start ends */
++    VOID ArcticPlaceExtras(INT x, INT cy)
++    {
++        RECT rcClient;
++        HWND ahwnd[2] = { m_ArcticSearch, m_ArcticTaskView };
++        INT acx[2];
++
++        if (!GetClientRect(&rcClient))
++            return;
++        acx[0] = m_ArcticSearch && IsPosHorizontal() ? ArcticSearchWidth() : 0;
++        acx[1] = m_ArcticTaskView && IsPosHorizontal() ? ArcticTaskViewWidth() : 0;
++        for (INT i = 0; i < 2; i++)
++        {
++            if (!ahwnd[i])
++                continue;
++            if (!acx[i])
++            {
++                ::ShowWindow(ahwnd[i], SW_HIDE);
++                continue;
++            }
++            ::SetWindowPos(ahwnd[i], HWND_TOP, x, 0, acx[i], min((LONG)cy, rcClient.bottom),
++                           SWP_NOACTIVATE | SWP_SHOWWINDOW);
++            ::InvalidateRect(ahwnd[i], NULL, FALSE);
++            x += acx[i];
++        }
++    }
++
+     /* Arctic: the weather stands at the far left of a centred taskbar, while
+        it fits before Start, and otherwise next to the tray */
+     VOID ArcticPlaceWidget(INT xGroup)
+@@ -2884,8 +2931,10 @@
+ 
+         UpdateFonts();
+ 
+-        /* Arctic: the weather; AlignControls places it */
++        /* Arctic: the weather, the search and Task View; AlignControls places them */
+         m_ArcticWidget = ArcticWidgetCreate(m_hWnd);
++        m_ArcticSearch = ArcticSearchCreate(m_hWnd);
++        m_ArcticTaskView = ArcticTaskViewCreate(m_hWnd);
+ 
+         InitShellServices(&m_ShellServices);
+ 
+diff -ruN a/base/shell/explorer/util.cpp b/base/shell/explorer/util.cpp
+--- a/base/shell/explorer/util.cpp	2026-11-15 23:31:01.467483900 +0100
++++ b/base/shell/explorer/util.cpp	2026-11-15 23:31:21.815483400 +0100
+@@ -130,6 +130,47 @@
+     return pWidth ? pWidth() : 0;
+ }
+ 
++HWND ArcticSearchCreate(IN HWND hwndTray)
++{
++    typedef HWND (WINAPI *PFN_CREATE)(HWND);
++    PFN_CREATE pCreate = (PFN_CREATE)ArcticProc(L"startui.dll", "ArcticSearchCreate");
++
++    return pCreate ? pCreate(hwndTray) : NULL;
++}
++
++INT ArcticSearchWidth(VOID)
++{
++    typedef INT (WINAPI *PFN_WIDTH)(VOID);
++    PFN_WIDTH pWidth = (PFN_WIDTH)ArcticProc(L"startui.dll", "ArcticSearchWidth");
++
++    return pWidth ? pWidth() : 0;
++}
++
++HWND ArcticTaskViewCreate(IN HWND hwndTray)
++{
++    typedef HWND (WINAPI *PFN_CREATE)(HWND);
++    PFN_CREATE pCreate = (PFN_CREATE)ArcticProc(L"startui.dll", "ArcticTaskViewCreate");
++
++    return pCreate ? pCreate(hwndTray) : NULL;
++}
++
++INT ArcticTaskViewWidth(VOID)
++{
++    typedef INT (WINAPI *PFN_WIDTH)(VOID);
++    PFN_WIDTH pWidth = (PFN_WIDTH)ArcticProc(L"startui.dll", "ArcticTaskViewWidth");
++
++    return pWidth ? pWidth() : 0;
++}
++
++VOID ArcticTaskViewToggle(VOID)
++{
++    typedef BOOL (WINAPI *PFN_TOGGLE)(VOID);
++    PFN_TOGGLE pToggle = (PFN_TOGGLE)ArcticProc(L"twinui.dll", "ArcticTaskViewToggle");
++
++    if (pToggle)
++        pToggle();
++}
++
+ VOID ArcticTaskbarPaintButton(IN HDC hdc, IN const RECT *prc, IN DWORD dwFlags)
+ {
+     typedef VOID (WINAPI *PFN_PAINT)(HDC, const RECT *, DWORD);

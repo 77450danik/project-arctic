@@ -1,0 +1,24 @@
+From: Project Arctic
+Subject: shell32: the desktop's icons never get an empty work area.
+
+The view of the desktop's icons takes the work area. A shell that started
+while the monitors were being made anew (winlogon restarted it after a
+display mode change, 2026-11-18) read an empty one, and its icons stayed
+in a view of 0x0 until the shell was started again: the wallpaper and the
+widgets were there, the icons not. An empty work area is the whole screen.
+---
+diff --git a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+--- a/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
++++ b/dll/win32/shell32/shelldesktop/CDesktopBrowser.cpp
+@@ -217,9 +217,10 @@
+     SetRect(&rcScreen, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+             GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+             GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN));
+-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcNewSize, 0);
++    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcNewSize, 0) || IsRectEmpty(&rcNewSize))
++        rcNewSize = rcScreen;
+     if (IsRectEmpty(&rcScreen))
+         rcScreen = rcNewSize;
+     ::MoveWindow(m_hWnd, rcScreen.left, rcScreen.top, rcScreen.right - rcScreen.left, rcScreen.bottom - rcScreen.top, TRUE);
+     ::MoveWindow(m_hWndShellView, rcNewSize.left - rcScreen.left, rcNewSize.top - rcScreen.top,
+                  rcNewSize.right - rcNewSize.left, rcNewSize.bottom - rcNewSize.top, TRUE);

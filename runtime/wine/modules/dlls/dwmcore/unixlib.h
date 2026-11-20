@@ -14,17 +14,20 @@
 #include "wine/arctic_dwm.h"
 
 #define DWM_MAX_OUTPUTS 8
-#define DWM_MAX_MODES   160
+#define DWM_MAX_MODES   384
 #define DWM_MAX_EDID    2048
+#define DWM_MAX_CUSTOM  4     /* custom refresh rates kept per monitor */
 
 struct dwm_start_params
 {
     UINT32 background;  /* COLORREF of the desktop */
+    UINT64 timing;      /* struct arctic_dwm_timing *, the section of vertical blanks */
 };
 
 /* what happened while dispatching, for the Windows side to act on */
 #define DWM_EVENT_HOTPLUG 0x1  /* monitors came or went: they need a layout */
 #define DWM_EVENT_SAVE    0x2  /* a program applied a layout to be kept */
+#define DWM_EVENT_TRIAL   0x4  /* a custom refresh rate on trial was taken back */
 
 struct dwm_dispatch_params
 {
@@ -63,6 +66,7 @@ struct dwm_set_cursor_params
 };
 
 #define DWM_MODE_PREFERRED 0x1  /* the monitor's native mode */
+#define DWM_MODE_CUSTOM    0x2  /* a refresh rate the user made (Advanced display) */
 
 struct dwm_mode
 {
@@ -121,6 +125,13 @@ struct dwm_set_options_params
     UINT32 scaling[DWM_MAX_OUTPUTS];     /* smaller than their own (DISPLAYCONFIG_SCALING) */
     UINT32 shadow_style;  /* of the visual style: 0 Windows 10's shadows, 1 Windows 11's */
     UINT32 menu_light;    /* the menus' colour is light: they key by darkness */
+    /* refresh rates above the monitor's own (Advanced display): those the
+     * user kept, and one on trial, taken back unless kept */
+    UINT32 custom_count;
+    UINT32 custom_id[DWM_MAX_OUTPUTS];                   /* connectors */
+    UINT32 custom_rates[DWM_MAX_OUTPUTS];                /* how many of custom[] */
+    UINT32 custom[DWM_MAX_OUTPUTS][DWM_MAX_CUSTOM];      /* mHz */
+    UINT32 custom_trial[DWM_MAX_OUTPUTS];                /* mHz, 0 if none */
 };
 
 /* what programs asked of their windows through dwmapi (wine/arctic_dwm.h) */

@@ -1,0 +1,29 @@
+From: Project Arctic
+Subject: dwmapi: the backdrop of a window fades on its own.
+
+DWMWA_ARCTIC_BACKDROP_FADE, 0-255: how far the blur and tint behind the
+window have faded, the window's thumbnails untouched. Task View flies its
+pictures back to the windows while its backdrop fades with them; it had to
+hide the whole view at the end instead, the backdrop faded over the windows
+already in place, and the screen blinked (2026-11-18).
+---
+diff --git a/dlls/dwmapi/dwmapi_main.c b/dlls/dwmapi/dwmapi_main.c
+index 222dd52..aa5f244 100644
+--- a/dlls/dwmapi/dwmapi_main.c
++++ b/dlls/dwmapi/dwmapi_main.c
+@@ -216,6 +216,7 @@ HRESULT WINAPI DwmSetWindowAttribute(HWND hwnd, DWORD attributenum, LPCVOID attr
+     case DWMWA_ARCTIC_TRANSITION:
+     case DWMWA_ARCTIC_BLUR:
+     case DWMWA_ARCTIC_LIGHT:
++    case DWMWA_ARCTIC_BACKDROP_FADE:
+         if (size < sizeof(DWORD)) return E_INVALIDARG;
+         break;
+     case DWMWA_ARCTIC_MINIMIZE_RECT:
+@@ -255,6 +256,7 @@ HRESULT WINAPI DwmSetWindowAttribute(HWND hwnd, DWORD attributenum, LPCVOID attr
+         case DWMWA_ARCTIC_TRANSITION: window->transition = *(const DWORD *)attribute; break;
+         case DWMWA_ARCTIC_BLUR: window->blur = min( *(const DWORD *)attribute, 100 ); break;
+         case DWMWA_ARCTIC_LIGHT: window->light = !!*(const DWORD *)attribute; break;
++        case DWMWA_ARCTIC_BACKDROP_FADE: window->backdrop_fade = min( *(const DWORD *)attribute, 255 ); break;
+         case DWMWA_ARCTIC_MINIMIZE_RECT:
+         {
+             const RECT *rect = attribute;

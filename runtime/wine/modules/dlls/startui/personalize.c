@@ -328,9 +328,13 @@ static BOOL style_is_11(void)
 /* the look of the controls: the size of the visual style with its pictures
  * and fonts, and the font of the dialogs, which programs started from now
  * on take. dwm.exe follows the size with its shadows. */
+/* the interface font of the Windows 11 style: Open Sans, drawn by Segoe UI's
+ * own designer, with Cyrillic (Inter until 2026-11-18) */
+#define WIN11_FACE L"Open Sans"
+
 static void set_ui_fonts( BOOL win11 )
 {
-    const WCHAR *face = win11 ? L"Inter" : L"Source Sans Pro";
+    const WCHAR *face = win11 ? WIN11_FACE : L"Source Sans Pro";
     NONCLIENTMETRICSW metrics = { sizeof(metrics) };
     LOGFONTW icon;
 
@@ -341,7 +345,7 @@ static void set_ui_fonts( BOOL win11 )
         lstrcpyW( metrics.lfMenuFont.lfFaceName, face );
         lstrcpyW( metrics.lfStatusFont.lfFaceName, face );
         lstrcpyW( metrics.lfMessageFont.lfFaceName, face );
-        /* Inter is as large at the size of the menus as Source Sans Pro a point up */
+        /* Open Sans is as large at the size of the menus as Source Sans Pro a point up */
         metrics.lfCaptionFont.lfHeight = win11 ? metrics.lfMenuFont.lfHeight : MulDiv( metrics.lfMenuFont.lfHeight, 13, 12 );
         SystemParametersInfoW( SPI_SETNONCLIENTMETRICS, sizeof(metrics), &metrics, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE );
     }
@@ -360,9 +364,9 @@ static void set_ui_fonts( BOOL win11 )
 
 static void set_segoe_replacements( BOOL win11 )
 {
-    static const WCHAR inter[] = L"Inter\0", source[] = L"Source Sans Pro\0";
-    static const WCHAR inter_semibold[] = L"Inter SemiBold\0Inter\0", source_semibold[] = L"Source Sans Pro Semibold\0Source Sans Pro\0";
-    static const WCHAR inter_light[] = L"Inter Light\0Inter\0";
+    static const WCHAR inter[] = L"Open Sans\0", source[] = L"Source Sans Pro\0";
+    static const WCHAR inter_semibold[] = L"Open Sans SemiBold\0Open Sans\0", source_semibold[] = L"Source Sans Pro Semibold\0Source Sans Pro\0";
+    static const WCHAR inter_light[] = L"Open Sans Light\0Open Sans\0";
     static const struct { const WCHAR *name; const WCHAR *win11, *win10; DWORD size11, size10; } names[] =
     {
         { L"Segoe UI", inter, source, sizeof(inter), sizeof(source) },
@@ -383,13 +387,13 @@ static void set_segoe_replacements( BOOL win11 )
 /* the fonts are what the style wants: an update puts the registry's defaults back */
 static BOOL ui_fonts_right( BOOL win11 )
 {
-    const WCHAR *face = win11 ? L"Inter" : L"Source Sans Pro", *dialogs = win11 ? L"Inter" : L"Tahoma";
+    const WCHAR *face = win11 ? WIN11_FACE : L"Source Sans Pro", *dialogs = win11 ? WIN11_FACE : L"Tahoma";
     NONCLIENTMETRICSW metrics = { sizeof(metrics) };
     WCHAR value[64] = L"";
     DWORD size = sizeof(value);
 
     if (!SystemParametersInfoW( SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0 )) return TRUE;
-    /* GDI gives the full name back: Inter Regular */
+    /* GDI gives the full name back: Open Sans Regular */
     if (_wcsnicmp( metrics.lfMessageFont.lfFaceName, face, lstrlenW( face ) )) return FALSE;
     /* Segoe UI came later than the rest */
     if (RegGetValueW( HKEY_CURRENT_USER, REPLACEMENTS_KEY, L"Segoe UI", RRF_RT_REG_MULTI_SZ, NULL, value, &size ) ||
@@ -402,7 +406,7 @@ static BOOL ui_fonts_right( BOOL win11 )
 
 static void apply_style( BOOL win11 )
 {
-    const WCHAR *font = win11 ? L"Inter" : L"Tahoma";
+    const WCHAR *font = win11 ? WIN11_FACE : L"Tahoma";
     DWORD size = (lstrlenW( font ) + 1) * sizeof(WCHAR);
     HKEY key;
 

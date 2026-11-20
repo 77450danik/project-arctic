@@ -9,7 +9,7 @@
 # content, so an untouched file keeps its timestamp even when it was
 # regenerated.
 #
-# Output: $WINE_OUT (default out/wine)/usr/{bin,lib/wine,share/wine}
+# Output: $WINE_OUT (default out/wine)/usr/{bin,lib/nt,share/nt}
 set -euo pipefail
 
 ROOT=${ARCTIC_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -90,12 +90,35 @@ make install-lib DESTDIR="$OUT"
 # for compile checks of runtime changes on the build machine
 cp include/config.h "$OUT/build-config.h"
 
-find "$OUT/usr/lib/wine" -name '*.so' -exec strip --strip-unneeded {} +
+# NT's names (ci/wine-names.pl): the build keeps Wine's layout, the system
+# gets ntexec, ntloader, /usr/lib/nt, /usr/share/nt and nt.inf
+(
+    cd "$OUT/usr"
+    mv lib/wine lib/nt
+    mv share/wine share/nt
+    mv share/nt/wine.inf share/nt/nt.inf
+    mv bin/wineserver bin/ntexec
+    mv bin/wine bin/ntloader
+    for unix in lib/nt/*-unix; do
+        mv "$unix/wine" "$unix/ntloader"
+        [ ! -e "$unix/wine-preloader" ] || mv "$unix/wine-preloader" "$unix/ntloader-preloader"
+    done
+    # the programs' links (notepad, regedit...) run through the launcher;
+    # winecfg is not one of the system's (its settings are Control Panel's)
+    rm -f bin/winecfg lib/nt/*-windows/winecfg.exe
+    for link in bin/*; do
+        if [ -L "$link" ] && [ "$(readlink "$link")" = wine ]; then ln -sfn ntloader "$link"; fi
+    done
+)
+
+find "$OUT/usr/lib/nt" -name '*.so' -exec strip --strip-unneeded {} +
 find "$OUT/usr/bin" -type f -exec sh -c 'file -b "$1" | grep -q ELF && strip --strip-unneeded "$1"' _ {} \;
 rm -rf "$OUT/usr/share/man" "$OUT/usr/share/applications"
+# what is still named after Wine (wineps and winealsa keep it on purpose: ci/wine-names.pl)
+(cd "$OUT/usr" && find . -iname '*wine*' ! -name 'wineps*' ! -name 'winealsa*' | sed 's/^/still named wine: /')
 
 echo "$TAG" > "$OUT/version"
 # Wine's IDL compiler for the builds that need one (ci/build-vkd3d-proton.sh):
 # beside the build's config.h, not in usr/, so it stays out of host.sqfs
 install -D -m755 tools/widl/widl "$OUT/build-tools/widl"
-du -sh "$OUT"/usr/lib/wine/* "$OUT"/usr/share/wine
+du -sh "$OUT"/usr/lib/nt/* "$OUT"/usr/share/nt

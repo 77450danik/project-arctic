@@ -1,0 +1,34 @@
+# dwm snapshots of the frame's own size (2026-11-17): Explorer maximized by its
+# title bar, minimized by its button and restored from the taskbar, frame by
+# frame. Before the fix the restore showed the corner of the old frame
+# stretched over the window.
+sleep 8
+key win-e
+sleep 6
+move 500 22
+dblclick
+sleep 2
+shot m18b-maximized
+move 1166 15
+click                         # Згорнути
+burst m18b-minimize 12 0.03
+sleep 2
+shot m18b-minimized
+move 748 776
+click                         # the taskbar button
+burst m18b-restore 24 0.03
+sleep 2
+shot m18b-restored
+move 640 15
+dblclick
+burst m18b-unmaximize 6 0.04
+sleep 2
+shot m18b-normal
+move 840 15
+click                         # Згорнути
+sleep 2
+move 748 776
+click
+burst m18b-restore-normal 8 0.03
+sleep 2
+shot m18b-restored-normal

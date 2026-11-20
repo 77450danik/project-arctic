@@ -65,6 +65,17 @@ for patch in "$ROOT"/runtime/reactos/patches/*.patch; do
     echo "applying $(basename "$patch")"
     git -C src apply --whitespace=nowarn "$patch"
 done
+# Arctic's names in the version of every file, as ci/wine-names.pl gives
+# Wine's: a description "ReactOS X" is "Arctic X", and the modules that come
+# from Wine name the company as version.rc does (patch 0123). The copyright
+# stays: the code is the ReactOS and Wine authors'.
+grep -rlZ --include='*.rc' 'REACTOS_STR_FILE_DESCRIPTION *"ReactOS ' src |
+    xargs -0 -r sed -i 's/\(REACTOS_STR_FILE_DESCRIPTION *\)"ReactOS /\1"Arctic /'
+sed -i -e 's/^#define REACTOS_STR_FILE_DESCRIPTION "ReactOS core dll/#define REACTOS_STR_FILE_DESCRIPTION "Arctic core dll/' \
+       -e 's/^#define REACTOS_STR_COMPANY_NAME "ReactOS Project/#define REACTOS_STR_COMPANY_NAME "Microsoft Corporation/' \
+    src/sdk/include/wine/wine_common_ver.rc
+grep -q '^#define REACTOS_STR_COMPANY_NAME "Microsoft Corporation' src/sdk/include/wine/wine_common_ver.rc ||
+    { echo "wine_common_ver.rc: no company name to change"; exit 1; }
 
 cat > build-steps.sh <<EOF
 set -e
@@ -90,7 +101,8 @@ for app in $APPLICATIONS; do
     cp "build/base/applications/$app/$app.exe" "$OUT/Windows/System32/"
 done
 for brand in $BRANDING; do
-    cp "build/dll/branding/$brand/$brand.dll" "$OUT/Windows/System32/"
+    # under Windows' name for it, basebrd.dll (ReactOS patch 0123)
+    cp "build/dll/branding/$brand/$brand.dll" "$OUT/Windows/System32/basebrd.dll"
 done
 for kbd in $KEYBOARDS; do
     # the layouts are linked straight into dll/keyboard, not into a folder each

@@ -42,10 +42,12 @@ static struct
     WCHAR program[256];    /* what the window calls the program being run */
     WCHAR source[256];     /* the program that asked for it */
     WCHAR path[MAX_PATH];  /* its image, under "Показати подробиці" */
-    WCHAR command[1024];   /* what it wants to run, under "Показати подробиці" */
+    WCHAR command[1024];   /* what it wants to run */
+    WCHAR via[512];        /* the programs between it and the request (pwsh.exe, hamam.exe) */
     BOOL  password_needed;
     BOOL  settings;        /* the request is the gate's own settings */
     BOOL  is_program;      /* a program whose manifest needs the administrator */
+    BOOL  host;            /* hamam.exe: root on the host kernel */
     BOOL  details;         /* "Показати подробиці" is open */
     BOOL  waiting;         /* an answer is with the service */
     int   pause_left;      /* seconds the Yes button stays disabled */
@@ -122,25 +124,37 @@ static DWORD WINAPI reader_thread( void *arg )
     }
 }
 
-/* "prompt <0|1> <program> <path> <what is asked>" */
+/* "prompt <0|1> <program> <path> <what is asked> [<kind> [<through>]]": the
+ * kind is "host" for hamam.exe, "settings" or "program"; an older host sent
+ * the kind in place of what is asked */
 static BOOL take_prompt( void )
 {
-    char *line = read_line(), *field[5] = { 0 };
+    char *line = read_line(), *field[7] = { 0 };
+    const char *kind;
     WCHAR *wide;
     int count = 0;
 
     if (!line || strncmp( line, "prompt\t", 7 )) return FALSE;
     field[count++] = line;
-    for (char *p = line; *p && count < 5; p++)
+    for (char *p = line; *p && count < 7; p++)
         if (*p == '\t')
         {
             *p = 0;
             field[count++] = p + 1;
         }
     if (count < 4) return FALSE;
+    kind = count > 5 ? field[5] : "";
+    if (count == 5 && (!strcmp( field[4], "settings" ) || !strcmp( field[4], "program" ))) kind = field[4];
     consent.password_needed = field[1][0] == '1';
-    consent.settings = count > 4 && !strcmp( field[4], "settings" );
-    consent.is_program = count > 4 && !strcmp( field[4], "program" );
+    consent.settings = !strcmp( kind, "settings" );
+    consent.is_program = !strcmp( kind, "program" );
+    consent.host = !strcmp( kind, "host" );
+    if (count > 6)
+    {
+        wide = to_wide( field[6] );
+        wcscpy_s( consent.via, ARRAY_SIZE(consent.via), wide );
+        free( wide );
+    }
 
     wide = to_wide( field[2] );
     wcscpy_s( consent.source, ARRAY_SIZE(consent.source), wide );
@@ -148,7 +162,7 @@ static BOOL take_prompt( void )
     wide = to_wide( field[3] );
     wcscpy_s( consent.path, ARRAY_SIZE(consent.path), wide );
     free( wide );
-    if (count > 4 && !consent.is_program)
+    if (count > 4 && field[4] != kind)
     {
         wide = to_wide( field[4] );
         wcscpy_s( consent.command, ARRAY_SIZE(consent.command), wide );
@@ -156,7 +170,7 @@ static BOOL take_prompt( void )
     }
     /* a program whose manifest needs the administrator is named by itself */
     wcscpy_s( consent.program, ARRAY_SIZE(consent.program), consent.is_program ? consent.source :
-              load( consent.settings ? IDS_PROGRAM_SETTINGS : IDS_PROGRAM_WSL ) );
+              load( consent.settings ? IDS_PROGRAM_SETTINGS : consent.host ? IDS_PROGRAM_HAMAM : IDS_PROGRAM_WSL ) );
     return TRUE;
 }
 
@@ -196,7 +210,8 @@ static void show( HWND dialog, UINT id, BOOL visible )
  * is hidden and what follows moves up, as a dialog that grows and shrinks
  * does. The places in the template are the measure: nothing is laid out by
  * hand here, only moved by the height of what is gone. */
-#define DETAILS_DU   24   /* the two rows under "Запит від" */
+#define DETAILS_DU   12   /* the row of "Розташування програми", under "Подробиці" */
+#define COMMAND_DU   20   /* the command, two lines: gone when nothing is run (the settings) */
 #define PASSWORD_DU  26   /* the line that asks for the password, and the box */
 #define MESSAGE_DU   12   /* "Неправильний пароль." */
 
@@ -208,13 +223,14 @@ static void move_up( HWND dialog, UINT id, const RECT *place, int up )
 
 static void relayout( HWND dialog )
 {
-    static const UINT moving[] = { IDC_DETAILS, IDC_PASSWORD_PROMPT, IDC_PASSWORD, IDC_MESSAGE, IDC_ANSWER_YES, IDC_ANSWER_NO };
-    static const UINT details_rows[] = { IDC_LOCATION_LABEL, IDC_LOCATION, IDC_COMMAND_LABEL, IDC_COMMAND };
+    static const UINT moving[] = { IDC_DETAILS, IDC_PASSWORD_PROMPT, IDC_PASSWORD, IDC_MESSAGE, IDC_ANSWER_YES, IDC_ANSWER_NO,
+                                   IDC_LOCATION_LABEL, IDC_LOCATION };
+    static const UINT details_rows[] = { IDC_LOCATION_LABEL, IDC_LOCATION };
     static RECT places[ARRAY_SIZE(moving)];
     static BOOL remembered;
     RECT unit = { 0, 0, 4, 8 }, item, client;
     WCHAR message[256];
-    int du, no_details, no_password, no_message;
+    int du, no_details, no_password, no_message, no_command;
 
     MapDialogRect( dialog, &unit );
     du = unit.bottom;   /* eight dialog units, in pixels */
@@ -236,12 +252,18 @@ static void relayout( HWND dialog )
      * kept even when it is empty: the window then does not jump about between
      * attempts, and the box under the hands of the person stays where it was */
     no_message = (message[0] || consent.password_needed) ? 0 : MESSAGE_DU * du / 8;
+    no_command = consent.command[0] ? 0 : COMMAND_DU * du / 8;
 
     for (unsigned int i = 0; i < ARRAY_SIZE(details_rows); i++) show( dialog, details_rows[i], consent.details );
+    show( dialog, IDC_COMMAND_LABEL, consent.command[0] != 0 );
+    show( dialog, IDC_COMMAND, consent.command[0] != 0 );
     show( dialog, IDC_PASSWORD_PROMPT, consent.password_needed );
     show( dialog, IDC_PASSWORD, consent.password_needed );
     show( dialog, IDC_MESSAGE, message[0] != 0 );
 
+    move_up( dialog, IDC_LOCATION_LABEL, &places[6], no_command );
+    move_up( dialog, IDC_LOCATION, &places[7], no_command );
+    no_details += no_command;
     move_up( dialog, IDC_DETAILS, &places[0], no_details );
     move_up( dialog, IDC_PASSWORD_PROMPT, &places[1], no_details );
     move_up( dialog, IDC_PASSWORD, &places[2], no_details );
@@ -331,29 +353,46 @@ static void server_line( HWND dialog, char *line )
     SetFocus( GetDlgItem( dialog, consent.password_needed ? IDC_PASSWORD : IDC_ANSWER_YES ) );
 }
 
+/* The window says what is asked for, not only that something is: who asks
+ * (and through which programs), what access it gets, and what it runs.
+ * The name of the program that asks is in the question itself. */
 static void fill( HWND dialog )
 {
+    WCHAR text[1024];
+    RECT size = { 0, 0, 21, 0 };
     HICON shield;
 
     SetWindowTextW( dialog, load( IDS_TITLE ) );
-    SetDlgItemTextW( dialog, IDC_HEADING, load( IDS_HEADING ) );
+    if (consent.host) swprintf( text, ARRAY_SIZE(text), load( IDS_HEADING_HOST ), consent.source );
+    else wcscpy_s( text, ARRAY_SIZE(text), load( consent.settings ? IDS_HEADING_SETTINGS : IDS_HEADING ) );
+    SetDlgItemTextW( dialog, IDC_HEADING, text );
     SetDlgItemTextW( dialog, IDC_PROGRAM_LABEL, load( IDS_PROGRAM ) );
     SetDlgItemTextW( dialog, IDC_PROGRAM, consent.program );
     SetDlgItemTextW( dialog, IDC_PUBLISHER_LABEL, load( IDS_PUBLISHER ) );
     SetDlgItemTextW( dialog, IDC_PUBLISHER, load( consent.is_program ? IDS_PUBLISHER_UNKNOWN : IDS_PUBLISHER_NAME ) );
+    SetDlgItemTextW( dialog, IDC_ACCESS_LABEL, load( IDS_ACCESS ) );
+    SetDlgItemTextW( dialog, IDC_ACCESS, load( consent.host ? IDS_ACCESS_HOST : consent.settings ? IDS_ACCESS_SETTINGS
+                                                                                               : IDS_ACCESS_ADMIN ) );
     SetDlgItemTextW( dialog, IDC_REQUESTER_LABEL, load( IDS_REQUESTER ) );
-    SetDlgItemTextW( dialog, IDC_REQUESTER, consent.source );
+    if (consent.via[0]) swprintf( text, ARRAY_SIZE(text), load( IDS_VIA ), consent.source, consent.via );
+    else wcscpy_s( text, ARRAY_SIZE(text), consent.source );
+    SetDlgItemTextW( dialog, IDC_REQUESTER, text );
     SetDlgItemTextW( dialog, IDC_LOCATION_LABEL, load( IDS_LOCATION ) );
     SetDlgItemTextW( dialog, IDC_LOCATION, consent.path );
     SetDlgItemTextW( dialog, IDC_COMMAND_LABEL, load( IDS_COMMAND ) );
     SetDlgItemTextW( dialog, IDC_COMMAND, consent.command );
     SetDlgItemTextW( dialog, IDC_DETAILS, load( IDS_SHOW_DETAILS ) );
-    SetDlgItemTextW( dialog, IDC_PASSWORD_PROMPT, load( IDS_PASSWORD_PROMPT ) );
+    SetDlgItemTextW( dialog, IDC_PASSWORD_PROMPT, load( consent.host || consent.settings ? IDS_PASSWORD_PROMPT_HOST
+                                                                                         : IDS_PASSWORD_PROMPT ) );
     SetDlgItemTextW( dialog, IDC_ANSWER_YES, load( IDS_YES ) );
     SetDlgItemTextW( dialog, IDC_ANSWER_NO, load( IDS_NO ) );
     SetDlgItemTextW( dialog, IDC_MESSAGE, L"" );
 
-    if (!(shield = LoadImageW( NULL, (const WCHAR *)IDI_SHIELD, IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE )))
+    /* the shield of the system (the icon theme's, user32 IDI_SHIELD), as big
+     * as its place in the dialog at this DPI */
+    MapDialogRect( dialog, &size );
+    if (!(shield = LoadImageW( NULL, (const WCHAR *)IDI_SHIELD, IMAGE_ICON, size.right, size.right, 0 )) &&
+        !(shield = LoadImageW( NULL, (const WCHAR *)IDI_SHIELD, IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE )))
         shield = LoadIconW( NULL, (const WCHAR *)IDI_WARNING );
     if (shield) SendDlgItemMessageW( dialog, IDC_SHIELD, STM_SETICON, (WPARAM)shield, 0 );
     SendDlgItemMessageW( dialog, IDC_PASSWORD, EM_SETCUEBANNER, 0, (LPARAM)load( IDS_PASSWORD_CUE ) );

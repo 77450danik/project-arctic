@@ -224,3 +224,7 @@
 #define IDS_RUN_TEXT            1309
 #define IDS_EXPAND              1310
 #define IDS_COLLAPSE            1311
+#define IDS_MEM_SYSTEM          1312
+#define IDS_MEM_COMPRESSION     1313
+#define IDS_MEM_SHARED          1314
+#define IDS_MEM_IMAGES          1315

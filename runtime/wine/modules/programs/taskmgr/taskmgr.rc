@@ -298,6 +298,10 @@ BEGIN
     IDS_RUN_TEXT            "Введіть ім'я програми, папки, документа або ресурсу Інтернету, і Windows відкриє його."
     IDS_EXPAND              "Розгорнути"
     IDS_COLLAPSE            "Згорнути"
+    IDS_MEM_SYSTEM          "Система"
+    IDS_MEM_COMPRESSION     "Стиснення пам'яті"
+    IDS_MEM_SHARED          "Спільна пам'ять програм"
+    IDS_MEM_IMAGES          "Кеш образів програм"
 END
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
@@ -332,4 +336,8 @@ BEGIN
     IDS_GROUP_BACKGROUND    "Background processes"
     IDS_GROUP_WINDOWS       "Windows processes"
     IDS_EXPLORER            "Windows Explorer"
+    IDS_MEM_SYSTEM          "System"
+    IDS_MEM_COMPRESSION     "Memory Compression"
+    IDS_MEM_SHARED          "Shared memory of programs"
+    IDS_MEM_IMAGES          "Cached program images"
 END

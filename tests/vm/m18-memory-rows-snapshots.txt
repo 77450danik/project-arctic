@@ -1,0 +1,47 @@
+# 2026-11-17 batch (vm-test.py --usb --fresh): files written and walked on C:
+# (the ntfs driver keeps inodes as reclaimable memory now, kernel 0005), the
+# Task Manager's memory rows of the system (Wine 0142), and a window
+# maximized, minimized and restored (dwm snapshots of the frame's own size).
+sleep 8
+key win-r
+sleep 2
+type cmd /k mkdir C:\Users\Public\t & (for /l %i in (1,1,400) do @echo line %i> C:\Users\Public\t\f%i.txt) & dir /s /b C:\Windows > C:\Users\Public\list.txt & find /c "line" C:\Users\Public\t\f400.txt C:\Users\Public\t\f1.txt & dir C:\Users\Public\t | find "File(s)"
+key ret
+sleep 40
+shot m18-c-written
+key alt-f4
+sleep 2
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Compact /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 8
+move 500 450
+click
+sleep 1
+key end
+sleep 3
+shot m18-taskmgr-rows
+key alt-f4
+sleep 2
+key win-e
+sleep 6
+key win-up
+sleep 2
+shot m18-explorer-maximized
+key win-down
+sleep 1
+key win-down
+sleep 2
+key alt-tab
+burst m18-restore 6 0.05
+sleep 1
+shot m18-explorer-restored
+sleep 2

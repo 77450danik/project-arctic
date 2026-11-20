@@ -88,14 +88,18 @@ def write_ico(path, images):
 
 
 def banner():
-    w, h = 413, 72
+    """the project's name as it is, "Project Arctic"; the About dialog fills
+    the rest of its width with the banner's black (shell32, ReactOS patch
+    0125), so the banner need not be as wide as the dialog"""
+    w, h = 470, 72
     big = Image.new("RGBA", (w * SS, h * SS), (0, 0, 0, 255))
     flake = flake_at(56 * SS)
     big.alpha_composite(flake, (18 * SS, 8 * SS))
     draw = ImageDraw.Draw(big)
-    draw.text((88 * SS, 34 * SS), "Arctic", font=ImageFont.truetype(REGULAR, 40 * SS), fill=(255, 255, 255, 255),
-              anchor="lm")
-    draw.text((214 * SS, 41 * SS), "pre-alpha", font=ImageFont.truetype(SEMIBOLD, 15 * SS),
+    name = ImageFont.truetype(REGULAR, 36 * SS)
+    draw.text((88 * SS, 34 * SS), "Project Arctic", font=name, fill=(255, 255, 255, 255), anchor="lm")
+    right = 88 * SS + draw.textlength("Project Arctic", font=name)
+    draw.text((right + 12 * SS, 41 * SS), "pre-alpha", font=ImageFont.truetype(SEMIBOLD, 15 * SS),
               fill=(0x9f, 0xc6, 0xe8, 255), anchor="ls")
     return big.resize((w, h), Image.LANCZOS)
 

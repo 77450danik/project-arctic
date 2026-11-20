@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-XML=${WAYLAND_XML:-$ROOT/out/src/wine/dlls/winewayland.drv}
+XML=${WAYLAND_XML:-$ROOT/out/src/wine/dlls/winwayland.drv}   # winewayland.drv, renamed by ci/wine-names.pl
 DST=$ROOT/runtime/wine/modules/dlls/dwmcore
 
 # makedep resolves "quoted" includes among the sources and fails on system

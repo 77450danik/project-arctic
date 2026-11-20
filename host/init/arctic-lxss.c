@@ -39,9 +39,11 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sched.h>
 #include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -68,10 +70,65 @@ enum { F_STDIN, F_STDIN_EOF, F_STDOUT, F_STDERR, F_EXIT, F_ERROR, F_SIGNAL, F_DE
 #define REQ_GITBASH 2   /* the working folder as Git Bash names it: /d/... */
 #define REQ_TERMINATE 4 /* wsl --terminate <name> */
 #define REQ_GATE 8      /* the Panel's "status" / "password" / "require" */
+#define REQ_HOST 16     /* hamam.exe: root on the host kernel, behind the consent window */
+
+/* ---- the containers ----
+ *
+ * A command of wsl.exe runs in its distribution's container, as WSL runs it
+ * on Windows, only without a VM: its own user, mount, PID, IPC, UTS and
+ * cgroup namespaces on the host's kernel. Root in there is the Windows
+ * user (nt) on the host and nothing more: no host process is in sight, no
+ * device but the harmless ones, /sys read-only, no firmware, no module, no
+ * disk but its own and the drives, and C:\ as a standard user of Windows
+ * has it. Whatever is deleted in there, the kernel and the system stay.
+ * The container lives from its first command to wsl --terminate, --shutdown
+ * or the end of the system; every command joins it (setns), as WSL's do.
+ * Root on the host itself is hamam.exe's (REQ_HOST), behind the consent
+ * window (docs/linux-gate.md). */
+#define CONTAINERS ROOTS "/.c"   /* a distribution's disk, staged id-mapped for its container */
+#define SUBID_BASE 1000000u      /* the ids 1..65535 of every container, on the host */
+#define SUBID_COUNT 65535u
+
+#ifndef OPEN_TREE_CLONE
+#define OPEN_TREE_CLONE 1
+#endif
+#ifndef OPEN_TREE_CLOEXEC
+#define OPEN_TREE_CLOEXEC O_CLOEXEC
+#endif
+#ifndef MOVE_MOUNT_F_EMPTY_PATH
+#define MOVE_MOUNT_F_EMPTY_PATH 0x00000004
+#endif
+#ifndef MOUNT_ATTR_RDONLY
+#define MOUNT_ATTR_RDONLY 0x00000001
+#endif
+#ifndef MOUNT_ATTR_IDMAP
+#define MOUNT_ATTR_IDMAP 0x00100000
+#endif
+#ifndef AT_RECURSIVE
+#define AT_RECURSIVE 0x8000
+#endif
+#ifndef SYS_open_tree
+#define SYS_open_tree 428
+#endif
+#ifndef SYS_move_mount
+#define SYS_move_mount 429
+#endif
+#ifndef SYS_mount_setattr
+#define SYS_mount_setattr 442
+#endif
+struct lxss_mount_attr {
+    uint64_t attr_set, attr_clr, propagation, userns_fd;
+};
 
 static char token[TOKEN_LEN + 1];
 static volatile sig_atomic_t stopping;
 static void say(const char *fmt, ...);
+static long read_number(const char *path);
+static void write_text(const char *path, const char *text);
+static int running(pid_t pid);
+#ifndef SYS_close_range
+#define SYS_close_range 436
+#endif
 
 /* ---- the Linux gate (docs/linux-gate.md) ----
  *
@@ -366,6 +423,405 @@ static void bind_drives(const char *root)
     }
     if (d)
         closedir(d);
+}
+
+/* ---- the containers: what is in them ---- */
+
+static int lxss_mount_setattr(int dfd, const char *path, unsigned int flags, uint64_t set, int userns_fd)
+{
+    struct lxss_mount_attr attr = {.attr_set = set, .userns_fd = (uint64_t)userns_fd};
+
+    return (int)syscall(SYS_mount_setattr, dfd, path, flags, &attr, sizeof(attr));
+}
+
+/* a mount made read-only, whatever flags it was locked with */
+static void read_only(const char *path)
+{
+    if (lxss_mount_setattr(AT_FDCWD, path, 0, MOUNT_ATTR_RDONLY, 0))
+        say("container: %s read-only: %s", path, strerror(errno));
+}
+
+static void bind_at(const char *src, const char *dst, unsigned long flags)
+{
+    if (mount(src, dst, NULL, MS_BIND | flags, NULL))
+        say("container: %s -> %s: %s", src, dst, strerror(errno));
+}
+
+/* the drive that holds Windows */
+static int system_drive(const char *target)
+{
+    char path[PATH_MAX];
+
+    snprintf(path, sizeof(path), "%s/Windows/System32", target);
+    return !access(path, F_OK);
+}
+
+/* The drives, as WSL gives them: /mnt/x, and /x as Git Bash names them. The
+ * container's root is the Windows user, and the drives are the user's as a
+ * standard user of Windows has them: the system's drive read-only but its
+ * Users folder, the other drives writable; the disks of the distributions
+ * read-only whatever drive they are on (deleting the disk a distribution
+ * runs from would lose it). Before pivot_root: the host's paths are still
+ * there to bind from. */
+static void container_drives(const char *root)
+{
+    char link[PATH_MAX], target[PATH_MAX], dir[PATH_MAX], sub[PATH_MAX];
+    char drives[26][PATH_MAX];
+    int count = 0;
+    DIR *d = opendir(DOSDEVICES);
+
+    for (struct dirent *de; d && (de = readdir(d));) {
+        if (strlen(de->d_name) != 2 || de->d_name[1] != ':' || !isalpha((unsigned char)de->d_name[0]))
+            continue;
+        snprintf(link, sizeof(link), DOSDEVICES "/%s", de->d_name);
+        struct stat st;
+        if (!realpath(link, target) || stat(target, &st) || !S_ISDIR(st.st_mode))
+            continue;
+        char letter = (char)tolower((unsigned char)de->d_name[0]);
+        int sys = system_drive(target);
+        for (int git_bash = 0; git_bash < 2; git_bash++) {
+            snprintf(dir, sizeof(dir), git_bash ? "%s/%c" : "%s/mnt/%c", root, letter);
+            make_dirs(dir);
+            bind_at(target, dir, MS_REC);
+            if (sys) {
+                read_only(dir);
+                snprintf(link, sizeof(link), "%s/Users", target);
+                snprintf(sub, sizeof(sub), "%s/Users", dir);
+                if (!access(link, F_OK))
+                    bind_at(link, sub, MS_REC);
+            }
+        }
+        if (count < 26)
+            snprintf(drives[count++], PATH_MAX, "%c%s", letter, target);
+    }
+    if (d)
+        closedir(d);
+
+    /* every distribution's disk, read-only in both views of its drive */
+    char line[PATH_MAX + 128], host[PATH_MAX];
+    FILE *f = fopen(DISTROS, "re");
+    while (f && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *gap = line + strcspn(line, " \t"), *path = gap + strspn(gap, " \t");
+        if (!*gap || !*path || line[0] == '#' || find_vhdx(path, host, sizeof(host)))
+            continue;
+        for (int i = 0; i < count; i++) {
+            size_t len = strlen(drives[i] + 1);
+            if (strncmp(host, drives[i] + 1, len) || host[len] != '/')
+                continue;
+            for (int git_bash = 0; git_bash < 2; git_bash++) {
+                snprintf(dir, sizeof(dir), git_bash ? "%s/%c%s" : "%s/mnt/%c%s", root, drives[i][0], host + len);
+                bind_at(dir, dir, 0);
+                read_only(dir);
+            }
+        }
+    }
+    if (f)
+        fclose(f);
+}
+
+/* /dev with the harmless devices only: no disk, no memory, no firmware */
+static void container_dev(const char *root)
+{
+    static const char *const nodes[] = {"null", "zero", "full", "random", "urandom", "tty", "fuse", NULL};
+    static const char *const links[][2] = {
+        {"/proc/self/fd", "fd"}, {"/proc/self/fd/0", "stdin"}, {"/proc/self/fd/1", "stdout"},
+        {"/proc/self/fd/2", "stderr"}, {"pts/ptmx", "ptmx"},
+    };
+    char dev[PATH_MAX], path[PATH_MAX], host[64];
+
+    snprintf(dev, sizeof(dev), "%s/dev", root);
+    make_dirs(dev);
+    if (mount("tmpfs", dev, "tmpfs", MS_NOSUID | MS_NOEXEC, "mode=755,size=1m"))
+        say("container: /dev: %s", strerror(errno));
+    for (int i = 0; nodes[i]; i++) {
+        snprintf(host, sizeof(host), "/dev/%s", nodes[i]);
+        if (access(host, F_OK))
+            continue;
+        snprintf(path, sizeof(path), "%s/%s", dev, nodes[i]);
+        int fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
+        if (fd >= 0)
+            close(fd);
+        bind_at(host, path, 0);
+    }
+    snprintf(path, sizeof(path), "%s/pts", dev);
+    mkdir(path, 0755);
+    if (mount("devpts", path, "devpts", MS_NOSUID | MS_NOEXEC, "newinstance,ptmxmode=0666,mode=620"))
+        say("container: devpts: %s", strerror(errno));
+    snprintf(path, sizeof(path), "%s/shm", dev);
+    mkdir(path, 01777);
+    mount("tmpfs", path, "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777");
+    for (size_t i = 0; i < sizeof(links) / sizeof(*links); i++) {
+        snprintf(path, sizeof(path), "%s/%s", dev, links[i][1]);
+        symlink(links[i][0], path);
+    }
+}
+
+static volatile sig_atomic_t init_stop;
+
+static void init_child(int sig)
+{
+    (void)sig;
+}
+
+static void init_term(int sig)
+{
+    (void)sig;
+    init_stop = 1;
+}
+
+/* The container's PID 1: it sets the container up from the inside (it is
+ * root of the container's namespaces, nothing more), says it is ready on fd
+ * 3, then reaps what ends in there until it is told to stop. */
+static void container_init(const char *stage, const char *hostname)
+{
+    char path[PATH_MAX];
+    struct sigaction sa = {.sa_handler = init_child};
+
+    prctl(PR_SET_NAME, "init", 0, 0, 0);
+    /* not to be traced by root in the container: its memory came from
+     * arctic-lxss (fork), and must not be any process's in there */
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+
+    /* The staged disk came into this namespace as a copy, and a copy made
+     * for a less privileged namespace is locked to its parent: pivot_root
+     * will not take it (EINVAL). Bound onto itself here it is a mount of
+     * this namespace's own, with the same id-mapping, and can be the root. */
+    if (mount(stage, stage, NULL, MS_BIND, NULL)) {
+        say("container: %s onto itself: %s", stage, strerror(errno));
+        _exit(1);
+    }
+
+    snprintf(path, sizeof(path), "%s/proc", stage);
+    make_dirs(path);
+    if (mount("proc", path, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL))
+        say("container: /proc: %s", strerror(errno));
+    /* /sys whole and read-only, its submounts too (efivarfs, debugfs...):
+     * they are locked to it in a namespace like this one and cannot be left
+     * out, and nothing in there is root of the host to write them anyway */
+    snprintf(path, sizeof(path), "%s/sys", stage);
+    make_dirs(path);
+    bind_at("/sys", path, MS_REC);
+    if (lxss_mount_setattr(AT_FDCWD, path, AT_RECURSIVE, MOUNT_ATTR_RDONLY, 0))
+        say("container: /sys read-only: %s", strerror(errno));
+    container_dev(stage);
+    snprintf(path, sizeof(path), "%s/run", stage);
+    make_dirs(path);
+    mount("tmpfs", path, "tmpfs", MS_NOSUID | MS_NODEV, "mode=755");
+    container_drives(stage);
+    if (hostname[0])
+        sethostname(hostname, strlen(hostname));
+
+    /* the host's tree goes: nothing outside the container is left to reach */
+    if (chdir(stage) || syscall(SYS_pivot_root, ".", ".") || umount2(".", MNT_DETACH) || chdir("/")) {
+        say("container: pivot_root %s: %s", stage, strerror(errno));
+        _exit(1);
+    }
+    write(3, "r", 1);
+    close(3);
+
+    sigaction(SIGCHLD, &sa, NULL);
+    sa.sa_handler = init_term;
+    sigaction(SIGTERM, &sa, NULL);
+    while (!init_stop) {
+        while (waitpid(-1, NULL, WNOHANG) > 0)
+            ;
+        pause();
+    }
+    kill(-1, SIGKILL); /* everything in the container, as WSL's terminate does */
+    _exit(0);
+}
+
+/* the PID 1 of a distribution's running container, or 0 */
+static pid_t container_running(const char *name)
+{
+    char path[PATH_MAX], ours[64] = "", theirs[64] = "";
+    pid_t pid;
+
+    snprintf(path, sizeof(path), ROOTS "/%s.init", name);
+    pid = (pid_t)read_number(path);
+    if (pid <= 0 || !running(pid))
+        return 0;
+    /* still that container's: a pid the host reused is in the host's user namespace */
+    snprintf(path, sizeof(path), "/proc/%d/ns/user", (int)pid);
+    if (readlink(path, theirs, sizeof(theirs) - 1) <= 0 || readlink("/proc/self/ns/user", ours, sizeof(ours) - 1) <= 0 ||
+        !strcmp(ours, theirs))
+        return 0;
+    return pid;
+}
+
+static int write_map(pid_t pid, const char *which, unsigned int outside)
+{
+    char path[64], text[128];
+    int fd, n;
+
+    snprintf(path, sizeof(path), "/proc/%d/%s", (int)pid, which);
+    n = snprintf(text, sizeof(text), "0 %u 1\n1 %u %u\n", outside, SUBID_BASE + 1, SUBID_COUNT);
+    if ((fd = open(path, O_WRONLY | O_CLOEXEC)) < 0)
+        return -1;
+    int ok = write(fd, text, (size_t)n) == n;
+    close(fd);
+    return ok ? 0 : -1;
+}
+
+/* Starts a distribution's container on its mounted disk (attach): a user
+ * namespace whose root is nt, the disk id-mapped into it (an ext4 written
+ * as root by WSL is root's in there too), then the other namespaces and its
+ * PID 1. The PID 1, or 0 with err set. */
+static pid_t start_container(const char *name, char *err, size_t err_len)
+{
+    char root[PATH_MAX], stage[PATH_MAX], hostname[256] = "", byte;
+    int up[2], down[2], ready[2];   /* the steps, back and forth; the init's "ready" on a pipe of its own */
+    struct passwd *pw = getpwnam(NT_USER);
+    uid_t nt_uid = pw ? pw->pw_uid : 1000;
+    gid_t nt_gid = pw ? pw->pw_gid : 1000;
+    pid_t c, init = 0;
+
+    snprintf(root, sizeof(root), ROOTS "/%s", name);
+    snprintf(stage, sizeof(stage), CONTAINERS "/%s", name);
+    gethostname(hostname, sizeof(hostname) - 1);
+    if (pipe2(up, O_CLOEXEC) || pipe2(down, O_CLOEXEC) || pipe2(ready, O_CLOEXEC)) {
+        snprintf(err, err_len, "pipe: %s", strerror(errno));
+        return 0;
+    }
+    if (!(c = fork())) {
+        close(up[0]);
+        close(down[1]);
+        close(ready[0]);
+        /* nothing of arctic-lxss goes in: its socket, the gate's shared memory */
+        if (gate_shm)
+            munmap(gate_shm, sizeof(*gate_shm));
+        if (unshare(CLONE_NEWUSER) || write(up[1], "u", 1) != 1 || read(down[0], &byte, 1) != 1 || byte != 'm')
+            _exit(1);
+        if (setresgid(0, 0, 0) || setresuid(0, 0, 0) || setgroups(0, NULL))
+            _exit(1);
+        if (unshare(CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_NEWCGROUP) ||
+            mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) || write(up[1], "n", 1) != 1)
+            _exit(1);
+        pid_t i = fork();
+        if (!i) {
+            int null = open("/dev/null", O_RDWR | O_CLOEXEC);
+            dup2(ready[1], 3); /* "ready" goes here */
+            if (null >= 0) { /* stderr stays arctic-lxss's: what goes wrong in there is in the host's log */
+                dup2(null, 0);
+                dup2(null, 1);
+            }
+            syscall(SYS_close_range, 4, ~0U, 0);
+            container_init(stage, hostname);
+        }
+        close(ready[1]);
+        write(up[1], &i, sizeof(i));
+        _exit(i > 0 ? 0 : 1);
+    }
+    close(up[1]);
+    close(down[0]);
+    close(ready[1]); /* the init's is the only one left: its end is a failed start */
+    if (c < 0) {
+        snprintf(err, err_len, "fork: %s", strerror(errno));
+        goto done;
+    }
+    if (read(up[0], &byte, 1) != 1 || byte != 'u' || write_map(c, "uid_map", nt_uid) || write_map(c, "gid_map", nt_gid)) {
+        snprintf(err, err_len, "%s: the container's user namespace: %s", name, strerror(errno));
+        goto done;
+    }
+    /* the disk, id-mapped through the container's user namespace, staged
+     * here for the container's copy of the mounts to take */
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/ns/user", (int)c);
+    int userns = open(path, O_RDONLY | O_CLOEXEC);
+    int tree = (int)syscall(SYS_open_tree, AT_FDCWD, root, OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC);
+    make_dirs(stage);
+    if (userns < 0 || tree < 0 || lxss_mount_setattr(tree, "", AT_EMPTY_PATH, MOUNT_ATTR_IDMAP, userns) ||
+        syscall(SYS_move_mount, tree, "", AT_FDCWD, stage, MOVE_MOUNT_F_EMPTY_PATH)) {
+        snprintf(err, err_len, "%s: the disk for the container: %s", name, strerror(errno));
+        if (userns >= 0)
+            close(userns);
+        if (tree >= 0)
+            close(tree);
+        goto done;
+    }
+    close(userns);
+    close(tree);
+    if (write(down[1], "m", 1) != 1 || read(up[0], &byte, 1) != 1 || byte != 'n') {
+        snprintf(err, err_len, "%s: the container did not start", name);
+        umount2(stage, MNT_DETACH);
+        goto done;
+    }
+    /* the container has its own copy: the host keeps none. The directory
+     * stays until the container has left it (pivot_root): /run is one
+     * tmpfs for every namespace, and removing a mount point detaches the
+     * mount in all of them, the container's copy too */
+    umount2(stage, MNT_DETACH);
+    if (read(up[0], &init, sizeof(init)) != sizeof(init) || init <= 0 ||
+        read(ready[0], &byte, 1) != 1 || byte != 'r') {
+        rmdir(stage);
+        snprintf(err, err_len, "%s: the container did not come up", name);
+        if (init > 0)
+            kill(init, SIGKILL);
+        init = 0;
+        goto done;
+    }
+    rmdir(stage); /* the container is on its own root now */
+    snprintf(path, sizeof(path), ROOTS "/%s.init", name);
+    char number[32];
+    snprintf(number, sizeof(number), "%d", (int)init);
+    write_text(path, number);
+    say("%s: container up (init %d)", name, (int)init);
+
+done:
+    close(up[0]);
+    close(down[1]);
+    close(ready[0]);
+    if (c > 0) {
+        if (!init)
+            kill(c, SIGKILL); /* it may be waiting for a step that will not come */
+        waitpid(c, NULL, 0);
+    }
+    return init;
+}
+
+/* A command's child process, joining the distribution's container (its
+ * namespaces, as root of it), then running the command in it */
+static void exec_child(const char *root, const char *user, const char *cwd, int git_bash, int argc, char **argv,
+                       int envc, char **env, const char *distro);
+
+static void container_child(pid_t init, const char *user, const char *cwd, int git_bash, int argc, char **argv,
+                            int envc, char **env, const char *distro)
+{
+    static const struct { const char *name; int type; } spaces[] = {
+        {"user", CLONE_NEWUSER}, {"mnt", CLONE_NEWNS}, {"pid", CLONE_NEWPID},
+        {"ipc", CLONE_NEWIPC},   {"uts", CLONE_NEWUTS}, {"cgroup", CLONE_NEWCGROUP},
+    };
+    int fds[6], status;
+    char path[64];
+
+    setsid(); /* one process group for the session's signals, the command's too */
+    if (gate_shm)
+        munmap(gate_shm, sizeof(*gate_shm));
+    for (int i = 0; i < 6; i++) {
+        snprintf(path, sizeof(path), "/proc/%d/ns/%s", (int)init, spaces[i].name);
+        if ((fds[i] = open(path, O_RDONLY | O_CLOEXEC)) < 0) {
+            fprintf(stderr, "wsl: the container of %s: %s\n", distro, strerror(errno));
+            _exit(126);
+        }
+    }
+    for (int i = 0; i < 6; i++)
+        if (setns(fds[i], spaces[i].type)) {
+            fprintf(stderr, "wsl: into the container of %s (%s): %s\n", distro, spaces[i].name, strerror(errno));
+            _exit(126);
+        }
+    if (setresgid(0, 0, 0) || setresuid(0, 0, 0) || setgroups(0, NULL)) {
+        fprintf(stderr, "wsl: root of the container of %s: %s\n", distro, strerror(errno));
+        _exit(126);
+    }
+    pid_t g = fork(); /* the PID namespace is the children's */
+    if (!g)
+        exec_child(NULL, user, cwd, git_bash, argc, argv, envc, env, distro);
+    if (g < 0)
+        _exit(126);
+    while (waitpid(g, &status, 0) < 0 && errno == EINTR)
+        ;
+    _exit(WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status));
 }
 
 static int free_nbd(void)
@@ -760,15 +1216,12 @@ static int attach(const char *name, const char *vhdx_win, char *err, size_t err_
         run(detach);
         return -1;
     }
-    snprintf(path, sizeof(path), "%s/proc", root);
-    make_dirs(path);
-    mount("proc", path, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
-    snprintf(path, sizeof(path), "%s/sys", root);
-    make_dirs(path);
-    mount("/sys", path, NULL, MS_BIND | MS_REC, NULL);
-    snprintf(path, sizeof(path), "%s/dev", root);
-    make_dirs(path);
-    mount("/dev", path, NULL, MS_BIND | MS_REC, NULL);
+    /* Only the disk is mounted here, in the host's namespace. /proc, /sys,
+     * /dev and the drives are each session's own: a container's, or a
+     * hamam.exe command's in a mount namespace of its own (host_child), gone
+     * with it. Nothing of the host stays bound under /run/lxss for an
+     * rm -rf there to reach (12.11.2026: /dev and the firmware's boot
+     * entries were erased through such binds). */
 
     /* WSL writes it for each start as well */
     char resolv[4096];
@@ -868,6 +1321,28 @@ static void detach(const char *name)
     int count = 0;
 
     snprintf(root, sizeof(root), ROOTS "/%s", name);
+    /* the container: its PID 1 takes every process in it along, and its
+     * copy of the mounts (the disk) goes with the last of them */
+    pid_t init = container_running(name);
+    if (init) {
+        kill(init, SIGTERM);
+        for (int i = 0; i < 30 && running(init); i++)
+            usleep(100000);
+        if (running(init))
+            kill(init, SIGKILL);
+        for (int i = 0; i < 30 && running(init); i++) {
+            while (waitpid(-1, NULL, WNOHANG) > 0) /* ours: we are its subreaper */
+                ;
+            usleep(100000);
+        }
+    }
+    snprintf(path, sizeof(path), ROOTS "/%s.init", name);
+    unlink(path);
+    snprintf(path, sizeof(path), CONTAINERS "/%s", name);
+    if (is_mountpoint(path))
+        umount2(path, MNT_DETACH);
+    rmdir(path);
+    /* hamam.exe's commands, chrooted there */
     kill_inside(root, SIGTERM);
     for (int i = 0; i < 30 && anything_inside(root); i++)
         usleep(100000);
@@ -1087,13 +1562,20 @@ static const char *image_basename(const char *path)
     return base;
 }
 
+/* NT's executive, ntexec (it was wineserver before the names of 2026-11-16) */
+static int is_server_image(const char *image)
+{
+    const char *base = image_basename(image);
+    return !strcasecmp(base, "ntexec") || !strcasecmp(base, "wineserver");
+}
+
 /* never given a grant: what starts them (the shell, a service) must not
  * hand every program it runs the grant it builds up for itself */
 static int is_system_image(const char *basename)
 {
     static const char *const system[] = {
         "explorer.exe", "svchost.exe", "services.exe", "winlogon.exe", "wininit.exe", "csrss.exe",
-        "rpcss.exe",    "winedevice.exe", "wineserver", "arctic-init", NULL,
+        "rpcss.exe",    "windevice.exe", "ntexec", "wineserver", "arctic-init", NULL,
     };
 
     for (int i = 0; system[i]; i++)
@@ -1128,7 +1610,8 @@ static void find_origin(const struct ntree_entry *chain, int n, struct ntree_ent
     int i = 0;
 
     while (i < n && (!strcasecmp(image_basename(chain[i].image), "wsl.exe") ||
-                      !strcasecmp(image_basename(chain[i].image), "bash.exe")))
+                      !strcasecmp(image_basename(chain[i].image), "bash.exe") ||
+                      !strcasecmp(image_basename(chain[i].image), "hamam.exe")))
         i++;
     while (i + 1 < n && is_shell_image(image_basename(chain[i].image)) &&
            !is_system_image(image_basename(chain[i + 1].image)))
@@ -1136,19 +1619,6 @@ static void find_origin(const struct ntree_entry *chain, int n, struct ntree_ent
     *origin = (i < n && !is_system_image(image_basename(chain[i].image))) ? chain[i] : chain[0];
 }
 
-/* a process of a distribution: Linux already, which asks for another one
- * (tools/arctic/wsl.py in a build) */
-static int inside_distribution(pid_t pid)
-{
-    char link[64], where[PATH_MAX];
-    ssize_t n;
-
-    snprintf(link, sizeof(link), "/proc/%d/root", (int)pid);
-    if ((n = readlink(link, where, sizeof(where) - 1)) <= 0)
-        return 0;
-    where[n] = 0;
-    return !strncmp(where, ROOTS "/", strlen(ROOTS "/"));
-}
 
 /* Every process that holds this socket: /proc/net/tcp names no owner, only
  * the inode, and /proc/<pid>/fd links one as "socket:[<inode>]". There is
@@ -1237,7 +1707,7 @@ static pid_t peer_pid(int sock)
     for (int i = 0; i < count; i++) {
         struct ntree_entry chain[NTREE_MAX];
 
-        if (query_ntree(pids[i], chain, 1) && strcasecmp(image_basename(chain[0].image), "wineserver"))
+        if (query_ntree(pids[i], chain, 1) && !is_server_image(chain[0].image))
             return pids[i];
     }
     return count ? pids[0] : -1;
@@ -1367,7 +1837,7 @@ static int is_appinfo_service(int sock)
 
             /* wineserver holds the sockets it makes for everybody: it says
              * nothing about whose connection this is */
-            if (!n || !strcasecmp(image_basename(chain[0].image), "wineserver")) continue;
+            if (!n || is_server_image(chain[0].image)) continue;
             known = 1;
             if (strcasecmp(image_basename(chain[0].image), "svchost.exe"))
                 continue;
@@ -1424,10 +1894,22 @@ static int appinfo_connect(void)
     return -1;
 }
 
-static enum consent_result ask_consent(struct gate_state *st, int need_password, const char *source_name,
-                                       const char *source_path, const char *purpose)
+/* a field of the prompt line: no tab or line break of its own */
+static void prompt_field(char *out, size_t len, const char *in)
 {
-    char line[2048], prompt[2048];
+    snprintf(out, len, "%s", in ? in : "");
+    for (char *p = out; *p; p++)
+        if (*p == '\t' || *p == '\n' || *p == '\r')
+            *p = ' ';
+}
+
+/* kind: "host" (hamam.exe) or "settings"; through: the programs between the
+ * one asking and the request, for the window to say (pwsh.exe → hamam.exe) */
+static enum consent_result ask_consent(struct gate_state *st, int need_password, const char *source_name,
+                                       const char *source_path, const char *purpose, const char *kind,
+                                       const char *through)
+{
+    char line[2048], prompt[4096], f_name[256], f_path[PATH_MAX], f_purpose[1024], f_through[512];
     int wrong = 0, n, fd = appinfo_connect();
     enum consent_result result = CONSENT_DENIED;
 
@@ -1435,8 +1917,12 @@ static enum consent_result ask_consent(struct gate_state *st, int need_password,
         say("gate: no window to ask in: the Application Information service did not answer");
         return CONSENT_DENIED;
     }
-    n = snprintf(prompt, sizeof(prompt), "prompt\t%d\t%s\t%s\t%s\n", need_password, source_name, source_path,
-                purpose);
+    prompt_field(f_name, sizeof(f_name), source_name);
+    prompt_field(f_path, sizeof(f_path), source_path);
+    prompt_field(f_purpose, sizeof(f_purpose), purpose);
+    prompt_field(f_through, sizeof(f_through), through);
+    n = snprintf(prompt, sizeof(prompt), "prompt\t%d\t%s\t%s\t%s\t%s\t%s\n", need_password, f_name, f_path, f_purpose,
+                 kind, f_through);
     if (n < 0 || send_all(fd, prompt, (size_t)n)) {
         close(fd);
         return CONSENT_DENIED;
@@ -1479,7 +1965,8 @@ static enum consent_result ask_consent(struct gate_state *st, int need_password,
 /* True once origin has a grant; otherwise asks (one window at a time: a
  * request that waited checks again first, in case the answer already
  * covered it) and records a "yes" before returning */
-static int gate_authorize(struct gate_state *st, const struct ntree_entry *origin, const char *purpose)
+static int gate_authorize(struct gate_state *st, const struct ntree_entry *origin, const char *purpose,
+                          const char *through)
 {
     int lock_fd, ok;
 
@@ -1499,7 +1986,7 @@ static int gate_authorize(struct gate_state *st, const struct ntree_entry *origi
     if (!ok) {
         int need_password = st->password_on && !gate_shm->password_entered;
 
-        if (ask_consent(st, need_password, image_basename(origin->image), origin->image, purpose) ==
+        if (ask_consent(st, need_password, image_basename(origin->image), origin->image, purpose, "host", through) ==
             CONSENT_GRANTED) {
             gate_lock();
             grant_add(origin->unix_pid, origin->start_time);
@@ -1516,20 +2003,40 @@ static int gate_authorize(struct gate_state *st, const struct ntree_entry *origi
 
 /* Who is asking: the program behind the connection (find_origin), or -1
  * once the client was told it could not be known */
-static int identify(int sock, uint32_t flags, struct ntree_entry *origin)
+static int identify(int sock, uint32_t flags, struct ntree_entry *origin, char *through, size_t through_len)
 {
     struct ntree_entry chain[NTREE_MAX];
     pid_t peer = peer_pid(sock);
     int chain_len = peer > 0 ? query_ntree(peer, chain, NTREE_MAX) : 0;
 
+    if (through_len)
+        through[0] = 0;
     if (!chain_len && peer > 0) { /* wineserver had nothing for it: per-process, not per-origin */
         long long start = process_start_time_fallback(peer);
 
         if (start >= 0) {
+            char path[64], comm[64] = "", ours[64] = "", theirs[64] = "";
+            int fd;
+
             chain[0].unix_pid = peer;
             chain[0].win32_id = 0;
             chain[0].start_time = start;
-            snprintf(chain[0].image, sizeof(chain[0].image), "%s", (flags & REQ_GITBASH) ? "bash.exe" : "wsl.exe");
+            /* a process of Linux, not of Windows: in a container (its user
+             * namespace is not the host's) it is named as one */
+            snprintf(path, sizeof(path), "/proc/%d/comm", (int)peer);
+            if ((fd = open(path, O_RDONLY | O_CLOEXEC)) >= 0) {
+                ssize_t n = read(fd, comm, sizeof(comm) - 1);
+                comm[n > 0 ? n : 0] = 0;
+                comm[strcspn(comm, "\n")] = 0;
+                close(fd);
+            }
+            snprintf(path, sizeof(path), "/proc/%d/ns/user", (int)peer);
+            if (comm[0] && readlink(path, theirs, sizeof(theirs) - 1) > 0 &&
+                readlink("/proc/self/ns/user", ours, sizeof(ours) - 1) > 0 && strcmp(ours, theirs))
+                snprintf(chain[0].image, sizeof(chain[0].image), "%s (Linux, WSL)", comm);
+            else
+                snprintf(chain[0].image, sizeof(chain[0].image), "%s",
+                         (flags & REQ_HOST) ? "hamam.exe" : (flags & REQ_GITBASH) ? "bash.exe" : "wsl.exe");
             chain_len = 1;
         }
     }
@@ -1538,23 +2045,24 @@ static int identify(int sock, uint32_t flags, struct ntree_entry *origin)
         return -1;
     }
     find_origin(chain, chain_len, origin);
+    /* what lies between the program and the request, nearest first:
+     * "pwsh.exe → hamam.exe" */
+    for (int i = 0; i < chain_len && through_len; i++) {
+        if (chain[i].unix_pid != origin->unix_pid)
+            continue;
+        size_t used = 0;
+        for (int j = i - 1; j >= 0 && used + 1 < through_len; j--) {
+            int n = snprintf(through + used, through_len - used, "%s%s", used ? " \xe2\x86\x92 " : "",
+                             image_basename(chain[j].image));
+            if (n < 0)
+                break;
+            used += (size_t)n;
+        }
+        break;
+    }
     return 0;
 }
 
-/* The distribution that is the gate: by its name in the protected gate.conf
- * or by its disk, as the list of distributions is a file any Windows
- * program can write (another name for the same VHDX is the same gate) */
-static int is_gate_target(const struct gate_state *st, const char *name, const char *vhdx_win)
-{
-    char gate_name[256], gate_vhdx_win[PATH_MAX], a[PATH_MAX], b[PATH_MAX], ra[PATH_MAX], rb[PATH_MAX];
-
-    if (!strcasecmp(name, st->distro))
-        return 1;
-    if (find_distro(st->distro, gate_name, sizeof(gate_name), gate_vhdx_win, sizeof(gate_vhdx_win)))
-        return 0;
-    return !find_vhdx(vhdx_win, a, sizeof(a)) && !find_vhdx(gate_vhdx_win, b, sizeof(b)) && realpath(a, ra) &&
-           realpath(b, rb) && !strcmp(ra, rb);
-}
 
 /* REQ_GATE, for the Panel's "User Accounts": status needs no window;
  * changing the password or requiring it always does, with the current
@@ -1575,7 +2083,7 @@ static void serve_gate(int sock, struct gate_state *st, const struct ntree_entry
         send_error(sock, "gate: unknown request");
         return;
     }
-    if (ask_consent(st, st->password_on, image_basename(origin->image), origin->image, "settings") !=
+    if (ask_consent(st, st->password_on, image_basename(origin->image), origin->image, "", "settings", "") !=
         CONSENT_GRANTED) {
         send_frame(sock, F_DENIED, NULL, 0);
         return;
@@ -1650,9 +2158,15 @@ static void exec_child(const char *root, const char *user, const char *cwd, int 
     uid_t uid = 0;
     gid_t gid = 0;
 
-    setsid();
-    if (chroot(root) || chdir("/")) {
-        fprintf(stderr, "wsl: chroot %s: %s\n", root, strerror(errno));
+    /* in a container (root NULL) the root is the container's already, and
+     * the session's process group is the joining child's */
+    if (root) {
+        setsid();
+        if (chroot(root) || chdir("/")) {
+            fprintf(stderr, "wsl: chroot %s: %s\n", root, strerror(errno));
+            _exit(126);
+        }
+    } else if (chdir("/")) {
         _exit(126);
     }
     if (find_user(*user ? user : "root", &uid, &gid, home, sizeof(home), shell, sizeof(shell)) && *user) {
@@ -1697,6 +2211,34 @@ static void exec_child(const char *root, const char *user, const char *cwd, int 
     }
     fprintf(stderr, "wsl: %s: %s\n", argc ? argv[0] : shell, strerror(errno));
     _exit(127);
+}
+
+/* hamam.exe's command: root on the host, with the distribution's programs.
+ * The host's /proc, /sys and /dev and the drives are bound in a mount
+ * namespace of this command's own: they go when it ends, and none is left
+ * under /run/lxss in the host's namespace. */
+static void host_child(const char *root, const char *user, const char *cwd, int git_bash, int argc, char **argv,
+                       int envc, char **env, const char *distro)
+{
+    char path[PATH_MAX];
+
+    if (gate_shm)
+        munmap(gate_shm, sizeof(*gate_shm));
+    if (unshare(CLONE_NEWNS) || mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL)) {
+        fprintf(stderr, "hamam: a mount namespace: %s\n", strerror(errno));
+        _exit(126);
+    }
+    snprintf(path, sizeof(path), "%s/proc", root);
+    make_dirs(path);
+    mount("proc", path, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
+    snprintf(path, sizeof(path), "%s/sys", root);
+    make_dirs(path);
+    mount("/sys", path, NULL, MS_BIND | MS_REC, NULL);
+    snprintf(path, sizeof(path), "%s/dev", root);
+    make_dirs(path);
+    mount("/dev", path, NULL, MS_BIND | MS_REC, NULL);
+    bind_drives(root);
+    exec_child(root, user, cwd, git_bash, argc, argv, envc, env, distro);
 }
 
 /* stdin, stdout and stderr between the socket and the command until it ends */
@@ -1838,43 +2380,44 @@ static void serve(int sock)
     tv.tv_sec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    /* The gate (docs/linux-gate.md): the Panel's requests, and commands in
-     * the distribution that is the gate to the host, ask the user. The
-     * others do not, as WSL on Windows does not; until they run in WSL's
-     * own VM they are a root chroot on the host as well, which the user
-     * chose to leave free meanwhile. Stopping distributions asks nothing,
-     * as on Windows. */
+    /* The gate (docs/linux-gate.md). wsl.exe's commands run in their
+     * distribution's container and ask nothing, as WSL on Windows does not.
+     * hamam.exe's (REQ_HOST) are root on the host kernel: they always ask,
+     * whoever asks, a process of a container too (it is the way out of one).
+     * The Panel's requests ask as well. Stopping distributions asks
+     * nothing, as on Windows. */
     struct gate_state gate_st;
     struct ntree_entry origin;
+    char through[512];
+    int host = (flags & REQ_HOST) != 0;
 
     gate_load(&gate_st);
     if (flags & REQ_GATE) {
-        if (!identify(sock, flags, &origin))
+        if (!identify(sock, flags, &origin, through, sizeof(through)))
             serve_gate(sock, &gate_st, &origin, argc, argv);
         _exit(0);
     }
-    if (!(flags & (REQ_SHUTDOWN | REQ_TERMINATE))) {
-        pid_t peer;
+    if (host) {
+        char purpose[2048];
 
+        flags &= ~(uint32_t)(REQ_SHUTDOWN | REQ_TERMINATE);
+        if (!*distro) /* hamam's own distribution, the one gate.conf names */
+            distro = gate_st.distro;
         if (find_distro(distro, name, sizeof(name), vhdx, sizeof(vhdx))) {
             send_error(sock, *distro ? "There is no distribution with the supplied name: %s" : "No distribution in %s",
                        *distro ? distro : "C:\\ProgramData\\Arctic\\Lxss\\distros");
             _exit(0);
         }
-        /* a process of a distribution is Linux already (wsl.py in a build) */
-        if (is_gate_target(&gate_st, name, vhdx) && !((peer = peer_pid(sock)) > 0 && inside_distribution(peer))) {
-            char purpose[2048];
-
-            if (identify(sock, flags, &origin))
-                _exit(0);
-            join_argv(argc, argv, purpose, sizeof(purpose));
-            if (!purpose[0])
-                snprintf(purpose, sizeof(purpose), "wsl -d %s", name);
-            if (!gate_authorize(&gate_st, &origin, purpose)) {
-                send_frame(sock, F_DENIED, NULL, 0);
-                _exit(0);
-            }
+        if (identify(sock, flags, &origin, through, sizeof(through)))
+            _exit(0);
+        join_argv(argc, argv, purpose, sizeof(purpose));
+        if (!purpose[0])
+            snprintf(purpose, sizeof(purpose), "hamam -d %s", name);
+        if (!gate_authorize(&gate_st, &origin, purpose, through)) {
+            send_frame(sock, F_DENIED, NULL, 0);
+            _exit(0);
         }
+        say("hamam: %s (%s) as root on the host: %s", image_basename(origin.image), name, purpose);
     }
 
     int lock = lock_roots();
@@ -1901,7 +2444,12 @@ static void serve(int sock)
         _exit(0);
     }
     snprintf(root, sizeof(root), ROOTS "/%s", name);
-    bind_drives(root);
+    pid_t init = 0;
+    if (!host && !(init = container_running(name)) && !(init = start_container(name, err, sizeof(err)))) {
+        say("%s", err);
+        send_error(sock, "%s", err);
+        _exit(0);
+    }
     close(lock);
 
     int in[2], out[2], errp[2];
@@ -1915,7 +2463,10 @@ static void serve(int sock)
         dup2(in[0], 0);
         dup2(out[1], 1);
         dup2(errp[1], 2);
-        exec_child(root, user, cwd, (flags & REQ_GITBASH) != 0, (int)argc, argv, (int)envc, env, name);
+        if (host)
+            host_child(root, user, cwd, (flags & REQ_GITBASH) != 0, (int)argc, argv, (int)envc, env, name);
+        else
+            container_child(init, user, cwd, (flags & REQ_GITBASH) != 0, (int)argc, argv, (int)envc, env, name);
     }
     close(in[0]);
     close(out[1]);

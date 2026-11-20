@@ -226,11 +226,28 @@ void games_build( struct view *view )
     view_space( view, px( 8 ) );
     label_row_begin( view, IDS_MAX_FPS );
     combo = combo_beside( view, ID_MAX_FPS );
-    for (UINT i = 0; i < ARRAY_SIZE(frame_rates); i++)
     {
-        if (frame_rates[i]) swprintf( text, ARRAY_SIZE(text), L"%d", frame_rates[i] );
-        else lstrcpynW( text, load_string( IDS_NO_LIMIT ), ARRAY_SIZE(text) );
-        combo_add( combo, text, frame_rates[i], games.max_fps );
+        /* the monitor's own rate is in the list too, in its place (a custom
+         * 68 Hz between 60 and 75): a game capped at it runs no frame the
+         * screen cannot show */
+        DEVMODEW mode = { .dmSize = sizeof(mode) };
+        int refresh = 0;
+
+        if (EnumDisplaySettingsW( NULL, ENUM_REGISTRY_SETTINGS, &mode ) && mode.dmDisplayFrequency > 1)
+            refresh = mode.dmDisplayFrequency;
+        for (UINT i = 0; i < ARRAY_SIZE(frame_rates); i++)
+        {
+            if (refresh && frame_rates[i] && refresh < frame_rates[i] && (i < 2 || refresh > frame_rates[i - 1]))
+            {
+                swprintf( text, ARRAY_SIZE(text), L"%d", refresh );
+                combo_add( combo, text, refresh, games.max_fps );
+                refresh = 0;
+            }
+            if (frame_rates[i] == refresh) refresh = 0;
+            if (frame_rates[i]) swprintf( text, ARRAY_SIZE(text), L"%d", frame_rates[i] );
+            else lstrcpynW( text, load_string( IDS_NO_LIMIT ), ARRAY_SIZE(text) );
+            combo_add( combo, text, frame_rates[i], games.max_fps );
+        }
     }
     if (SendMessageW( combo, CB_GETCURSEL, 0, 0 ) < 0)
     {

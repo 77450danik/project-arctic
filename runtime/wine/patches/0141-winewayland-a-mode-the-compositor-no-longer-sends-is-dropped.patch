@@ -1,0 +1,25 @@
+From: Project Arctic
+Subject: winewayland: a mode the compositor no longer sends is dropped.
+
+The modes of an output were only ever added to: a mode the compositor
+stopped sending (dwm.exe's custom refresh rate the user removed, or turned
+off with Win+Ctrl+Shift+B) stayed in EnumDisplaySettings until the process
+ended, and a program choosing it failed. The list the compositor sends with
+each done is the whole list, as wl_output has it, and replaces ours.
+---
+diff --git a/dlls/winewayland.drv/wayland_output.c b/dlls/winewayland.drv/wayland_output.c
+--- a/dlls/winewayland.drv/wayland_output.c
++++ b/dlls/winewayland.drv/wayland_output.c
+@@ -139,6 +139,12 @@
+ 
+     if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_MODES)
+     {
++        /* The compositor sends the whole list again: a mode it no longer
++         * has (a custom refresh rate removed) goes from ours too. */
++        rb_destroy(&output->current.modes, wayland_output_mode_free_rb, NULL);
++        rb_init(&output->current.modes, wayland_output_mode_cmp_rb);
++        output->current.modes_count = 0;
++        output->current.current_mode = NULL;
+         RB_FOR_EACH_ENTRY(mode, &output->pending.modes, struct wayland_output_mode, entry)
+         {
+             wayland_output_state_add_mode(&output->current,

@@ -1,0 +1,45 @@
+# WSL as containers (docs/linux-gate.md): no window for wsl.exe, root in there
+# is no root of the system, and deleting everything in one leaves the
+# system as it was.
+#   tools/wsl/make-wsl-test-disk.sh                        (two tiny distributions)
+#   vm-test.py --usb --uefi --disk out/test-local/wsl-disk.img --script tests/vm/w10-containers.txt
+# What to see on the shots: w10-inside — uid=0, /dev with null zero full random
+# urandom tty fuse pts shm and the fd links only, PID 1 "init", a handful of
+# processes; w10-rm — "rm -rf --no-preserve-root /" ran, the errors it met (busy
+# mounts, read-only C:\Windows) and "gone"; w10-denied — "Read-only file system" for C:\Windows and /sys,
+# "Operation not permitted" for mknod, C:\Users listed; w10-after — after
+# "rm -rf /" in arctic-ros the desktop is up, arctic-build still answers, and
+# arctic-ros answers with nothing left in it.
+# (A comment after "type" would be typed in: they go on their own line.)
+sleep 5
+# "Виконати" (Win+R): the Start button moved to the middle with the Windows 11 taskbar
+key win-r
+sleep 3
+type cmd
+key ret
+sleep 6
+type md C:\ProgramData\Arctic\Lxss
+key ret
+sleep 2
+type echo arctic-build D:\gate.vhdx> C:\ProgramData\Arctic\Lxss\distros
+key ret
+sleep 2
+type echo arctic-ros D:\free.vhdx>> C:\ProgramData\Arctic\Lxss\distros
+key ret
+sleep 2
+type cls & wsl -d arctic-ros -e bash -c "id; ls /dev; cat /proc/1/comm; ls /proc | head -12"
+key ret
+sleep 20
+shot w10-inside
+type cls & wsl -d arctic-ros -e bash -c "touch /mnt/c/Windows/x; echo 1 > /sys/kernel/sysrq; mknod /tmp/sda b 8 0; ls /mnt/c/Users"
+key ret
+sleep 10
+shot w10-denied
+type cls & wsl -d arctic-ros -e bash -c "rm -rf --no-preserve-root / 2>&1 | head -4; echo gone"
+key ret
+sleep 40
+shot w10-rm
+type cls & wsl -d arctic-build -e id & wsl -d arctic-ros -e ls / & echo exit=%errorlevel%
+key ret
+sleep 15
+shot w10-after

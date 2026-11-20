@@ -26,6 +26,8 @@
 void run( WCHAR *cmdline );
 void run_userinit(void);
 void end_session( int exit_code );
+extern BOOL session_ending;  /* the programs are being told: the shell is not started again */
+void end_session_from_thread( UINT flags );
 void show_security_options(void);
 void shell_restarted(void);
 BOOL check_shell_answers(void);

@@ -1,0 +1,77 @@
+From: Project Arctic
+Subject: win32u: a broadcast waits for a thread that does not answer only once.
+
+Steam keeps four hidden windows in a thread that never takes its
+messages and is not hung by Wine's measure (it does not wait for
+messages at all). A broadcast waited two seconds for each of them, eight
+in all, and a display mode change waits for its broadcast: CS2 stood
+still for eight seconds whenever it set its mode or gave the desktop its
+own back, and the desktop's programs took the change as late
+(2026-11-18). A thread that let one window's message time out is not
+waited for again in the same broadcast, and WM_DISPLAYCHANGE goes out to
+the other programs without waiting at all; each finds the new monitors
+in the display cache when it asks.
+---
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 747c941..d3222c4 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -4121,7 +4121,8 @@ static BOOL broadcast_message( struct send_message_info *info, DWORD_PTR *res_pt
+     if (is_message_broadcastable( info->msg ) &&
+         (list = list_window_children( 0 )))
+     {
+-        int i;
++        DWORD late[16], tid;
++        int i, j, late_count = 0;
+ 
+         for (i = 0; list[i]; i++)
+         {
+@@ -4129,16 +4130,26 @@ static BOOL broadcast_message( struct send_message_info *info, DWORD_PTR *res_pt
+             if ((get_window_long( list[i], GWL_STYLE ) & (WS_POPUP|WS_CHILD)) == WS_CHILD)
+                 continue;
+ 
++            /* Arctic: a thread that did not answer one of its windows is
++             * not waited for again for the next ones */
++            tid = get_window_thread( list[i], NULL );
++            for (j = 0; j < late_count; j++) if (late[j] == tid) break;
++            if (j < late_count) continue;
++
+             switch(info->type)
+             {
+             case MSG_UNICODE:
+             case MSG_OTHER_PROCESS:
+-                send_message_timeout( list[i], info->msg, info->wparam, info->lparam,
+-                                      info->flags, info->timeout, FALSE );
++                if (!send_message_timeout( list[i], info->msg, info->wparam, info->lparam,
++                                           info->flags, info->timeout, FALSE ) &&
++                    RtlGetLastWin32Error() == ERROR_TIMEOUT && late_count < ARRAY_SIZE(late))
++                    late[late_count++] = tid;
+                 break;
+             case MSG_ASCII:
+-                send_message_timeout( list[i], info->msg, info->wparam, info->lparam,
+-                                      info->flags, info->timeout, TRUE );
++                if (!send_message_timeout( list[i], info->msg, info->wparam, info->lparam,
++                                           info->flags, info->timeout, TRUE ) &&
++                    RtlGetLastWin32Error() == ERROR_TIMEOUT && late_count < ARRAY_SIZE(late))
++                    late[late_count++] = tid;
+                 break;
+             case MSG_NOTIFY:
+                 NtUserMessageCall( list[i], info->msg, info->wparam, info->lparam,
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 926da1d..ec26c31 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -4834,9 +4834,10 @@ static void display_mode_changed( BOOL broadcast )
+         NtUserClipCursor( NULL );
+         send_notify_message( get_desktop_window(), WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
+                              MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ), FALSE );
+-        send_message_timeout( HWND_BROADCAST, WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
+-                              MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ),
+-                              SMTO_ABORTIFHUNG, 2000, FALSE );
++        /* Arctic: without waiting for the programs, as the game that
++         * changed the mode must not stand still meanwhile */
++        send_notify_message( HWND_BROADCAST, WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
++                             MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ), FALSE );
+         /* post clip_fullscreen_window request to the foreground window */
+         NtUserPostMessage( NtUserGetForegroundWindow(), WM_WINE_CLIPCURSOR, SET_CURSOR_FSCLIP, 0 );
+     }

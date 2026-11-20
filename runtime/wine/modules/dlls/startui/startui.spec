@@ -49,3 +49,8 @@
 @ stdcall ArcticTaskbarUnpinFile(wstr)
 @ stdcall ArcticTaskbarPinMenu(long wstr ptr)
 @ stdcall ArcticPinDropRegister(long long)
+@ stdcall ArcticSearchCreate(long)
+@ stdcall ArcticSearchWidth()
+@ stdcall ArcticSearchToggle()
+@ stdcall ArcticTaskViewCreate(long)
+@ stdcall ArcticTaskViewWidth()

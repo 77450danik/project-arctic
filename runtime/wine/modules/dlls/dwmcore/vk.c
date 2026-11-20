@@ -946,6 +946,31 @@ static bool upload( struct texture *t, const uint32_t *pixels )
     return true;
 }
 
+/* a rectangle of an image of pixels, stride wide: only what changed goes to the GPU */
+static bool upload_rect( struct texture *t, const uint32_t *pixels, int stride, const int rect[4] )
+{
+    int x0 = max( rect[0], 0 ), y0 = max( rect[1], 0 );
+    int x1 = min( rect[2], (int)t->width ), y1 = min( rect[3], (int)t->height );
+    VkBufferImageCopy region =
+    {
+        .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .imageOffset = { x0, y0, 0 },
+        .imageExtent = { x1 - x0, y1 - y0, 1 },
+    };
+    struct staging *s;
+    uint8_t *dst;
+
+    if (x1 <= x0 || y1 <= y0) return true;
+    if (!(s = staging_alloc( (VkDeviceSize)(x1 - x0) * (y1 - y0) * 4, &region.bufferOffset ))) return false;
+    dst = s->map + region.bufferOffset;
+    for (int y = y0; y < y1; y++, dst += (size_t)(x1 - x0) * 4)
+        memcpy( dst, pixels + (size_t)y * stride + x0, (size_t)(x1 - x0) * 4 );
+    set_image_layout( setup_cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+    vkCmdCopyBufferToImage( setup_cmd, s->buffer, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
+    set_image_layout( setup_cmd, t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+    return true;
+}
+
 /* images are shrunk into thumbnails: smoothly, from levels each half the one before */
 static void generate_mips( struct texture *t )
 {
@@ -1783,11 +1808,20 @@ static struct texture *shm_texture( struct surface *s )
     {
         if (!(t = s->texture = texture_create( s->width, s->height, false ))) return NULL;
         s->texture_stale = true;
+        s->stale_rect[0] = s->stale_rect[1] = 0;
+        s->stale_rect[2] = s->width;
+        s->stale_rect[3] = s->height;
     }
     if (s->texture_stale)
     {
-        if (!upload( t, s->pixels )) return t->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? t : NULL;
+        bool whole = !s->stale_rect[0] && !s->stale_rect[1] && s->stale_rect[2] >= s->width &&
+                     s->stale_rect[3] >= s->height;
+        bool ok = whole || s->stale_rect[2] <= s->stale_rect[0] ? upload( t, s->pixels )
+                                                                 : upload_rect( t, s->pixels, s->width, s->stale_rect );
+
+        if (!ok) return t->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? t : NULL;
         s->texture_stale = false;
+        memset( s->stale_rect, 0, sizeof(s->stale_rect) );
     }
     return t;
 }
@@ -2076,7 +2110,7 @@ static void draw_backdrop( const struct window_draw *draw_, int ox, int oy )
     blur_strength( draw_->strength, &levels, &offset );
     if (!draw_->blur)
     {
-        push_init( &pc, &draw_->clip, draw_->opacity );
+        push_init( &pc, &draw_->clip, draw_->opacity * (1 - draw_->backdrop_fade) );
         push_color( &pc, tint[0] * tint[3], tint[1] * tint[3], tint[2] * tint[3], tint[3] );
         push_rect( &pc, r->left, r->top, r->right, r->bottom );
         draw( PIPE_COLOR, NULL, 0, &pc );
@@ -2088,7 +2122,7 @@ static void draw_backdrop( const struct window_draw *draw_, int ox, int oy )
     y0 = max( 0, (int)floorf( r->top ) - oy - BLUR_MARGIN );
     x1 = min( pass.width, (int)ceilf( r->right ) - ox + BLUR_MARGIN );
     y1 = min( pass.height, (int)ceilf( r->bottom ) - oy + BLUR_MARGIN );
-    if (x1 <= x0 || y1 <= y0 || !target) return;
+    if (x1 <= x0 || y1 <= y0 || !target || draw_->backdrop_fade >= 1) return;
     width = x1 - x0;
     height = y1 - y0;
     if (!(chain = blur_chain( width, height ))) return;
@@ -2111,7 +2145,7 @@ static void draw_backdrop( const struct window_draw *draw_, int ox, int oy )
         pass = saved;
     }
 
-    push_init( &pc, &draw_->clip, draw_->opacity );
+    push_init( &pc, &draw_->clip, draw_->opacity * (1 - draw_->backdrop_fade) );
     push_color( &pc, tint[0], tint[1], tint[2], tint[3] );
     pc.mode = draw_->grain ? 0.02f : 0.0f;
     push_rect( &pc, r->left, r->top, r->right, r->bottom );

@@ -27,6 +27,11 @@ struct surface
     struct wl_resource *pending_buffer;
     struct wl_listener  pending_buffer_destroy;
     bool                pending_attach;
+    /* what the client says changed in its buffer (damage_buffer), buffer
+     * pixels; whole when it cannot say (damage in surface coordinates of a
+     * scaled surface) */
+    int                 pending_damage[4];   /* left, top, right, bottom; right <= left: none */
+    bool                pending_damage_all;
     struct wl_list      pending_frames;      /* wl_callback resources */
     struct wl_list      frames;
 
@@ -35,6 +40,7 @@ struct surface
     int                 width, height;
     struct dmabuf      *dmabuf;              /* a GPU buffer, kept while it is the content */
     bool                stale;               /* pixels are older than the dmabuf */
+    bool                pixels_from_gpu;     /* pixels were read from a dmabuf: the next shm buffer is copied whole */
     bool                alpha;               /* premultiplied ARGB */
     int                 src_x, src_y, src_width, src_height; /* wp_viewport source, width 0 if unset */
     int                 dst_width, dst_height; /* wp_viewport destination, 0 if unset */
@@ -53,6 +59,8 @@ struct surface
     void               *texture;             /* NULL if none */
     uint32_t            texture_generation;  /* of the device it was made on */
     bool                texture_stale;       /* the pixels changed since the upload */
+    int                 stale_rect[4];       /* ... where: only that goes to the GPU, as Windows' DWM
+                                              * updates a redirection surface by its dirty rectangles */
 
     /* subsurface role */
     struct wl_resource *subsurface;
@@ -239,6 +247,7 @@ struct window_draw
     uint32_t                 strength;       /* of the blur, 1-100; 0 for the default */
     uint32_t                 tint;           /* 0xAARRGGBB, straight alpha */
     float                    content_alpha;  /* of what the window draws, over its backdrop */
+    float                    backdrop_fade;  /* how far the backdrop alone has faded, 0-1 (DWMWA_ARCTIC_BACKDROP_FADE) */
     uint32_t                 caption;        /* the backdrop is behind these rows from the window's top alone,
                                                 its title bar (DWMWA_ARCTIC_CAPTION); 0: behind all of it */
     enum layer_mode          (*mode)( const struct surface *s, const struct window_draw *draw );

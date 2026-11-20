@@ -1,0 +1,1146 @@
+From: Project Arctic
+Subject: server, ntdll, win32u: USER is served by win32k in the kernel.
+
+As in Windows, USER (windows, message queues, hooks, classes, atoms, the
+clipboard) lives in the kernel, in win32k (kernel/drivers/win32k,
+docs/win32k.md), and its handlers run in the calling thread instead of a
+round trip to wineserver.
+
+ntdll: a thread says who it is to win32k (win32k_hello) once wineserver has
+made it; win32k says which requests it serves, and those go to it by its
+system call. Three requests name an object of wineserver: the queue's event
+(get_msg_queue_handle) is made through wineserver and given as its ntsync fd,
+which win32k sets from the kernel; the driver's connection (set_queue_fd) as
+its unix fd; a desktop (get_window_list) as the id wineserver gave it
+(get_desktop_id).
+
+server: the object manager of win32k. Window stations and desktops stay its
+objects, with names, handles and security; it gives them ids and tells
+win32k what happens to them and to processes and threads (win32k_callout),
+as Windows' object manager calls win32k's callouts. A socket's
+WSAAsyncSelect message goes through it too.
+
+win32u: the shared objects of USER are in win32k's session memory.
+
+Without win32k in the kernel, or with arctic.win32k=0 (NT_WIN32K=0), USER
+stays in wineserver as before.
+---
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -526,6 +526,218 @@
+ 
+ 
+ /***********************************************************************
++ * Arctic: win32k
++ *
++ * The requests of USER (windows, queues, hooks, classes, atoms, the
++ * clipboard) go to win32k, USER in the kernel (docs/win32k.md), by its own
++ * system call, and are served in this thread; the rest go to wineserver. A
++ * thread says who it is to win32k when wineserver has made it
++ * (win32k_hello), which also says which requests win32k serves. When no
++ * wineserver uses win32k (arctic.win32k=0, or a kernel without it), all of
++ * them go to wineserver as before.
++ *
++ * Three requests name an object of wineserver by its handle; ntdll gives
++ * win32k what it stands for: the queue's event (get_msg_queue_handle), made
++ * here through wineserver, as its ntsync fd; the driver's connection
++ * (set_queue_fd) as its unix fd; a desktop (get_window_list) as the id
++ * wineserver gave it.
++ */
++#if defined(__linux__) && defined(__x86_64__)
++
++/* as include/uapi/linux/win32k.h of the kernel (kernel/drivers/win32k) */
++#define __NR_win32k_hello   0x1000
++#define __NR_win32k_call    0x1001
++
++struct win32k_hello
++{
++    UINT32 protocol;
++    UINT32 process_id;
++    UINT32 thread_id;
++    UINT32 requests_size;
++    UINT64 requests;
++};
++
++struct win32k_call
++{
++    UINT64 request;
++    UINT64 request_data;
++    UINT32 request_size;
++    UINT32 request_data_size;
++    UINT64 reply;
++    UINT64 reply_data;
++    UINT32 reply_size;
++    UINT32 reply_data_max;
++    UINT32 reply_data_size;
++    UINT32 status;
++    INT32  fd;
++    UINT32 pad;
++};
++
++static unsigned char win32k_requests[(REQ_NB_REQUESTS + 7) / 8];
++static int win32k_unused;  /* no wineserver uses win32k */
++
++static void win32k_init_thread( struct thread_data *data, process_id_t pid, thread_id_t tid )
++{
++    struct win32k_hello hello =
++    {
++        .protocol      = SERVER_PROTOCOL_VERSION,
++        .process_id    = pid,
++        .thread_id     = tid,
++        .requests_size = sizeof(win32k_requests),
++        .requests      = (ULONG_PTR)win32k_requests,
++    };
++
++    if (win32k_unused) return;
++    if (!syscall( __NR_win32k_hello, &hello ))
++    {
++        data->win32k = 1;
++        return;
++    }
++    /* ENOSYS: a kernel without win32k; ENOENT: wineserver keeps USER */
++    if (errno == ENOSYS || errno == ENOENT) win32k_unused = 1;
++    else ERR( "win32k_hello failed: %s; USER stays with wineserver for thread %04x\n", strerror(errno), tid );
++}
++
++static inline BOOL is_win32k_request( enum request code )
++{
++    return code < REQ_NB_REQUESTS && (win32k_requests[code / 8] & (1 << (code % 8)));
++}
++
++/* the id of a desktop, for win32k, as wineserver checks its handle */
++static unsigned int win32k_desktop_id( obj_handle_t handle, unsigned int access, unsigned int *status )
++{
++    unsigned int id = 0;
++
++    SERVER_START_REQ( get_desktop_id )
++    {
++        req->handle = handle;
++        req->access = access;
++        if (!(*status = wine_server_call( req ))) id = reply->id;
++    }
++    SERVER_END_REQ;
++    return id;
++}
++
++/* the process's idle event, which wineserver keeps */
++static obj_handle_t win32k_idle_event(void)
++{
++    obj_handle_t event = 0;
++
++    SERVER_START_REQ( get_process_idle_event )
++    {
++        req->handle = wine_server_obj_handle( GetCurrentProcess() );
++        if (!wine_server_call( req )) event = reply->event;
++    }
++    SERVER_END_REQ;
++    return event;
++}
++
++/* the request to win32k, if it serves it; FALSE if it goes to wineserver */
++static BOOL win32k_call( struct thread_data *data, struct __server_request_info *info, unsigned int *ret )
++{
++    enum request code = info->u.req.request_header.req;
++    unsigned int size = info->u.req.request_header.request_size, i;
++    unsigned int status = STATUS_SUCCESS;
++    struct win32k_call call;
++    HANDLE event = 0;
++    int fd = -1, needs_close = 0;
++    char *buffer = NULL;
++
++    if (!data->win32k || !is_win32k_request( code )) return FALSE;
++
++    memset( &call, 0, sizeof(call) );
++    call.request        = (ULONG_PTR)&info->u.req;
++    call.request_size   = sizeof(info->u.req);
++    call.reply          = (ULONG_PTR)&info->u.reply;
++    call.reply_size     = sizeof(info->u.reply);
++    call.reply_data     = (ULONG_PTR)info->reply_data;
++    call.reply_data_max = info->u.req.request_header.reply_size;
++
++    /* the request's data in one piece */
++    call.request_data_size = size;
++    if (info->data_count == 1) call.request_data = (ULONG_PTR)info->data[0].ptr;
++    else if (info->data_count > 1)
++    {
++        char *ptr;
++
++        if (!(buffer = malloc( size )))
++        {
++            *ret = STATUS_NO_MEMORY;
++            return TRUE;
++        }
++        for (i = 0, ptr = buffer; i < info->data_count; i++)
++        {
++            memcpy( ptr, info->data[i].ptr, info->data[i].size );
++            ptr += info->data[i].size;
++        }
++        call.request_data = (ULONG_PTR)buffer;
++    }
++
++    switch (code)
++    {
++    case REQ_get_msg_queue_handle:
++        /* an event of wineserver's (one device of ntsync for all the objects a
++         * thread waits on), which win32k then sets and resets */
++        if (!(status = NtCreateEvent( &event, SYNCHRONIZE | EVENT_QUERY_STATE | EVENT_MODIFY_STATE,
++                                      NULL, NotificationEvent, FALSE )) &&
++            (fd = dup_inproc_event_fd( event )) == -1)
++            status = STATUS_NOT_SUPPORTED;
++        needs_close = 1;
++        break;
++    case REQ_set_queue_fd:
++        status = server_get_unix_fd( wine_server_ptr_handle( info->u.req.set_queue_fd_request.handle ),
++                                     0, &fd, &needs_close, NULL, NULL );
++        break;
++    case REQ_get_window_list:
++        if (info->u.req.get_window_list_request.desktop)
++            info->u.req.get_window_list_request.desktop =
++                win32k_desktop_id( info->u.req.get_window_list_request.desktop, DESKTOP_READOBJECTS, &status );
++        break;
++    default:
++        break;
++    }
++
++    if (!status)
++    {
++        call.fd = fd;
++        if (!syscall( __NR_win32k_call, &call )) status = call.status;
++        else
++        {
++            if (errno == EFAULT) status = STATUS_ACCESS_VIOLATION;
++            else
++            {
++                ERR( "win32k_call of request %u failed: %s\n", code, strerror(errno) );
++                status = STATUS_INTERNAL_ERROR;
++            }
++            memset( &info->u.reply, 0, sizeof(info->u.reply) );
++            call.reply_data_size = 0;
++        }
++    }
++    else memset( &info->u.reply, 0, sizeof(info->u.reply) );
++    /* as wineserver: the data a handler gave goes back with its error too */
++    info->u.reply.reply_header.error = status;
++    info->u.reply.reply_header.reply_size = call.reply_data_size;
++
++    if (code == REQ_get_msg_queue_handle && !status)
++    {
++        info->u.reply.get_msg_queue_handle_reply.handle = wine_server_obj_handle( event );
++        info->u.reply.get_msg_queue_handle_reply.idle_event = win32k_idle_event();
++        event = 0;  /* the caller's now */
++    }
++    if (event) NtClose( event );
++    if (needs_close && fd != -1) close( fd );
++    free( buffer );
++    *ret = status;
++    return TRUE;
++}
++
++#else
++static void win32k_init_thread( struct thread_data *data, process_id_t pid, thread_id_t tid ) { }
++static BOOL win32k_call( struct thread_data *data, struct __server_request_info *req, unsigned int *ret ) { return FALSE; }
++#endif
++
++
++/***********************************************************************
+  *           server_call_unlocked
+  */
+ unsigned int server_call_unlocked( void *req_ptr )
+@@ -534,6 +746,7 @@
+     struct __server_request_info * const req = req_ptr;
+     unsigned int ret;
+ 
++    if (data->win32k && win32k_call( data, req, &ret )) return ret;
+ #ifdef __linux__
+     if (data->fastcall && fastcall( data, req, &ret )) return ret;
+ #endif
+@@ -1955,6 +2168,7 @@
+ 
+     if (ret) server_protocol_error( "init_first_thread failed with status %x\n", ret );
+     fastcall_init_thread( data, TRUE );
++    win32k_init_thread( data, pid, data->tid );
+ 
+     if (!supported_machines_count)
+         fatal_error( "'%s' is a 64-bit installation, it cannot be used with a 32-bit wineserver.\n",
+@@ -2049,6 +2263,8 @@
+     SERVER_END_REQ;
+     close( reply_pipe );
+     fastcall_init_thread( data, FALSE );
++    if (data->teb) win32k_init_thread( data, HandleToULong( data->teb->ClientId.UniqueProcess ),
++                                       HandleToULong( data->teb->ClientId.UniqueThread ) );
+ 
+     if (data->teb)
+     {
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -773,6 +773,20 @@
+     }
+ }
+ 
++/* Arctic: a copy of the ntsync fd of an event, for win32k to set it from the
++ * kernel (docs/win32k.md); -1 if it has none. The caller closes it. */
++int dup_inproc_event_fd( HANDLE handle )
++{
++    struct inproc_sync stack, *sync;
++    int fd;
++
++    if (inproc_device_fd < 0) return -1;
++    if (get_inproc_sync( handle, INPROC_SYNC_EVENT, EVENT_MODIFY_STATE, &stack, &sync )) return -1;
++    fd = fcntl( sync->fd, F_DUPFD_CLOEXEC, 0 );
++    release_inproc_sync( sync );
++    return fd;
++}
++
+ static NTSTATUS inproc_release_semaphore( HANDLE handle, ULONG count, ULONG *prev_count )
+ {
+     struct inproc_sync stack, *sync;
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -128,6 +128,7 @@
+     struct list  entry;             /* entry in TEB list */
+     fastcall_slot_t *fastcall;      /* Arctic: the thread's slot for fast calls, or NULL */
+     unsigned int fastcall_index;    /* its index in the process's area */
++    int          win32k;            /* Arctic: 1 said hello to win32k, 0 not in use */
+     char         debug_info[0x800]; /* debug_info structure */
+     char         signal_stack[];    /* signal stack */
+     /* char kernel_stack[] */
+@@ -423,6 +424,7 @@
+ extern void dbg_init(void);
+ 
+ extern void close_inproc_sync( HANDLE handle );
++extern int dup_inproc_event_fd( HANDLE handle );
+ extern void registry_cache_close( HANDLE handle );
+ 
+ extern NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -27,6 +27,10 @@
+ #include <stddef.h>
+ 
+ #include <pthread.h>
++#include <unistd.h>
++#ifdef __linux__
++#include <sys/syscall.h>
++#endif
+ 
+ #include "ntstatus.h"
+ #include "windef.h"
+@@ -102,6 +106,38 @@
+     return lock.id;
+ }
+ 
++/* Arctic: when win32k (USER in the kernel, docs/win32k.md) serves this
++ * thread's requests, the shared objects of USER are in its session memory,
++ * which win32k_session gives as a read-only file; a section of it is made
++ * once. NULL when wineserver keeps USER. Called with session_lock held. */
++static HANDLE get_win32k_session_section(void)
++{
++#if defined(__linux__) && defined(__x86_64__)
++    static HANDLE section;
++    static BOOL tried;
++    HANDLE file;
++    int fd;
++
++    if (tried) return section;
++    tried = TRUE;
++    if ((fd = syscall( 0x1002 /* __NR_win32k_session */ )) == -1) return NULL;
++    if (!wine_server_fd_to_handle( fd, GENERIC_READ | SYNCHRONIZE, 0, &file ))
++    {
++        if (NtCreateSection( &section, SECTION_MAP_READ | SECTION_QUERY, NULL, NULL,
++                             PAGE_READONLY, SEC_COMMIT, file ))
++        {
++            ERR( "no section of win32k's session memory\n" );
++            section = NULL;
++        }
++        NtClose( file );
++    }
++    close( fd );
++    return section;
++#else
++    return NULL;
++#endif
++}
++
+ static NTSTATUS map_shared_session_block( SIZE_T offset, SIZE_T size, struct session_block **ret )
+ {
+     static const WCHAR nameW[] =
+@@ -121,9 +157,12 @@
+     if (!(block = calloc( 1, sizeof(*block) ))) return STATUS_NO_MEMORY;
+ 
+     InitializeObjectAttributes( &attr, &name, 0, NULL, NULL );
+-    if ((status = NtOpenSection( &handle, SECTION_MAP_READ, &attr )))
++    if ((handle = get_win32k_session_section()))
++        status = NtDuplicateObject( GetCurrentProcess(), handle, GetCurrentProcess(), &handle,
++                                    0, 0, DUPLICATE_SAME_ACCESS );
++    else if ((status = NtOpenSection( &handle, SECTION_MAP_READ, &attr )))
+         WARN( "Failed to open shared session section, status %#x\n", status );
+-    else
++    if (!status)
+     {
+         if ((status = NtMapViewOfSection( handle, GetCurrentProcess(), (void **)&block->data, 0, 0,
+                                           &off, &block->size, ViewUnmap, 0, PAGE_READONLY )))
+diff --git a/server/Makefile.in b/server/Makefile.in
+--- a/server/Makefile.in
++++ b/server/Makefile.in
+@@ -49,6 +49,7 @@
+ 	wineserver.de.UTF-8.man.in \
+ 	wineserver.fr.UTF-8.man.in \
+ 	wineserver.man.in \
++	win32k.c \
+ 	winstation.c
+ 
+ UNIX_CFLAGS = $(INOTIFY_CFLAGS)
+diff --git a/server/main.c b/server/main.c
+--- a/server/main.c
++++ b/server/main.c
+@@ -40,6 +40,7 @@
+ #include "thread.h"
+ #include "request.h"
+ #include "unicode.h"
++#include "user.h"
+ 
+ /* command-line options */
+ int debug_level = 0;
+@@ -262,6 +263,7 @@
+     if (debug_level) fprintf( stderr, "wineserver: starting (pid=%ld)\n", (long) getpid() );
+     set_current_time();
+     init_signals();
++    win32k_init();  /* Arctic: USER in the kernel, if it is there and in use */
+     init_memory();
+     init_directories( load_intl_file() );
+     init_threading();
+diff --git a/server/process.c b/server/process.c
+--- a/server/process.c
++++ b/server/process.c
+@@ -695,6 +695,7 @@
+     }
+     if (!process->handles || !process->token) goto error;
+     process->session_id = token_get_session_id( process->token );
++    if (win32k_active) win32k_process_init( process, process->parent_id, process->machine );  /* its W32PROCESS */
+ 
+     set_fd_events( process->msg_fd, POLLIN );  /* start listening to events */
+     return process;
+@@ -727,6 +728,7 @@
+ 
+     assert( !process->sigkill_timeout );  /* timeout should hold a reference to the process */
+ 
++    if (win32k_active) win32k_process_gone( process );  /* one that never ran a thread too */
+     close_process_handles( process );
+     set_process_startup_state( process, STARTUP_ABORTED );
+ 
+@@ -937,9 +939,10 @@
+     process->idle_event = NULL;
+     assert( !process->console );
+ 
+-    destroy_process_classes( process );
++    if (win32k_active) win32k_process_gone( process );  /* win32k frees what USER kept */
++    else destroy_process_classes( process );
+     free_mapped_views( process );
+-    free_process_user_handles( process );
++    if (!win32k_active) free_process_user_handles( process );
+     remove_process_locks( process );
+     set_process_startup_state( process, STARTUP_ABORTED );
+     finish_process_tracing( process );
+@@ -1274,6 +1277,7 @@
+         goto done;
+ 
+     process->machine = req->machine;
++    if (win32k_active) win32k_process_init( process, process->parent_id, process->machine );
+     process->startup_info = (struct startup_info *)grab_object( info );
+ 
+     job = parent->job;
+@@ -1789,8 +1793,10 @@
+ 
+     if (!process->is_system)
+     {
+-        LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
+-            release_thread_desktop( thread, 0 );
++        if (win32k_active) win32k_process_system( process );
++        else
++            LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
++                release_thread_desktop( thread, 0 );
+         process->is_system = 1;
+         if (!--user_processes && !shutdown_stage && master_socket_timeout != TIMEOUT_INFINITE)
+             shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
+diff --git a/server/protocol.def b/server/protocol.def
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -4481,3 +4481,12 @@
+     int          doorbell_fd;  /* eventfd that wakes the server, -1 once the process has one */
+     unsigned int slot;         /* the slot of the calling thread */
+ @END
++
++
++/* Arctic: the id win32k knows a desktop by (docs/win32k.md), checking the handle's access */
++@REQ(get_desktop_id)
++    obj_handle_t handle;       /* handle to the desktop */
++    unsigned int access;       /* access it needs */
++@REPLY
++    unsigned int id;           /* the desktop's id */
++@END
+diff --git a/server/sock.c b/server/sock.c
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -852,7 +852,8 @@
+                     lparam = FD_CLOSE | (WSAECONNABORTED << 16);
+                 else
+                     lparam = afd_poll_flag_to_win32(1 << event) | (sock_get_error( sock->errors[event] ) << 16);
+-                post_message( sock->window, sock->message, sock->wparam, lparam );
++                if (win32k_active) win32k_post_message( sock->window, sock->message, sock->wparam, lparam );
++                else post_message( sock->window, sock->message, sock->wparam, lparam );
+             }
+         }
+         sock->pending_events = 0;
+diff --git a/server/thread.c b/server/thread.c
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -519,6 +519,8 @@
+     if (!(thread->sync = create_internal_sync( 1, 0 ))) goto error;
+     if (get_inproc_device_fd() >= 0 && !(thread->alert_sync = create_inproc_internal_sync( 1, 0 ))) goto error;
+ 
++    if (win32k_active) win32k_thread_init( thread );  /* its W32THREAD */
++
+     if (process->desktop)
+     {
+         if (!(desktop = get_desktop_obj( process, process->desktop, 0 ))) clear_error();  /* ignore errors */
+@@ -578,9 +580,13 @@
+     if (thread->request_fd) release_object( thread->request_fd );
+     if (thread->reply_fd) release_object( thread->reply_fd );
+     if (thread->wait_fd) release_object( thread->wait_fd );
+-    cleanup_clipboard_thread(thread);
+-    destroy_thread_windows( thread );
+-    free_msg_queue( thread );
++    if (win32k_active) win32k_thread_gone( thread );  /* win32k frees what USER kept */
++    else
++    {
++        cleanup_clipboard_thread(thread);
++        destroy_thread_windows( thread );
++        free_msg_queue( thread );
++    }
+     release_thread_desktop( thread, 1 );
+     for (i = 0; i < MAX_INFLIGHT_FDS; i++)
+     {
+@@ -1728,6 +1734,7 @@
+ 
+     current->unix_pid = process->unix_pid = req->unix_pid;
+     current->unix_tid = req->unix_tid;
++    if (win32k_active) win32k_thread_task( current );  /* only this task may say it is the thread */
+ 
+     if (!process->parent_id)
+         process->affinity = current->affinity = get_thread_affinity( current );
+@@ -1766,6 +1773,7 @@
+ 
+     current->unix_pid = current->process->unix_pid;
+     current->unix_tid = req->unix_tid;
++    if (win32k_active) win32k_thread_task( current );  /* only this task may say it is the thread */
+     current->teb      = req->teb;
+     current->entry_point = req->entry;
+ 
+diff --git a/server/user.h b/server/user.h
+--- a/server/user.h
++++ b/server/user.h
+@@ -39,6 +39,7 @@
+ struct winstation
+ {
+     struct object      obj;                /* object header */
++    unsigned int       id;                 /* Arctic: what win32k knows it by */
+     unsigned int       flags;              /* winstation flags */
+     struct list        entry;              /* entry in global winstation list */
+     struct list        desktops;           /* list of desktops of this winstation */
+@@ -64,6 +65,7 @@
+ struct desktop
+ {
+     struct object        obj;              /* object header */
++    unsigned int         id;               /* Arctic: what win32k knows it by */
+     struct winstation   *winstation;       /* winstation this desktop belongs to */
+     timeout_t            input_time;       /* last time this desktop had the input */
+     struct list          entry;            /* entry in winstation list of desktops */
+@@ -92,6 +94,33 @@
+     desktop_shm_t       *shared;           /* desktop session shared memory */
+ };
+ 
++/* Arctic: win32k, USER in the kernel (win32k.c): when it is in use, the
++ * server keeps window stations and desktops as objects and calls out */
++
++extern int win32k_active;
++extern void win32k_init(void);
++extern void win32k_process_init( struct process *process, process_id_t parent_id, unsigned short machine );
++extern void win32k_process_gone( struct process *process );
++extern void win32k_process_system( struct process *process );
++extern void win32k_thread_init( struct thread *thread );
++extern void win32k_thread_task( struct thread *thread );
++extern void win32k_thread_gone( struct thread *thread );
++extern void win32k_winstation_create( struct winstation *winstation );
++extern void win32k_winstation_delete( struct winstation *winstation );
++extern unsigned int win32k_winstation_flags( struct winstation *winstation, int set, unsigned int flags );
++extern unsigned int win32k_desktop_create( struct desktop *desktop, unsigned int flags, int existed );
++extern void win32k_desktop_delete( struct desktop *desktop );
++extern unsigned int win32k_desktop_flags( struct desktop *desktop, int set, unsigned int flags );
++extern struct obj_locator win32k_desktop_locator( struct desktop *desktop );
++extern unsigned int win32k_input_desktop( struct winstation *winstation );
++extern unsigned int win32k_set_input_desktop( struct winstation *winstation, struct desktop *desktop );
++extern void win32k_process_winstation( struct process *process, struct winstation *winstation, unsigned int access );
++extern void win32k_process_desktop( struct process *process, struct desktop *desktop, unsigned int access );
++extern unsigned int win32k_thread_desktop( struct thread *thread, struct desktop *desktop, unsigned int access,
++                                           int chosen, struct obj_locator *locator );
++extern void win32k_thread_desktop_release( struct thread *thread, int close );
++extern void win32k_post_message( user_handle_t win, unsigned int message, lparam_t wparam, lparam_t lparam );
++
+ /* user handles functions */
+ 
+ extern user_handle_t alloc_user_handle( void *ptr, volatile void *shared, unsigned short type );
+diff --git a/server/win32k.c b/server/win32k.c
+new file mode 100644
+--- /dev/null
++++ b/server/win32k.c
+@@ -0,0 +1,304 @@
++/*
++ * Arctic: win32k, USER in the kernel (docs/win32k.md)
++ *
++ * When win32k is in use, the requests of USER (windows, queues, hooks,
++ * classes, atoms, the clipboard) go from ntdll straight to it, and the
++ * server is the object manager it is in Windows: window stations and
++ * desktops are its objects, with their names, handles and security, and it
++ * tells win32k what happens to them, and to processes and threads, by the
++ * callouts below (the system call win32k_callout), as Windows' object
++ * manager and process manager call win32k's callouts. win32k keeps the USER
++ * state of a window station or desktop by the id the server gives it.
++ *
++ * The server registers at startup; arctic.win32k=0 on the kernel line
++ * (NT_WIN32K=0 in the environment) or a kernel without win32k keeps USER in
++ * the server, as before.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include "config.h"
++
++#include <errno.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#ifdef HAVE_SYS_SYSCALL_H
++# include <sys/syscall.h>
++#endif
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winternl.h"
++
++#include "object.h"
++#include "process.h"
++#include "thread.h"
++#include "request.h"
++#include "user.h"
++
++int win32k_active = 0;
++
++#if defined(__linux__) && defined(__x86_64__)
++
++/* as include/uapi/linux/win32k.h of the kernel (kernel/drivers/win32k) */
++#define __NR_win32k_callout 0x1003
++
++enum win32k_callout_code
++{
++    W32_CALLOUT_REGISTER = 1,
++    W32_CALLOUT_THREAD_INIT,
++    W32_CALLOUT_THREAD_TASK,
++    W32_CALLOUT_THREAD_GONE,
++    W32_CALLOUT_PROCESS_INIT,
++    W32_CALLOUT_PROCESS_GONE,
++    W32_CALLOUT_PROCESS_SYSTEM,
++    W32_CALLOUT_WINSTATION_CREATE,
++    W32_CALLOUT_WINSTATION_DELETE,
++    W32_CALLOUT_WINSTATION_FLAGS,
++    W32_CALLOUT_DESKTOP_CREATE,
++    W32_CALLOUT_DESKTOP_DELETE,
++    W32_CALLOUT_DESKTOP_FLAGS,
++    W32_CALLOUT_DESKTOP_LOCATOR,
++    W32_CALLOUT_INPUT_DESKTOP,
++    W32_CALLOUT_SET_INPUT_DESKTOP,
++    W32_CALLOUT_PROCESS_WINSTATION,
++    W32_CALLOUT_PROCESS_DESKTOP,
++    W32_CALLOUT_THREAD_DESKTOP,
++    W32_CALLOUT_THREAD_DESKTOP_RELEASE,
++    W32_CALLOUT_POST_MESSAGE,
++};
++
++struct win32k_callout
++{
++    unsigned int code;
++    unsigned int status;
++    unsigned int thread;
++    unsigned int process;
++    unsigned int object;
++    unsigned int parent;
++    unsigned int flags;
++    unsigned int set;
++    unsigned long long value;
++    unsigned long long lparam;
++    unsigned long long locator_id;
++    unsigned long long locator_offset;
++};
++
++/* a callout; its NTSTATUS (set as the server's error unless asked not to) */
++static unsigned int callout( struct win32k_callout *co )
++{
++    if (syscall( __NR_win32k_callout, co ))
++    {
++        fprintf( stderr, "wineserver: win32k callout %u failed: %s\n", co->code, strerror( errno ));
++        co->status = STATUS_INTERNAL_ERROR;
++    }
++    return co->status;
++}
++
++void win32k_init(void)
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_REGISTER, .value = SERVER_PROTOCOL_VERSION };
++    const char *env = getenv( "NT_WIN32K" );
++
++    if (env && !strcmp( env, "0" )) return;
++    if (syscall( __NR_win32k_callout, &co ))
++    {
++        /* ENOSYS: a kernel without win32k */
++        if (errno != ENOSYS) fprintf( stderr, "wineserver: win32k: %s, USER stays here\n", strerror( errno ));
++        return;
++    }
++    win32k_active = 1;
++}
++
++/* processes and threads */
++
++void win32k_process_init( struct process *process, process_id_t parent_id, unsigned short machine )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_PROCESS_INIT, .process = process->id,
++                                 .parent = parent_id, .value = machine };
++    callout( &co );
++}
++
++void win32k_process_gone( struct process *process )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_PROCESS_GONE, .process = process->id };
++    callout( &co );
++}
++
++void win32k_process_system( struct process *process )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_PROCESS_SYSTEM, .process = process->id };
++    callout( &co );
++}
++
++void win32k_thread_init( struct thread *thread )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_THREAD_INIT, .thread = thread->id,
++                                 .process = thread->process->id };
++    callout( &co );
++}
++
++void win32k_thread_task( struct thread *thread )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_THREAD_TASK, .thread = thread->id,
++                                 .value = thread->unix_tid };
++    callout( &co );
++}
++
++void win32k_thread_gone( struct thread *thread )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_THREAD_GONE, .thread = thread->id };
++    callout( &co );
++}
++
++/* window stations and desktops */
++
++void win32k_winstation_create( struct winstation *winstation )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_WINSTATION_CREATE, .object = winstation->id,
++                                 .flags = winstation->flags };
++    callout( &co );
++}
++
++void win32k_winstation_delete( struct winstation *winstation )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_WINSTATION_DELETE, .object = winstation->id };
++    callout( &co );
++}
++
++unsigned int win32k_winstation_flags( struct winstation *winstation, int set, unsigned int flags )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_WINSTATION_FLAGS, .object = winstation->id,
++                                 .set = set, .flags = flags };
++    callout( &co );
++    return co.value;
++}
++
++unsigned int win32k_desktop_create( struct desktop *desktop, unsigned int flags, int existed )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_DESKTOP_CREATE, .object = desktop->id,
++                                 .parent = desktop->winstation->id, .flags = flags,
++                                 .thread = current ? current->id : 0, .set = existed };
++    return callout( &co );
++}
++
++void win32k_desktop_delete( struct desktop *desktop )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_DESKTOP_DELETE, .object = desktop->id };
++    callout( &co );
++}
++
++unsigned int win32k_desktop_flags( struct desktop *desktop, int set, unsigned int flags )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_DESKTOP_FLAGS, .object = desktop->id,
++                                 .set = set, .flags = flags };
++    callout( &co );
++    return co.value;
++}
++
++struct obj_locator win32k_desktop_locator( struct desktop *desktop )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_DESKTOP_LOCATOR, .object = desktop->id };
++    struct obj_locator locator = {0};
++
++    if (!callout( &co ))
++    {
++        locator.id = co.locator_id;
++        locator.offset = co.locator_offset;
++    }
++    return locator;
++}
++
++/* the id of the input desktop of a window station; 0 and an error if there is none */
++unsigned int win32k_input_desktop( struct winstation *winstation )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_INPUT_DESKTOP, .parent = winstation->id };
++
++    if (callout( &co )) set_error( co.status );
++    return co.status ? 0 : co.object;
++}
++
++unsigned int win32k_set_input_desktop( struct winstation *winstation, struct desktop *desktop )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_SET_INPUT_DESKTOP, .parent = winstation->id,
++                                 .object = desktop->id };
++    return callout( &co );
++}
++
++void win32k_process_winstation( struct process *process, struct winstation *winstation, unsigned int access )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_PROCESS_WINSTATION, .process = process->id,
++                                 .object = winstation ? winstation->id : 0, .value = access };
++    callout( &co );
++}
++
++void win32k_process_desktop( struct process *process, struct desktop *desktop, unsigned int access )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_PROCESS_DESKTOP, .process = process->id,
++                                 .object = desktop ? desktop->id : 0, .value = access };
++    callout( &co );
++}
++
++/* the desktop of a thread: chosen (set_thread_desktop) or its default one;
++ * the locator of its shared memory */
++unsigned int win32k_thread_desktop( struct thread *thread, struct desktop *desktop, unsigned int access,
++                                    int chosen, struct obj_locator *locator )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_THREAD_DESKTOP, .thread = thread->id,
++                                 .object = desktop->id, .value = access, .set = chosen };
++
++    if (!callout( &co ) && locator)
++    {
++        locator->id = co.locator_id;
++        locator->offset = co.locator_offset;
++    }
++    return co.status;
++}
++
++void win32k_thread_desktop_release( struct thread *thread, int close )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_THREAD_DESKTOP_RELEASE, .thread = thread->id,
++                                 .set = close };
++    callout( &co );
++}
++
++void win32k_post_message( user_handle_t win, unsigned int message, lparam_t wparam, lparam_t lparam )
++{
++    struct win32k_callout co = { .code = W32_CALLOUT_POST_MESSAGE, .object = win, .flags = message,
++                                 .value = wparam, .lparam = lparam };
++    callout( &co );
++}
++
++#else  /* no win32k there */
++
++void win32k_init(void) { }
++void win32k_process_init( struct process *process, process_id_t parent_id, unsigned short machine ) { }
++void win32k_process_gone( struct process *process ) { }
++void win32k_process_system( struct process *process ) { }
++void win32k_thread_init( struct thread *thread ) { }
++void win32k_thread_task( struct thread *thread ) { }
++void win32k_thread_gone( struct thread *thread ) { }
++void win32k_winstation_create( struct winstation *winstation ) { }
++void win32k_winstation_delete( struct winstation *winstation ) { }
++unsigned int win32k_winstation_flags( struct winstation *winstation, int set, unsigned int flags ) { return 0; }
++unsigned int win32k_desktop_create( struct desktop *desktop, unsigned int flags, int existed ) { return 0; }
++void win32k_desktop_delete( struct desktop *desktop ) { }
++unsigned int win32k_desktop_flags( struct desktop *desktop, int set, unsigned int flags ) { return 0; }
++struct obj_locator win32k_desktop_locator( struct desktop *desktop ) { struct obj_locator l = {0}; return l; }
++unsigned int win32k_input_desktop( struct winstation *winstation ) { return 0; }
++unsigned int win32k_set_input_desktop( struct winstation *winstation, struct desktop *desktop ) { return 0; }
++void win32k_process_winstation( struct process *process, struct winstation *winstation, unsigned int access ) { }
++void win32k_process_desktop( struct process *process, struct desktop *desktop, unsigned int access ) { }
++unsigned int win32k_thread_desktop( struct thread *thread, struct desktop *desktop, unsigned int access,
++                                    int chosen, struct obj_locator *locator ) { return 0; }
++void win32k_thread_desktop_release( struct thread *thread, int close ) { }
++void win32k_post_message( user_handle_t win, unsigned int message, lparam_t wparam, lparam_t lparam ) { }
++
++#endif
+diff --git a/server/winstation.c b/server/winstation.c
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -119,6 +119,9 @@
+     .destroy       = desktop_destroy,
+ };
+ 
++/* Arctic: the ids of window stations and desktops, for win32k (win32k.c) */
++static unsigned int next_user_object_id = 1;
++
+ static void winstation_dump( struct object *obj, int verbose )
+ {
+     struct winstation *winstation = (struct winstation *)obj;
+@@ -141,8 +144,10 @@
+     winstation->monitors = NULL;
+     winstation->monitor_count = 0;
+     winstation->monitor_serial = 1;
++    winstation->id = next_user_object_id++;
+     list_init( &winstation->desktops );
+     list_add_tail( &winstation_list, &winstation->entry );
++    if (win32k_active) win32k_winstation_create( winstation );
+     return true;
+ }
+ 
+@@ -177,6 +182,7 @@
+ {
+     struct winstation *winstation = (struct winstation *)obj;
+ 
++    if (win32k_active) win32k_winstation_delete( winstation );
+     list_remove( &winstation->entry );
+     if (winstation->clipboard) release_object( winstation->clipboard );
+     if (winstation->atom_table) release_object( winstation->atom_table );
+@@ -309,6 +315,13 @@
+     }
+     SHARED_WRITE_END;
+ 
++    desktop->id = next_user_object_id++;
++    /* win32k makes its USER body, with the flags inherited as above */
++    if (win32k_active && win32k_desktop_create( desktop, data->flags, 0 ))
++    {
++        set_error( STATUS_NO_MEMORY );
++        return false;
++    }
+     return true;
+ }
+ 
+@@ -361,6 +374,7 @@
+     struct desktop *desktop = (struct desktop *)obj;
+     struct winstation *winstation = desktop->winstation;
+ 
++    if (win32k_active && desktop->id) win32k_desktop_delete( desktop );
+     list_remove( &desktop->entry );
+ 
+     if (desktop == winstation->input_desktop)
+@@ -453,6 +467,11 @@
+     if (thread->desktop) return;  /* nothing to do */
+ 
+     thread->desktop = handle;
++    if (win32k_active)  /* the USER side is win32k's */
++    {
++        win32k_thread_desktop( thread, desktop, get_handle_access( thread->process, handle ), 0, NULL );
++        return;
++    }
+     add_desktop_thread( desktop, thread );
+ }
+ 
+@@ -466,6 +485,14 @@
+ 
+     process->desktop = handle;
+ 
++    if (win32k_active)  /* win32k gives it to its threads that have none, as below */
++    {
++        win32k_process_desktop( process, desktop, get_handle_access( process, handle ) );
++        LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
++            if (!thread->desktop) thread->desktop = handle;
++        return;
++    }
++
+     /* set desktop for threads that don't have one yet */
+     LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
+         set_thread_default_desktop( thread, desktop, handle );
+@@ -514,6 +541,7 @@
+     }
+     if (!winstation) goto done;
+     process->winstation = handle;
++    if (win32k_active) win32k_process_winstation( process, winstation, get_handle_access( process, handle ) );
+ 
+     params.root = &winstation->obj;
+     params.ops  = &desktop_ops;
+@@ -570,6 +598,15 @@
+ 
+     if (!(handle = thread->desktop)) return;
+ 
++    if (win32k_active)
++    {
++        /* the USER side went with win32k_thread_gone or win32k_process_system */
++        if (!close) return;
++        thread->desktop = 0;
++        close_handle( thread->process, handle );
++        return;
++    }
++
+     if (!(desktop = get_desktop_obj( thread->process, handle, 0 ))) clear_error();  /* ignore errors */
+     else
+     {
+@@ -672,6 +709,9 @@
+     {
+         /* FIXME: should we close the old one? */
+         current->process->winstation = req->handle;
++        if (win32k_active)
++            win32k_process_winstation( current->process, winstation,
++                                       get_handle_access( current->process, req->handle ));
+         release_object( winstation );
+     }
+ }
+@@ -703,6 +743,8 @@
+             }
+             SHARED_WRITE_END;
+             clear_error();
++            /* win32k: its flags, and the input desktop of a window station that has none */
++            if (win32k_active) win32k_desktop_create( desktop, data.flags, 1 );
+             reply->handle = alloc_handle( current->process, desktop, req->access, params.attr );
+         }
+         else
+@@ -710,7 +752,8 @@
+             reply->handle = alloc_handle_no_access_check( current->process, desktop,
+                                                           req->access, params.attr );
+         }
+-        if (!winstation->input_desktop) set_input_desktop( winstation, desktop );
++        /* win32k: done with the callout of desktop_init or the one above */
++        if (!win32k_active && !winstation->input_desktop) set_input_desktop( winstation, desktop );
+         release_object( desktop );
+     }
+     if (params.root) release_object( params.root );
+@@ -751,6 +794,21 @@
+ 
+     if (!winstation) return;
+ 
++    if (win32k_active)  /* win32k knows which one has the input */
++    {
++        unsigned int id = win32k_input_desktop( winstation );
++
++        if (id)
++            LIST_FOR_EACH_ENTRY( desktop, &winstation->desktops, struct desktop, entry )
++            {
++                if (desktop->id != id) continue;
++                reply->handle = alloc_handle( current->process, desktop, req->access, req->attributes );
++                break;
++            }
++        release_object( winstation );
++        return;
++    }
++
+     if (!(winstation->flags & WSF_VISIBLE))
+     {
+         set_error( STATUS_ILLEGAL_FUNCTION );
+@@ -777,7 +835,13 @@
+ 
+     if ((desktop = (struct desktop *)get_handle_obj( current->process, req->handle, 0, &desktop_ops )))
+     {
+-        if (!set_input_desktop( winstation, desktop )) set_error( STATUS_ILLEGAL_FUNCTION );
++        unsigned int status;
++
++        if (win32k_active)
++        {
++            if ((status = win32k_set_input_desktop( winstation, desktop ))) set_error( status );
++        }
++        else if (!set_input_desktop( winstation, desktop )) set_error( STATUS_ILLEGAL_FUNCTION );
+         release_object( desktop );
+     }
+ 
+@@ -811,7 +875,9 @@
+     if (!(desktop = get_thread_desktop( thread, 0 ))) clear_error();
+     else
+     {
+-        if (desktop->shared) reply->locator = get_shared_object_locator( desktop->shared );
++        /* win32k: its shared memory is win32k's */
++        if (win32k_active) reply->locator = win32k_desktop_locator( desktop );
++        else if (desktop->shared) reply->locator = get_shared_object_locator( desktop->shared );
+         release_object( desktop );
+     }
+ 
+@@ -841,6 +907,23 @@
+         return;
+     }
+ 
++    if (win32k_active)
++    {
++        /* win32k changes the USER side, or says why it cannot */
++        unsigned int status = win32k_thread_desktop( current, new_desktop,
++                                                     get_handle_access( current->process, req->handle ),
++                                                     1, &reply->locator );
++        if (status) set_error( status );
++        else
++        {
++            current->desktop = req->handle;  /* FIXME: should we close the old one? */
++            if (!current->process->desktop) current->process->desktop = req->handle;
++        }
++        release_object( new_desktop );
++        release_object( winstation );
++        return;
++    }
++
+     /* check if we are changing to a new desktop */
+ 
+     if (!(old_desktop = get_desktop_obj( current->process, current->desktop, 0)))
+@@ -884,6 +967,9 @@
+         struct desktop *desktop = (struct desktop *)obj;
+         reply->is_desktop = 1;
+         reply->old_obj_flags = desktop->shared->flags;
++        if (win32k_active)  /* the flags that count are win32k's */
++            reply->old_obj_flags = win32k_desktop_flags( desktop, !!(req->flags & SET_USER_OBJECT_SET_FLAGS),
++                                                         req->obj_flags );
+         if (req->flags & SET_USER_OBJECT_SET_FLAGS)
+         {
+             SHARED_WRITE_BEGIN( desktop->shared, desktop_shm_t )
+@@ -898,6 +984,9 @@
+         struct winstation *winstation = (struct winstation *)obj;
+         reply->is_desktop = 0;
+         reply->old_obj_flags = winstation->flags;
++        if (win32k_active)
++            reply->old_obj_flags = win32k_winstation_flags( winstation, !!(req->flags & SET_USER_OBJECT_SET_FLAGS),
++                                                            req->obj_flags );
+         if (req->flags & SET_USER_OBJECT_SET_FLAGS) winstation->flags = req->obj_flags;
+     }
+     else
+@@ -999,3 +1088,15 @@
+         set_error( STATUS_BUFFER_TOO_SMALL );
+     }
+ }
++
++/* Arctic: the id win32k knows a desktop by, checking the handle's access */
++DECL_HANDLER(get_desktop_id)
++{
++    struct desktop *desktop;
++
++    if ((desktop = get_desktop_obj( current->process, req->handle, req->access )))
++    {
++        reply->id = desktop->id;
++        release_object( desktop );
++    }
++}

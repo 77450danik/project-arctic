@@ -361,10 +361,12 @@ static void open_start_menu(void)
 
 #define KEY_S          31
 #define KEY_LEFTSHIFT  42
+#define KEY_B          48
 #define KEY_RIGHTSHIFT 54
 
 static BOOL windows_key_alone;  /* down, and nothing else pressed since */
 static BOOL clip_key_down;      /* the S of Win+Shift+S, kept from programs */
+static BOOL reset_key_down;     /* the B of Win+Ctrl+Shift+B, kept from programs */
 static BOOL sas_key_down;       /* the Del of Ctrl+Alt+Del, kept from programs */
 static DWORD last_sas;
 
@@ -400,11 +402,45 @@ static void secure_attention(void)
     last_sas = now;
 }
 
+/* Win+Ctrl+Shift+B, with which Windows starts the graphics driver again:
+ * the monitors go back to the refresh rates they have of their own, a custom
+ * one (Advanced display) that left the screen dark undone without seeing it,
+ * and are set up again (dwm.exe reads both from the volatile display key) */
+static void reset_display(void)
+{
+    DWORD now = GetTickCount();
+    HKEY key;
+
+    if (RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticDisplay", 0, NULL,
+                         REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &key, NULL ))
+        return;
+    MESSAGE( "csrss: Win+Ctrl+Shift+B: the monitors are set up again at their own refresh rates\n" );
+    RegSetValueExW( key, L"ResetRefresh", 0, REG_DWORD, (BYTE *)&now, sizeof(now) );
+    RegSetValueExW( key, L"Relight", 0, REG_DWORD, (BYTE *)&now, sizeof(now) );
+    RegCloseKey( key );
+}
+
+/* The modifiers as the keys themselves say, which this thread sees first:
+ * GetAsyncKeyState here read the state of a desktop the keys did not go to
+ * once USER moved into win32k, and Win+Shift+S and Ctrl+Alt+Del did
+ * nothing (2026-11-18). */
+static BOOL key_down[256];
+
+static void track_key( UINT key, int value )
+{
+    if (key < ARRAY_SIZE(key_down)) key_down[key] = value != 0;
+}
+
+static BOOL win_down(void)   { return key_down[KEY_LEFTMETA] || key_down[KEY_RIGHTMETA]; }
+static BOOL shift_down(void) { return key_down[42 /* KEY_LEFTSHIFT */] || key_down[54 /* KEY_RIGHTSHIFT */]; }
+static BOOL ctrl_down(void)  { return key_down[29 /* KEY_LEFTCTRL */] || key_down[KEY_RIGHTCTRL]; }
+static BOOL alt_down(void)   { return key_down[56 /* KEY_LEFTALT */] || key_down[KEY_RIGHTALT]; }
+
 /* The Windows key's chords that are the system's. TRUE: the key goes to no
  * program, as a hotkey's does not. */
 static BOOL windows_key_chord( UINT key, int value )
 {
-    BOOL win = GetAsyncKeyState( VK_LWIN ) < 0 || GetAsyncKeyState( VK_RWIN ) < 0;
+    BOOL win = win_down();
 
     if (key == KEY_LEFTMETA || key == KEY_RIGHTMETA)
     {
@@ -421,7 +457,7 @@ static BOOL windows_key_chord( UINT key, int value )
     /* Ctrl+Alt+Del, with the Del of the keypad too, as in Windows */
     if (key == KEY_DELETE || key == KEY_KPDOT)
     {
-        if (value == 1 && GetAsyncKeyState( VK_CONTROL ) < 0 && GetAsyncKeyState( VK_MENU ) < 0)
+        if (value == 1 && ctrl_down() && alt_down())
         {
             sas_key_down = TRUE;
             secure_attention();
@@ -434,13 +470,31 @@ static BOOL windows_key_chord( UINT key, int value )
         }
     }
 
+    /* Win+Ctrl+Shift+B: the display set up again */
+    if (key == KEY_B)
+    {
+        if (value == 1 && win && shift_down() && ctrl_down() &&
+            !alt_down())
+        {
+            reset_key_down = TRUE;
+            reset_display();
+            return TRUE;
+        }
+        if (reset_key_down)
+        {
+            if (!value) reset_key_down = FALSE;
+            return TRUE;
+        }
+    }
+
     /* Win+Shift+S: screen snipping, the overlay of the Snipping Tool */
     if (key == KEY_S)
     {
-        if (value == 1 && win && GetAsyncKeyState( VK_SHIFT ) < 0 && GetAsyncKeyState( VK_CONTROL ) >= 0 &&
-            GetAsyncKeyState( VK_MENU ) >= 0)
+        if (value == 1 && win && shift_down() && !ctrl_down() &&
+            !alt_down())
         {
             clip_key_down = TRUE;
+            MESSAGE( "csrss: Win+Shift+S\n" );
             screen_snip();
             return TRUE;
         }
@@ -530,6 +584,7 @@ static DWORD WINAPI raw_input_thread( void *arg )
 
                 if (layout) ActivateKeyboardLayout( layout, 0 );
                 if (event->value) follow_input_language();
+                track_key( event->code, event->value );
                 if ((system = windows_key_chord( event->code, event->value )))
                 {
                     if (event->code == repeat_key) repeat_key = 0;
@@ -537,7 +592,7 @@ static DWORD WINAPI raw_input_thread( void *arg )
                 }
                 send_key( event->code, event->value );
                 if (language_chord( event->code, event->value )) next_input_language();
-                if (event->code == KEY_SYSRQ && event->value == 1) print_screen();
+                if (event->code == KEY_SYSRQ && event->value == 1) print_screen( win_down(), alt_down() );
                 if (event->code == KEY_POWER || event->code == KEY_SLEEP)
                 {
                     HANDLE thread;

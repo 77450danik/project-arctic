@@ -1,0 +1,47 @@
+# Images laid out by the kernel (kernel 0006 /dev/ntimage, Wine 0143): Chrome,
+# whose chrome.dll keeps its sections at 512-byte offsets, starts and draws;
+# so do a few programs of C:\Windows; the Task Manager then shows no "Cached
+# program images" row (nothing in /run/nt/imagecache) and the memory of the
+# images is cache, not in use.
+sleep 8
+key win-r
+sleep 2
+type "C:\Program Files\Google\Chrome\Application\chrome.exe" --no-first-run --no-default-browser-check chrome://version
+key ret
+sleep 45
+shot m19-chrome
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 6
+key win-r
+sleep 2
+type mspaint
+key ret
+sleep 8
+shot m19-programs
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 0 /f
+key ret
+sleep 3
+key ctrl-shift-esc
+sleep 8
+move 500 450
+click
+sleep 1
+key end
+sleep 3
+shot m19-taskmgr
+key win-r
+sleep 2
+type reg add HKCU\Software\Microsoft\Windows\CurrentVersion\TaskManager /v Arctic.Page /t REG_DWORD /d 1 /f
+key ret
+sleep 2
+key alt-f4
+sleep 2
+key ctrl-shift-esc
+sleep 8
+shot m19-perf
+sleep 2

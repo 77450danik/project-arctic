@@ -20,7 +20,9 @@ if [ ! -f "$OUT/kernel/vmlinuz" ]; then
     xorriso -osirrox on -indev "$ROOT/out/arctic.iso" \
         -extract /arctic/vmlinuz "$OUT/kernel/vmlinuz" \
         -extract /arctic/host.sqfs /tmp/kernel-from-iso/host.sqfs >/dev/null 2>&1
-    unsquashfs -q -d /tmp/kernel-from-iso/root /tmp/kernel-from-iso/host.sqfs usr/lib/modules
+    # host.sqfs is EROFS since 2026-11-17, squashfs before
+    unsquashfs -q -d /tmp/kernel-from-iso/root /tmp/kernel-from-iso/host.sqfs usr/lib/modules 2>/dev/null ||
+        fsck.erofs --extract=/tmp/kernel-from-iso/root /tmp/kernel-from-iso/host.sqfs
     mv /tmp/kernel-from-iso/root/usr/lib/modules "$OUT/kernel/lib/modules"
     rm -rf /tmp/kernel-from-iso
 fi

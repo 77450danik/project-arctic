@@ -15,6 +15,8 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+#include <stdio.h>
+#include <string.h>
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "taskmgr.h"
@@ -476,6 +478,97 @@ void data_init(void)
 
 /* ------------------------------------------------------------------ sampling */
 
+/* Memory in use that no process has as its own, in rows of its own, so that
+ * the Memory column adds up to "In use" exactly (2026-11-17: 8 GB in use,
+ * the processes 3 GB). The host's figures are read where they are. */
+#define PSEUDO_COUNT 4
+
+static DWORD read_unix_file( const WCHAR *path, char *buf, DWORD size )
+{
+    HANDLE h = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
+    DWORD got = 0, n;
+
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    while (got + 1 < size && ReadFile( h, buf + got, size - 1 - got, &n, NULL ) && n) got += n;
+    CloseHandle( h );
+    buf[got] = 0;
+    return got;
+}
+
+static ULONGLONG meminfo_value( const char *text, const char *key )
+{
+    const char *p = strstr( text, key );
+    return p ? _strtoui64( p + strlen( key ), NULL, 10 ) * 1024 : 0;
+}
+
+static void add_pseudo( UINT ids, DWORD pid, ULONGLONG bytes )
+{
+    struct proc *p = &procs[proc_count++];
+
+    memset( p, 0, sizeof(*p) );
+    p->pid = pid;
+    p->pseudo = TRUE;
+    p->kind = KIND_WINDOWS;
+    p->icon = default_icon();
+    p->private_ws = p->working_set = (SIZE_T)bytes;
+    lstrcpynW( p->title, load_string( ids ), ARRAY_SIZE(p->title) );
+    lstrcpynW( p->exe, p->title, ARRAY_SIZE(p->exe) );
+    lstrcpyW( p->user, L"SYSTEM" );
+}
+
+static void add_system_memory(void)
+{
+    static char text[8192];
+    ULONGLONG total, avail, used, shmem, zram = 0, images = 0, programs = 0, rest;
+    WIN32_FIND_DATAW fd;
+    HANDLE find;
+
+    if (!read_unix_file( L"\\\\?\\unix\\proc\\meminfo", text, sizeof(text) )) return;
+    total = meminfo_value( text, "MemTotal:" );
+    avail = meminfo_value( text, "MemAvailable:" );
+    shmem = meminfo_value( text, "Shmem:" );
+    if (!total || avail > total) return;
+    used = total - avail;
+
+    /* compressed memory: what the zram devices hold in RAM (mm_stat's third
+     * number), the swap of compressed pages and, in live mode, C:'s changes */
+    for (int i = 0; i < 8; i++)
+    {
+        WCHAR path[64];
+        unsigned long long orig, compr, mem;
+
+        swprintf( path, ARRAY_SIZE(path), L"\\\\?\\unix\\sys\\block\\zram%d\\mm_stat", i );
+        if (read_unix_file( path, text, sizeof(text) ) && sscanf( text, "%llu %llu %llu", &orig, &compr, &mem ) == 3)
+            zram += mem;
+    }
+
+    /* the images of programs kept in memory to be shared (tmpfs, so shmem) */
+    if ((find = FindFirstFileW( L"\\\\?\\unix\\run\\nt\\imagecache\\*", &fd )) != INVALID_HANDLE_VALUE)
+    {
+        do
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                images += ((ULONGLONG)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        while (FindNextFileW( find, &fd ));
+        FindClose( find );
+    }
+    if (images > shmem) images = shmem;
+
+    for (UINT i = 0; i < proc_count; i++) programs += procs[i].private_ws;
+
+    /* the kernel, its caches that cannot be dropped, the drivers, the host's
+     * own services: what remains, so that the rows add up */
+    rest = used > programs + zram + shmem ? used - programs - zram - shmem : 0;
+
+    {
+        DWORD system_pid = 4;   /* as Windows numbers it, unless a process here has 4 */
+        for (UINT i = 0; i < proc_count; i++) if (procs[i].pid == 4) system_pid = 0xfffffff0;
+        add_pseudo( IDS_MEM_SYSTEM, system_pid, rest );
+    }
+    if (zram) add_pseudo( IDS_MEM_COMPRESSION, 0xfffffff1, zram );
+    if (shmem > images) add_pseudo( IDS_MEM_SHARED, 0xfffffff2, shmem - images );
+    if (images) add_pseudo( IDS_MEM_IMAGES, 0xfffffff3, images );
+}
+
 static void sample_processes( double elapsed_100ns )
 {
     ULONG size = 512 * 1024, len;
@@ -500,7 +593,7 @@ static void sample_processes( double elapsed_100ns )
         if (!spi->NextEntryOffset) break;
     }
     free( procs );
-    if (!(procs = calloc( count, sizeof(*procs) ))) { free( buf ); proc_count = 0; return; }
+    if (!(procs = calloc( count + PSEUDO_COUNT, sizeof(*procs) ))) { free( buf ); proc_count = 0; return; }
     for (UINT i = 0; i < known_count; i++) known[i].alive = FALSE;
 
     proc_count = 0;
@@ -542,7 +635,10 @@ static void sample_processes( double elapsed_100ns )
                 }
             }
             p->working_set = spi->vmCounters.WorkingSetSize;
-            p->private_ws = spi->vmCounters.PagefileUsage ? spi->vmCounters.PagefileUsage : spi->vmCounters.PrivateUsage;
+            /* ntdll fills the private working set (Wine 0142); before it, the
+             * private pages and what of them is paged out */
+            if (spi->WorkingSetPrivateSize.QuadPart) p->private_ws = spi->WorkingSetPrivateSize.QuadPart;
+            else p->private_ws = spi->vmCounters.PagefileUsage ? spi->vmCounters.PagefileUsage : spi->vmCounters.PrivateUsage;
             p->commit = spi->vmCounters.PrivateUsage ? spi->vmCounters.PrivateUsage : p->private_ws;
             p->io_bytes = io;
             /* every thread waiting for a resume: suspended, as Windows says */
@@ -601,6 +697,7 @@ static void sample_processes( double elapsed_100ns )
     sysinfo.processes = proc_count;
     sysinfo.threads = threads;
     sysinfo.handles = handles;
+    add_system_memory();
 }
 
 static double sample_cpu( struct sample *s, double elapsed_100ns )
@@ -831,6 +928,21 @@ void data_sample(void)
     memset( s, 0, sizeof(*s) );
     sample_processes( elapsed_ms * 10000.0 );
     s->cpu = sample_cpu( s, elapsed_ms * 10000.0 );
+    {
+        /* the processor the processes of the NT side did not use went to the
+         * host: the kernel, its services, the subsystem for Linux (a build in
+         * a container showed 100 % with every row near 0); "System" has it,
+         * so that the CPU column adds up as the memory one does */
+        double programs = 0;
+        struct proc *system = NULL;
+
+        for (UINT i = 0; i < proc_count; i++)
+        {
+            if (!procs[i].pseudo) programs += procs[i].cpu;
+            else if (procs[i].pid == 4 || procs[i].pid == 0xfffffff0) system = &procs[i];
+        }
+        if (system && have_last) system->cpu = s->cpu > programs ? s->cpu - programs : 0;
+    }
     sample_memory( s );
     /* a disk plugged in or taken out shows within a few seconds */
     if (addresses_every && !(addresses_every % 5)) read_disks();
@@ -877,6 +989,8 @@ BOOL data_end_process( DWORD pid, BOOL tree )
     HANDLE process;
     BOOL ret;
 
+    for (UINT i = 0; i < proc_count; i++)
+        if (procs[i].pid == pid && procs[i].pseudo) return FALSE;
     if (tree) end_children( pid );
     if (!(process = OpenProcess( PROCESS_TERMINATE, FALSE, pid ))) return FALSE;
     ret = TerminateProcess( process, 1 );

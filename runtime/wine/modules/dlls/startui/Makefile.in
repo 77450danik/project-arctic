@@ -15,9 +15,12 @@ SOURCES = \
 	menu.c \
 	menu10.c \
 	menu11.c \
+	menupics.c \
 	personalize.c \
 	pins.c \
 	popup.c \
+	search.c \
+	search11.c \
 	settings.c \
 	startpage.c \
 	taskbar.c \

@@ -8,9 +8,9 @@ bluetoothd, PipeWire чи bluez-alsa в образі немає.
 
 | Windows | Arctic |
 |---|---|
-| bthport.sys, bthusb.sys | `winebth.sys` (модуль Arctic замість Wine-івського): PE-драйвер шини + unix-частина, що говорить з ядром напряму |
+| bthport.sys, bthusb.sys | `winbth.sys` (модуль Arctic замість Wine-івського; у дереві `modules/dlls/winebth.sys`, ім'я міняє `ci/wine-names.pl`): PE-драйвер шини + unix-частина, що говорить з ядром напряму |
 | BluetoothApis.dll, bthprops.cpl | Wine-івські, з правками Arctic (`modules/dlls/bluetoothapis/main.c`) |
-| BthA2dp.sys + аудіоендпоінт | A2DP у `winebth.sys` (`profiles.c`, кодер SBC `sbc.c`), вихід у winealsa (патч 0126) |
+| BthA2dp.sys + аудіоендпоінт | A2DP у `winbth.sys` (`profiles.c`, кодер SBC `sbc.c`), вихід у winealsa (патч 0126) |
 | AVRCP-транспорт | AVRCP Target у `profiles.c` → медіаклавіші через `sndvolsso.dll` |
 | fsquirt.exe | `programs/fsquirt` + вікно в `devicescpl.dll`, OBEX Object Push у `obex.c` |
 | Параметри → Bluetooth і пристрої, DevicePairingWizard | `devicescpl.dll`: «Пристрої та принтери» + майстер «Додавання пристрою» |
@@ -26,9 +26,9 @@ bluetoothd, PipeWire чи bluez-alsa в образі немає.
 (SCM_RIGHTS), як `arctic-disk` для дисків. Решту робить драйвер сам.
 Ще він знімає програмний rfkill, коли радіо вмикають.
 
-## winebth.sys
+## winbth.sys
 
-PE-частина (`winebth.c`) — Wine-івська: радіо й віддалені пристрої як PDO,
+PE-частина (`winebth.c`, у зібраному дереві `winbth.c`) — Wine-івська: радіо й віддалені пристрої як PDO,
 IOCTL bthioctl.h і `wine/winebth.h`. Додано (IOCTL Arctic, `0xb0`–`0xb6`):
 живлення радіо, його стан (увімкнено, пошук, чия музика грає),
 підключення профілів пристрою, надсилання файлу та його хід і скасування,
@@ -127,7 +127,7 @@ HFP-шним. Драйвер віддає все IOCTL `0xb6` (`GET_BATTERY`); `
 
 ## Журнал
 
-Драйвер завжди пише в `nt.log` (`winebth:`): підключення з класом і причиною
+Драйвер завжди пише в `nt.log` (`winbth:`; до перейменування — `winebth:`): підключення з класом і причиною
 відключення, сигнали AVDTP і відмови з кодами, налаштування SBC,
 START/SUSPEND, AT-команди гарнітури, заряд.
 

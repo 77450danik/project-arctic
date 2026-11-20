@@ -414,7 +414,7 @@ BOOL WINAPI ArcticTaskbarJumpList( HWND owner, const HWND *windows, UINT count, 
     else pt.y = button->bottom + (style == POPUP_WIN11 ? px( 8 ) : 0);
 
     look_load_taskbar( &look );
-    chosen = popup_track( root, pt, align, items, n, style, &look );
+    chosen = popup_track( root, pt, align, items, n, style | POPUP_TASKBAR, &look );
     if (icon) DeleteObject( icon );
 
     if (previous && previous != root && IsWindow( previous )) SetForegroundWindow( previous );
@@ -491,18 +491,57 @@ static const struct popup_item *convert_menu( HMENU menu, UINT *count, int depth
     return n ? block : NULL;
 }
 
+/* what the taskbar's menu has of its own, before explorer's items, as in
+ * Windows 10: the search and the Task View button */
+#define ID_SEARCH_HIDDEN     0xae01
+#define ID_SEARCH_ICON       0xae02
+#define ID_SEARCH_BOX        0xae03
+#define ID_SEARCH_LABEL      0xae04
+#define ID_TASKVIEW_BUTTON   0xae05
+#define ID_TRAY_PROPERTIES   401   /* explorer's ID_SHELL_CMD_PROPERTIES */
+#define ID_TRAY_TASKMGR      405   /* explorer's ID_SHELL_CMD_OPEN_TASKMGR: the menu is the taskbar's */
+
+static BOOL menu_has( HMENU menu, UINT id )
+{
+    MENUITEMINFOW info = { sizeof(info), MIIM_ID };
+    return GetMenuItemInfoW( menu, id, FALSE, &info );
+}
+
 BOOL WINAPI ArcticTrackTaskbarMenu( HMENU menu, HWND owner, const POINT *where, UINT *command )
 {
-    int style = read_option( L"ButtonStyle" ) == 1 ? POPUP_WIN11 : POPUP_WIN10;
-    int gap = style == POPUP_WIN11 ? px( 8 ) : 0;
+    static struct popup_item search_items[4], all[MENU_MAX + 3];
+    BOOL win11 = read_option( L"ButtonStyle" ) == 1;
+    int style = (win11 ? POPUP_WIN11 : POPUP_WIN10) | POPUP_TASKBAR;
+    int gap = win11 ? px( 8 ) : 0;
     MONITORINFO info = { sizeof(info) };
     const struct popup_item *items;
-    UINT count, align = TPM_LEFTALIGN;
+    UINT count, total = 0, align = TPM_LEFTALIGN, n = 0;
+    DWORD mode = search_mode();
     struct look look;
     POINT pt = *where;
 
     menu_used = 0;
     if (!(items = convert_menu( menu, &count, 0 ))) return FALSE;
+    for (UINT i = 0; i < count; i++)
+        if (items[i].id == ID_TRAY_PROPERTIES) ((struct popup_item *)items)[i].glyph = GLYPH_SETTINGS;
+
+    if (menu_has( menu, ID_TRAY_TASKMGR ))
+    {
+        search_items[n++] = (struct popup_item){ ID_SEARCH_HIDDEN, load_string( IDS_SEARCH_HIDE ), GLYPH_NONE,
+                                                 mode == SEARCH_HIDDEN };
+        search_items[n++] = (struct popup_item){ ID_SEARCH_ICON, load_string( IDS_SEARCH_ICON ), GLYPH_NONE,
+                                                 mode == SEARCH_ICON };
+        if (win11)
+            search_items[n++] = (struct popup_item){ ID_SEARCH_LABEL, load_string( IDS_SEARCH_ICON_LABEL ), GLYPH_NONE,
+                                                     mode == SEARCH_ICON_LABEL };
+        search_items[n++] = (struct popup_item){ ID_SEARCH_BOX, load_string( IDS_SEARCH_BOX_MODE ), GLYPH_NONE,
+                                                 mode == SEARCH_BOX };
+        all[total++] = (struct popup_item){ 0, load_string( IDS_SEARCH_BOX ), GLYPH_SEARCH, FALSE, FALSE, search_items, n };
+        all[total++] = (struct popup_item){ ID_TASKVIEW_BUTTON, load_string( IDS_SHOW_TASKVIEW ), GLYPH_NONE,
+                                            taskview_button_shown() };
+        all[total++] = (struct popup_item){ 0 };
+    }
+    for (UINT i = 0; i < count && total < ARRAY_SIZE(all); i++) all[total++] = items[i];
 
     /* against the taskbar, whichever edge it is on */
     GetMonitorInfoW( MonitorFromPoint( pt, MONITOR_DEFAULTTONEAREST ), &info );
@@ -515,7 +554,18 @@ BOOL WINAPI ArcticTrackTaskbarMenu( HMENU menu, HWND owner, const POINT *where, 
     else align |= TPM_BOTTOMALIGN;
 
     look_load_taskbar( &look );
-    *command = popup_track( owner, pt, align, items, count, style, &look );
+    *command = popup_track( owner, pt, align, all, total, style, &look );
+    switch (*command)
+    {
+    case ID_SEARCH_HIDDEN:   search_set_mode( SEARCH_HIDDEN ); break;
+    case ID_SEARCH_ICON:     search_set_mode( SEARCH_ICON ); break;
+    case ID_SEARCH_LABEL:    search_set_mode( SEARCH_ICON_LABEL ); break;
+    case ID_SEARCH_BOX:      search_set_mode( SEARCH_BOX ); break;
+    case ID_TASKVIEW_BUTTON: taskview_button_show( !taskview_button_shown() ); break;
+    default: return TRUE;
+    }
+    /* chosen here: nothing for explorer to do */
+    *command = 0;
     return TRUE;
 }
 

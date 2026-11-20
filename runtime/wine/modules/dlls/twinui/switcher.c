@@ -525,6 +525,7 @@ static DWORD WINAPI switcher_thread( void *arg )
         if (!RegisterHotKey( switcher, HOTKEY_NEXT, MOD_ALT, VK_TAB ) ||
             !RegisterHotKey( switcher, HOTKEY_PREVIOUS, MOD_ALT | MOD_SHIFT, VK_TAB ))
             ERR( "Alt+Tab is taken: %lu\n", GetLastError() );
+        taskview_init();
     }
     SetEvent( ready );
     if (!switcher) return 1;

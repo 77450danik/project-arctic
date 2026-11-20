@@ -113,6 +113,57 @@ void monitor_write_scaling( const struct monitor *m )
     store_write( m, L"Scaling", m->scaling );
 }
 
+/* Custom refresh rates (dwmcore.c): the mHz kept, a DWORD each; the one on
+ * trial; whether they are offered. dwm.exe follows each change at once. */
+/* each rate: mHz, and the blank in the top four bits (CUSTOM_RATE) */
+UINT monitor_custom_rates( const struct monitor *m, DWORD *rates, UINT max )
+{
+    DWORD values[CUSTOM_MAX], size = sizeof(values);
+    WCHAR key[128];
+    UINT count = 0;
+
+    if (!m->pnp[0]) return 0;
+    swprintf( key, ARRAY_SIZE(key), L"%s\\%s", MONITOR_STORE_KEY, m->pnp );
+    if (RegGetValueW( HKEY_LOCAL_MACHINE, key, L"CustomRefresh", RRF_RT_REG_BINARY, NULL, values, &size )) return 0;
+    for (UINT i = 0; i < size / sizeof(DWORD) && count < max; i++) rates[count++] = values[i];
+    return count;
+}
+
+void monitor_custom_set_rates( const struct monitor *m, const DWORD *values, UINT count )
+{
+    DWORD rates[CUSTOM_MAX];
+    WCHAR key[128];
+
+    if (!m->pnp[0]) return;
+    swprintf( key, ARRAY_SIZE(key), L"%s\\%s", MONITOR_STORE_KEY, m->pnp );
+    count = min( count, CUSTOM_MAX );
+    for (UINT i = 0; i < count; i++) rates[i] = values[i];
+    if (count) RegSetKeyValueW( HKEY_LOCAL_MACHINE, key, L"CustomRefresh", REG_BINARY, rates, count * sizeof(DWORD) );
+    else RegDeleteKeyValueW( HKEY_LOCAL_MACHINE, key, L"CustomRefresh" );
+}
+
+BOOL monitor_custom_on( const struct monitor *m )
+{
+    DWORD off = 0;
+
+    return !store_read( m, L"CustomRefreshOff", &off ) || !off;
+}
+
+void monitor_custom_set_on( const struct monitor *m, BOOL on )
+{
+    store_write( m, L"CustomRefreshOff", on ? 0 : 1 );
+}
+
+void monitor_custom_trial( const struct monitor *m, DWORD rate )
+{
+    WCHAR key[128];
+
+    if (!m->pnp[0]) return;
+    swprintf( key, ARRAY_SIZE(key), L"%s\\%s", MONITOR_STORE_KEY, m->pnp );
+    if (rate) store_write( m, L"CustomRefreshTrial", rate );
+    else RegDeleteKeyValueW( HKEY_LOCAL_MACHINE, key, L"CustomRefreshTrial" );
+}
+
 /**********************************************************************
  *          The list of monitors
  */

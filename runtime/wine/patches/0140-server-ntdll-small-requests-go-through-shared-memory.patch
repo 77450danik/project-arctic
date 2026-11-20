@@ -1,0 +1,867 @@
+From: Project Arctic
+Subject: server, ntdll: small requests go through shared memory.
+
+A request took 6.6 us although the server spends about 1 us on it: the
+rest is the request and reply pipes, and waking the server and the thread up.
+On this kernel a bare system call is 0.5 us, a pipe round trip 5.3 us and a
+futex round trip with both sides spinning 0.6 us (tests/tools/ipcfloor.c).
+
+A process now gives the server a sealed memfd with a slot for each thread and
+an eventfd (register_fastcall). A request that fits (4 KB of data and of
+reply) goes into the thread's slot and a bit in the area's pending words; the
+server takes posted slots between its other events, looks for more for up to
+50 us while they come close together, and before it sleeps in epoll sets
+server_sleeping in every area, after which the clients ring the doorbell. The
+thread spins for its reply for up to 15 us and then sleeps on the slot's
+state (a futex), checking once a second that the server is still there.
+The server copies the request out of the slot and checks it like one read
+from a pipe; the area must be sealed against shrinking.
+
+Requests that do not fit, data behind a bad pointer (the pipe gives the
+program its STATUS_ACCESS_VIOLATION as before), a call made while the thread
+is in another and a thread beyond the 256th of a process use the pipes. So
+does everything with fewer than 4 processors or NT_FASTCALL=0.
+---
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index fa9138d..8ebfc5d 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -279,6 +279,252 @@ static inline unsigned int wait_reply( int reply_fd, struct __server_request_inf
+ }
+ 
+ 
++/***********************************************************************
++ * Arctic: fast calls
++ *
++ * A small request goes to the server through the thread's slot of the
++ * process's fast call area (fastcall_area_t), not through the pipes: no
++ * system call while the server is busy anyway, and a short spin instead of
++ * sleeping for a reply that is a few microseconds away. The server looks
++ * for posted slots while it has work and sleeps in epoll otherwise; the
++ * doorbell eventfd wakes it then. Anything that does not fit in a slot,
++ * a request whose data the program gave us a bad pointer for (so that it
++ * gets STATUS_ACCESS_VIOLATION as before) and a call made while a fast call
++ * is in progress on the thread go through the pipes. NT_FASTCALL=0 in the
++ * environment, or fewer than 4 processors (spinning needs a processor for
++ * each side), keeps all requests on the pipes.
++ */
++#ifdef __linux__
++#include <poll.h>
++#include <time.h>
++#include <sys/eventfd.h>
++#include <linux/futex.h>
++
++static fastcall_area_t *fastcall_area;
++static int fastcall_doorbell = -1;
++static LONG64 fastcall_used[FASTCALL_SLOTS / 64];
++static unsigned int fastcall_spin_ns;  /* how long a thread spins for its reply */
++
++C_ASSERT( sizeof(union generic_request) == sizeof(((fastcall_slot_t *)0)->req) );
++C_ASSERT( sizeof(union generic_reply) == sizeof(((fastcall_slot_t *)0)->reply) );
++
++static int fastcall_futex( volatile int *addr, int op, int val, const struct timespec *timeout )
++{
++    /* not FUTEX_PRIVATE: the server shares the memory */
++    return syscall( SYS_futex, (int *)addr, op, val, timeout, NULL, 0 );
++}
++
++/* the process's area, made by the first thread */
++static int fastcall_init_process(void)
++{
++    const char *env = getenv( "NT_FASTCALL" );
++    fastcall_area_t *area;
++    int fd;
++
++    if (env && !strcmp( env, "0" )) return -1;
++    /* the server and the thread each keep a processor while they spin: below
++     * 4 that is taken from everything else. With 4 (a VM of 4 vCPUs,
++     * 2026-11-16, three runs each) CreateThread and SetWindowPos were as fast
++     * or faster than without */
++    if (sysconf( _SC_NPROCESSORS_ONLN ) < 4) return -1;
++    if ((fd = memfd_create( "nt-fastcall", MFD_CLOEXEC | MFD_ALLOW_SEALING )) == -1) return -1;
++    if (ftruncate( fd, sizeof(*area) ) == -1 ||
++        fcntl( fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL ) == -1 ||
++        (area = mmap( NULL, sizeof(*area), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 )) == MAP_FAILED)
++    {
++        close( fd );
++        return -1;
++    }
++    if ((fastcall_doorbell = eventfd( 0, EFD_CLOEXEC | EFD_NONBLOCK )) == -1)
++    {
++        munmap( (void *)area, sizeof(*area) );
++        close( fd );
++        return -1;
++    }
++    fastcall_area = area;
++    /* a reply from a server that is awake takes 1-3 us, one it has to be woken
++     * for 5-10 us: longer than that, sleeping costs less than spinning */
++    fastcall_spin_ns = 15000;
++    return fd;
++}
++
++static int fastcall_alloc_slot(void)
++{
++    unsigned int i, bit;
++
++    for (i = 0; i < ARRAY_SIZE(fastcall_used); i++)
++    {
++        LONG64 used;
++        while (~(used = fastcall_used[i]))
++        {
++            bit = __builtin_ctzll( ~used );
++            if (InterlockedCompareExchange64( &fastcall_used[i], used | (1ull << bit), used ) == used)
++                return i * 64 + bit;
++        }
++    }
++    return -1;
++}
++
++static void fastcall_free_slot( unsigned int index )
++{
++    LONG64 used;
++    do used = fastcall_used[index / 64];
++    while (InterlockedCompareExchange64( &fastcall_used[index / 64], used & ~(1ull << (index % 64)), used ) != used);
++}
++
++/* register the thread's slot with the server; the first thread also gives it the area */
++static void fastcall_init_thread( struct thread_data *data, BOOL first )
++{
++    int area_fd = -1, index;
++    fastcall_slot_t *slot;
++    unsigned int status;
++
++    if (first && (area_fd = fastcall_init_process()) == -1) return;
++    if (!fastcall_area) return;
++    if ((index = fastcall_alloc_slot()) == -1) return;
++
++    slot = &fastcall_area->slots[index];
++    slot->state = FASTCALL_IDLE;
++    slot->waiting = 0;
++    if (first)
++    {
++        wine_server_send_fd( area_fd );
++        wine_server_send_fd( fastcall_doorbell );
++    }
++    SERVER_START_REQ( register_fastcall )
++    {
++        req->area_fd     = area_fd;
++        req->doorbell_fd = first ? fastcall_doorbell : -1;
++        req->slot        = index;
++        status = wine_server_call( req );
++    }
++    SERVER_END_REQ;
++    if (area_fd != -1) close( area_fd );
++
++    if (status)
++    {
++        WARN( "no fast calls: %#x\n", status );
++        fastcall_free_slot( index );
++        if (first)  /* the server does not take them: pipes only */
++        {
++            munmap( (void *)fastcall_area, sizeof(*fastcall_area) );
++            fastcall_area = NULL;
++            close( fastcall_doorbell );
++            fastcall_doorbell = -1;
++        }
++        return;
++    }
++    data->fastcall = slot;
++    data->fastcall_index = index;
++}
++
++void fastcall_exit_thread( struct thread_data *data )
++{
++    if (!data->fastcall) return;
++    data->fastcall = NULL;
++    fastcall_free_slot( data->fastcall_index );
++}
++
++/* the request through the thread's slot; FALSE if it has to go through the pipes */
++static BOOL fastcall( struct thread_data *data, struct __server_request_info *req, unsigned int *ret )
++{
++    fastcall_slot_t *slot = data->fastcall;
++    unsigned int size = req->u.req.request_header.request_size, reply_size, i, spin;
++    /* the reply goes over the request in req->u: keep what was asked for */
++    unsigned int reply_max = req->u.req.request_header.reply_size;
++    BOOL copied = FALSE, replied;
++    char *ptr;
++
++    if (size > FASTCALL_DATA_SIZE || reply_max > FASTCALL_DATA_SIZE) return FALSE;
++    if (data->jmp_buf) return FALSE;  /* inside a __TRY already */
++    if (__atomic_load_n( &slot->state, __ATOMIC_ACQUIRE ) != FASTCALL_IDLE) return FALSE;  /* a call in a call */
++    slot->state = FASTCALL_FILLING;
++
++    memcpy( (void *)slot->req, &req->u.req, sizeof(req->u.req) );
++    __TRY
++    {
++        for (i = 0, ptr = (char *)slot->data; i < req->data_count; i++)
++        {
++            memcpy( ptr, req->data[i].ptr, req->data[i].size );
++            ptr += req->data[i].size;
++        }
++        copied = TRUE;
++    }
++    __EXCEPT
++    {
++    }
++    __ENDTRY
++    if (!copied)  /* a bad pointer: the pipe gives the program its error */
++    {
++        __atomic_store_n( &slot->state, FASTCALL_IDLE, __ATOMIC_RELEASE );
++        return FALSE;
++    }
++
++    __atomic_store_n( &slot->state, FASTCALL_POSTED, __ATOMIC_SEQ_CST );
++    __atomic_fetch_or( &fastcall_area->pending[data->fastcall_index / 64],
++                       1ull << (data->fastcall_index % 64), __ATOMIC_SEQ_CST );
++    if (__atomic_load_n( &fastcall_area->server_sleeping, __ATOMIC_SEQ_CST ))
++    {
++        static const UINT64 one = 1;
++        write( fastcall_doorbell, &one, sizeof(one) );
++    }
++
++    /* the reply: spin for a while (time, not loops: a pause takes 10 to 140 cycles) */
++    replied = FALSE;
++    if (fastcall_spin_ns)
++    {
++        struct timespec now;
++        ULONGLONG end;
++
++        clock_gettime( CLOCK_MONOTONIC, &now );
++        end = now.tv_sec * 1000000000ull + now.tv_nsec + fastcall_spin_ns;
++        for (spin = 0; ; spin++)
++        {
++            if (__atomic_load_n( &slot->state, __ATOMIC_ACQUIRE ) == FASTCALL_REPLIED)
++            {
++                replied = TRUE;
++                break;
++            }
++            YieldProcessor();
++            if (spin % 16 == 15)
++            {
++                clock_gettime( CLOCK_MONOTONIC, &now );
++                if (now.tv_sec * 1000000000ull + now.tv_nsec >= end) break;
++            }
++        }
++    }
++    if (!replied)
++    {
++        static const struct timespec second = { 1, 0 };
++
++        for (;;)
++        {
++            __atomic_store_n( &slot->waiting, 1, __ATOMIC_SEQ_CST );
++            if (__atomic_load_n( &slot->state, __ATOMIC_SEQ_CST ) == FASTCALL_REPLIED) break;
++            if (fastcall_futex( &slot->state, FUTEX_WAIT, FASTCALL_POSTED, &second ) == -1 &&
++                errno == ETIMEDOUT)
++            {
++                /* is the server still there? the reply pipe hangs up when it goes */
++                struct pollfd pfd = { data->reply_fd, POLLIN, 0 };
++                if (poll( &pfd, 1, 0 ) == 1 && (pfd.revents & (POLLHUP | POLLERR))) abort_thread( 0 );
++            }
++        }
++        slot->waiting = 0;
++    }
++
++    memcpy( &req->u.reply, (void *)slot->reply, sizeof(req->u.reply) );
++    reply_size = req->u.reply.reply_header.reply_size;
++    if (reply_size) memcpy( req->reply_data, (void *)slot->data, min( reply_size, reply_max ));
++    __atomic_store_n( &slot->state, FASTCALL_IDLE, __ATOMIC_RELEASE );
++    *ret = req->u.reply.reply_header.error;
++    return TRUE;
++}
++#else
++static void fastcall_init_thread( struct thread_data *data, BOOL first ) { }
++void fastcall_exit_thread( struct thread_data *data ) { }
++#endif
++
++
+ /***********************************************************************
+  *           server_call_unlocked
+  */
+@@ -288,6 +534,9 @@ unsigned int server_call_unlocked( void *req_ptr )
+     struct __server_request_info * const req = req_ptr;
+     unsigned int ret;
+ 
++#ifdef __linux__
++    if (data->fastcall && fastcall( data, req, &ret )) return ret;
++#endif
+     if ((ret = send_request( data->request_fd, req ))) return ret;
+     return wait_reply( data->reply_fd, req );
+ }
+@@ -1705,6 +1954,7 @@ void server_init_process( struct thread_data *data )
+     close( reply_pipe );
+ 
+     if (ret) server_protocol_error( "init_first_thread failed with status %x\n", ret );
++    fastcall_init_thread( data, TRUE );
+ 
+     if (!supported_machines_count)
+         fatal_error( "'%s' is a 64-bit installation, it cannot be used with a 32-bit wineserver.\n",
+@@ -1798,6 +2048,7 @@ void server_init_thread( struct thread_data *data )
+     }
+     SERVER_END_REQ;
+     close( reply_pipe );
++    fastcall_init_thread( data, FALSE );
+ 
+     if (data->teb)
+     {
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index b06ea92..c614dc9 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1116,6 +1116,7 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
+ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+ {
+     struct thread_data *data = get_thread_data();
++    fastcall_exit_thread( data );
+     close( data->alert_fd );
+     close( data->wait_fd[0] );
+     close( data->wait_fd[1] );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 9b6401e..9672894 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -126,6 +126,8 @@ struct thread_data
+     void        *start;             /* thread entry point */
+     void        *param;             /* thread entry point parameter */
+     struct list  entry;             /* entry in TEB list */
++    fastcall_slot_t *fastcall;      /* Arctic: the thread's slot for fast calls, or NULL */
++    unsigned int fastcall_index;    /* its index in the process's area */
+     char         debug_info[0x800]; /* debug_info structure */
+     char         signal_stack[];    /* signal stack */
+     /* char kernel_stack[] */
+@@ -268,6 +270,7 @@ extern void process_exit_wrapper( int status ) DECLSPEC_NORETURN;
+ extern void server_init_process( struct thread_data *data );
+ extern void server_init_process_done(void);
+ extern void server_init_thread( struct thread_data *data );
++extern void fastcall_exit_thread( struct thread_data *data );
+ extern int server_pipe( int fd[2] );
+ 
+ extern void fpux_to_fpu( I386_FLOATING_SAVE_AREA *fpu, const XSAVE_FORMAT *fpux );
+diff --git a/server/fd.c b/server/fd.c
+index 19aee94..cfd6e1c 100644
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -523,6 +523,15 @@ static inline void remove_epoll_user( struct fd *fd, int user )
+     }
+ }
+ 
++/* Arctic: whether epoll has events for the main loop, without taking them
++ * (the fast calls' spin ends for them: a request on a pipe does not wait) */
++int has_poll_events(void)
++{
++    struct pollfd pfd = { epoll_fd, POLLIN, 0 };
++
++    return epoll_fd != -1 && poll( &pfd, 1, 0 ) > 0;
++}
++
+ static inline void main_loop_epoll(void)
+ {
+     int i, ret, timeout;
+@@ -546,6 +555,9 @@ static inline void main_loop_epoll(void)
+         if (!active_users) break;  /* last user removed by a timeout */
+         if (epoll_fd == -1) break;  /* an error occurred with epoll */
+ 
++        /* Arctic: fast calls first; after some, the timeouts again */
++        if (fastcall_poll( timeout )) continue;
++
+ #ifdef HAVE_EPOLL_PWAIT2
+         if (!failed_epoll_pwait2)
+         {
+@@ -557,6 +569,7 @@ static inline void main_loop_epoll(void)
+ #endif
+             ret = epoll_wait( epoll_fd, events, ARRAY_SIZE( events ), timeout );
+ 
++        fastcall_awake();
+         set_current_time();
+ 
+         /* put the events into the pollfd array first, like poll does */
+@@ -782,6 +795,10 @@ static inline void main_loop_epoll(void) { }
+ 
+ #endif /* USE_EPOLL */
+ 
++#ifndef USE_EPOLL
++int has_poll_events(void) { return 0; }
++#endif
++
+ 
+ /* add a user in the poll array and return its index, or -1 on failure */
+ static int add_poll_user( struct fd *fd )
+diff --git a/server/process.c b/server/process.c
+index 99228ba..4024209 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -610,6 +610,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
+     process->debug_event     = NULL;
+     process->handles         = NULL;
+     process->msg_fd          = NULL;
++    process->fastcall        = NULL;
+     process->sigkill_timeout = NULL;
+     process->sigkill_delay   = TICKS_PER_SEC / 64;
+     process->machine         = native_machine;
+@@ -736,6 +737,7 @@ static void process_destroy( struct object *obj )
+     }
+     if (process->console) release_object( process->console );
+     if (process->msg_fd) release_object( process->msg_fd );
++    fastcall_process_gone( process );
+     if (process->idle_event) release_object( process->idle_event );
+     if (process->id) free_ptid( process->id );
+     if (process->token) release_object( process->token );
+diff --git a/server/process.h b/server/process.h
+index e889ec7..fe6f2ec 100644
+--- a/server/process.h
++++ b/server/process.h
+@@ -44,6 +44,7 @@ struct process
+     struct debug_event  *debug_event;     /* debug event being sent to debugger */
+     struct handle_table *handles;         /* handle entries */
+     struct fd           *msg_fd;          /* fd for sendmsg/recvmsg */
++    struct fastcall_process *fastcall;    /* Arctic: the process's fast call area (request.c) */
+     process_id_t         id;              /* id of the process */
+     process_id_t         group_id;        /* group id of the process */
+     unsigned int         session_id;      /* session id */
+diff --git a/server/protocol.def b/server/protocol.def
+index b0dd67b..6899080 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1136,6 +1147,38 @@ typedef volatile struct
+     struct user_entry user_entries[MAX_USER_HANDLES];
+ } session_shm_t;
+ 
++/* Arctic: fast calls. A process's threads pass small requests to the server
++ * through a memfd the process shares with it (register_fastcall): the
++ * request goes into the thread's slot, a bit in "pending" tells the server,
++ * which looks for those bits while it is busy and is woken by the doorbell
++ * eventfd when it sleeps; the reply comes back in the slot and the thread
++ * waits for it on the slot's state (a futex). Everything that does not fit
++ * goes through the request pipe as before. */
++#define FASTCALL_SLOTS     256
++#define FASTCALL_DATA_SIZE 4096
++#define FASTCALL_IDLE      0
++#define FASTCALL_FILLING   1   /* the client is writing the request */
++#define FASTCALL_POSTED    2   /* the server may take it */
++#define FASTCALL_REPLIED   3   /* the reply is in the slot */
++
++typedef volatile struct
++{
++    int                  state;            /* FASTCALL_*, the futex the client sleeps on */
++    int                  waiting;          /* the client sleeps: wake it */
++    int                  __pad[14];
++    unsigned char        req[64];          /* union generic_request */
++    unsigned char        reply[64];        /* union generic_reply */
++    unsigned char        data[FASTCALL_DATA_SIZE]; /* request data, then reply data */
++} fastcall_slot_t;
++
++typedef volatile struct
++{
++    unsigned __int64     pending[FASTCALL_SLOTS / 64]; /* a bit for each slot with a posted request */
++    int                  server_sleeping;  /* the server waits for events: ring the doorbell */
++    int                  __pad[7];
++    fastcall_slot_t      slots[FASTCALL_SLOTS];
++} fastcall_area_t;
++
+ /****************************************************************/
+ /* Request declarations */
+ 
+@@ -4417,3 +4473,11 @@ enum inproc_sync_type
+ @REPLY
+     obj_handle_t        handle;         /* handle to the ALPC port */
+ @END
++
++
++/* Arctic: share a process's fast call area with the server (fast calls) */
++@REQ(register_fastcall)
++    int          area_fd;      /* sealed memfd of a fastcall_area_t, -1 once the process has one */
++    int          doorbell_fd;  /* eventfd that wakes the server, -1 once the process has one */
++    unsigned int slot;         /* the slot of the calling thread */
++@END
+diff --git a/server/request.c b/server/request.c
+index 58492aa..0003e6a 100644
+--- a/server/request.c
++++ b/server/request.c
+@@ -225,11 +225,18 @@ void write_reply( struct thread *thread )
+         fatal_protocol_error( thread, "reply write: %s\n", strerror( errno ));
+ }
+ 
++static void fastcall_send_reply( struct thread *thread, union generic_reply *reply );
++
+ /* send a reply to the current thread */
+ static void send_reply( union generic_reply *reply )
+ {
+     int ret;
+ 
++    if (current->fastcall_reply)
++    {
++        fastcall_send_reply( current, reply );
++        return;
++    }
+     if (!current->reply_size)
+     {
+         if ((ret = write( get_unix_fd( current->reply_fd ),
+@@ -352,6 +359,316 @@ error:
+         fatal_protocol_error( thread, "read: %s\n", strerror( errno ));
+ }
+ 
++
++/* Arctic: fast calls (fastcall_area_t in protocol.def, the client side in
++ * ntdll/unix/server.c). A process gives the server a sealed memfd with a
++ * slot for each of its threads and an eventfd. The server takes posted
++ * requests from the slots between its other events, keeps looking for more
++ * for a short while when they come close together, and before it sleeps in
++ * epoll it tells every process to ring the doorbell. Nothing in the slots is
++ * trusted: the request is copied out and checked like one read from a pipe. */
++
++#ifdef __linux__
++#include <sys/mman.h>
++#include <sys/syscall.h>
++#include <linux/futex.h>
++
++struct fastcall_process
++{
++    struct list       entry;          /* in fastcall_list */
++    struct process   *process;        /* not referenced: the process takes this away when it goes */
++    fastcall_area_t  *area;
++    struct fd        *doorbell;
++    struct thread    *threads[FASTCALL_SLOTS];
++};
++
++static struct list fastcall_list = LIST_INIT( fastcall_list );
++static timeout_t fastcall_last;               /* monotonic time of the last fast call */
++static timeout_t fastcall_gap = TICKS_PER_SEC; /* average time between fast calls */
++static int fastcall_sleeping;
++
++/* the longest the server looks for more fast calls before it sleeps: past
++ * that, being woken by the doorbell costs less than spinning */
++#define FASTCALL_SPIN_MAX (500)  /* 50 us in ticks */
++
++static void fastcall_doorbell_event( struct fd *fd, int event );
++
++static const struct fd_ops fastcall_fd_ops =
++{
++    .poll_event = fastcall_doorbell_event,
++};
++
++static void fastcall_set_sleeping( int sleeping )
++{
++    struct fastcall_process *fp;
++
++    if (fastcall_sleeping == sleeping) return;
++    fastcall_sleeping = sleeping;
++    LIST_FOR_EACH_ENTRY( fp, &fastcall_list, struct fastcall_process, entry )
++        __atomic_store_n( &fp->area->server_sleeping, sleeping, __ATOMIC_SEQ_CST );
++}
++
++static void fastcall_send_reply( struct thread *thread, union generic_reply *reply )
++{
++    struct fastcall_process *fp = thread->process->fastcall;
++    fastcall_slot_t *slot;
++
++    thread->fastcall_reply = 0;
++    if (!fp || thread->fastcall_slot < 0) return;
++    slot = &fp->area->slots[thread->fastcall_slot];
++
++    memcpy( (void *)slot->reply, reply, sizeof(*reply) );
++    if (thread->reply_size)
++        memcpy( (void *)slot->data, thread->reply_data, min( thread->reply_size, FASTCALL_DATA_SIZE ));
++    free( thread->reply_data );
++    thread->reply_data = NULL;
++    __atomic_store_n( &slot->state, FASTCALL_REPLIED, __ATOMIC_SEQ_CST );
++    if (__atomic_load_n( &slot->waiting, __ATOMIC_SEQ_CST ))
++        syscall( SYS_futex, (int *)&slot->state, FUTEX_WAKE, 1, NULL, NULL, 0 );
++}
++
++/* handle the request posted in a slot */
++static void fastcall_handle( struct fastcall_process *fp, unsigned int index )
++{
++    struct thread *thread = fp->threads[index];
++    fastcall_slot_t *slot = &fp->area->slots[index];
++    data_size_t size;
++
++    if (!thread || thread->state == TERMINATED) return;
++    if (__atomic_load_n( &slot->state, __ATOMIC_ACQUIRE ) != FASTCALL_POSTED) return;
++    if (thread->req_toread || thread->reply_towrite || thread->req_data)
++    {
++        /* a thread makes one request at a time: this one did not */
++        fatal_protocol_error( thread, "fast call during a pipe request\n" );
++        return;
++    }
++
++    memcpy( &thread->req, (void *)slot->req, sizeof(thread->req) );
++    size = thread->req.request_header.request_size;
++    if (size > FASTCALL_DATA_SIZE || thread->req.request_header.reply_size > FASTCALL_DATA_SIZE)
++    {
++        fatal_protocol_error( thread, "fast call of %u bytes\n", size );
++        return;
++    }
++    if (size)
++    {
++        if (!(thread->req_data = malloc( size )))
++        {
++            fatal_protocol_error( thread, "no memory for %u bytes request %d\n", size,
++                                  thread->req.request_header.req );
++            return;
++        }
++        memcpy( thread->req_data, (void *)slot->data, size );
++    }
++
++    grab_object( thread );
++    set_current_time();
++    thread->fastcall_reply = 1;
++    call_req_handler( thread );
++    thread->fastcall_reply = 0;
++    free( thread->req_data );
++    thread->req_data = NULL;
++    release_object( thread );
++}
++
++/* handle the posted requests of every process; the number handled */
++static int fastcall_scan(void)
++{
++    struct fastcall_process *fp;
++    int handled = 0, found;
++
++    do
++    {
++        found = 0;
++        LIST_FOR_EACH_ENTRY( fp, &fastcall_list, struct fastcall_process, entry )
++        {
++            unsigned int i;
++
++            for (i = 0; i < FASTCALL_SLOTS / 64; i++)
++            {
++                unsigned __int64 bits;
++
++                struct process *process = fp->process;
++
++                if (!__atomic_load_n( &fp->area->pending[i], __ATOMIC_RELAXED )) continue;
++                bits = __atomic_exchange_n( &fp->area->pending[i], 0, __ATOMIC_SEQ_CST );
++                grab_object( process );  /* fp stays while we use it */
++                while (bits)
++                {
++                    unsigned int bit = __builtin_ctzll( bits );
++                    timeout_t now = monotonic_counter();
++
++                    bits &= bits - 1;
++                    fastcall_gap = (fastcall_gap * 7 + (now - fastcall_last)) / 8;
++                    fastcall_last = now;
++                    fastcall_handle( fp, i * 64 + bit );
++                    handled++;
++                }
++                release_object( process );  /* may free fp: not used after this */
++                found = 1;
++                break;
++            }
++            /* a request may have taken processes away: start the list again */
++            if (found) break;
++        }
++    } while (found);
++    return handled;
++}
++
++/* called by the main loop before it waits: handle fast calls, spin for more
++ * while they come close together; non-zero when it handled some (and the
++ * loop has to look at its timeouts again) */
++int fastcall_poll( int timeout )
++{
++    timeout_t end;
++    int handled;
++
++    if (list_empty( &fastcall_list )) return 0;
++    if ((handled = fastcall_scan())) return handled;
++
++    if (timeout && fastcall_gap < FASTCALL_SPIN_MAX)
++    {
++        unsigned int loops = 0;
++
++        end = monotonic_counter() + min( 2 * fastcall_gap + 20, FASTCALL_SPIN_MAX );
++        while (monotonic_counter() < end)
++        {
++            int i;
++            for (i = 0; i < 16; i++) YieldProcessor();
++            if ((handled = fastcall_scan())) return handled;
++            /* a request on a pipe, a timer, a wait: the main loop's, within
++             * a few microseconds (a look at epoll is a system call) */
++            if (!(++loops % 4) && has_poll_events()) break;
++        }
++    }
++
++    /* going to sleep: from now on the clients ring the doorbell */
++    fastcall_set_sleeping( 1 );
++    if ((handled = fastcall_scan()))
++    {
++        fastcall_set_sleeping( 0 );
++        return handled;
++    }
++    return 0;
++}
++
++/* called by the main loop when it wakes up */
++void fastcall_awake(void)
++{
++    fastcall_set_sleeping( 0 );
++}
++
++static void fastcall_doorbell_event( struct fd *fd, int event )
++{
++    UINT64 count;
++
++    if (read( get_unix_fd( fd ), &count, sizeof(count) ) < 0 && errno != EAGAIN)
++        set_fd_events( fd, -1 );
++    /* the main loop scans the slots next */
++}
++
++void fastcall_thread_gone( struct thread *thread )
++{
++    struct fastcall_process *fp = thread->process ? thread->process->fastcall : NULL;
++
++    if (fp && thread->fastcall_slot >= 0 && fp->threads[thread->fastcall_slot] == thread)
++        fp->threads[thread->fastcall_slot] = NULL;
++    thread->fastcall_slot = -1;
++}
++
++void fastcall_process_gone( struct process *process )
++{
++    struct fastcall_process *fp = process->fastcall;
++
++    if (!fp) return;
++    process->fastcall = NULL;
++    list_remove( &fp->entry );
++    if (fp->doorbell) release_object( fp->doorbell );
++    munmap( (void *)fp->area, sizeof(*fp->area) );
++    free( fp );
++}
++
++DECL_HANDLER(register_fastcall)
++{
++    struct fastcall_process *fp = current->process->fastcall;
++
++    if (req->slot >= FASTCALL_SLOTS)
++    {
++        set_error( STATUS_INVALID_PARAMETER );
++        return;
++    }
++    if (!fp)
++    {
++        int area_fd, doorbell_fd, seals;
++        struct stat st;
++        void *area;
++
++        if (req->area_fd == -1 || req->doorbell_fd == -1)
++        {
++            set_error( STATUS_INVALID_PARAMETER );
++            return;
++        }
++        area_fd = thread_get_inflight_fd( current, req->area_fd );
++        doorbell_fd = thread_get_inflight_fd( current, req->doorbell_fd );
++        if (area_fd == -1 || doorbell_fd == -1)
++        {
++            if (area_fd != -1) close( area_fd );
++            if (doorbell_fd != -1) close( doorbell_fd );
++            set_error( STATUS_INVALID_HANDLE );
++            return;
++        }
++        /* the client must not be able to shrink the memory under us */
++        seals = fcntl( area_fd, F_GET_SEALS );
++        if (seals == -1 || (seals & (F_SEAL_SHRINK | F_SEAL_SEAL)) != (F_SEAL_SHRINK | F_SEAL_SEAL) ||
++            fstat( area_fd, &st ) == -1 || st.st_size < sizeof(fastcall_area_t) ||
++            (area = mmap( NULL, sizeof(fastcall_area_t), PROT_READ | PROT_WRITE, MAP_SHARED,
++                          area_fd, 0 )) == MAP_FAILED)
++        {
++            close( area_fd );
++            close( doorbell_fd );
++            set_error( STATUS_INVALID_PARAMETER );
++            return;
++        }
++        close( area_fd );
++        if (!(fp = mem_alloc( sizeof(*fp) )))
++        {
++            munmap( area, sizeof(fastcall_area_t) );
++            close( doorbell_fd );
++            return;
++        }
++        memset( fp, 0, sizeof(*fp) );
++        fp->process = current->process;
++        fp->area = area;
++        if (!(fp->doorbell = create_anonymous_fd( &fastcall_fd_ops, doorbell_fd, &current->process->obj, 0 )))
++        {
++            munmap( area, sizeof(fastcall_area_t) );
++            free( fp );
++            return;
++        }
++        set_fd_events( fp->doorbell, POLLIN );
++        __atomic_store_n( &fp->area->server_sleeping, fastcall_sleeping, __ATOMIC_SEQ_CST );
++        current->process->fastcall = fp;
++        list_add_tail( &fastcall_list, &fp->entry );
++    }
++    if (fp->threads[req->slot] && fp->threads[req->slot] != current)
++        fp->threads[req->slot]->fastcall_slot = -1;  /* a slot the process gave again */
++    if (current->fastcall_slot >= 0 && fp->threads[current->fastcall_slot] == current)
++        fp->threads[current->fastcall_slot] = NULL;
++    fp->threads[req->slot] = current;
++    current->fastcall_slot = req->slot;
++}
++
++#else  /* __linux__ */
++
++static void fastcall_send_reply( struct thread *thread, union generic_reply *reply ) { }
++void fastcall_thread_gone( struct thread *thread ) { }
++void fastcall_process_gone( struct process *process ) { }
++int fastcall_poll( int timeout ) { return 0; }
++void fastcall_awake(void) { }
++DECL_HANDLER(register_fastcall) { set_error( STATUS_NOT_SUPPORTED ); }
++
++#endif  /* __linux__ */
++
+ /* receive a file descriptor on the process socket */
+ int receive_fd( struct process *process )
+ {
+diff --git a/server/request.h b/server/request.h
+index 68229d1..ad8e4e9 100644
+--- a/server/request.h
++++ b/server/request.h
+@@ -52,6 +52,12 @@ extern int receive_fd( struct process *process );
+ extern int send_client_fd( struct process *process, int fd, obj_handle_t handle );
+ extern void read_request( struct thread *thread );
+ extern void write_reply( struct thread *thread );
++/* Arctic: fast calls */
++extern void fastcall_thread_gone( struct thread *thread );
++extern void fastcall_process_gone( struct process *process );
++extern int fastcall_poll( int timeout );
++extern int has_poll_events(void);
++extern void fastcall_awake(void);
+ extern timeout_t monotonic_counter(void);
+ extern void open_master_socket(void);
+ extern void close_master_socket( timeout_t timeout );
+diff --git a/server/thread.c b/server/thread.c
+index bdf48c4..a97651c 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -362,6 +362,8 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->reply_data      = NULL;
+     thread->reply_towrite   = 0;
+     thread->request_fd      = NULL;
++    thread->fastcall_slot   = -1;
++    thread->fastcall_reply  = 0;
+     thread->reply_fd        = NULL;
+     thread->wait_fd         = NULL;
+     thread->state           = RUNNING;
+@@ -570,6 +572,7 @@ static void cleanup_thread( struct thread *thread )
+     }
+     clear_apc_queue( &thread->system_apc );
+     clear_apc_queue( &thread->user_apc );
++    fastcall_thread_gone( thread );
+     free( thread->req_data );
+     free( thread->reply_data );
+     if (thread->request_fd) release_object( thread->request_fd );
+diff --git a/server/thread.h b/server/thread.h
+index 96c643c..88e15c9 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -73,6 +73,8 @@ struct thread
+     unsigned int           reply_size;    /* size of reply data */
+     unsigned int           reply_towrite; /* amount of data still to write in reply */
+     struct fd             *request_fd;    /* fd for receiving client requests */
++    int                    fastcall_slot; /* Arctic: the thread's slot in its process's fast call area, or -1 */
++    int                    fastcall_reply;/* the request being handled came through it */
+     struct fd             *reply_fd;      /* fd to send a reply to a client */
+     struct fd             *wait_fd;       /* fd to use to wake a sleeping client */
+     enum run_state         state;         /* running state */

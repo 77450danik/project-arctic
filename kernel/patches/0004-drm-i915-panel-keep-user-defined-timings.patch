@@ -1,0 +1,81 @@
+From: 77450danik <ddziuba1@stu.vistula.edu.pl>
+Subject: [PATCH] drm/i915/panel: Keep the timings of a user-defined mode of the panel's size
+
+A built-in panel (eDP, LVDS, DSI) always ran with its fixed mode: a
+requested mode of another refresh rate was refused, one of the same rate
+was replaced by the fixed mode. Windows drivers take custom resolutions
+on such panels, and tools that raise a laptop panel's refresh rate rely
+on it. A mode userspace made itself (DRM_MODE_TYPE_USERDEF) of the
+panel's own size now keeps its timings; the link is computed for it as
+for any other mode. i915.panel_user_timings=0 turns it off.
+
+---
+--- a/drivers/gpu/drm/i915/display/intel_panel.c
++++ b/drivers/gpu/drm/i915/display/intel_panel.c
+@@ -29,6 +29,7 @@
+  */
+ 
+ #include <linux/kernel.h>
++#include <linux/moduleparam.h>
+ #include <linux/pwm.h>
+ 
+ #include <drm/drm_edid.h>
+@@ -197,6 +198,48 @@
+ 	return connector->panel.vbt.drrs_type;
+ }
+ 
++/*
++ * A mode made by userspace (DRM_MODE_TYPE_USERDEF) of the panel's own size
++ * keeps its own timings, instead of the panel's fixed mode taking its place:
++ * a refresh rate above the one the panel's EDID gives ("overclocking" the
++ * panel), made and confirmed by the user with a timeout that takes it back.
++ * The link is still computed for it as for any mode, so one the link cannot
++ * carry fails the atomic check as before.
++ */
++static bool panel_user_timings = true;
++module_param(panel_user_timings, bool, 0600);
++MODULE_PARM_DESC(panel_user_timings,
++		 "Keep the timings of a user-defined mode of the panel's size on built-in panels (default: true)");
++
++static bool intel_panel_keep_user_timings(struct intel_connector *connector,
++					  const struct drm_display_mode *fixed_mode,
++					  struct drm_display_mode *adjusted_mode)
++{
++	if (!panel_user_timings || !(adjusted_mode->type & DRM_MODE_TYPE_USERDEF))
++		return false;
++
++	if (adjusted_mode->hdisplay != fixed_mode->hdisplay ||
++	    adjusted_mode->vdisplay != fixed_mode->vdisplay)
++		return false;
++
++	if (adjusted_mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN |
++				    DRM_MODE_FLAG_DBLCLK))
++		return false;
++
++	if (adjusted_mode->htotal <= adjusted_mode->hsync_end ||
++	    adjusted_mode->vtotal <= adjusted_mode->vsync_end)
++		return false;
++
++	drm_dbg_kms(connector->base.dev,
++		    "[CONNECTOR:%d:%s] using user-defined timings: " DRM_MODE_FMT "\n",
++		    connector->base.base.id, connector->base.name,
++		    DRM_MODE_ARG(adjusted_mode));
++
++	drm_mode_set_crtcinfo(adjusted_mode, 0);
++
++	return true;
++}
++
+ int intel_panel_compute_config(struct intel_connector *connector,
+ 			       struct drm_display_mode *adjusted_mode)
+ {
+@@ -208,6 +251,9 @@
+ 	if (!fixed_mode)
+ 		return 0;
+ 
++	if (intel_panel_keep_user_timings(connector, fixed_mode, adjusted_mode))
++		return 0;
++
+ 	vrefresh = drm_mode_vrefresh(adjusted_mode);
+ 	fixed_mode_vrefresh = drm_mode_vrefresh(fixed_mode);
+ 

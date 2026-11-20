@@ -1,0 +1,59 @@
+From: Project Arctic
+Subject: shell32: the About banner fills the dialog, without a line.
+
+The banner of winver and ShellAbout was drawn at its own size, 413 pixels
+of a dialog wider than that at 125 %, with the coloured line under it
+(2026-11-18). It is drawn at the dialog's scale and the rest of its row is
+filled with its black; the line is gone, and the name is the project's,
+Project Arctic.
+---
+diff --git a/dll/win32/shell32/wine/shell32_main.c b/dll/win32/shell32/wine/shell32_main.c
+--- a/dll/win32/shell32/wine/shell32_main.c
++++ b/dll/win32/shell32/wine/shell32_main.c
+@@ -1123,3 +1123,5 @@
+ 
+-                SetDlgItemTextW(hWnd, IDC_ABOUT_APPNAME, info->szApp);
++                /* Arctic: the project's name in full */
++                SetDlgItemTextW(hWnd, IDC_ABOUT_APPNAME,
++                                _wcsicmp(info->szApp, L"Arctic") ? info->szApp : L"Project Arctic");
+                 SetDlgItemTextW(hWnd, IDC_ABOUT_VERSION, info->szOSVersion);
+@@ -1218,21 +1221,34 @@
+         {
+-            if (hLogoBmp && hLineBmp)
++            if (hLogoBmp)
+             {
+                 PAINTSTRUCT ps;
+                 HDC hdc;
+                 HDC hdcMem;
+                 HGDIOBJ hOldObj;
++                RECT rcClient, rcRest;
++                UINT dpi;
++                int cx, cy;
+ 
+                 hdc = BeginPaint(hWnd, &ps);
+                 hdcMem = CreateCompatibleDC(hdc);
++                GetClientRect(hWnd, &rcClient);
++                dpi = GetDeviceCaps(hdc, LOGPIXELSY);
++                cx = MulDiv(cxLogoBmp, dpi ? dpi : 96, 96);
++                cy = MulDiv(cyLogoBmp, dpi ? dpi : 96, 96);
+ 
+                 if (hdcMem)
+                 {
++                    HBRUSH hbrBanner;
++
+                     hOldObj = SelectObject(hdcMem, hLogoBmp);
+-                    BitBlt(hdc, 0, 0, cxLogoBmp, cyLogoBmp, hdcMem, 0, 0, SRCCOPY);
+-
+-                    SelectObject(hdcMem, hLineBmp);
+-                    BitBlt(hdc, 0, cyLogoBmp, cxLogoBmp, cyLineBmp, hdcMem, 0, 0, SRCCOPY);
++                    /* Arctic: at the dialog's scale, the rest of the row in
++                     * the banner's own colour; no coloured line under it */
++                    SetStretchBltMode(hdc, HALFTONE);
++                    StretchBlt(hdc, 0, 0, cx, cy, hdcMem, 0, 0, cxLogoBmp, cyLogoBmp, SRCCOPY);
++                    hbrBanner = CreateSolidBrush(GetPixel(hdcMem, cxLogoBmp - 1, 0));
++                    SetRect(&rcRest, cx, 0, rcClient.right, cy);
++                    if (hbrBanner && !IsRectEmpty(&rcRest)) FillRect(hdc, &rcRest, hbrBanner);
++                    if (hbrBanner) DeleteObject(hbrBanner);
+ 
+                     SelectObject(hdcMem, hOldObj);
+                     DeleteDC(hdcMem);

@@ -251,12 +251,114 @@ static void store_display_settings(void)
 /* win32u names the process that changed the display mode here; the mode
  * goes back to the stored one when that process ends */
 static HANDLE fullscreen_process;
+static DWORD fullscreen_pid;
+
+/* A game's own mode (CS2 in 1400x1050) is the game's only while it is in
+ * front, as DXGI keeps it in Windows: the desktop gets its own mode back once
+ * another program comes to the front or the game is minimized, and the game
+ * its mode when it comes back. The game may do it itself, and often does; but
+ * SDL and DXVK each keep their own idea of the mode, and a minimize after
+ * DXVK had set it left the desktop in 4:3 (2026-11-16 23:17). */
+#define MAX_SAVED_MODES 8
+static struct { WCHAR device[32]; DEVMODEW mode; } saved_modes[MAX_SAVED_MODES];
+static UINT saved_count;
+
+static BOOL same_mode( const DEVMODEW *a, const DEVMODEW *b )
+{
+    return a->dmPelsWidth == b->dmPelsWidth && a->dmPelsHeight == b->dmPelsHeight &&
+           a->dmDisplayFrequency == b->dmDisplayFrequency && a->dmBitsPerPel == b->dmBitsPerPel;
+}
+
+enum game_place { GAME_UNSURE, GAME_IN_FRONT, GAME_AWAY };
+
+/* Where the game is: in front (one of its windows has the foreground and is
+ * not minimized), away (another program's window has it), or not yet known.
+ * Its window that has the foreground while minimized is on its way back
+ * (SwitchToThisWindow and the taskbar activate it first and restore it a
+ * moment later, in the game's own thread) or on its way down: the game sets
+ * its own mode as soon as it is active, and taking it away then left CS2 a
+ * 1920x1080 screen it never asked for, its picture frozen (2026-11-18). */
+static enum game_place fullscreen_process_place(void)
+{
+    HWND foreground = GetForegroundWindow();
+    DWORD pid = 0;
+
+    if (!foreground) return GAME_UNSURE;  /* between two windows: nothing to go by yet */
+    GetWindowThreadProcessId( foreground, &pid );
+    if (pid != fullscreen_pid) return GAME_AWAY;
+    return IsIconic( foreground ) ? GAME_UNSURE : GAME_IN_FRONT;
+}
+
+static void give_desktop_its_modes(void)
+{
+    DISPLAY_DEVICEW device = { .cb = sizeof(device) };
+
+    saved_count = 0;
+    for (DWORD i = 0; EnumDisplayDevicesW( NULL, i, &device, 0 ) && saved_count < MAX_SAVED_MODES; i++)
+    {
+        DEVMODEW current = { .dmSize = sizeof(current) }, stored = { .dmSize = sizeof(stored) };
+
+        if (!(device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)) continue;
+        if (!EnumDisplaySettingsExW( device.DeviceName, ENUM_CURRENT_SETTINGS, &current, 0 ) ||
+            !EnumDisplaySettingsExW( device.DeviceName, ENUM_REGISTRY_SETTINGS, &stored, 0 ) ||
+            same_mode( &current, &stored ))
+            continue;
+        lstrcpynW( saved_modes[saved_count].device, device.DeviceName, ARRAY_SIZE(saved_modes[0].device) );
+        saved_modes[saved_count++].mode = current;
+    }
+    if (!saved_count) return;
+    MESSAGE( "csrss: process %04x is not in front: the desktop's modes back\n", (UINT)fullscreen_pid );
+    ChangeDisplaySettingsExW( NULL, NULL, NULL, 0, NULL );
+}
+
+static void give_game_its_modes(void)
+{
+    for (UINT i = 0; i < saved_count; i++)
+    {
+        DEVMODEW current = { .dmSize = sizeof(current) }, stored = { .dmSize = sizeof(stored) };
+
+        /* only where nobody changed the mode since */
+        if (!EnumDisplaySettingsExW( saved_modes[i].device, ENUM_CURRENT_SETTINGS, &current, 0 ) ||
+            !EnumDisplaySettingsExW( saved_modes[i].device, ENUM_REGISTRY_SETTINGS, &stored, 0 ) ||
+            !same_mode( &current, &stored ))
+            continue;
+        saved_modes[i].mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_BITSPERPEL;
+        MESSAGE( "csrss: process %04x is in front again: its %lux%lu back\n", (UINT)fullscreen_pid,
+                 saved_modes[i].mode.dmPelsWidth, saved_modes[i].mode.dmPelsHeight );
+        ChangeDisplaySettingsExW( saved_modes[i].device, &saved_modes[i].mode, NULL, CDS_FULLSCREEN, NULL );
+    }
+    saved_count = 0;
+}
+
+/* how often the restorer looks while a game holds a mode, and how long its
+ * window may have the foreground minimized before it counts as away (the
+ * taskbar button minimizes the active window and leaves it active) */
+#define RESTORER_POLL_MS    50
+#define RESTORER_UNSURE_MS  1000
+
+static DWORD unsure_since;
+
+static void check_fullscreen_process(void)
+{
+    enum game_place place = fullscreen_process_place();
+    DWORD now = GetTickCount();
+
+    if (place != GAME_UNSURE) unsure_since = 0;
+    else if (!unsure_since) unsure_since = now ? now : 1;
+    else if (now - unsure_since >= RESTORER_UNSURE_MS) place = GAME_AWAY;
+
+    if (place == GAME_AWAY && !saved_count) give_desktop_its_modes();
+    else if (place == GAME_IN_FRONT && saved_count) give_game_its_modes();
+}
 
 static LRESULT WINAPI restorer_wnd_proc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
 {
     if (message != WM_USER) return DefWindowProcW( hwnd, message, wp, lp );
     if (fullscreen_process) CloseHandle( fullscreen_process );
     fullscreen_process = lp ? OpenProcess( SYNCHRONIZE, FALSE, lp ) : NULL;
+    fullscreen_pid = fullscreen_process ? lp : 0;
+    saved_count = 0;
+    unsure_since = 0;
     return 0;
 }
 
@@ -283,12 +385,24 @@ static DWORD WINAPI display_settings_restorer_thread( void *arg )
             if (msg.message == WM_QUIT) return 0;
             DispatchMessageW( &msg );
         }
-        ret = MsgWaitForMultipleObjects( fullscreen_process ? 1 : 0, &fullscreen_process, FALSE, INFINITE, QS_ALLINPUT );
+        /* while a game holds a mode of its own: twenty times a second, whether
+         * it is in front (two cheap reads; no WinEvent hook, which would make
+         * every program that activates or minimizes a window wait for us) */
+        ret = MsgWaitForMultipleObjects( fullscreen_process ? 1 : 0, &fullscreen_process, FALSE,
+                                         fullscreen_process ? RESTORER_POLL_MS : INFINITE, QS_ALLINPUT );
         if (ret == WAIT_FAILED) return 0;
-        if (!fullscreen_process || ret != WAIT_OBJECT_0) continue;
-        ChangeDisplaySettingsExW( NULL, NULL, NULL, 0, NULL );
+        if (!fullscreen_process) continue;
+        if (ret == WAIT_TIMEOUT)
+        {
+            check_fullscreen_process();
+            continue;
+        }
+        if (ret != WAIT_OBJECT_0) continue;
+        if (!saved_count) ChangeDisplaySettingsExW( NULL, NULL, NULL, 0, NULL );
         CloseHandle( fullscreen_process );
         fullscreen_process = NULL;
+        fullscreen_pid = 0;
+        saved_count = 0;
     }
 }
 

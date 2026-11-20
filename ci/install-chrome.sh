@@ -30,6 +30,13 @@ mkdir -p "$APP"
 cp -a "$WORK/chrome/Chrome-bin/." "$APP/"
 echo "Chrome $(basename "$installer" _chrome_installer.exe)"
 
+# WebGPU on Vulkan, not Direct3D 12 over vkd3d-proton (ci/patch-chrome-webgpu.py);
+# a Chrome whose code changed stays as it is. Nothing updates it afterwards:
+# Google's updater is not installed and chrome.reg turns updates off by policy.
+for dll in "$APP"/*/chrome.dll; do
+    python3 "$ROOT/ci/patch-chrome-webgpu.py" "$dll" || echo "warning: $dll not patched, WebGPU on Direct3D 12"
+done
+
 # no first-run pages and no question about the default browser: it is one
 cat > "$APP/initial_preferences" <<'EOF'
 {

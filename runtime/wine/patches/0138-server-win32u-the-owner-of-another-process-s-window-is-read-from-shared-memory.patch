@@ -1,0 +1,73 @@
+From: Project Arctic
+Subject: server, win32u: the owner of another process's window is read from shared memory.
+
+Every change of a toplevel window's z-order (creating, showing,
+activating one) goes through swp_owner_popups, which asks for the owner of
+every toplevel window of the desktop; for a window of another process that
+was a get_window_tree request each. With 81 windows on the desktop,
+CreateWindowEx and DestroyWindow made 335 requests, 275 of them for owners,
+2.8 ms. The owner is now in the window's shared object (the padding after
+"ansi"), as win32k keeps it in memory Windows reads.
+---
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 147c206..ecf70ff 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -857,6 +857,20 @@ HWND get_window_relative( HWND hwnd, UINT rel )
+             release_win_ptr( win );
+             return retval;
+         }
++        else
++        {
++            /* Arctic: another process's window has its owner in the session's
++             * shared memory, as Windows reads it from win32k: z-order changes
++             * ask this of every toplevel window (swp_owner_popups) */
++            struct object_lock lock = OBJECT_LOCK_INIT;
++            const window_shm_t *window_shm = NULL;
++            NTSTATUS status;
++
++            while ((status = get_shared_window( hwnd, &lock, &window_shm )) == STATUS_PENDING)
++                retval = wine_server_ptr_handle( window_shm->owner );
++            if (!status) return retval;
++            retval = 0;
++        }
+         /* else fall through to server call */
+     }
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index b0dd67b..6899080 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1106,7 +1117,7 @@ typedef volatile struct
+     unsigned int         dpi_context;      /* DPI awareness context */
+     unsigned int         fnid;             /* builtin class FNID, or 0 */
+     unsigned int         ansi;             /* window wndproc is ansi */
+-    int                  __pad;
++    user_handle_t        owner;            /* owner window (GW_OWNER), Arctic: read without a request */
+     struct ratio         dpi;              /* effective DPI of the window monitor */
+     struct ratio         raw_dpi;          /* raw DPI of the window monitor */
+     data_size_t          private_size;     /* length of private extra bytes range */
+diff --git a/server/window.c b/server/window.c
+index 88c7e77..34ee0f8 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -766,6 +766,7 @@ static struct window *create_window( struct window *parent, struct window *owner
+         memset( (void *)shared->extra, 0, extra_size );
+         shared->info.wndproc    = get_class_wndproc( win->class, &ansi );
+         shared->ansi            = ansi;
++        shared->owner           = win->owner;
+     }
+     SHARED_WRITE_END;
+ 
+@@ -2587,6 +2588,11 @@ DECL_HANDLER(set_window_owner)
+ 
+     reply->prev_owner = win->owner;
+     reply->full_owner = win->owner = owner ? owner->handle : 0;
++    SHARED_WRITE_BEGIN( win->shared, window_shm_t )
++    {
++        shared->owner = win->owner;
++    }
++    SHARED_WRITE_END;
+ }
+ 
+ 

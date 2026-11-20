@@ -279,6 +279,25 @@
 #define IDS_EX_BLUETOOTH_DEVICE 381
 #define IDS_EX_PRINTER          382
 #define IDS_WX_STORM            291
+#define IDS_SEARCH_BOX          383
+#define IDS_SEARCH_HIDE         385
+#define IDS_SEARCH_ICON         386
+#define IDS_SEARCH_ICON_LABEL   387
+#define IDS_SEARCH_BOX_MODE     388
+#define IDS_SHOW_TASKVIEW       389
+#define IDS_TOP_APPS            390
+#define IDS_RECENT_SEARCH       391
+#define IDS_TAB_ALL             392
+#define IDS_TAB_APPS            393
+#define IDS_TAB_DOCUMENTS       394
+#define IDS_TAB_SETTINGS        395
+#define IDS_KIND_APP            396
+#define IDS_KIND_SETTING        397
+#define IDS_KIND_FILE           398
+#define IDS_TASKVIEW            399
+#define IDS_SEARCH_PLACEHOLDER  400
+#define IDS_NO_RECENT           401
+#define IDS_SEARCH_WIN10        402
 
 extern HINSTANCE startui_instance;
 
@@ -531,6 +550,9 @@ BOOL update_ready(void);
 void power_shut_down(void);
 /* popup.c: the context menus of the Start menus */
 enum popup_style { POPUP_SYSTEM = -1, POPUP_WIN10, POPUP_WIN11 };
+/* or'ed into the style: a menu of the taskbar's, as clear as the taskbar, in
+ * the font and with the pictures of File Explorer's menus */
+#define POPUP_TASKBAR 0x100
 
 struct popup_item
 {
@@ -556,6 +578,22 @@ int start_style_load(void);
 void start_style_save( int style );
 void describe_age( const FILETIME *time, WCHAR *text, int size );
 
+/* menupics.c: the pictures of File Explorer's menus, for a light or a dark look */
+HBITMAP menu_picture( const char *name, BOOL light, int size );
+/* search.c: the search box and the Task View button of the taskbar */
+#define SEARCH_HIDDEN      0    /* SearchboxTaskbarMode, as Windows 11 has it */
+#define SEARCH_ICON        1
+#define SEARCH_BOX         2
+#define SEARCH_ICON_LABEL  3
+DWORD search_mode(void);
+void search_set_mode( DWORD mode );
+BOOL taskview_button_shown(void);
+void taskview_button_show( BOOL show );
+void search_button_refresh(void);
+/* search11.c: what the search box opens */
+void search11_toggle( HWND tray, const RECT *button );
+void search11_hide(void);
+BOOL search11_visible(void);
 /* taskbtn.c: the taskbar's buttons */
 BOOL taskbar_centered(void);
 BOOL taskbar_style11(void);

@@ -37,9 +37,9 @@ STRINGTABLE
     IDS_TITLE                  "Make changes to your user account"
     IDS_MANAGE_ACCOUNTS        "Manage User Accounts"
     IDS_UAC_SETTINGS           "Change User Account Control settings"
-    IDS_LINUX_GROUP            "Windows Subsystem for Linux"
-    IDS_LINUX_ABOUT            "A program that is given the Linux subsystem has the rights of an administrator on this computer, so Arctic asks for your consent, and for a password once after every restart."
-    IDS_LINUX_PASSWORD         "Change the password of the Linux subsystem"
+    IDS_LINUX_GROUP            "Direct access to the kernel (HAMAM)"
+    IDS_LINUX_ABOUT            "The Windows Subsystem for Linux runs in containers and asks for nothing. A program that is given HAMAM is root on the kernel of this computer, so Arctic asks for your consent, and for a password once after every restart."
+    IDS_LINUX_PASSWORD         "Change the HAMAM password"
     IDS_ONE_ACCOUNT            "This computer has one account, and everything runs as it."
 }
 
@@ -57,8 +57,8 @@ STRINGTABLE
     IDS_TITLE                  "Внесення змін до облікового запису користувача"
     IDS_MANAGE_ACCOUNTS        "Керування обліковими записами користувачів"
     IDS_UAC_SETTINGS           "Змінити параметри контролю облікових записів користувачів"
-    IDS_LINUX_GROUP            "Підсистема Windows для Linux"
-    IDS_LINUX_ABOUT            "Програма, якій дозволено підсистему Linux, отримує права адміністратора на цьому комп’ютері, тому Arctic питає дозволу, а пароль — раз після кожного перезавантаження."
-    IDS_LINUX_PASSWORD         "Змінити пароль підсистеми Linux"
+    IDS_LINUX_GROUP            "Прямий доступ до ядра (HAMAM)"
+    IDS_LINUX_ABOUT            "Підсистема Windows для Linux працює в контейнерах і нічого не питає. Програма, якій дозволено HAMAM, — root на ядрі цього комп’ютера, тому Arctic питає дозволу, а пароль — раз після кожного перезавантаження."
+    IDS_LINUX_PASSWORD         "Змінити пароль HAMAM"
     IDS_ONE_ACCOUNT            "На цьому комп’ютері один обліковий запис, і все працює від нього."
 }

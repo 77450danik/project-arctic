@@ -19,6 +19,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(wininit);
 
 /* exit codes, read by arctic-init */
+#define EXIT_LOGOFF         0  /* winlogon.exe: signed out */
 #define EXIT_DWM_FAILED     1
 #define EXIT_CSRSS_ENDED    2
 #define EXIT_RESTART        3  /* winlogon.exe's own codes, passed on */
@@ -87,6 +88,14 @@ int WINAPI wWinMain( HINSTANCE instance, HINSTANCE prev, WCHAR *cmdline, int sho
         case WAIT_OBJECT_0 + 1:
             GetExitCodeProcess( winlogon, &code );
             if (code == EXIT_RESTART || code == EXIT_SHUTDOWN) return code;
+            if (code == EXIT_LOGOFF)
+            {
+                /* signed out: the session starts again, the machine stays on */
+                MESSAGE( "wininit: signed out, the session starts again\n" );
+                CloseHandle( winlogon );
+                if (!(winlogon = start( L"winlogon.exe" ))) return EXIT_WINLOGON_ENDED;
+                break;
+            }
             ERR( "winlogon.exe ended (%lu)\n", code );
             return EXIT_WINLOGON_ENDED;
         case WAIT_OBJECT_0 + 2:

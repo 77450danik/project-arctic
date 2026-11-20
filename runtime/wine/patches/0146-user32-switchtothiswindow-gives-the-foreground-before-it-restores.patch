@@ -1,0 +1,30 @@
+From: Project Arctic
+Subject: user32: SwitchToThisWindow gives the foreground before it restores.
+
+The taskbar and Alt+Tab switch with it. A minimized window was restored
+first, in its own thread and synchronously: a game takes its time there
+(CS2 sets its display mode), and the mouse moving over another program
+meanwhile made that one the program the user last touched, so the
+foreground the shell gave next was refused. CS2 came back restored but
+inactive, DXVK gave the desktop its mode back, and the game stood still
+for eight seconds until it took the foreground itself (2026-11-18). The
+foreground goes first now, while the click on the taskbar still counts.
+---
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index ac460b3..f534418 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -669,9 +669,11 @@ void WINAPI SwitchToThisWindow( HWND hwnd, BOOL alt_tab )
+ {
+     arctic_log_stack( IsIconic( hwnd ) ? "activate: SwitchToThisWindow, restoring" : "activate: SwitchToThisWindow",
+                       hwnd, alt_tab );
+-    /* as in Windows, the window becomes the foreground one, not only the top one */
+-    if (IsIconic( hwnd )) NtUserShowWindow( hwnd, SW_RESTORE );
++    /* as in Windows, the window becomes the foreground one, not only the top
++     * one; first, while the user's click still gives the caller the right:
++     * the restore runs in the window's thread and may take long */
+     NtUserSetForegroundWindow( hwnd );
++    if (IsIconic( hwnd )) NtUserShowWindow( hwnd, SW_RESTORE );
+ }
+ 
+ 

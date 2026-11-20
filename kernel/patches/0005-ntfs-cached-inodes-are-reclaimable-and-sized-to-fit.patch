@@ -1,0 +1,84 @@
+From: Arctic
+Subject: [PATCH] ntfs: what a cached inode keeps is reclaimable and sized to fit
+
+Each cached inode keeps a copy of its mft record, its name, its attribute
+list and the runlists of its attributes until it is evicted, yet these were
+plain kmalloc memory: counted as unreclaimable, so MemAvailable and the Task
+Manager showed a walked disk (2 million inodes) as 5 GB in use. The runlist
+of a file with one run took a whole page. The copies now come from the
+reclaimable kmalloc caches, and a runlist decompressed alone is cut to its
+size.
+
+diff --git a/fs/ntfs/inode.c b/fs/ntfs/inode.c
+index 407d40d..c4b5d06 100644
+--- a/fs/ntfs/inode.c
++++ b/fs/ntfs/inode.c
+@@ -119,7 +119,7 @@ static int ntfs_init_locked_inode(struct inode *vi, void *data)
+ 		unsigned int i;
+ 
+ 		i = na->name_len * sizeof(__le16);
+-		ni->name = kmalloc(i + sizeof(__le16), GFP_ATOMIC);
++		ni->name = kmalloc(i + sizeof(__le16), GFP_ATOMIC | __GFP_RECLAIMABLE);
+ 		if (!ni->name)
+ 			return -ENOMEM;
+ 		memcpy(ni->name, na->name, i);
+@@ -825,7 +825,7 @@ static int ntfs_read_locked_inode(struct inode *vi)
+ 			ntfs_error(vi->i_sb, "Attr_list_size is zero");
+ 			goto unm_err_out;
+ 		}
+-		ni->attr_list = kvzalloc(ni->attr_list_size, GFP_NOFS);
++		ni->attr_list = kvzalloc(ni->attr_list_size, GFP_NOFS | __GFP_RECLAIMABLE);
+ 		if (!ni->attr_list) {
+ 			ntfs_error(vi->i_sb,
+ 				"Not enough memory to allocate buffer for attribute list.");
+diff --git a/fs/ntfs/mft.c b/fs/ntfs/mft.c
+index 203fc46..3bfced2 100644
+--- a/fs/ntfs/mft.c
++++ b/fs/ntfs/mft.c
+@@ -144,7 +144,8 @@ static inline struct mft_record *map_mft_record_folio(struct ntfs_inode *ni)
+ 	if (!IS_ERR(folio)) {
+ 		u8 *addr;
+ 
+-		ni->mrec = kmalloc(vol->mft_record_size, GFP_NOFS);
++		/* kept until the inode is evicted: reclaimable with it */
++		ni->mrec = kmalloc(vol->mft_record_size, GFP_NOFS | __GFP_RECLAIMABLE);
+ 		if (!ni->mrec) {
+ 			folio_put(folio);
+ 			folio = ERR_PTR(-ENOMEM);
+@@ -2430,7 +2431,7 @@ mft_rec_already_initialized:
+ 		 * record.
+ 		 */
+ 
+-		(*ni)->mrec = kmalloc(vol->mft_record_size, GFP_NOFS);
++		(*ni)->mrec = kmalloc(vol->mft_record_size, GFP_NOFS | __GFP_RECLAIMABLE);
+ 		if (!(*ni)->mrec) {
+ 			folio_unlock(folio);
+ 			kunmap_local(m);
+diff --git a/fs/ntfs/runlist.c b/fs/ntfs/runlist.c
+index 00373e4..d5507de 100644
+--- a/fs/ntfs/runlist.c
++++ b/fs/ntfs/runlist.c
+@@ -1010,6 +1010,23 @@ mpa_err:
+ 	/* If no existing runlist was specified, we are done. */
+ 	if (!old_runlist || !old_runlist->rl) {
+ 		*new_rl_count = rlpos + 1;
++		/*
++		 * The runlist stays with the inode for as long as the inode is
++		 * cached, and most files have one or two runs: a whole page
++		 * for each of them made the inodes of a walked disk take
++		 * gigabytes. Keep only what is used, as reclaimable memory.
++		 */
++		if ((size_t)(rlpos + 1) * sizeof(*rl) <= (size_t)rlsize / 2) {
++			struct runlist_element *fit;
++
++			fit = kvmalloc_array(rlpos + 1, sizeof(*rl),
++					     GFP_NOFS | __GFP_RECLAIMABLE);
++			if (fit) {
++				memcpy(fit, rl, (rlpos + 1) * sizeof(*rl));
++				kvfree(rl);
++				rl = fit;
++			}
++		}
+ 		ntfs_debug("Mapping pairs array successfully decompressed:");
+ 		ntfs_debug_dump_runlist(rl);
+ 		return rl;

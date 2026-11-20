@@ -1,0 +1,361 @@
+From: Project Arctic
+Subject: [PATCH] fs: NT image sections, laid out from their file and reclaimed as cache
+
+Windows maps an executable once for all processes, its image section built
+page by page from the file and dropped like any cache when memory runs short.
+Linux maps a file only at page-aligned offsets, and a PE file keeps its
+sections at 512-byte ones, so the NT side copied such images into tmpfs,
+where 1-2 GB stayed counted as in use. /dev/ntimage (NTIMAGE_CREATE) gives
+an fd of the image laid out: an inode of an internal filesystem whose
+read_folio reads the sections from the executable, one inode per image for
+every process that maps it.
+
+diff -ruN a/fs/Makefile b/fs/Makefile
+--- a/fs/Makefile	2026-11-17 15:14:32.483832397 +0100
++++ b/fs/Makefile	2026-11-17 15:14:32.748521017 +0100
+@@ -129,3 +129,5 @@
+ obj-$(CONFIG_ZONEFS_FS)		+= zonefs/
+ obj-$(CONFIG_BPF_LSM)		+= bpf_fs_kfuncs.o
+ obj-$(CONFIG_RESCTRL_FS)	+= resctrl/
++# NT image sections (Arctic): always built in
++obj-y				+= ntimage.o
+diff -ruN a/fs/ntimage.c b/fs/ntimage.c
+--- a/fs/ntimage.c	1970-01-01 01:00:00.000000000 +0100
++++ b/fs/ntimage.c	2026-11-17 15:14:32.747558503 +0100
+@@ -0,0 +1,296 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * NT image sections: an executable laid out as it is mapped.
++ *
++ * Windows maps an .exe or .dll once for all processes, from its file: the
++ * pages of an image section are built from the file's sections, shared by
++ * every process that maps the image, and dropped when memory runs short,
++ * to be built again from the file. Linux maps a file only at offsets that
++ * are multiples of the page size, and a PE file keeps its sections at
++ * multiples of 512 bytes, so the NT side used to copy such images into
++ * memory: a private copy in every process, or one shared copy in tmpfs that
++ * could not be dropped (1-2 GB with a browser and an IDE open).
++ *
++ * Here an image is a file of its own on an internal filesystem: page i of
++ * it holds what the sections put there, read from the executable when the
++ * page is first needed. Its pages are ordinary page cache: one copy for
++ * every process that maps the image, counted as cache, reclaimed like any
++ * clean file page. The images of one executable are one inode as long as
++ * any process maps it.
++ *
++ * /dev/ntimage, NTIMAGE_CREATE: the executable's fd, the size of the image
++ * and its sections (where in the image, where in the file, how many bytes)
++ * give back a read-only fd of the image, to be mapped MAP_PRIVATE: a page a
++ * process writes to (relocations, data) becomes its own, as in Windows.
++ */
++
++#include <linux/file.h>
++#include <linux/fs.h>
++#include <linux/fs_context.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mount.h>
++#include <linux/pagemap.h>
++#include <linux/pseudo_fs.h>
++#include <linux/slab.h>
++#include <linux/sort.h>
++#include <linux/uaccess.h>
++#include <uapi/linux/ntimage.h>
++
++#define NTIMAGE_MAGIC 0x4e54494d  /* "NTIM" */
++
++struct ntimage_key
++{
++	struct super_block *sb;		/* of the executable */
++	u64 ino;
++	u32 generation;
++	loff_t file_size;
++	struct timespec64 mtime;
++	u64 size;			/* of the image */
++	u32 count;
++	u32 sum;			/* of the section table */
++};
++
++struct ntimage
++{
++	struct ntimage_key key;
++	struct file *backing;		/* the executable */
++	struct ntimage_section sections[];	/* key.count of them, by va */
++};
++
++static struct vfsmount *ntimage_mnt;
++
++/* the bytes the sections put into one folio of the image; the rest is zero */
++static int ntimage_read_folio(struct file *file, struct folio *folio)
++{
++	struct ntimage *img = folio->mapping->host->i_private;
++	loff_t start = folio_pos(folio), end = start + folio_size(folio);
++	int err = 0;
++
++	for (size_t done = 0; done < folio_size(folio); done += PAGE_SIZE) {
++		void *addr = kmap_local_folio(folio, done);
++
++		memset(addr, 0, PAGE_SIZE);
++		kunmap_local(addr);
++	}
++	for (u32 i = 0; i < img->key.count && !err; i++) {
++		const struct ntimage_section *sec = &img->sections[i];
++		loff_t lo = max_t(loff_t, start, sec->va);
++		loff_t hi = min_t(loff_t, end, sec->va + sec->size);
++
++		/* page by page: a folio of high memory is mapped one page at a time */
++		while (lo < hi) {
++			loff_t page_end = min_t(loff_t, hi, round_down(lo, PAGE_SIZE) + PAGE_SIZE);
++			loff_t pos = sec->offset + (lo - sec->va);
++			void *addr = kmap_local_folio(folio, lo - start);
++			ssize_t n = kernel_read(img->backing, addr, page_end - lo, &pos);
++
++			kunmap_local(addr);
++			if (n < 0) {
++				err = n;
++				break;
++			}
++			/* a short file: what it does not have stays zero, as Windows has it */
++			lo = page_end;
++		}
++	}
++	if (!err)
++		folio_mark_uptodate(folio);
++	folio_unlock(folio);
++	return err;
++}
++
++static const struct address_space_operations ntimage_aops = {
++	.read_folio	= ntimage_read_folio,
++};
++
++static const struct file_operations ntimage_fops = {
++	.llseek		= generic_file_llseek,
++	.read_iter	= generic_file_read_iter,
++	.mmap_prepare	= generic_file_readonly_mmap_prepare,
++	.splice_read	= filemap_splice_read,
++};
++
++static int ntimage_test(struct inode *inode, void *data)
++{
++	const struct ntimage *img = inode->i_private, *want = data;
++
++	return img && !memcmp(&img->key, &want->key, sizeof(want->key)) &&
++	       !memcmp(img->sections, want->sections, want->key.count * sizeof(want->sections[0]));
++}
++
++static int ntimage_set(struct inode *inode, void *data)
++{
++	inode->i_private = data;
++	return 0;
++}
++
++static void ntimage_free(struct ntimage *img)
++{
++	if (img->backing)
++		fput(img->backing);
++	kfree(img);
++}
++
++static void ntimage_evict_inode(struct inode *inode)
++{
++	truncate_inode_pages_final(&inode->i_data);
++	clear_inode(inode);
++	if (inode->i_private)
++		ntimage_free(inode->i_private);
++	inode->i_private = NULL;
++}
++
++static const struct super_operations ntimage_sops = {
++	.statfs		= simple_statfs,
++	.evict_inode	= ntimage_evict_inode,
++	/* gone with the last process that maps it: the executable stays
++	 * open only that long, and a removable disk can be ejected */
++	.drop_inode	= inode_just_drop,
++};
++
++static int ntimage_init_fs_context(struct fs_context *fc)
++{
++	struct pseudo_fs_context *ctx = init_pseudo(fc, NTIMAGE_MAGIC);
++
++	if (!ctx)
++		return -ENOMEM;
++	ctx->ops = &ntimage_sops;
++	/* code runs from these files */
++	fc->s_iflags &= ~SB_I_NOEXEC;
++	return 0;
++}
++
++static struct file_system_type ntimage_fs_type = {
++	.name		= "ntimage",
++	.init_fs_context = ntimage_init_fs_context,
++	.kill_sb	= kill_anon_super,
++};
++
++static int cmp_sections(const void *a, const void *b)
++{
++	const struct ntimage_section *x = a, *y = b;
++
++	return x->va < y->va ? -1 : x->va > y->va;
++}
++
++static struct file *ntimage_create(const struct ntimage_create *req)
++{
++	struct ntimage *img;
++	struct inode *backing_inode, *inode;
++	struct file *backing, *file;
++	u64 size = PAGE_ALIGN(req->size);
++	u32 sum = 0;
++	int err;
++
++	if (!req->count || req->count > NTIMAGE_MAX_SECTIONS || !req->size || req->size > NTIMAGE_MAX_SIZE)
++		return ERR_PTR(-EINVAL);
++	backing = fget(req->fd);
++	if (!backing)
++		return ERR_PTR(-EBADF);
++	backing_inode = file_inode(backing);
++	if (!(backing->f_mode & FMODE_READ) || !S_ISREG(backing_inode->i_mode)) {
++		fput(backing);
++		return ERR_PTR(-EACCES);
++	}
++
++	img = kzalloc_flex(*img, sections, req->count);
++	if (!img) {
++		fput(backing);
++		return ERR_PTR(-ENOMEM);
++	}
++	img->key.count = req->count;
++	img->backing = backing;
++	if (copy_from_user(img->sections, u64_to_user_ptr(req->sections),
++			   req->count * sizeof(img->sections[0]))) {
++		err = -EFAULT;
++		goto fail;
++	}
++	sort(img->sections, req->count, sizeof(img->sections[0]), cmp_sections, NULL);
++	for (u32 i = 0; i < req->count; i++) {
++		const struct ntimage_section *sec = &img->sections[i];
++
++		/* inside the image, and not over one another */
++		if (sec->va >= size || sec->size > size - sec->va || sec->offset > NTIMAGE_MAX_SIZE ||
++		    (i && sec->va < img->sections[i - 1].va + img->sections[i - 1].size)) {
++			err = -EINVAL;
++			goto fail;
++		}
++		sum = sum * 31 + (u32)(sec->va ^ (sec->offset << 7) ^ (sec->size << 13));
++	}
++
++	img->key.sb = backing_inode->i_sb;
++	img->key.ino = backing_inode->i_ino;
++	img->key.generation = backing_inode->i_generation;
++	img->key.file_size = i_size_read(backing_inode);
++	img->key.mtime = inode_get_mtime(backing_inode);
++	img->key.size = size;
++	img->key.sum = sum;
++
++	inode = iget5_locked(ntimage_mnt->mnt_sb, backing_inode->i_ino ^ (unsigned long)backing_inode->i_sb,
++			     ntimage_test, ntimage_set, img);
++	if (!inode) {
++		err = -ENOMEM;
++		goto fail;
++	}
++	if (inode->i_private != img) {
++		/* the image is mapped already: its pages are shared */
++		ntimage_free(img);
++	} else {
++		inode->i_mode = S_IFREG | 0444;
++		inode->i_size = size;
++		inode->i_mapping->a_ops = &ntimage_aops;
++		inode->i_fop = &ntimage_fops;
++		simple_inode_init_ts(inode);
++		unlock_new_inode(inode);
++	}
++
++	file = alloc_file_pseudo(inode, ntimage_mnt, "ntimage", O_RDONLY | O_LARGEFILE, &ntimage_fops);
++	if (IS_ERR(file))
++		iput(inode);
++	return file;
++
++fail:
++	ntimage_free(img);
++	return ERR_PTR(err);
++}
++
++static long ntimage_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct ntimage_create req;
++
++	if (cmd != NTIMAGE_CREATE)
++		return -ENOTTY;
++	if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
++		return -EFAULT;
++	if (req.flags & ~NTIMAGE_CLOEXEC)
++		return -EINVAL;
++	return FD_ADD((req.flags & NTIMAGE_CLOEXEC) ? O_CLOEXEC : 0, ntimage_create(&req));
++}
++
++static const struct file_operations ntimage_dev_fops = {
++	.owner		= THIS_MODULE,
++	.unlocked_ioctl	= ntimage_ioctl,
++	.compat_ioctl	= compat_ptr_ioctl,
++};
++
++static struct miscdevice ntimage_dev = {
++	.minor		= MISC_DYNAMIC_MINOR,
++	.name		= "ntimage",
++	.fops		= &ntimage_dev_fops,
++	.mode		= 0666,
++};
++
++static int __init ntimage_init(void)
++{
++	int err;
++
++	ntimage_mnt = kern_mount(&ntimage_fs_type);
++	if (IS_ERR(ntimage_mnt))
++		return PTR_ERR(ntimage_mnt);
++	err = misc_register(&ntimage_dev);
++	if (err)
++		kern_unmount(ntimage_mnt);
++	return err;
++}
++fs_initcall(ntimage_init);
+diff -ruN a/include/uapi/linux/ntimage.h b/include/uapi/linux/ntimage.h
+--- a/include/uapi/linux/ntimage.h	1970-01-01 01:00:00.000000000 +0100
++++ b/include/uapi/linux/ntimage.h	2026-11-17 15:14:32.748521017 +0100
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
++/*
++ * NT image sections (fs/ntimage.c)
++ */
++
++#ifndef __LINUX_NTIMAGE_H
++#define __LINUX_NTIMAGE_H
++
++#include <linux/types.h>
++#include <linux/ioctl.h>
++
++#define NTIMAGE_MAX_SECTIONS	96		/* as the PE loader of Windows allows */
++#define NTIMAGE_MAX_SIZE	(1ULL << 32)
++
++/* size bytes of the file from offset go to va in the image */
++struct ntimage_section {
++	__u64 va;
++	__u64 offset;
++	__u64 size;
++};
++
++#define NTIMAGE_CLOEXEC		1
++
++struct ntimage_create {
++	__s32 fd;			/* the executable, open for reading */
++	__u32 count;			/* of sections */
++	__u64 size;			/* of the image */
++	__u64 sections;			/* struct ntimage_section[count] */
++	__u32 flags;			/* NTIMAGE_CLOEXEC */
++	__u32 pad;
++};
++
++/* returns an fd of the image, read-only */
++#define NTIMAGE_CREATE		_IOW('N', 0x90, struct ntimage_create)
++
++#endif

@@ -1,0 +1,86 @@
+From: Project Arctic
+Subject: ntdll: the kernel lays out an image and drops its pages, as Windows does.
+
+The images 0059 shares lived in tmpfs: 1-2 GB with a browser and an IDE
+open, counted as in use and never dropped, only squeezed into swap. Windows
+builds an image section from its file and drops its pages like any cache.
+Arctic's kernel does that now (fs/ntimage.c): /dev/ntimage lays an image
+out from its file page by page, one inode for every process that maps it,
+its pages ordinary file cache. The tmpfs copy stays for a kernel without it.
+---
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3046,6 +3046,62 @@ static IMAGE_BASE_RELOCATION *process_relocation_block( char *page, IMAGE_BASE_R
+  * copy, so the pages are shared, and relocations copy only what they touch.
+  * The copy is named by the file's device, inode, size and time, and appears
+  * whole (rename), whoever wrote it. Returns its fd, or -1. */
++/* Arctic's kernel lays an image out itself (fs/ntimage.c, /dev/ntimage), as
++ * Windows makes an image section: each page built from the file when it is
++ * first touched, one copy for every process, and dropped like file cache when
++ * memory runs short. The copy in WINE_IMAGE_CACHE below lived in tmpfs and
++ * could not be dropped at all. */
++#ifdef __linux__
++struct ntimage_section { ULONG64 va, offset, size; };
++struct ntimage_create { int fd; unsigned int count; ULONG64 size, sections; unsigned int flags, pad; };
++#define NTIMAGE_CLOEXEC 1
++#define NTIMAGE_CREATE _IOW( 'N', 0x90, struct ntimage_create )
++
++static int open_kernel_image( int fd, const IMAGE_SECTION_HEADER *sec, int count, SIZE_T total_size,
++                              SIZE_T align_mask )
++{
++    static const SIZE_T sector_align = 0x1ff;
++    static int device = -2;
++    struct ntimage_section sections[96];
++    struct ntimage_create req;
++    int i, n = 0, image;
++
++    if (device == -2) device = open( "/dev/ntimage", O_RDONLY | O_CLOEXEC );  /* under virtual_mutex */
++    if (device < 0) return -1;
++    for (i = 0; i < count; i++)
++    {
++        SIZE_T map_size, file_size;
++
++        if (!sec[i].PointerToRawData || !sec[i].SizeOfRawData) continue;
++        if ((sec[i].Characteristics & IMAGE_SCN_MEM_SHARED) && (sec[i].Characteristics & IMAGE_SCN_MEM_WRITE))
++            continue;  /* mapped from the shared mapping, as before */
++        if (n == ARRAY_SIZE(sections)) return -1;
++        if (!sec[i].Misc.VirtualSize) map_size = ROUND_SIZE( 0, sec[i].SizeOfRawData, align_mask );
++        else map_size = ROUND_SIZE( 0, sec[i].Misc.VirtualSize, align_mask );
++        file_size = ROUND_SIZE( sec[i].PointerToRawData, sec[i].SizeOfRawData, sector_align );
++        if (file_size > map_size) file_size = map_size;
++        if (sec[i].VirtualAddress + file_size > total_size) return -1;
++        sections[n].va = sec[i].VirtualAddress;
++        sections[n].offset = sec[i].PointerToRawData & ~sector_align;
++        sections[n].size = file_size;
++        n++;
++    }
++    if (!n) return -1;
++    memset( &req, 0, sizeof(req) );
++    req.fd = fd;
++    req.count = n;
++    req.size = total_size;
++    req.sections = (ULONG_PTR)sections;
++    req.flags = NTIMAGE_CLOEXEC;
++    if ((image = ioctl( device, NTIMAGE_CREATE, &req )) < 0)
++    {
++        WARN_(module)( "the kernel did not lay the image out: %s\n", strerror( errno ) );
++        return -1;
++    }
++    return image;
++}
++#endif
++
+ static int open_image_cache( int fd, const struct stat *st, const IMAGE_SECTION_HEADER *sec, int count,
+                              SIZE_T total_size, SIZE_T align_mask )
+ {
+@@ -3063,6 +3119,9 @@ static int open_image_cache( int fd, const struct stat *st, const IMAGE_SECTION_
+         dir = getenv( "WINE_IMAGE_CACHE" );
+         checked = 1;
+     }
++#ifdef __linux__
++    if ((cache = open_kernel_image( fd, sec, count, total_size, align_mask )) != -1) return cache;
++#endif
+     if (!dir || !*dir) return -1;
+     snprintf( path, sizeof(path), "%s/%lx-%lx-%lx-%lx", dir, (unsigned long)st->st_dev,
+               (unsigned long)st->st_ino, (unsigned long)st->st_size, (unsigned long)st->st_mtime );

@@ -12,7 +12,7 @@ ISO="$OUT/iso"
 
 if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
-    pacman -Syu --noconfirm --needed squashfs-tools xorriso limine cpio zstd \
+    pacman -Syu --noconfirm --needed squashfs-tools erofs-utils xorriso limine cpio zstd \
         sbsigntools binutils openssl dosfstools mtools libarchive \
         clang lld llvm nasm patch make
 fi
@@ -23,8 +23,13 @@ rm -f "$RFS/usr/share/arctic/windows.img"
 
 rm -rf "$ISO" "$OUT/arctic.iso"
 mkdir -p "$ISO/boot/limine" "$ISO/EFI/BOOT" "$ISO/arctic"
-mksquashfs "$RFS" "$ISO/arctic/host.sqfs" -comp zstd -Xcompression-level 15 -b 1M -noappend -quiet
-mksquashfs "$OUT/windows.img" "$ISO/arctic/windows.sqfs" -comp zstd -Xcompression-level 15 -b 1M -noappend -quiet
+# The host is EROFS (the name stays host.sqfs: updates go by it), lz4hc in
+# clusters of 16 KB, as CompactOS keeps Windows' files in 4 KB chunks: the
+# code of a program is read a page at a time when it is touched, and squashfs
+# unpacked a whole 1 MB block for each such page. initrd-init mounts it
+# straight from its file (mount_host_image).
+mkfs.erofs -zlz4hc,12 -C16384 -Eztailpacking --quiet "$ISO/arctic/host.sqfs" "$RFS"
+mksquashfs "$OUT/windows.img" "$ISO/arctic/windows.sqfs" -comp zstd -Xcompression-level 15 -b 128K -noappend -quiet
 (cd "$OUT/initrd" && find . | cpio -o -H newc --quiet) | zstd -19 -q > "$ISO/arctic/initrd.img"
 cp "$OUT/kernel/vmlinuz" "$ISO/arctic/vmlinuz"
 

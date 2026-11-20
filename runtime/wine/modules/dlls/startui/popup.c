@@ -54,7 +54,8 @@ static int level_count;
 static int style;
 static struct look popup_look;
 static struct palette pal;
-static HFONT font;
+static HFONT font, menu_font, font_now;
+static BOOL taskbar_menu;      /* POPUP_TASKBAR: the pictures of File Explorer's menus */
 static UINT result;
 static BOOL done, keyboard;
 static int pending_level = -1, pending_row = -1;   /* the submenu the timer opens */
@@ -102,6 +103,21 @@ static int row_at( const struct level *level, POINT pt )
     return -1;
 }
 
+/* the picture File Explorer's menus have for what a glyph shows */
+static const char *picture_of_glyph( enum glyph glyph )
+{
+    switch (glyph)
+    {
+    case GLYPH_PIN:      return "pin";
+    case GLYPH_UNPIN:    return "unpin";
+    case GLYPH_SEARCH:   return "search";
+    case GLYPH_FOLDER:   return "folder";
+    case GLYPH_LOCK:     return "lock";
+    case GLYPH_SETTINGS: return "properties";
+    default:             return NULL;
+    }
+}
+
 static void paint( HWND hwnd )
 {
     struct level *level = &levels[level_of( hwnd )];
@@ -116,6 +132,7 @@ static void paint( HWND hwnd )
         const struct popup_item *item = &level->items[i];
         RECT rect = row_rect( level, i ), text;
         COLORREF color = item->disabled ? pal.dim : pal.text;
+        HBITMAP picture;
         int mid = (rect.top + rect.bottom) / 2;
 
         if (!item->id && !item->sub)
@@ -130,7 +147,11 @@ static void paint( HWND hwnd )
             if (style == POPUP_WIN11) fill_round_rect( hdc, &rect, (float)px( 4 ), pal.ink, 0x14 );
             else fill_alpha( hdc, &rect, pal.ink, 0x1a );
         }
-        if (item->icon)
+        picture = !item->icon && !item->checked && taskbar_menu
+                  ? menu_picture( picture_of_glyph( item->glyph ), pal.light, GLYPH_SIZE ) : NULL;
+        if (picture)
+            draw_icon_bitmap( hdc, picture, GLYPH_LEFT, mid - GLYPH_SIZE / 2, GLYPH_SIZE );
+        else if (item->icon)
             draw_icon_bitmap( hdc, item->icon, GLYPH_LEFT, mid - GLYPH_SIZE / 2, GLYPH_SIZE );
         else if (item->checked)
             draw_glyph( hdc, GLYPH_CHECK, GLYPH_LEFT, mid - GLYPH_SIZE / 2, GLYPH_SIZE, color, 255 );
@@ -138,7 +159,7 @@ static void paint( HWND hwnd )
             draw_glyph( hdc, item->glyph, GLYPH_LEFT, mid - GLYPH_SIZE / 2, GLYPH_SIZE, color, 255 );
         SetRect( &text, TEXT_LEFT, rect.top, rect.right - px( 12 ) - (item->sub ? CHEVRON_SIZE + px( 8 ) : 0),
                  rect.bottom );
-        paint_text( hdc, item->text, &text, font, color, DT_LEFT );
+        paint_text( hdc, item->text, &text, font_now, color, DT_LEFT );
         if (item->sub)
             draw_glyph( hdc, GLYPH_CHEVRON_RIGHT, rect.right - px( 12 ) - CHEVRON_SIZE, mid - CHEVRON_SIZE / 2,
                         CHEVRON_SIZE, color, 255 );
@@ -320,7 +341,7 @@ static BOOL open_level( HWND owner, POINT pt, UINT align, const struct popup_ite
 
     /* as wide as its longest text, as high as its rows */
     hdc = GetDC( NULL );
-    old = SelectObject( hdc, font );
+    old = SelectObject( hdc, font_now );
     level->width = MIN_WIDTH;
     for (UINT i = 0; i < count; i++)
     {
@@ -391,8 +412,11 @@ UINT popup_track( HWND owner, POINT pt, UINT align, const struct popup_item *ite
                   const struct look *look )
 {
     static BOOL registered, tracking;
+    BOOL taskbar = popup_style >= 0 && (popup_style & POPUP_TASKBAR);
     HWND first;
     MSG msg;
+
+    if (popup_style >= 0) popup_style &= ~POPUP_TASKBAR;
 
     if (popup_style == POPUP_SYSTEM)
     {
@@ -433,10 +457,28 @@ UINT popup_track( HWND owner, POINT pt, UINT align, const struct popup_item *ite
     }
     style = popup_style;
     popup_look = *look;
-    /* over what is under it, a little more opaque than the menu */
-    if (popup_look.effect != 1 /* ARCTIC_ACCENT_ENABLE_GRADIENT */) popup_look.opacity = max( popup_look.opacity, 90 );
+    /* over what is under it, a little more opaque than the menu; the
+     * taskbar's menus are as clear and as blurred as the taskbar, in the
+     * font of File Explorer's menus */
+    if (!taskbar && popup_look.effect != 1 /* ARCTIC_ACCENT_ENABLE_GRADIENT */)
+        popup_look.opacity = max( popup_look.opacity, 90 );
     palette_init( &pal, look_is_light( &popup_look ) );
     if (!font) font = shell_font( px( 14 ), FW_NORMAL );
+    font_now = font;
+    taskbar_menu = taskbar;
+    if (taskbar)
+    {
+        NONCLIENTMETRICSW metrics = { sizeof(metrics) };
+
+        if (menu_font) DeleteObject( menu_font );
+        menu_font = NULL;
+        if (SystemParametersInfoW( SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0 ))
+        {
+            metrics.lfMenuFont.lfQuality = CLEARTYPE_QUALITY;
+            menu_font = CreateFontIndirectW( &metrics.lfMenuFont );
+        }
+        if (menu_font) font_now = menu_font;
+    }
     result = 0;
     done = keyboard = FALSE;
     level_count = 0;

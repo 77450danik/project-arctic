@@ -293,15 +293,29 @@ void screen_snip(void)
     if ((thread = CreateThread( NULL, 0, snip_thread, NULL, 0, NULL ))) CloseHandle( thread );
 }
 
-/* the raw input thread saw PrintScreen go down */
-void print_screen(void)
+/* The raw input thread saw PrintScreen go down, with the modifiers as it
+ * saw them. As in Windows 11: the key alone opens screen snipping, with the
+ * Windows key the screen goes to a file in Pictures\Screenshots, with Alt
+ * the active window to the clipboard. */
+void print_screen( BOOL win, BOOL alt )
 {
     enum screenshot what = SCREEN;
     HANDLE thread;
 
-    if (GetAsyncKeyState( VK_LWIN ) < 0 || GetAsyncKeyState( VK_RWIN ) < 0) what = SCREEN_TO_FILE;
-    else if (GetAsyncKeyState( VK_MENU ) < 0) what = ACTIVE_WINDOW;
-    if (InterlockedCompareExchange( &busy, 1, 0 )) return;
+    if (win) what = SCREEN_TO_FILE;
+    else if (alt) what = ACTIVE_WINDOW;
+    else
+    {
+        MESSAGE( "csrss: PrintScreen: screen snipping\n" );
+        screen_snip();
+        return;
+    }
+    MESSAGE( "csrss: %s\n", win ? "Win+PrintScreen" : "Alt+PrintScreen" );
+    if (InterlockedCompareExchange( &busy, 1, 0 ))
+    {
+        WARN( "a screenshot is still being taken\n" );
+        return;
+    }
     if ((thread = CreateThread( NULL, 0, screenshot_thread, (void *)(UINT_PTR)what, 0, NULL ))) CloseHandle( thread );
     else InterlockedExchange( &busy, 0 );
 }

@@ -172,6 +172,11 @@ static BOOL start_window( struct window *window )
 
     GetSystemDirectoryW( path, ARRAY_SIZE(path) );
     wcscat( path, L"\\consent.exe" );
+    /* the service runs on the services' window station, which nobody sees:
+     * left to inherit it, the window came up there (14.11.2026: an invisible
+     * dialog every request waited behind). It belongs on the desktop of the
+     * session, as wininit starts the session's programs */
+    si.lpDesktop = (WCHAR *)L"WinSta0\\Default";
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdInput = in_read;
     si.hStdOutput = out_write;

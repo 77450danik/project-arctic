@@ -1,0 +1,40 @@
+# USER in the kernel (win32k, kernel 0007 + drivers/win32k, Wine 0144): the
+# desktop, taskbar and Start come up with every request of USER served by
+# win32k; programs open, take keys and the mouse, talk to each other (the
+# clipboard, Alt+Tab), and close. The serial log has "win32k: USER served
+# here"; arctic.win32k=0 on the kernel line gives the same pictures with
+# wineserver serving USER (A/B).
+sleep 8
+shot m20-desktop
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 5
+type Arctic win32k
+key ctrl-a
+key ctrl-c
+key win-r
+sleep 2
+type wordpad
+key ret
+sleep 8
+key ctrl-v
+sleep 2
+shot m20-clipboard
+key alt-tab
+sleep 2
+shot m20-alttab
+key win
+sleep 3
+shot m20-start
+key esc
+sleep 1
+key ctrl-shift-esc
+sleep 8
+shot m20-taskmgr
+key alt-f4
+sleep 2
+key win-e
+sleep 6
+shot m20-explorer

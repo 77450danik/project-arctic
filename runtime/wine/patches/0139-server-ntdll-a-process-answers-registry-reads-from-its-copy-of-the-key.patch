@@ -1,0 +1,746 @@
+From: Project Arctic
+Subject: server, ntdll: a process answers registry reads from its copy of the key.
+
+Each NtQueryValueKey and NtEnumerateValueKey was a request; every GUI
+process enumerates the Fonts keys value by value as it starts (about 200
+requests) and every program reads the same keys again and again.
+
+A handle that may query values now comes with the locator of its key's
+change counter in session memory (a shared object of the key, made when a
+client opens a handle and gone with the last handle). On the second read
+through the handle, or its first enumeration, the process gets all of the
+key's values in one request (get_key_values, up to 64 KB a key, 4 MB a
+process) and answers from that copy for as long as the counter has not moved;
+every change of the key's values moves it (touch_key, loading a hive, the key
+being deleted), from whichever process. The answers are what the server
+gives, byte for byte, including the buffer sizes and statuses. NtClose and
+DUPLICATE_CLOSE_SOURCE forget the handle's copy. NT_REGCACHE=0 turns it off.
+---
+diff --git a/dlls/ntdll/unix/registry.c b/dlls/ntdll/unix/registry.c
+index 9f45f73..38bc8a6 100644
+--- a/dlls/ntdll/unix/registry.c
++++ b/dlls/ntdll/unix/registry.c
+@@ -39,6 +39,360 @@ WINE_DEFAULT_DEBUG_CHANNEL(reg);
+ #define MAX_VALUE_LENGTH (16383 * sizeof(WCHAR))
+ 
+ 
++/***********************************************************************
++ * Arctic: the process's copy of registry values
++ *
++ * Windows reads a key's values from memory of its own; here each one was a
++ * request to the server, and a program reads the same few keys again and
++ * again (and enumerates the Fonts keys value by value in every process).
++ * A handle the server lets query values comes with the locator of the key's
++ * change counter in session memory (open_key, create_key). From the second
++ * read through that handle on, or at its first enumeration, the process gets
++ * all the key's values at once (get_key_values) and answers NtQueryValueKey
++ * and NtEnumerateValueKey from that copy for as long as the counter has not
++ * moved. Every change of the key's values moves it, in whichever process.
++ * NT_REGCACHE=0 in the environment turns it off.
++ */
++
++struct reg_values  /* a copy of a key's values, shared by the readers using it */
++{
++    LONG          refcount;
++    unsigned int  count;
++    size_t        size;
++    const struct key_value_entry *entries[];  /* each followed by its name and data */
++};
++
++struct reg_cache_key
++{
++    struct list         entry;   /* in reg_cache_buckets */
++    struct list         lru;     /* in reg_cache_lru, while it has values */
++    HANDLE              handle;
++    object_id_t         id;      /* the key's shared object */
++    mem_size_t          offset;
++    UINT64              seq;     /* its counter when the values were read */
++    unsigned int        uses;
++    BOOL                too_big;
++    struct reg_values  *values;
++};
++
++struct reg_session_block
++{
++    struct list  entry;
++    char        *data;
++    SIZE_T       offset;
++    SIZE_T       size;
++};
++
++#define REG_CACHE_BUCKETS  256
++#define REG_CACHE_MAX_KEY  (64 * 1024)        /* a key with more than this is not copied */
++#define REG_CACHE_BUDGET   (4 * 1024 * 1024)  /* all the copies of a process */
++
++static struct list reg_cache_buckets[REG_CACHE_BUCKETS];
++static struct list reg_cache_lru = LIST_INIT( reg_cache_lru );
++static struct list reg_session_blocks = LIST_INIT( reg_session_blocks );
++static size_t reg_cache_size;
++static LONG reg_cache_count;
++static int reg_cache_enabled = -1;
++static pthread_mutex_t reg_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
++static pthread_mutex_t reg_session_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static BOOL reg_cache_on(void)
++{
++    if (reg_cache_enabled == -1)
++    {
++        const char *env = getenv( "NT_REGCACHE" );
++        unsigned int i;
++
++        for (i = 0; i < REG_CACHE_BUCKETS; i++) list_init( &reg_cache_buckets[i] );
++        reg_cache_enabled = !(env && !strcmp( env, "0" ));
++    }
++    return reg_cache_enabled;
++}
++
++static struct list *reg_cache_bucket( HANDLE handle )
++{
++    return &reg_cache_buckets[((ULONG_PTR)handle >> 2) % REG_CACHE_BUCKETS];
++}
++
++static struct reg_cache_key *reg_cache_find( HANDLE handle )
++{
++    struct reg_cache_key *key;
++
++    LIST_FOR_EACH_ENTRY( key, reg_cache_bucket( handle ), struct reg_cache_key, entry )
++        if (key->handle == handle) return key;
++    return NULL;
++}
++
++static void reg_values_release( struct reg_values *values )
++{
++    if (values && !InterlockedDecrement( &values->refcount )) free( values );
++}
++
++static void reg_cache_drop_values( struct reg_cache_key *key )
++{
++    if (!key->values) return;
++    reg_cache_size -= key->values->size;
++    list_remove( &key->lru );
++    reg_values_release( key->values );
++    key->values = NULL;
++    key->seq = 0;
++}
++
++static void reg_cache_free( struct reg_cache_key *key )
++{
++    reg_cache_drop_values( key );
++    list_remove( &key->entry );
++    free( key );
++    InterlockedDecrement( &reg_cache_count );
++}
++
++/* the key's shared object, if its part of the session section is mapped */
++static const shared_object_t *reg_shared_object( mem_size_t offset )
++{
++    const shared_object_t *ret = NULL;
++    struct reg_session_block *block;
++
++    pthread_mutex_lock( &reg_session_mutex );
++    LIST_FOR_EACH_ENTRY( block, &reg_session_blocks, struct reg_session_block, entry )
++    {
++        if (block->offset > offset || offset + sizeof(shared_object_t) > block->offset + block->size) continue;
++        ret = (const shared_object_t *)(block->data + offset - block->offset);
++        break;
++    }
++    pthread_mutex_unlock( &reg_session_mutex );
++    return ret;
++}
++
++/* map the part of the session section with that offset, as win32u does; called
++ * without reg_cache_mutex: mapping a view takes the fd cache's lock, and NtClose
++ * takes ours inside that one */
++static void reg_map_session( mem_size_t offset )
++{
++    static const WCHAR nameW[] =
++        {'\\','K','e','r','n','e','l','O','b','j','e','c','t','s','\\',
++         '_','_','w','i','n','e','_','s','e','s','s','i','o','n',0};
++    UNICODE_STRING name = RTL_CONSTANT_STRING( nameW );
++    struct reg_session_block *block;
++    OBJECT_ATTRIBUTES attr;
++    LARGE_INTEGER off;
++    HANDLE section;
++
++    if (!(block = calloc( 1, sizeof(*block) ))) return;
++    off.QuadPart = offset & ~(mem_size_t)0xffff;  /* the allocation granularity */
++    InitializeObjectAttributes( &attr, &name, 0, NULL, NULL );
++    if (NtOpenSection( &section, SECTION_MAP_READ, &attr ))
++    {
++        free( block );
++        return;
++    }
++    if (NtMapViewOfSection( section, GetCurrentProcess(), (void **)&block->data, 0, 0, &off,
++                            &block->size, ViewUnmap, 0, PAGE_READONLY ))
++    {
++        NtClose( section );
++        free( block );
++        return;
++    }
++    NtClose( section );
++    block->offset = off.QuadPart;
++    {
++        sigset_t sigset;
++        server_enter_uninterrupted_section( &reg_session_mutex, &sigset );
++        list_add_tail( &reg_session_blocks, &block->entry );
++        server_leave_uninterrupted_section( &reg_session_mutex, &sigset );
++    }
++}
++
++/* is the copy still the key's values? */
++static BOOL reg_cache_valid( struct reg_cache_key *key, const shared_object_t *object )
++{
++    UINT64 seq;
++    object_id_t id;
++
++    if (!key->values || !object) return FALSE;
++    seq = __atomic_load_n( (LONG64 *)&object->seq, __ATOMIC_ACQUIRE );
++    id = object->id;
++    __atomic_thread_fence( __ATOMIC_ACQUIRE );
++    if (seq & 1) return FALSE;
++    if (__atomic_load_n( (LONG64 *)&object->seq, __ATOMIC_RELAXED ) != (LONG64)seq) return FALSE;
++    return id == key->id && seq == key->seq;
++}
++
++/* read all the values of the key again */
++static void reg_cache_fetch( struct reg_cache_key *key )
++{
++    struct reg_values *values;
++    unsigned int status, count = 0, i;
++    data_size_t total = 0;
++    UINT64 seq = 0;
++    char *buffer, *ptr, *end;
++
++    if (key->too_big) return;
++    if (!(buffer = malloc( REG_CACHE_MAX_KEY ))) return;
++
++    SERVER_START_REQ( get_key_values )
++    {
++        req->hkey = wine_server_obj_handle( key->handle );
++        wine_server_set_reply( req, buffer, REG_CACHE_MAX_KEY );
++        if (!(status = wine_server_call( req )))
++        {
++            seq   = reply->seq;
++            count = reply->count;
++            total = wine_server_reply_size( reply );
++        }
++    }
++    SERVER_END_REQ;
++
++    if (status == STATUS_BUFFER_OVERFLOW) key->too_big = TRUE;
++    if (status || !seq || (seq & 1))
++    {
++        free( buffer );
++        return;
++    }
++    if (!(values = malloc( offsetof( struct reg_values, entries[count] ) + total )))
++    {
++        free( buffer );
++        return;
++    }
++    ptr = (char *)&values->entries[count];
++    memcpy( ptr, buffer, total );
++    free( buffer );
++    end = ptr + total;
++    for (i = 0; i < count; i++)
++    {
++        const struct key_value_entry *entry = (const struct key_value_entry *)ptr;
++        size_t size;
++
++        if (end - ptr < sizeof(*entry)) break;
++        size = (sizeof(*entry) + entry->namelen + entry->len + 7) & ~7;
++        if (size > end - ptr) break;
++        values->entries[i] = entry;
++        ptr += size;
++    }
++    if (i < count)  /* not what the server sends */
++    {
++        free( values );
++        key->too_big = TRUE;
++        return;
++    }
++    values->refcount = 1;
++    values->count    = count;
++    values->size     = offsetof( struct reg_values, entries[count] ) + total;
++
++    reg_cache_drop_values( key );
++    key->values = values;
++    key->seq    = seq;
++    reg_cache_size += values->size;
++    list_add_head( &reg_cache_lru, &key->lru );
++    while (reg_cache_size > REG_CACHE_BUDGET && !list_empty( &reg_cache_lru ))
++    {
++        struct reg_cache_key *old = LIST_ENTRY( list_tail( &reg_cache_lru ), struct reg_cache_key, lru );
++        if (old == key) break;
++        reg_cache_drop_values( old );
++    }
++}
++
++/* the values to answer from, with a reference, or NULL to ask the server */
++static struct reg_values *reg_cache_get( HANDLE handle, BOOL enumerating )
++{
++    struct reg_values *values = NULL;
++    struct reg_cache_key *key;
++    const shared_object_t *object;
++    mem_size_t unmapped = 0;
++    BOOL mapped = FALSE;
++    sigset_t sigset;
++
++    if (!reg_cache_count || !reg_cache_on()) return NULL;
++
++again:
++    server_enter_uninterrupted_section( &reg_cache_mutex, &sigset );
++    if ((key = reg_cache_find( handle )))
++    {
++        object = reg_shared_object( key->offset );
++        if (!object && !mapped)
++        {
++            /* map that part of the session memory first, outside the lock */
++            unmapped = key->offset;
++            server_leave_uninterrupted_section( &reg_cache_mutex, &sigset );
++            reg_map_session( unmapped );
++            mapped = TRUE;
++            goto again;
++        }
++        if (!object)
++        {
++            server_leave_uninterrupted_section( &reg_cache_mutex, &sigset );
++            return NULL;  /* cannot see the counter: ask the server */
++        }
++        if (key->values && !reg_cache_valid( key, object ))
++        {
++            /* changed: start again, a key written as often as read is not worth copying */
++            reg_cache_drop_values( key );
++            key->uses = 0;
++        }
++        key->uses++;
++        if (!key->values && (enumerating || key->uses >= 2)) reg_cache_fetch( key );
++        if (key->values)
++        {
++            list_remove( &key->lru );
++            list_add_head( &reg_cache_lru, &key->lru );
++            values = key->values;
++            InterlockedIncrement( &values->refcount );
++        }
++    }
++    server_leave_uninterrupted_section( &reg_cache_mutex, &sigset );
++    return values;
++}
++
++/* a handle came from the server, with the locator of its key's counter */
++static void reg_cache_open( HANDLE handle, const struct obj_locator *locator )
++{
++    struct reg_cache_key *key;
++    sigset_t sigset;
++
++    if (!handle || !reg_cache_on()) return;
++    server_enter_uninterrupted_section( &reg_cache_mutex, &sigset );
++    if ((key = reg_cache_find( handle ))) reg_cache_free( key );  /* the handle was closed behind our back */
++    if (locator->id && (key = calloc( 1, sizeof(*key) )))
++    {
++        key->handle = handle;
++        key->id     = locator->id;
++        key->offset = locator->offset;
++        list_add_head( reg_cache_bucket( handle ), &key->entry );
++        InterlockedIncrement( &reg_cache_count );
++    }
++    server_leave_uninterrupted_section( &reg_cache_mutex, &sigset );
++}
++
++/* NtClose, NtDuplicateObject with DUPLICATE_CLOSE_SOURCE */
++void registry_cache_close( HANDLE handle )
++{
++    struct reg_cache_key *key;
++    sigset_t sigset;
++
++    if (!reg_cache_count) return;
++    server_enter_uninterrupted_section( &reg_cache_mutex, &sigset );
++    if ((key = reg_cache_find( handle ))) reg_cache_free( key );
++    server_leave_uninterrupted_section( &reg_cache_mutex, &sigset );
++}
++
++static const struct key_value_entry *reg_values_find( const struct reg_values *values,
++                                                      const WCHAR *name, unsigned int len )
++{
++    unsigned int i, j;
++
++    for (i = 0; i < values->count; i++)
++    {
++        const struct key_value_entry *entry = values->entries[i];
++        const WCHAR *entry_name = (const WCHAR *)(entry + 1);
++
++        if (entry->namelen != len) continue;
++        for (j = 0; j < len / sizeof(WCHAR); j++)
++            if (ntdll_towupper( entry_name[j] ) != ntdll_towupper( name[j] )) break;
++        if (j == len / sizeof(WCHAR)) return entry;
++    }
++    return NULL;
++}
++
++
+ NTSTATUS open_hkcu_key( const char *path, HANDLE *key )
+ {
+     NTSTATUS status;
+@@ -95,6 +449,7 @@ NTSTATUS WINAPI NtCreateKey( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRI
+         if (class) wine_server_add_data( req, class->Buffer, class->Length );
+         ret = wine_server_call( req );
+         *key = wine_server_ptr_handle( reply->hkey );
++        if (!ret || ret == STATUS_OBJECT_NAME_EXISTS) reg_cache_open( *key, &reply->shm );
+     }
+     SERVER_END_REQ;
+ 
+@@ -153,6 +508,7 @@ NTSTATUS WINAPI NtOpenKeyEx( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRI
+         wine_server_add_data( req, attr->ObjectName->Buffer, attr->ObjectName->Length );
+         ret = wine_server_call( req );
+         *key = wine_server_ptr_handle( reply->hkey );
++        if (!ret) reg_cache_open( *key, &reply->shm );
+     }
+     SERVER_END_REQ;
+     TRACE("<- %p\n", *key);
+@@ -449,6 +805,7 @@ NTSTATUS WINAPI NtEnumerateValueKey( HANDLE handle, ULONG index, KEY_VALUE_INFOR
+     unsigned int ret;
+     void *ptr;
+     size_t fixed_size;
++    struct reg_values *values;
+ 
+     TRACE( "(%p,%u,%d,%p,%d)\n", handle, index, info_class, info, length );
+ 
+@@ -464,6 +821,43 @@ NTSTATUS WINAPI NtEnumerateValueKey( HANDLE handle, ULONG index, KEY_VALUE_INFOR
+     }
+     fixed_size = (char *)ptr - (char *)info;
+ 
++    if ((values = reg_cache_get( handle, TRUE )))
++    {
++        /* what the server does in enum_value, from the copy */
++        const struct key_value_entry *entry;
++        data_size_t total, namelen, maxlen, reply_namelen = 0;
++
++        if ((int)index < 0 || index >= values->count) ret = STATUS_NO_MORE_ENTRIES;
++        else
++        {
++            entry = values->entries[index];
++            namelen = entry->namelen;
++            switch (info_class)
++            {
++            case KeyValueBasicInformation: total = namelen; break;
++            case KeyValueFullInformation:  total = namelen + entry->len; break;
++            default:                       total = entry->len; namelen = 0; break;
++            }
++            maxlen = length > fixed_size ? min( total, length - fixed_size ) : 0;
++            if (maxlen > namelen)
++            {
++                reply_namelen = namelen;
++                memcpy( ptr, entry + 1, namelen );
++                memcpy( (char *)ptr + namelen, (const char *)(entry + 1) + entry->namelen, maxlen - namelen );
++            }
++            else if (maxlen)
++            {
++                reply_namelen = maxlen;
++                memcpy( ptr, entry + 1, maxlen );
++            }
++            copy_key_value_info( info_class, info, length, entry->type, reply_namelen, maxlen - reply_namelen );
++            *result_len = fixed_size + total;
++            ret = length < *result_len ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
++        }
++        reg_values_release( values );
++        return ret;
++    }
++
+     SERVER_START_REQ( enum_key_value )
+     {
+         req->hkey       = wine_server_obj_handle( handle );
+@@ -493,6 +887,7 @@ NTSTATUS WINAPI NtQueryValueKey( HANDLE handle, const UNICODE_STRING *name,
+     unsigned int ret;
+     UCHAR *data_ptr;
+     unsigned int fixed_size, min_size;
++    struct reg_values *values;
+ 
+     TRACE( "(%p,%s,%d,%p,%d)\n", handle, debugstr_us(name), info_class, info, length );
+ 
+@@ -538,6 +933,26 @@ NTSTATUS WINAPI NtQueryValueKey( HANDLE handle, const UNICODE_STRING *name,
+         return STATUS_INVALID_PARAMETER;
+     }
+ 
++    if ((values = reg_cache_get( handle, FALSE )))
++    {
++        /* what the server does in get_value, from the copy */
++        const struct key_value_entry *entry = reg_values_find( values, name->Buffer, name->Length & ~1 );
++
++        if (!entry) ret = STATUS_OBJECT_NAME_NOT_FOUND;
++        else
++        {
++            if (length > fixed_size && data_ptr)
++                memcpy( data_ptr, (const char *)(entry + 1) + entry->namelen, min( entry->len, length - fixed_size ) );
++            copy_key_value_info( info_class, info, length, entry->type, name->Length, entry->len );
++            *result_len = fixed_size + (info_class == KeyValueBasicInformation ? 0 : entry->len);
++            if (length < min_size) ret = STATUS_BUFFER_TOO_SMALL;
++            else if (length < *result_len) ret = STATUS_BUFFER_OVERFLOW;
++            else ret = STATUS_SUCCESS;
++        }
++        reg_values_release( values );
++        return ret;
++    }
++
+     SERVER_START_REQ( get_key_value )
+     {
+         req->hkey = wine_server_obj_handle( handle );
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index fa9138d..8ebfc5d 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1881,6 +2132,7 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+     {
+         fd = remove_fd_from_cache( source );
+         close_inproc_sync( source );
++        registry_cache_close( source );
+     }
+ 
+     SERVER_START_REQ( dup_handle )
+@@ -1955,6 +2207,7 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+      * retrieve it again */
+     fd = remove_fd_from_cache( handle );
+     close_inproc_sync( handle );
++    registry_cache_close( handle );
+ 
+     SERVER_START_REQ( close_handle )
+     {
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 9b6401e..9672894 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -420,6 +423,7 @@ extern NTSTATUS wow64_wine_spawnvp( void *args );
+ extern void dbg_init(void);
+ 
+ extern void close_inproc_sync( HANDLE handle );
++extern void registry_cache_close( HANDLE handle );
+ 
+ extern NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
+                                           ULONG_PTR arg3, PNTAPCFUNC func, NTSTATUS status );
+diff --git a/server/protocol.def b/server/protocol.def
+index b0dd67b..6899080 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1017,6 +1017,17 @@ struct obj_locator
+     mem_size_t           offset;           /* offset of the object in session shared memory */
+ };
+ 
++/* Arctic: an entry of get_key_values, followed by the name and the data,
++ * the whole padded to 8 bytes */
++struct key_value_entry
++{
++    unsigned int         type;             /* value type */
++    unsigned short       namelen;          /* length of the name in bytes */
++    unsigned short       __pad;
++    data_size_t          len;              /* length of the data in bytes */
++    unsigned int         __pad2;
++};
++
+ #define MAX_ATOM_LEN     255
+ #define WH_WINEVENT      (WH_MAXHOOK + 1)
+ #define NB_HOOKS         (WH_WINEVENT - WH_MINHOOK + 1)
+@@ -2110,6 +2153,7 @@ struct process_info
+     VARARG(class,unicode_str);         /* class name */
+ @REPLY
+     obj_handle_t hkey;         /* handle to the created key */
++    struct obj_locator shm;    /* Arctic: the key's change counter, if the handle may query values */
+ @END
+ 
+ /* Open a registry key */
+@@ -2120,6 +2164,7 @@ struct process_info
+     VARARG(name,unicode_str);  /* key name */
+ @REPLY
+     obj_handle_t hkey;         /* handle to the open key */
++    struct obj_locator shm;    /* Arctic: the key's change counter, if the handle may query values */
+ @END
+ 
+ 
+@@ -2176,6 +2221,17 @@ struct process_info
+ @END
+ 
+ 
++/* Arctic: every value of a registry key at once, for the client's cache */
++@REQ(get_key_values)
++    obj_handle_t hkey;         /* handle to registry key */
++@REPLY
++    unsigned __int64 seq;      /* the key's change counter the values go with */
++    unsigned int count;        /* number of values */
++    data_size_t  total;        /* size of the whole list */
++    VARARG(values,bytes);      /* struct key_value_entry and name and data, 8-aligned, for each */
++@END
++
++
+ /* Enumerate a value of a registry key */
+ @REQ(enum_key_value)
+     obj_handle_t hkey;         /* handle to registry key */
+diff --git a/server/registry.c b/server/registry.c
+index c45ad43..e558ce0 100644
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -95,6 +95,7 @@ struct key
+     unsigned int      flags;       /* flags */
+     timeout_t         modif;       /* last modification time */
+     struct list       notify_list; /* list of notifications */
++    object_shm_t     *shared;      /* Arctic: change counter in session memory, for client caches */
+ };
+ 
+ /* key flags */
+@@ -407,6 +408,7 @@ static bool key_init( struct object *obj, const void *init_data )
+     key->last_value  = -1;
+     key->values      = NULL;
+     key->modif       = data->modif;
++    key->shared      = NULL;
+     list_init( &key->notify_list );
+ 
+     if ((key->classlen = (data->classlen / sizeof(WCHAR)) * sizeof(WCHAR)) &&
+@@ -687,11 +689,54 @@ static void key_unlink_name( struct object *obj, struct object_name *name )
+ }
+ 
+ /* close the notification associated with a handle */
++/* Arctic: client caches of key values (ntdll registry.c). A key a client
++ * may query through its handle gets a shared object in session memory; its
++ * sequence number moves on every change of the key's values, so a client
++ * knows its copy of them is still the key's. It goes when the last handle
++ * to the key does. */
++#define MAX_SHARED_KEYS 16384
++static unsigned int shared_keys;
++
++static void key_values_changed( struct key *key )
++{
++    if (!key->shared) return;
++    SHARED_WRITE_BEGIN( key->shared, object_shm_t )
++    {
++        (void)shared;
++    }
++    SHARED_WRITE_END;
++}
++
++static void unshare_key( struct key *key )
++{
++    if (!key->shared) return;
++    free_shared_object( key->shared );
++    key->shared = NULL;
++    shared_keys--;
++}
++
++/* the locator of the key's counter, for a handle just opened */
++static struct obj_locator share_key( struct key *key, obj_handle_t handle )
++{
++    struct obj_locator locator = {0};
++
++    if (!handle || key->flags & (KEY_PREDEF | KEY_DELETED)) return locator;
++    if (!(get_handle_access( current->process, handle ) & KEY_QUERY_VALUE)) return locator;
++    if (!key->shared)
++    {
++        if (shared_keys >= MAX_SHARED_KEYS) return locator;
++        if (!(key->shared = alloc_shared_object( sizeof(object_shm_t) ))) return locator;
++        shared_keys++;
++    }
++    return get_shared_object_locator( key->shared );
++}
++
+ static int key_close_handle( struct object *obj, struct process *process, obj_handle_t handle )
+ {
+     struct key * key = (struct key *) obj;
+     struct notify *notify = find_notify( key, process, handle );
+     if (notify) do_notification( key, notify, 1 );
++    if (obj->handle_count == 1) unshare_key( key );  /* the last handle goes */
+     return 1;  /* ok to close */
+ }
+ 
+@@ -702,6 +747,7 @@ static void key_destroy( struct object *obj )
+     struct key *key = (struct key *)obj;
+     assert( obj->ops == &key_ops );
+ 
++    unshare_key( key );
+     free( key->class );
+     for (i = 0; i <= key->last_value; i++)
+     {
+@@ -763,6 +809,7 @@ static void touch_key( struct key *key, unsigned int change )
+ {
+     key->modif = current_time;
+     make_dirty( key );
++    if (change & REG_NOTIFY_CHANGE_LAST_SET) key_values_changed( key );
+ 
+     /* do notifications */
+     check_notify( key, change, 1 );
+@@ -1032,6 +1079,7 @@ static int delete_key( struct key *key, int recurse )
+ 
+     if (debug_level > 1) dump_operation( key, NULL, "Delete" );
+     key->flags |= KEY_DELETED;
++    key_values_changed( key );  /* a cached copy of its values says nothing now */
+     unlink_named_object( &key->obj );
+     touch_key( parent, REG_NOTIFY_CHANGE_NAME );
+     return 1;
+@@ -1573,6 +1621,7 @@ static int load_value( struct key *key, const char *buffer, struct file_load_inf
+     struct key_value *value;
+ 
+     if (!(value = parse_value_name( key, buffer, &len, info ))) return 0;
++    key_values_changed( key );  /* loading a hive over a key a client has open */
+     if (!(res = get_data_type( buffer + len, &type, &parse_type ))) goto error;
+     buffer += len + res;
+ 
+@@ -2241,6 +2290,7 @@ DECL_HANDLER(create_key)
+             if (parent) touch_key( get_parent( key ), REG_NOTIFY_CHANGE_NAME );
+             if (debug_level > 1) dump_operation( key, NULL, "Create" );
+         }
++        reply->shm = share_key( key, reply->hkey );
+         release_object( key );
+     }
+ 
+@@ -2269,6 +2319,7 @@ DECL_HANDLER(open_key)
+         if (!(access & KEY_WOW64_64KEY)) key = grab_wow6432node( key );
+         if (key->flags & KEY_PREDEF) set_error( STATUS_PREDEFINED_HANDLE );
+         reply->hkey = alloc_handle( current->process, key, access, req->attributes );
++        reply->shm = share_key( key, reply->hkey );
+         if (debug_level > 1) dump_operation( key, NULL, "Open" );
+         release_object( key );
+     }
+@@ -2348,6 +2399,48 @@ DECL_HANDLER(get_key_value)
+     }
+ }
+ 
++/* Arctic: every value of a registry key, for the client's cache */
++DECL_HANDLER(get_key_values)
++{
++    struct key_value_entry *entry;
++    struct key *key;
++    data_size_t total = 0;
++    char *ptr;
++    int i;
++
++    if (!(key = get_hkey_obj( req->hkey, KEY_QUERY_VALUE ))) return;
++    if (key->flags & KEY_PREDEF)
++    {
++        set_error( STATUS_INVALID_HANDLE );
++        release_object( key );
++        return;
++    }
++    for (i = 0; i <= key->last_value; i++)
++        total += (sizeof(*entry) + key->values[i].namelen + key->values[i].len + 7) & ~7;
++    reply->count = key->last_value + 1;
++    reply->total = total;
++    reply->seq   = key->shared ? CONTAINING_RECORD( key->shared, shared_object_t, shm )->seq : 0;
++    if (total > get_reply_max_size()) set_error( STATUS_BUFFER_OVERFLOW );
++    else if (total && (ptr = set_reply_data_size( total )))
++    {
++        for (i = 0; i <= key->last_value; i++)
++        {
++            const struct key_value *value = &key->values[i];
++            data_size_t size = (sizeof(*entry) + value->namelen + value->len + 7) & ~7;
++
++            memset( ptr, 0, size );
++            entry = (struct key_value_entry *)ptr;
++            entry->type    = value->type;
++            entry->namelen = value->namelen;
++            entry->len     = value->len;
++            memcpy( entry + 1, value->name, value->namelen );
++            if (value->len) memcpy( (char *)(entry + 1) + value->namelen, value->data, value->len );
++            ptr += size;
++        }
++    }
++    release_object( key );
++}
++
+ /* enumerate the value of a registry key */
+ DECL_HANDLER(enum_key_value)
+ {

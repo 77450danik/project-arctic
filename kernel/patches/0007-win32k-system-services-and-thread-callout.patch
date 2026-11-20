@@ -1,0 +1,124 @@
+From: Project Arctic
+Subject: [PATCH] win32k: its system services and the thread callout
+
+Windows reaches win32k.sys by system calls of its own (the second service
+table, numbered from 0x1000), and win32k frees a thread's windows and queue
+when the thread ends (the thread callout). Arctic's win32k (drivers/win32k,
+USER of the NT side) is reached the same way: win32k_hello, win32k_call,
+win32k_session (its shared memory) and win32k_callout (what wineserver, the
+object manager, tells it) at 0x1000-0x1003, and do_exit calls
+win32k_thread_exit. win32k finds a task's W32THREAD in a table of its own,
+so the kernel's structures stay as they are.
+
+A thread waits for its message queue on an ntsync event, together with its
+other objects; win32k sets and resets that event from the kernel
+(ntsync_event_set_kernel), as wineserver did through the ioctls.
+---
+diff -ruN a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+--- a/arch/x86/entry/syscalls/syscall_64.tbl	2026-11-18 13:12:18.023696586 +0100
++++ b/arch/x86/entry/syscalls/syscall_64.tbl	2026-11-18 13:12:24.409080500 +0100
+@@ -441,3 +441,12 @@
+ 547	x32	pwritev2		compat_sys_pwritev64v2
+ # This is the end of the legacy x32 range.  Numbers 548 and above are
+ # not special and are not to be used for x32-specific syscalls.
++
++#
++# Arctic: win32k's services, from 0x1000 as the service table of win32k.sys
++# in Windows (drivers/win32k, docs/win32k.md)
++#
++4096	64	win32k_hello		sys_win32k_hello
++4097	64	win32k_call		sys_win32k_call
++4098	64	win32k_session		sys_win32k_session
++4099	64	win32k_callout		sys_win32k_callout
+diff -ruN a/drivers/misc/ntsync.c b/drivers/misc/ntsync.c
+--- a/drivers/misc/ntsync.c	2026-11-18 13:12:23.639696445 +0100
++++ b/drivers/misc/ntsync.c	2026-11-18 13:12:24.410187316 +0100
+@@ -21,6 +21,7 @@
+ #include <linux/spinlock.h>
+ #include <linux/time_namespace.h>
+ #include <uapi/linux/ntsync.h>
++#include <linux/win32k.h>
+ 
+ #define NTSYNC_NAME	"ntsync"
+ 
+@@ -1205,6 +1206,34 @@
+ 	.mode		= 0666,
+ };
+ 
++/*
++ * Arctic: the event a thread waits on for its message queue is an ntsync
++ * event wineserver made (on its one device, with the rest of the objects the
++ * thread waits on); win32k (drivers/win32k) holds its file and sets or
++ * resets it from the kernel, as wineserver did through the ioctls.
++ */
++int ntsync_event_set_kernel(struct file *file, bool signaled)
++{
++	struct ntsync_obj *event;
++	bool all;
++
++	if (file->f_op != &ntsync_obj_fops)
++		return -EINVAL;
++	event = file->private_data;
++	if (event->type != NTSYNC_TYPE_EVENT)
++		return -EINVAL;
++
++	all = ntsync_lock_obj(event->dev, event);
++	event->u.event.signaled = signaled;
++	if (signaled) {
++		if (all)
++			try_wake_all_obj(event->dev, event);
++		try_wake_any_event(event);
++	}
++	ntsync_unlock_obj(event->dev, event, all);
++	return 0;
++}
++
+ module_misc_device(ntsync_misc);
+ 
+ MODULE_AUTHOR("Elizabeth Figura <zfigura@codeweavers.com>");
+diff -ruN a/include/linux/win32k.h b/include/linux/win32k.h
+--- a/include/linux/win32k.h	1970-01-01 01:00:00.000000000 +0100
++++ b/include/linux/win32k.h	2026-11-18 13:12:24.415444223 +0100
+@@ -0,0 +1,21 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Arctic: win32k (drivers/win32k): what the rest of the kernel calls.
++ */
++#ifndef _LINUX_WIN32K_H
++#define _LINUX_WIN32K_H
++
++#include <linux/types.h>
++
++struct task_struct;
++struct file;
++
++/* a task ends (do_exit): for one that is a thread of win32k, Windows'
++ * thread callout; for any other, a lookup that finds nothing */
++void win32k_thread_exit(struct task_struct *tsk);
++
++/* drivers/misc/ntsync.c: sets or resets an ntsync event (the event of a
++ * message queue); -EINVAL if the file is not an ntsync event */
++int ntsync_event_set_kernel(struct file *event, bool signaled);
++
++#endif
+diff -ruN a/kernel/exit.c b/kernel/exit.c
+--- a/kernel/exit.c	2026-11-18 13:12:21.797696491 +0100
++++ b/kernel/exit.c	2026-11-18 13:12:24.409731659 +0100
+@@ -67,6 +67,7 @@
+ #include <linux/kprobes.h>
+ #include <linux/rethook.h>
+ #include <linux/sysfs.h>
++#include <linux/win32k.h>
+ #include <linux/user_events.h>
+ #include <linux/unwind_deferred.h>
+ #include <linux/uaccess.h>
+@@ -950,6 +951,9 @@
+ 	sched_mm_cid_exit(tsk);
+ 	exit_signals(tsk);  /* sets PF_EXITING */
+ 
++	/* Arctic: win32k frees what the thread left, as Windows' thread callout */
++	win32k_thread_exit(tsk);
++
+ 	seccomp_filter_release(tsk);
+ 
+ 	acct_update_integrals(tsk);

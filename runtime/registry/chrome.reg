@@ -106,3 +106,14 @@ REGEDIT4
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe]
 @="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 "Path"="C:\\Program Files\\Google\\Chrome\\Application"
+
+; Chrome is part of the system and its chrome.dll carries Arctic's change
+; (ci/patch-chrome-webgpu.py: WebGPU on Vulkan): an update would put Google's
+; file back. The image has no Google updater; should one come (Chrome's own
+; installer, a user's), these policies keep it from updating Chrome, as the
+; enterprise policy of Google Update does on Windows. {8A69D345-...} is
+; Chrome stable.
+[HKEY_LOCAL_MACHINE\Software\Policies\Google\Update]
+"UpdateDefault"=dword:00000000
+"AutoUpdateCheckPeriodMinutes"=dword:00000000
+"Update{8A69D345-D564-463C-AFF1-A69D9E530F96}"=dword:00000000

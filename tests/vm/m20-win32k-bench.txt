@@ -1,0 +1,23 @@
+# The cost of USER with win32k and without (vm-test.py --disk
+# out/test-local/tools.img, it becomes D:): ntbench's window and message
+# tests (CreateWindowEx, PeekMessage, PostMessage, SendMessage within a thread
+# and between threads, SetWindowPos, GetDC) and the rest for reference. Run once
+# as it is and once with --append arctic.win32k=0, three times each (single
+# VM runs are noise); the table is left open in Notepad for the picture.
+sleep 10
+key win-r
+sleep 2
+type cmd /c D:\ntbench.exe vm > C:\Users\Public\ntbench-vm-stdout.txt
+key ret
+sleep 150
+key win-r
+sleep 2
+type notepad C:\Users\Public\ntbench-vm.txt
+key ret
+sleep 5
+key win-up
+sleep 2
+shot m20-bench
+key ctrl-end
+sleep 2
+shot m20-bench-end

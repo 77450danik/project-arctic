@@ -6,4 +6,5 @@ VER_FILEDESCRIPTION_STR = "Windows shell experience: task switching"
 SOURCES = \
 	flyout.c \
 	main.c \
-	switcher.c
+	switcher.c \
+	taskview.c

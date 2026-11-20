@@ -120,6 +120,7 @@ static LRESULT WINAPI sas_window_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     }
     if (msg == WM_TIMER && wp == TIMER_SHELL)
     {
+        if (session_ending) return 0;  /* explorer ends with the session */
         if (check_shell_answers()) shell_restarted();
         else check_shell();
         return 0;
@@ -128,6 +129,19 @@ static LRESULT WINAPI sas_window_proc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     if (wp == HOTKEY_SECURITY_OPTIONS) show_security_options();
     else if (wp == HOTKEY_TASK_MANAGER) run( taskmgr );
     return 0;
+}
+
+HWND sas_window;
+
+/* the power policy's thread ends the session as ExitWindowsEx would ask
+ * it, straight to the window: through ExitWindowsEx it did not find it (the
+ * power button in the VM, 2026-11-14 and 11-16), so the session went down
+ * through winboot, winlogon ended with 0 and wininit stopped the system on
+ * CRITICAL_PROCESS_DIED instead of shutting it down */
+void end_session_from_thread( UINT flags )
+{
+    if (!sas_window || !PostMessageW( sas_window, WM_LOGONNOTIFY, LN_LOGOFF, flags ))
+        ExitWindowsEx( flags, SHTDN_REASON_MAJOR_POWER | SHTDN_REASON_FLAG_PLANNED );
 }
 
 /* receives the secure attention keys, as Windows' "SAS window" does */
@@ -144,6 +158,7 @@ static void create_sas_window(void)
         ERR( "cannot create the SAS window: %lu\n", GetLastError() );
         return;
     }
+    sas_window = hwnd;
     if (!RegisterHotKey( hwnd, HOTKEY_SECURITY_OPTIONS, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_DELETE ))
         ERR( "Ctrl+Alt+Del is taken: %lu\n", GetLastError() );
     if (!RegisterHotKey( hwnd, HOTKEY_TASK_MANAGER, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_ESCAPE ))

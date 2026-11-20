@@ -24,5 +24,8 @@ mkfs.vfat -F 32 -n TESTS "$TMP/fat" >/dev/null
 for f in "$ROOT"/out/tests/*.exe; do
     mcopy -i "$TMP/fat" "$f" "::$(basename "$f")"
 done
+# the user32 conformance runner (tests/vm/m20-win32k-user32.txt), with CRLF for cmd
+sed 's/\r*$/\r/' "$ROOT/tests/vm/ut.cmd" > "$TMP/ut.cmd"
+mcopy -i "$TMP/fat" "$TMP/ut.cmd" ::ut.cmd
 dd if="$TMP/fat" of="$img" bs=1M seek=1 conv=notrunc status=none
 mdir -i "$TMP/fat" ::

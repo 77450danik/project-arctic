@@ -1,0 +1,722 @@
+From: Project Arctic
+Subject: win32u: VRAM that is full spills to system memory, as Windows pages it.
+---
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+--- a/dlls/win32u/vulkan.c	2026-11-13 22:52:30.297032568 +0100
++++ b/dlls/win32u/vulkan.c	2026-11-13 22:52:31.096822655 +0100
+@@ -129,6 +129,14 @@
+     D3DKMT_HANDLE mutex;
+     VkSemaphore semaphore;
+     UINT64 semaphore_value;
++
++    /* VRAM was full: no host memory behind it, every resource bound to it gets
++     * system memory of its own type (see win32u_vkAllocateMemory) */
++    BOOL spill;
++    uint32_t spill_type;  /* the device-local type asked for */
++    pthread_mutex_t spill_lock;
++    UINT spill_count, spill_capacity;
++    VkDeviceMemory *spills;
+ };
+ 
+ static inline struct device_memory *device_memory_from_handle( VkDeviceMemory handle )
+@@ -862,9 +870,257 @@
+     *client_queue = device_find_queue( client_device, &info );
+ }
+ 
++/* Windows (WDDM) never refuses device-local memory for lack of VRAM: video
++ * memory management places the allocation in system memory and pages it. A
++ * Linux driver refuses (NVIDIA: VK_ERROR_OUT_OF_DEVICE_MEMORY once VRAM is
++ * full), and programs written for Windows (Dawn, Chrome's WebGPU) then fail
++ * to create textures. For an allocation made for one resource the memory
++ * types it accepts are known: system memory of such a type stands in. */
++static uint32_t system_memory_type( struct vulkan_device *device, uint32_t type_bits );
++
++/* Images that draw (color or depth attachments, storage): when VRAM runs short
++ * they keep it, as WDDM keeps render targets resident and pages textures out.
++ * A small open-addressing set of host handles, filled by vkCreateImage; a
++ * destroyed image stays in it until its handle is reused or the set is reset. */
++#define DRAWING_IMAGES 8192
++static pthread_mutex_t drawing_images_lock = PTHREAD_MUTEX_INITIALIZER;
++static VkImage drawing_images[DRAWING_IMAGES];
++static UINT drawing_image_count;
++
++static UINT drawing_image_slot( VkImage image )
++{
++    UINT64 h = (UINT64)image * 0x9e3779b97f4a7c15ull;
++    return (UINT)(h >> 51) & (DRAWING_IMAGES - 1);
++}
++
++static void add_drawing_image( VkImage image )
++{
++    UINT i;
++
++    pthread_mutex_lock( &drawing_images_lock );
++    if (drawing_image_count > DRAWING_IMAGES * 3 / 4)
++    {
++        memset( drawing_images, 0, sizeof(drawing_images) );
++        drawing_image_count = 0;
++    }
++    for (i = drawing_image_slot( image ); drawing_images[i] && drawing_images[i] != image; i = (i + 1) & (DRAWING_IMAGES - 1));
++    if (!drawing_images[i]) drawing_image_count++;
++    drawing_images[i] = image;
++    pthread_mutex_unlock( &drawing_images_lock );
++}
++
++static BOOL is_drawing_image( VkImage image )
++{
++    BOOL found;
++    UINT i;
++
++    pthread_mutex_lock( &drawing_images_lock );
++    for (i = drawing_image_slot( image ); drawing_images[i] && drawing_images[i] != image; i = (i + 1) & (DRAWING_IMAGES - 1));
++    found = drawing_images[i] == image;
++    pthread_mutex_unlock( &drawing_images_lock );
++    return found;
++}
++
++/* Whether a device-local allocation of this size would leave less than a
++ * quarter of the VRAM heap's budget: then ordinary data goes to system memory
++ * before the driver puts there whatever comes next (on NVIDIA silently, a
++ * resize's render targets included). */
++static BOOL vram_tight( struct vulkan_device *device, uint32_t type_index, VkDeviceSize size )
++{
++    struct vulkan_physical_device *physical_device = device->physical_device;
++    const VkPhysicalDeviceMemoryProperties *props = &physical_device->memory_properties;
++    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
++    VkPhysicalDeviceMemoryProperties2 props2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &budget};
++    uint32_t heap = props->memoryTypes[type_index].heapIndex;
++
++    if (!physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2) return FALSE;
++    physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2( physical_device->host.physical_device, &props2 );
++    if (!budget.heapBudget[heap]) return FALSE;  /* no VK_EXT_memory_budget */
++    return budget.heapUsage[heap] + size + props->memoryHeaps[heap].size / 4 > budget.heapBudget[heap];
++}
++
++static uint32_t system_memory_type_for( struct vulkan_device *device, const VkMemoryAllocateInfo *alloc_info,
++                                        const VkMemoryDedicatedAllocateInfo *dedicated )
++{
++    const VkPhysicalDeviceMemoryProperties *props = &device->physical_device->memory_properties;
++    VkMemoryPropertyFlags flags = props->memoryTypes[alloc_info->memoryTypeIndex].propertyFlags;
++    VkMemoryRequirements requirements;
++
++    if (!(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) || (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) return ~0u;
++    if (!dedicated) return ~0u;  /* a block for many resources: no type is known to suit them all */
++    if (dedicated->image) device->p_vkGetImageMemoryRequirements( device->host.device, dedicated->image, &requirements );
++    else if (dedicated->buffer) device->p_vkGetBufferMemoryRequirements( device->host.device, dedicated->buffer, &requirements );
++    else return ~0u;
++    return system_memory_type( device, requirements.memoryTypeBits );
++}
++
++/* the system memory type among those a resource accepts; first one the CPU
++ * does not map, as the device-local one was */
++static uint32_t system_memory_type( struct vulkan_device *device, uint32_t type_bits )
++{
++    const VkPhysicalDeviceMemoryProperties *props = &device->physical_device->memory_properties;
++    uint32_t i, pass;
++
++    for (pass = 0; pass < 2; pass++)
++    {
++        for (i = 0; i < props->memoryTypeCount; i++)
++        {
++            if (!(type_bits & (1u << i))) continue;
++            if (props->memoryHeaps[props->memoryTypes[i].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) continue;
++            if (!pass && (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) continue;
++            return i;
++        }
++    }
++    return ~0u;
++}
++
++/* system memory for one resource bound to a spilled allocation */
++static VkResult spill_memory_for( struct vulkan_device *device, struct device_memory *memory, VkImage image,
++                                  VkBuffer buffer, VkDeviceMemory *host_memory )
++{
++    VkMemoryDedicatedAllocateInfo dedicated = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .image = image, .buffer = buffer};
++    VkMemoryAllocateInfo info = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &dedicated};
++    VkMemoryRequirements requirements;
++    VkDeviceMemory *spills;
++    VkResult res;
++
++    if (image) device->p_vkGetImageMemoryRequirements( device->host.device, image, &requirements );
++    else device->p_vkGetBufferMemoryRequirements( device->host.device, buffer, &requirements );
++    info.allocationSize = requirements.size;
++    res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++    /* what draws keeps VRAM: the type the heap was asked for */
++    if (image && (requirements.memoryTypeBits & (1u << memory->spill_type)) && is_drawing_image( image ))
++    {
++        info.memoryTypeIndex = memory->spill_type;
++        res = device->p_vkAllocateMemory( device->host.device, &info, NULL, host_memory );
++    }
++    if (res)
++    {
++        if ((info.memoryTypeIndex = system_memory_type( device, requirements.memoryTypeBits )) == ~0u)
++            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++        if ((res = device->p_vkAllocateMemory( device->host.device, &info, NULL, host_memory ))) return res;
++    }
++
++    pthread_mutex_lock( &memory->spill_lock );
++    if (memory->spill_count == memory->spill_capacity)
++    {
++        UINT capacity = max( 4, memory->spill_capacity * 2 );
++        if (!(spills = realloc( memory->spills, capacity * sizeof(*spills) )))
++        {
++            pthread_mutex_unlock( &memory->spill_lock );
++            device->p_vkFreeMemory( device->host.device, *host_memory, NULL );
++            return VK_ERROR_OUT_OF_HOST_MEMORY;
++        }
++        memory->spills = spills;
++        memory->spill_capacity = capacity;
++    }
++    memory->spills[memory->spill_count++] = *host_memory;
++    pthread_mutex_unlock( &memory->spill_lock );
++    return VK_SUCCESS;
++}
++
++/* the host memory and offset a resource is bound to */
++static VkResult bind_target( struct vulkan_device *device, VkDeviceMemory client_memory, VkImage image, VkBuffer buffer,
++                             VkDeviceMemory *host_memory, VkDeviceSize *offset )
++{
++    struct device_memory *memory;
++
++    if (!client_memory)
++    {
++        *host_memory = VK_NULL_HANDLE;
++        return VK_SUCCESS;
++    }
++    memory = device_memory_from_handle( client_memory );
++    if (!memory->spill)
++    {
++        *host_memory = memory->obj.host.device_memory;
++        return VK_SUCCESS;
++    }
++    *offset = 0;
++    return spill_memory_for( device, memory, image, buffer, host_memory );
++}
++
++static VkResult win32u_vkBindImageMemory( VkDevice client_device, VkImage image, VkDeviceMemory client_memory, VkDeviceSize offset )
++{
++    struct vulkan_device *device = vulkan_device_from_handle( client_device );
++    VkDeviceMemory host_memory;
++    VkResult res;
++
++    if ((res = bind_target( device, client_memory, image, VK_NULL_HANDLE, &host_memory, &offset ))) return res;
++    return device->p_vkBindImageMemory( device->host.device, image, host_memory, offset );
++}
++
++static VkResult win32u_vkBindBufferMemory( VkDevice client_device, VkBuffer buffer, VkDeviceMemory client_memory, VkDeviceSize offset )
++{
++    struct vulkan_device *device = vulkan_device_from_handle( client_device );
++    VkDeviceMemory host_memory;
++    VkResult res;
++
++    if ((res = bind_target( device, client_memory, VK_NULL_HANDLE, buffer, &host_memory, &offset ))) return res;
++    return device->p_vkBindBufferMemory( device->host.device, buffer, host_memory, offset );
++}
++
++static VkResult bind_image_memory2( VkDevice client_device, uint32_t count, const VkBindImageMemoryInfo *client_infos, BOOL khr )
++{
++    struct vulkan_device *device = vulkan_device_from_handle( client_device );
++    VkBindImageMemoryInfo *infos;
++    VkResult res = VK_SUCCESS;
++    uint32_t i;
++
++    /* the thunk converted the chain (a swap chain in it is the host's), the memory is still the client's */
++    if (!(infos = malloc( count * sizeof(*infos) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    memcpy( infos, client_infos, count * sizeof(*infos) );
++    for (i = 0; i < count && !res; i++)
++        res = bind_target( device, infos[i].memory, infos[i].image, VK_NULL_HANDLE, &infos[i].memory, &infos[i].memoryOffset );
++    if (!res)
++        res = khr ? device->p_vkBindImageMemory2KHR( device->host.device, count, infos )
++                  : device->p_vkBindImageMemory2( device->host.device, count, infos );
++    free( infos );
++    return res;
++}
++
++static VkResult win32u_vkBindImageMemory2( VkDevice client_device, uint32_t count, const VkBindImageMemoryInfo *infos )
++{
++    return bind_image_memory2( client_device, count, infos, FALSE );
++}
++
++static VkResult win32u_vkBindImageMemory2KHR( VkDevice client_device, uint32_t count, const VkBindImageMemoryInfo *infos )
++{
++    return bind_image_memory2( client_device, count, infos, TRUE );
++}
++
++static VkResult bind_buffer_memory2( VkDevice client_device, uint32_t count, const VkBindBufferMemoryInfo *client_infos, BOOL khr )
++{
++    struct vulkan_device *device = vulkan_device_from_handle( client_device );
++    VkBindBufferMemoryInfo *infos;
++    VkResult res = VK_SUCCESS;
++    uint32_t i;
++
++    if (!(infos = malloc( count * sizeof(*infos) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    memcpy( infos, client_infos, count * sizeof(*infos) );
++    for (i = 0; i < count && !res; i++)
++        res = bind_target( device, infos[i].memory, VK_NULL_HANDLE, infos[i].buffer, &infos[i].memory, &infos[i].memoryOffset );
++    if (!res)
++        res = khr ? device->p_vkBindBufferMemory2KHR( device->host.device, count, infos )
++                  : device->p_vkBindBufferMemory2( device->host.device, count, infos );
++    free( infos );
++    return res;
++}
++
++static VkResult win32u_vkBindBufferMemory2( VkDevice client_device, uint32_t count, const VkBindBufferMemoryInfo *infos )
++{
++    return bind_buffer_memory2( client_device, count, infos, FALSE );
++}
++
++static VkResult win32u_vkBindBufferMemory2KHR( VkDevice client_device, uint32_t count, const VkBindBufferMemoryInfo *infos )
++{
++    return bind_buffer_memory2( client_device, count, infos, TRUE );
++}
++
+ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryAllocateInfo *client_alloc_info,
+                                          const VkAllocationCallbacks *allocator, VkDeviceMemory *ret )
+ {
++    const VkMemoryDedicatedAllocateInfo *dedicated = NULL;
+     VkImportMemoryFdInfoKHR fd_info = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
+     VkMemoryAllocateInfo *alloc_info = (VkMemoryAllocateInfo *)client_alloc_info; /* cast away const, chain has been copied in the thunks */
+     VkBaseOutStructure **next, *prev = (VkBaseOutStructure *)alloc_info;
+@@ -877,7 +1133,7 @@
+     VkDeviceMemory host_device_memory = VK_NULL_HANDLE;
+     VkExportMemoryAllocateInfo *export_info = NULL;
+     struct device_memory *memory;
+-    BOOL nt_shared = FALSE;
++    BOOL nt_shared = FALSE, plain_block;
+     uint32_t mem_flags;
+     void *mapping = NULL;
+     VkResult res;
+@@ -910,7 +1166,9 @@
+             *next = (*next)->pNext; next = &prev;
+             break;
+         case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO: break;
+-        case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO: break;
++        case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO:
++            dedicated = (const VkMemoryDedicatedAllocateInfo *)*next;
++            break;
+         case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_TENSOR_ARM: break;
+         case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO: break;
+         case VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT: break;
+@@ -982,7 +1240,50 @@
+         alloc_info->pNext = &fd_info;
+     }
+ 
+-    if ((res = device->p_vkAllocateMemory( device->host.device, alloc_info, NULL, &host_device_memory ))) goto failed;
++    /* a plain block (no chain: Dawn's heaps, which hold images and buffers
++     * together) of VRAM; allocations with a chain (vkd3d's device addresses,
++     * DXVK's) keep the driver's answer, they handle VRAM by themselves */
++    mem_flags = physical_device->memory_properties.memoryTypes[alloc_info->memoryTypeIndex].propertyFlags;
++    plain_block = !client_alloc_info->pNext && !import_win32 && !export_info &&
++                  (mem_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && !(mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
++
++    if (plain_block && vram_tight( device, alloc_info->memoryTypeIndex, alloc_info->allocationSize ))
++        res = VK_ERROR_OUT_OF_DEVICE_MEMORY;  /* not asked: the last quarter stays for what draws */
++    else
++        res = device->p_vkAllocateMemory( device->host.device, alloc_info, NULL, &host_device_memory );
++
++    if (res)
++    {
++        uint32_t vram_type = alloc_info->memoryTypeIndex, type;
++        static LONG once, once_block;
++
++        if (res != VK_ERROR_OUT_OF_DEVICE_MEMORY || import_win32 || export_info) goto failed;
++        if ((type = system_memory_type_for( device, alloc_info, dedicated )) != ~0u)
++        {
++            alloc_info->memoryTypeIndex = type;
++            res = device->p_vkAllocateMemory( device->host.device, alloc_info, NULL, &host_device_memory );
++            alloc_info->memoryTypeIndex = vram_type;
++            if (res) goto failed;
++            if (!InterlockedExchange( &once, 1 ))
++                FIXME( "VRAM full: %s bytes in system memory (type %u instead of %u), as Windows pages it\n",
++                       wine_dbgstr_longlong( alloc_info->allocationSize ), type, vram_type );
++        }
++        /* nothing behind the block yet: each resource bound to it gets memory
++         * of its own, VRAM for what draws, system memory for the rest */
++        else if (plain_block)
++        {
++            memory->spill = TRUE;
++            memory->spill_type = vram_type;
++            pthread_mutex_init( &memory->spill_lock, NULL );
++            host_device_memory = (VkDeviceMemory)(UINT_PTR)memory;  /* a unique key for the object table, never given to the driver */
++            res = VK_SUCCESS;
++            if (!InterlockedExchange( &once_block, 1 ))
++                FIXME( "VRAM short: a %s-byte heap of type %u is backed per resource, render targets in VRAM, "
++                       "the rest in system memory, as Windows pages it\n",
++                       wine_dbgstr_longlong( alloc_info->allocationSize ), vram_type );
++        }
++        else goto failed;
++    }
+ 
+     if (export_info)
+     {
+@@ -1025,7 +1326,8 @@
+     d3dkmt_destroy_mutex( memory->mutex );
+     d3dkmt_destroy_sync( memory->sync );
+     free( memory );
+-    return VK_ERROR_OUT_OF_HOST_MEMORY;
++    /* what the driver said (out of device memory is not out of host memory) */
++    return res < 0 ? res : VK_ERROR_OUT_OF_HOST_MEMORY;
+ }
+ 
+ static void win32u_vkFreeMemory( VkDevice client_device, VkDeviceMemory client_memory, const VkAllocationCallbacks *allocator )
+@@ -1049,7 +1351,14 @@
+         device->p_vkUnmapMemory2KHR( device->host.device, &info );
+     }
+ 
+-    device->p_vkFreeMemory( device->host.device, memory->obj.host.device_memory, NULL );
++    if (memory->spill)
++    {
++        UINT i;
++        for (i = 0; i < memory->spill_count; i++) device->p_vkFreeMemory( device->host.device, memory->spills[i], NULL );
++        free( memory->spills );
++        pthread_mutex_destroy( &memory->spill_lock );
++    }
++    else device->p_vkFreeMemory( device->host.device, memory->obj.host.device_memory, NULL );
+     instance->p_remove_object( instance, &memory->obj.obj );
+ 
+     if (memory->vm_map)
+@@ -1361,6 +1670,7 @@
+     struct vulkan_device *device = vulkan_device_from_handle( client_device );
+     struct vulkan_physical_device *physical_device = device->physical_device;
+     VkExternalMemoryImageCreateInfo host_external_info, *external_info = NULL;
++    VkResult res;
+ 
+     for (next = &prev->pNext; *next; prev = *next, next = &(*next)->pNext)
+     {
+@@ -1394,7 +1704,11 @@
+         ((VkImageCreateInfo *)create_info)->pNext = &host_external_info; /* cast away const, it has been copied in the thunks */
+     }
+ 
+-    return device->p_vkCreateImage( device->host.device, create_info, NULL, image );
++    res = device->p_vkCreateImage( device->host.device, create_info, NULL, image );
++    if (!res && (create_info->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
++                                       VK_IMAGE_USAGE_STORAGE_BIT)))
++        add_drawing_image( *image );
++    return res;
+ }
+ 
+ static void win32u_vkGetDeviceImageMemoryRequirements( VkDevice client_device, const VkDeviceImageMemoryRequirements *image_requirements,
+@@ -2930,6 +3244,12 @@
+     .p_vkAcquireNextImage2KHR = win32u_vkAcquireNextImage2KHR,
+     .p_vkAcquireNextImageKHR = win32u_vkAcquireNextImageKHR,
+     .p_vkAllocateMemory = win32u_vkAllocateMemory,
++    .p_vkBindBufferMemory = win32u_vkBindBufferMemory,
++    .p_vkBindBufferMemory2 = win32u_vkBindBufferMemory2,
++    .p_vkBindBufferMemory2KHR = win32u_vkBindBufferMemory2KHR,
++    .p_vkBindImageMemory = win32u_vkBindImageMemory,
++    .p_vkBindImageMemory2 = win32u_vkBindImageMemory2,
++    .p_vkBindImageMemory2KHR = win32u_vkBindImageMemory2KHR,
+     .p_vkCreateBuffer = win32u_vkCreateBuffer,
+     .p_vkCreateDevice = win32u_vkCreateDevice,
+     .p_vkCreateFence = win32u_vkCreateFence,
+diff --git a/dlls/winevulkan/make_vulkan b/dlls/winevulkan/make_vulkan
+--- a/dlls/winevulkan/make_vulkan	2026-09-19 16:08:15.339691142 +0200
++++ b/dlls/winevulkan/make_vulkan	2026-11-13 22:52:31.170633375 +0100
+@@ -185,6 +185,12 @@
+ 
+ # functions for which a user driver entry must be generated
+ USER_DRIVER_FUNCS = {
++    "vkBindBufferMemory",
++    "vkBindBufferMemory2",
++    "vkBindBufferMemory2KHR",
++    "vkBindImageMemory",
++    "vkBindImageMemory2",
++    "vkBindImageMemory2KHR",
+     "vkAcquireNextImage2KHR",
+     "vkAcquireNextImageKHR",
+     "vkAllocateMemory",
+diff --git a/dlls/winevulkan/vulkan_thunks.c b/dlls/winevulkan/vulkan_thunks.c
+--- a/dlls/winevulkan/vulkan_thunks.c	2026-09-19 16:08:15.341979543 +0200
++++ b/dlls/winevulkan/vulkan_thunks.c	2026-11-13 22:52:38.321148120 +0100
+@@ -12131,38 +12131,7 @@
+     return out;
+ }
+ 
+-#ifdef _WIN64
+-static void convert_VkBindBufferMemoryInfo_win64_to_host(const VkBindBufferMemoryInfo *in, VkBindBufferMemoryInfo *out)
+-{
+-    if (!in) return;
+-
+-    out->sType = in->sType;
+-    out->pNext = in->pNext;
+-    out->buffer = in->buffer;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
+-    out->memoryOffset = in->memoryOffset;
+-}
+-#endif /* _WIN64 */
+-
+-#ifdef _WIN64
+-static const VkBindBufferMemoryInfo *convert_VkBindBufferMemoryInfo_array_win64_to_host(struct conversion_context *ctx, const VkBindBufferMemoryInfo *in, uint32_t count)
+-{
+-    VkBindBufferMemoryInfo *out;
+-    unsigned int i;
+-
+-    if (!in || !count) return NULL;
+-
+-    out = conversion_context_alloc(ctx, count * sizeof(*out));
+-    for (i = 0; i < count; i++)
+-    {
+-        convert_VkBindBufferMemoryInfo_win64_to_host(&in[i], &out[i]);
+-    }
+-
+-    return out;
+-}
+-#endif /* _WIN64 */
+-
+-static void convert_VkBindBufferMemoryInfo_win32_to_host(struct conversion_context *ctx, const VkBindBufferMemoryInfo32 *in, VkBindBufferMemoryInfo *out)
++static void convert_VkBindBufferMemoryInfo_win32_to_unwrapped_host(struct conversion_context *ctx, const VkBindBufferMemoryInfo32 *in, VkBindBufferMemoryInfo *out)
+ {
+     const VkBaseInStructure32 *in_header;
+     VkBaseOutStructure *out_header = (void *)out;
+@@ -12172,7 +12141,7 @@
+     out->sType = in->sType;
+     out->pNext = NULL;
+     out->buffer = in->buffer;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = in->memory;
+     out->memoryOffset = in->memoryOffset;
+ 
+     for (in_header = UlongToPtr(in->pNext); in_header; in_header = UlongToPtr(in_header->pNext))
+@@ -12209,7 +12178,7 @@
+     }
+ }
+ 
+-static const VkBindBufferMemoryInfo *convert_VkBindBufferMemoryInfo_array_win32_to_host(struct conversion_context *ctx, const VkBindBufferMemoryInfo32 *in, uint32_t count)
++static const VkBindBufferMemoryInfo *convert_VkBindBufferMemoryInfo_array_win32_to_unwrapped_host(struct conversion_context *ctx, const VkBindBufferMemoryInfo32 *in, uint32_t count)
+ {
+     VkBindBufferMemoryInfo *out;
+     unsigned int i;
+@@ -12219,7 +12188,7 @@
+     out = conversion_context_alloc(ctx, count * sizeof(*out));
+     for (i = 0; i < count; i++)
+     {
+-        convert_VkBindBufferMemoryInfo_win32_to_host(ctx, &in[i], &out[i]);
++        convert_VkBindBufferMemoryInfo_win32_to_unwrapped_host(ctx, &in[i], &out[i]);
+     }
+ 
+     return out;
+@@ -12290,7 +12259,7 @@
+ }
+ 
+ #ifdef _WIN64
+-static void convert_VkBindImageMemoryInfo_win64_to_host(struct conversion_context *ctx, const VkBindImageMemoryInfo *in, VkBindImageMemoryInfo *out)
++static void convert_VkBindImageMemoryInfo_win64_to_unwrapped_host(struct conversion_context *ctx, const VkBindImageMemoryInfo *in, VkBindImageMemoryInfo *out)
+ {
+     const VkBaseInStructure *in_header;
+     VkBaseOutStructure *out_header = (void *)out;
+@@ -12300,7 +12269,7 @@
+     out->sType = in->sType;
+     out->pNext = NULL;
+     out->image = in->image;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = in->memory;
+     out->memoryOffset = in->memoryOffset;
+ 
+     for (in_header = (void *)in->pNext; in_header; in_header = (void *)in_header->pNext)
+@@ -12364,7 +12333,7 @@
+ #endif /* _WIN64 */
+ 
+ #ifdef _WIN64
+-static const VkBindImageMemoryInfo *convert_VkBindImageMemoryInfo_array_win64_to_host(struct conversion_context *ctx, const VkBindImageMemoryInfo *in, uint32_t count)
++static const VkBindImageMemoryInfo *convert_VkBindImageMemoryInfo_array_win64_to_unwrapped_host(struct conversion_context *ctx, const VkBindImageMemoryInfo *in, uint32_t count)
+ {
+     VkBindImageMemoryInfo *out;
+     unsigned int i;
+@@ -12374,14 +12343,14 @@
+     out = conversion_context_alloc(ctx, count * sizeof(*out));
+     for (i = 0; i < count; i++)
+     {
+-        convert_VkBindImageMemoryInfo_win64_to_host(ctx, &in[i], &out[i]);
++        convert_VkBindImageMemoryInfo_win64_to_unwrapped_host(ctx, &in[i], &out[i]);
+     }
+ 
+     return out;
+ }
+ #endif /* _WIN64 */
+ 
+-static void convert_VkBindImageMemoryInfo_win32_to_host(struct conversion_context *ctx, const VkBindImageMemoryInfo32 *in, VkBindImageMemoryInfo *out)
++static void convert_VkBindImageMemoryInfo_win32_to_unwrapped_host(struct conversion_context *ctx, const VkBindImageMemoryInfo32 *in, VkBindImageMemoryInfo *out)
+ {
+     const VkBaseInStructure32 *in_header;
+     VkBaseOutStructure *out_header = (void *)out;
+@@ -12391,7 +12360,7 @@
+     out->sType = in->sType;
+     out->pNext = NULL;
+     out->image = in->image;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = in->memory;
+     out->memoryOffset = in->memoryOffset;
+ 
+     for (in_header = UlongToPtr(in->pNext); in_header; in_header = UlongToPtr(in_header->pNext))
+@@ -12453,7 +12422,7 @@
+     }
+ }
+ 
+-static const VkBindImageMemoryInfo *convert_VkBindImageMemoryInfo_array_win32_to_host(struct conversion_context *ctx, const VkBindImageMemoryInfo32 *in, uint32_t count)
++static const VkBindImageMemoryInfo *convert_VkBindImageMemoryInfo_array_win32_to_unwrapped_host(struct conversion_context *ctx, const VkBindImageMemoryInfo32 *in, uint32_t count)
+ {
+     VkBindImageMemoryInfo *out;
+     unsigned int i;
+@@ -12463,7 +12432,7 @@
+     out = conversion_context_alloc(ctx, count * sizeof(*out));
+     for (i = 0; i < count; i++)
+     {
+-        convert_VkBindImageMemoryInfo_win32_to_host(ctx, &in[i], &out[i]);
++        convert_VkBindImageMemoryInfo_win32_to_unwrapped_host(ctx, &in[i], &out[i]);
+     }
+ 
+     return out;
+@@ -51091,7 +51060,7 @@
+ 
+     TRACE("%p, 0x%s, 0x%s, 0x%s\n", params->device, wine_dbgstr_longlong(params->buffer), wine_dbgstr_longlong(params->memory), wine_dbgstr_longlong(params->memoryOffset));
+ 
+-    params->result = vulkan_device_from_handle(params->device)->p_vkBindBufferMemory(vulkan_device_from_handle(params->device)->host.device, params->buffer, vulkan_device_memory_from_handle(params->memory)->host.device_memory, params->memoryOffset);
++    params->result = vk_funcs->p_vkBindBufferMemory(params->device, params->buffer, params->memory, params->memoryOffset);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -51109,7 +51078,7 @@
+ 
+     TRACE("%#x, 0x%s, 0x%s, 0x%s\n", params->device, wine_dbgstr_longlong(params->buffer), wine_dbgstr_longlong(params->memory), wine_dbgstr_longlong(params->memoryOffset));
+ 
+-    params->result = vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkBindBufferMemory(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->buffer, vulkan_device_memory_from_handle(params->memory)->host.device_memory, params->memoryOffset);
++    params->result = vk_funcs->p_vkBindBufferMemory((VkDevice)UlongToPtr(params->device), params->buffer, params->memory, params->memoryOffset);
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -51117,16 +51086,10 @@
+ static NTSTATUS thunk64_vkBindBufferMemory2(void *args)
+ {
+     struct vkBindBufferMemory2_params *params = args;
+-    const VkBindBufferMemoryInfo *pBindInfos_host;
+-    struct conversion_context local_ctx;
+-    struct conversion_context *ctx = &local_ctx;
+ 
+     TRACE("%p, %u, %p\n", params->device, params->bindInfoCount, params->pBindInfos);
+ 
+-    init_conversion_context(ctx);
+-    pBindInfos_host = convert_VkBindBufferMemoryInfo_array_win64_to_host(ctx, params->pBindInfos, params->bindInfoCount);
+-    params->result = vulkan_device_from_handle(params->device)->p_vkBindBufferMemory2(vulkan_device_from_handle(params->device)->host.device, params->bindInfoCount, pBindInfos_host);
+-    free_conversion_context(ctx);
++    params->result = vk_funcs->p_vkBindBufferMemory2(params->device, params->bindInfoCount, params->pBindInfos);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -51147,8 +51110,8 @@
+     TRACE("%#x, %u, %#x\n", params->device, params->bindInfoCount, params->pBindInfos);
+ 
+     init_conversion_context(ctx);
+-    pBindInfos_host = convert_VkBindBufferMemoryInfo_array_win32_to_host(ctx, (const VkBindBufferMemoryInfo32 *)UlongToPtr(params->pBindInfos), params->bindInfoCount);
+-    params->result = vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkBindBufferMemory2(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->bindInfoCount, pBindInfos_host);
++    pBindInfos_host = convert_VkBindBufferMemoryInfo_array_win32_to_unwrapped_host(ctx, (const VkBindBufferMemoryInfo32 *)UlongToPtr(params->pBindInfos), params->bindInfoCount);
++    params->result = vk_funcs->p_vkBindBufferMemory2((VkDevice)UlongToPtr(params->device), params->bindInfoCount, pBindInfos_host);
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+ }
+@@ -51157,16 +51120,10 @@
+ static NTSTATUS thunk64_vkBindBufferMemory2KHR(void *args)
+ {
+     struct vkBindBufferMemory2KHR_params *params = args;
+-    const VkBindBufferMemoryInfo *pBindInfos_host;
+-    struct conversion_context local_ctx;
+-    struct conversion_context *ctx = &local_ctx;
+ 
+     TRACE("%p, %u, %p\n", params->device, params->bindInfoCount, params->pBindInfos);
+ 
+-    init_conversion_context(ctx);
+-    pBindInfos_host = convert_VkBindBufferMemoryInfo_array_win64_to_host(ctx, params->pBindInfos, params->bindInfoCount);
+-    params->result = vulkan_device_from_handle(params->device)->p_vkBindBufferMemory2KHR(vulkan_device_from_handle(params->device)->host.device, params->bindInfoCount, pBindInfos_host);
+-    free_conversion_context(ctx);
++    params->result = vk_funcs->p_vkBindBufferMemory2KHR(params->device, params->bindInfoCount, params->pBindInfos);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -51187,8 +51144,8 @@
+     TRACE("%#x, %u, %#x\n", params->device, params->bindInfoCount, params->pBindInfos);
+ 
+     init_conversion_context(ctx);
+-    pBindInfos_host = convert_VkBindBufferMemoryInfo_array_win32_to_host(ctx, (const VkBindBufferMemoryInfo32 *)UlongToPtr(params->pBindInfos), params->bindInfoCount);
+-    params->result = vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkBindBufferMemory2KHR(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->bindInfoCount, pBindInfos_host);
++    pBindInfos_host = convert_VkBindBufferMemoryInfo_array_win32_to_unwrapped_host(ctx, (const VkBindBufferMemoryInfo32 *)UlongToPtr(params->pBindInfos), params->bindInfoCount);
++    params->result = vk_funcs->p_vkBindBufferMemory2KHR((VkDevice)UlongToPtr(params->device), params->bindInfoCount, pBindInfos_host);
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+ }
+@@ -51240,7 +51197,7 @@
+ 
+     TRACE("%p, 0x%s, 0x%s, 0x%s\n", params->device, wine_dbgstr_longlong(params->image), wine_dbgstr_longlong(params->memory), wine_dbgstr_longlong(params->memoryOffset));
+ 
+-    params->result = vulkan_device_from_handle(params->device)->p_vkBindImageMemory(vulkan_device_from_handle(params->device)->host.device, params->image, vulkan_device_memory_from_handle(params->memory)->host.device_memory, params->memoryOffset);
++    params->result = vk_funcs->p_vkBindImageMemory(params->device, params->image, params->memory, params->memoryOffset);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -51258,7 +51215,7 @@
+ 
+     TRACE("%#x, 0x%s, 0x%s, 0x%s\n", params->device, wine_dbgstr_longlong(params->image), wine_dbgstr_longlong(params->memory), wine_dbgstr_longlong(params->memoryOffset));
+ 
+-    params->result = vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkBindImageMemory(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->image, vulkan_device_memory_from_handle(params->memory)->host.device_memory, params->memoryOffset);
++    params->result = vk_funcs->p_vkBindImageMemory((VkDevice)UlongToPtr(params->device), params->image, params->memory, params->memoryOffset);
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -51273,8 +51230,8 @@
+     TRACE("%p, %u, %p\n", params->device, params->bindInfoCount, params->pBindInfos);
+ 
+     init_conversion_context(ctx);
+-    pBindInfos_host = convert_VkBindImageMemoryInfo_array_win64_to_host(ctx, params->pBindInfos, params->bindInfoCount);
+-    params->result = vulkan_device_from_handle(params->device)->p_vkBindImageMemory2(vulkan_device_from_handle(params->device)->host.device, params->bindInfoCount, pBindInfos_host);
++    pBindInfos_host = convert_VkBindImageMemoryInfo_array_win64_to_unwrapped_host(ctx, params->pBindInfos, params->bindInfoCount);
++    params->result = vk_funcs->p_vkBindImageMemory2(params->device, params->bindInfoCount, pBindInfos_host);
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+ }
+@@ -51296,8 +51253,8 @@
+     TRACE("%#x, %u, %#x\n", params->device, params->bindInfoCount, params->pBindInfos);
+ 
+     init_conversion_context(ctx);
+-    pBindInfos_host = convert_VkBindImageMemoryInfo_array_win32_to_host(ctx, (const VkBindImageMemoryInfo32 *)UlongToPtr(params->pBindInfos), params->bindInfoCount);
+-    params->result = vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkBindImageMemory2(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->bindInfoCount, pBindInfos_host);
++    pBindInfos_host = convert_VkBindImageMemoryInfo_array_win32_to_unwrapped_host(ctx, (const VkBindImageMemoryInfo32 *)UlongToPtr(params->pBindInfos), params->bindInfoCount);
++    params->result = vk_funcs->p_vkBindImageMemory2((VkDevice)UlongToPtr(params->device), params->bindInfoCount, pBindInfos_host);
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+ }
+@@ -51313,8 +51270,8 @@
+     TRACE("%p, %u, %p\n", params->device, params->bindInfoCount, params->pBindInfos);
+ 
+     init_conversion_context(ctx);
+-    pBindInfos_host = convert_VkBindImageMemoryInfo_array_win64_to_host(ctx, params->pBindInfos, params->bindInfoCount);
+-    params->result = vulkan_device_from_handle(params->device)->p_vkBindImageMemory2KHR(vulkan_device_from_handle(params->device)->host.device, params->bindInfoCount, pBindInfos_host);
++    pBindInfos_host = convert_VkBindImageMemoryInfo_array_win64_to_unwrapped_host(ctx, params->pBindInfos, params->bindInfoCount);
++    params->result = vk_funcs->p_vkBindImageMemory2KHR(params->device, params->bindInfoCount, pBindInfos_host);
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+ }
+@@ -51336,8 +51293,8 @@
+     TRACE("%#x, %u, %#x\n", params->device, params->bindInfoCount, params->pBindInfos);
+ 
+     init_conversion_context(ctx);
+-    pBindInfos_host = convert_VkBindImageMemoryInfo_array_win32_to_host(ctx, (const VkBindImageMemoryInfo32 *)UlongToPtr(params->pBindInfos), params->bindInfoCount);
+-    params->result = vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkBindImageMemory2KHR(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->bindInfoCount, pBindInfos_host);
++    pBindInfos_host = convert_VkBindImageMemoryInfo_array_win32_to_unwrapped_host(ctx, (const VkBindImageMemoryInfo32 *)UlongToPtr(params->pBindInfos), params->bindInfoCount);
++    params->result = vk_funcs->p_vkBindImageMemory2KHR((VkDevice)UlongToPtr(params->device), params->bindInfoCount, pBindInfos_host);
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+ }
+diff --git a/include/wine/vulkan_driver.h b/include/wine/vulkan_driver.h
+--- a/include/wine/vulkan_driver.h	2026-09-19 16:08:15.477979585 +0200
++++ b/include/wine/vulkan_driver.h	2026-11-13 22:52:31.171041564 +0100
+@@ -299,6 +299,12 @@
+     PFN_vkAcquireNextImage2KHR p_vkAcquireNextImage2KHR;
+     PFN_vkAcquireNextImageKHR p_vkAcquireNextImageKHR;
+     PFN_vkAllocateMemory p_vkAllocateMemory;
++    PFN_vkBindBufferMemory p_vkBindBufferMemory;
++    PFN_vkBindBufferMemory2 p_vkBindBufferMemory2;
++    PFN_vkBindBufferMemory2KHR p_vkBindBufferMemory2KHR;
++    PFN_vkBindImageMemory p_vkBindImageMemory;
++    PFN_vkBindImageMemory2 p_vkBindImageMemory2;
++    PFN_vkBindImageMemory2KHR p_vkBindImageMemory2KHR;
+     PFN_vkCreateBuffer p_vkCreateBuffer;
+     PFN_vkCreateDevice p_vkCreateDevice;
+     PFN_vkCreateFence p_vkCreateFence;

@@ -1,0 +1,17 @@
+# SendMessage within a thread and to another thread, five runs in one start
+# (vm-test.py --disk out/test-local/tools.img, it becomes D:), with win32k and
+# with --append arctic.win32k=0; the five tables side by side in Notepad
+sleep 10
+key win-r
+sleep 2
+type cmd /c "(for /l %i in (1,1,5) do D:\ntbench.exe s%i SendMessage) & copy /b C:\Users\Public\ntbench-s*.txt C:\Users\Public\ntbench-send.txt"
+key ret
+sleep 60
+key win-r
+sleep 2
+type notepad C:\Users\Public\ntbench-send.txt
+key ret
+sleep 5
+key win-up
+sleep 2
+shot m20-send

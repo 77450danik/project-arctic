@@ -19,6 +19,22 @@
 
 #define ARCTIC_DWM_SECTION     L"Global\\__arctic_dwm"
 #define ARCTIC_DWM_VERSION     3
+
+/* When the screen shows a new frame, as dwm.exe learns it from the display:
+ * what DwmGetCompositionTimingInfo and DwmFlush give programs (Chrome paces
+ * its frames by them, Task View its animation), in QueryPerformanceCounter
+ * units. Written at every vertical blank of the primary monitor; seq is odd
+ * while it is written. */
+#define ARCTIC_DWM_TIMING_SECTION L"Global\\__arctic_dwm_timing"
+
+struct arctic_dwm_timing
+{
+    volatile LONG  seq;
+    UINT32         version;      /* 1 */
+    volatile INT64 vblank;       /* QPC of the last vertical blank */
+    volatile INT64 period;       /* QPC ticks one refresh takes */
+    volatile UINT64 count;       /* vertical blanks so far */
+};
 #define ARCTIC_DWM_MAX_ENTRIES 512
 
 /* how a window comes and goes, beyond what dwm.exe picks from its style */
@@ -61,6 +77,10 @@
  * arctic_caption, height 0 for none. Only those rows are keyed; the rest
  * of the window stays as it is drawn. */
 #define DWMWA_ARCTIC_CAPTION       0x1005
+/* the private DWMWINDOWATTRIBUTE of how far the window's backdrop (blur and
+ * tint) has faded: a DWORD 0-255, 0 for none; what the window draws and its
+ * thumbnails stay (Task View fades its backdrop as its pictures fly back) */
+#define DWMWA_ARCTIC_BACKDROP_FADE 0x1006
 
 struct arctic_caption
 {
@@ -108,6 +128,7 @@ struct arctic_dwm_window
     UINT32 blur;             /* DWMWA_ARCTIC_BLUR */
     UINT32 light;            /* DWMWA_ARCTIC_LIGHT */
     struct arctic_caption caption;  /* DWMWA_ARCTIC_CAPTION */
+    UINT32 backdrop_fade;    /* DWMWA_ARCTIC_BACKDROP_FADE */
 };
 
 struct arctic_dwm_thumbnail

@@ -1,387 +1,251 @@
-# Project Arctic — план гібридної ОС
+# Project Arctic — план і стан
 
-Ядро і драйвери — Linux. Усе, що бачить користувач і що бачать програми, — Windows.
+Ядро і драйвери — Linux. Усе, що бачить користувач і що бачать програми, — Windows. А NT-частина
+поступово переїжджає в ядро, як у Windows: першим туди перейшов USER (win32k).
 
-Дата: 2026-09-23, стан оновлено 2026-10-14. Статус: M0 пройдено (2026-09-19), M1 закрито (2026-09-21), M2–M6 у роботі (розділ 8).
+Оновлено 2026-11-18. Старт 2026-09-19; 281 коміт у `main` (останній — 2026-11-13) і 119 файлів
+незакомічених змін (усе, що зроблено з 13.11, включно з win32k).
+
+Позначки в цьому документі:
+
+- ✅ **залізо** — працює на справжньому ПК (ноутбук i7-7700HQ, Intel HD 630 + GTX 1050, 16 ГБ);
+- ✅ **VM** — перевірено лише у віртуальній машині (QEMU + WinHvPlatform, сценарії `tests/vm/`);
+- 🟡 **не перевірено** — зібрано й поставлено в оновлення, але наживо ще не перевірено;
+- 🔨 — у роботі; ⏳ — заплановано.
 
 ---
 
 ## 0. Суть
 
-Arctic — це не дистрибутив Linux, на якому запускається Wine. Це ОС, де:
+Arctic — не дистрибутив Linux, на якому запускається Wine. Це ОС, де:
 
-- **Linux** — лише ядро, драйвери, прошивки і кілька невидимих бекендів (udevd, iwd, BlueZ).
-- **Wine** — не контейнер, а **реалізація NT**. `wineserver` — виконавча система NT, яку стартує init
-  і яка живе, поки працює машина. Є один C:, один реєстр і один шлях створення процесу.
-- **Екран і ввід належать Windows-світу.** `dwm.exe` сам тримає DRM/KMS і композитить,
-  `csrss.exe` сам читає клавіатуру й мишу. Між Windows-програмою і драйвером GPU немає X11,
-  немає Wayland-композитора, немає Linux-desktop.
-- **Міст** — набір наших модулів, які перекладають стандартні Windows API (ChangeDisplaySettingsEx,
-  WASAPI, WLAN API, SetupAPI, …) у виклики драйверів Linux. Панель керування з ReactOS змінює
-  роздільність — і перемикається реальний режим KMS.
+- **Linux** — ядро, драйвери, прошивки й кілька невидимих бекендів (udevd, iwd, D-Bus). Ядро
+  несе й власні частини NT: **win32k** (USER: вікна, черги, хуки, класи, атоми, буфер обміну) і
+  **ntimage** (секції образів EXE/DLL).
+- **Wine** — не контейнер, а реалізація NT. `wineserver` — менеджер об'єктів NT: процеси, потоки,
+  файли, реєстр, синхронізація, імена й дескриптори. Його стартує init, і він живе, поки працює
+  машина. Один C:, один реєстр, один шлях створення процесу.
+- **Екран і ввід належать Windows-світу.** `dwm.exe` сам тримає DRM/KMS і композитить через Vulkan,
+  `csrss.exe` сам читає клавіатуру й мишу. Немає X11, Wayland-композитора чи Linux-desktop.
+- **Міст** — наші модулі, які перекладають стандартні Windows API (ChangeDisplaySettingsEx, WASAPI,
+  WLAN API, SetupAPI, WinHvPlatform…) у виклики драйверів Linux.
+- **Мета:** не «Wine поверх Linux», а NT, у якій від Wine лишаються бібліотеки користувацького
+  простору, а виконавча система — модулі ядра, як ntoskrnl і win32k.sys.
 
 ---
 
-## 1. Інваріанти (порушувати не можна)
+## 1. Інваріанти
 
-1. **Один NT-світ.** Один `wineserver` на машину, один C:, один реєстр. Кожен EXE, від Блокнота до
-   D3D12-гри, проходить через `CreateProcess`. Немає префіксів на програму, лаунчерів, «режиму Proton».
-2. **Linux невидимий.** Немає диска Z:, немає shell у релізному образі, немає VT-консолі,
-   ELF-програм у моделі користувача теж немає.
-3. **Політика — у Windows-світі.** Linux-компоненти лише виконують: KMS показує, ALSA грає, iwd асоціюється.
-   Рішення (яке вікно зверху, який пристрій за замовчуванням, до якої мережі підключатись) приймає
-   Windows-сторона.
-4. **Одне джерело правди про вікна** — `wineserver` + `win32u`. `dwm.exe` лише показує.
-5. **Залізо доступне тільки через стандартні Windows API** (таблиця в розділі 4). Своїх API для програм немає.
-6. **Два графічні режими, один код.** GPU-режим (Vulkan) і базовий (CPU, як XP без DWM).
-   Перехід між ними автоматичний.
-7. **Кожен етап закінчується ISO, що завантажується** в QEMU і на залізі.
+1. **Один NT-світ.** Один `wineserver`, один win32k, один C:, один реєстр. Кожен EXE проходить
+   через `CreateProcess`. Немає префіксів на програму, лаунчерів, «режиму Proton».
+2. **Linux невидимий.** Немає диска Z:, shell у релізному образі, VT-консолі. Linux-програми — лише
+   у WSL-контейнерах (розділ 3.13), як у Windows.
+3. **Політика — у Windows-світі.** Linux лише виконує: KMS показує, ALSA грає, iwd асоціюється.
+4. **Одне джерело правди про вікна** — win32k (з wineserver, коли `arctic.win32k=0`). `dwm.exe` лише показує.
+5. **Залізо доступне тільки через стандартні Windows API** (розділ 4). Своїх API для програм немає.
+6. **Програми — незмінні збірки для Windows.** Виправляємо Arctic, а не програму; жодних мостів до Linux-версій.
+7. **Кожна зміна системи проходить VM** (`tools/vm-test.py`, видиме вікно QEMU), перш ніж стати оновленням.
+8. **Швидкість не гірша.** Етап, що робить хоч щось повільніше (вимір `ntbench`), не йде далі, доки
+   причину не знайдено. Кожен великий перехід має перемикач назад у рядку ядра.
+9. **Збірки — мінімальний час.** Перезбирається лише змінене; зібране береться готовим.
 
 ---
 
 ## 2. Зафіксовані рішення
 
-| Питання | Рішення | Наслідок |
-|---|---|---|
-| Дисплей | `dwm.exe` (PE) володіє DRM/KMS, композитить. Буфери між процесами йдуть внутрішнім з'єднанням у форматі Wayland-wire | Mesa і NVIDIA одразу вміють віддавати кадри без копій; Wayland ніде не видно, а ввід через нього не йде |
-| Ввід | `csrss.exe`: libinput → `wineserver` напряму | Хіт-тест, фокус, захоплення миші — як у win32k, без обмежень Wayland |
-| Рантайм | Upstream Wine 11.x (dev-гілка) + компоненти Proton | Наші зміни не конфліктують з річними ребейзами Valve |
-| 32-біт | Лише новий WoW64 з Wine 11 | Жодної 32-бітної Linux-бібліотеки; `lib32`-зоопарк старої Arctic зникає |
-| Ядро | Mainline (зараз 7.2), свій конфіг. Єдиний погоджений патч — екран паніки `drm_panic` у вигляді BSOD Windows 10 (`kernel/patches/`) | Оновлення = зміна версії + перевірка, що один патч накладається |
-| Фатальні помилки | BSOD як у Windows 10 (синій фон, `:(`, українською, код зупинки) — і для помилок завантаження/NT-світу (`host/init/stop.c`), і для паніки ядра (патч `drm_panic`) | Жодного чорного екрана з текстом ядра. Працює без драйвера відеокарти, на кадровому буфері прошивки |
-| NVIDIA | І nvidia-open, і nouveau+NVK, автовибір | RTX 20xx+ → NVIDIA (швидше, DLSS), старші → nouveau |
-| Звук | Свій аудіорушій: `Audiosrv` + `audiodg.exe` → ALSA hw | Без PipeWire/PulseAudio/dmix |
-| Linux-бекенди | udevd, iwd, BlueZ + D-Bus | CUPS не беремо: друк через Windows-спулер напряму по IPP |
-| Користувачі | Один, без екрана входу | `winlogon.exe` є (Ctrl+Alt+Del, завершення роботи), але автологін |
-| Версія для програм | Windows 11 25H2 (10.0.26200) | «Режим сумісності» у властивостях EXE для старих програм |
-| Вигляд | Класичний макет ReactOS explorer + visual style **Mizu** (`reactos/media/themes/Mizu`) | Схожий на Windows 10, без нової оболонки |
-| Оболонка | Компоненти ReactOS, адаптовані під наш рантайм: explorer, shell32/browseui, робочий стіл, панель задач, «Пуск», діалоги властивостей | Explorer Wine не беремо: він урізаний (немає повноцінного робочого столу, панель задач і «Пуск» не налаштовуються, вікно властивостей є не всюди) |
-| Локалізація | MUI-файли, як у Windows: `<тека модуля>\uk-UA\<модуль>.mui` | Ті самі теки й формат, що у Windows; переклад можна просто покласти поруч |
-| Технології інтерфейсу | Лише Win32 | Жодних UWP, WinRT, WinUI чи інших «сучасних» компонентів Windows |
-| C: | NTFS (новий драйвер ядра 7.1, `nocase=1`) — і в живому режимі | Флешка читається на будь-якому Windows-ПК, там же можна запустити `chkdsk`. Журналювання в драйвері поки немає — див. розділ 10 |
-| Поставка | Поки лише LiveUSB | Інсталятор — після v0.1 |
-| Зі старої Arctic | Українська мова, EN/UA/RU + Alt+Shift, BIOS + UEFI, Secure Boot через shim (docs/boot.md), збереження на флешку окремим пунктом меню | Пункту «Налагодження» з Linux-консоллю **немає** |
-| Античит | Після бази (v0.2) | Міст EAC/BattlEye з Proton. Ядрові античити неможливі взагалі |
-| Windows-драйвери | Так: user-mode + USB `.sys` | Після v0.1 (v0.3) |
-| Перша версія v0.1 | Усе: екран у Панелі керування, мережа, звук, GPU + DXVK | Довше до першого ISO, зате одразу видно всі класи багів |
-| Збірка | GitHub Actions (Pro зі студентського пакета) + одноразові інстанси Google Cloud | На цій машині нічого не компілюємо |
+| Питання | Рішення |
+|---|---|
+| Ядро | Mainline 7.2.6, свій конфіг, 7 патчів (`kernel/patches`) і свої драйвери (`kernel/drivers`, зараз `win32k`) |
+| Виконавча система NT | wineserver (менеджер об'єктів) + модулі ядра: win32k (USER), ntimage (секції образів), ntsync (синхронізація). Далі — решта wineserver модулями (розділ 8) |
+| Рантайм | Wine 11.18 (dev) + 144 патчі (`runtime/wine/patches`) + 60 власних модулів (`runtime/wine/modules`) |
+| 32-біт | Лише новий WoW64; жодної 32-бітної Linux-бібліотеки |
+| Дисплей | `dwm.exe` (PE) володіє DRM/KMS, композить через Vulkan; буфери від програм — внутрішнім з'єднанням у форматі Wayland-wire |
+| Ввід | `csrss.exe`: libinput → USER напряму, без Wayland |
+| Оболонка | Свій `startui` (панель задач, «Пуск», пошук, Task View, віджети) у стилі Windows 11 + компоненти ReactOS (explorer, shell32, browseui, Панель керування) з 123 патчами (`runtime/reactos/patches`) |
+| Вигляд | Windows 11 за замовчуванням (тема Mizu «Windows 11», Inter, значки We10X), на вибір Windows 10 і класичний |
+| Технології інтерфейсу | Лише Win32 |
+| Локалізація | uk-UA; MUI-файли як у Windows |
+| C: | NTFS (драйвер ядра 7.1+, `nocase`, `windows_names`); у живому режимі теж |
+| Поставка | LiveUSB зі збереженням і встановлення на диск поруч із Windows; оновлення пакетами з відкатом |
+| Root хоста | Лише `hamam.exe` (UAC + пароль HAMAM); WSL — контейнери без root над машиною |
+| Збірка | Локально в контейнері `arctic-build` (Wine, ядро, ReactOS), образ і оновлення — через hamam; CI на GitHub Actions збирає з нуля |
+| Шрифти | Inter (DirectWrite, інтерфейс), шрифти Wine у `C:\Windows\Fonts`, метрично сумісні замінники |
 
 ---
 
-## 3. Архітектура
+## 3. Як система працює зараз
 
 ### 3.1 Шари
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ ПРОГРАМИ           notepad.exe · game.exe · steam.exe · setup.exe  │
+│ ПРОГРАМИ           Chrome · IDE на Electron · Discord · Spotify ·   │
+│                    ігри (DXVK/vkd3d) · PowerShell 7 · Git · Rufus   │
 ├────────────────────────────────────────────────────────────────────┤
-│ ОБОЛОНКА            explorer.exe (ReactOS) · Панель керування      │
-│                     taskmgr · regedit · devmgr · kbswitch · sndvol │
+│ ОБОЛОНКА           explorer (ReactOS) + startui (Win11) · Панель    │
+│                    керування (сторінки Win11 у Провіднику) ·        │
+│                    taskmgr · WordPad · Paint · Фото · Ножиці        │
 ├────────────────────────────────────────────────────────────────────┤
-│ СИСТЕМНІ ПРОЦЕСИ    wininit · csrss · dwm · services · svchost ·   │
-│ (усі PE)            lsass · winlogon · audiodg · winedevice        │
+│ СИСТЕМНІ ПРОЦЕСИ   wininit · csrss · dwm · services · svchost ·     │
+│ (усі PE)           lsass · winlogon · windevice · gameosd           │
 ├────────────────────────────────────────────────────────────────────┤
-│ NT-РАНТАЙМ          ntdll · kernel32 · user32 · win32u · gdi32 ·   │
-│ (Wine 11.x)         advapi32 · ole32 · rpcrt4 · ws2_32 · mmdevapi  │
-│                     DXVK · vkd3d-proton · dxvk-nvapi · Mono · Gecko│
+│ NT-РАНТАЙМ         ntdll · kernel32 · user32 · win32u · gdi32 ·     │
+│ (Wine 11.18)       ole32 · ws2_32 · mmdevapi · DXVK · vkd3d-proton  │
 ├────────────────────────────────────────────────────────────────────┤
-│ МІСТ (наш код)      winearctic.drv · dwm/csrss unix-частини ·      │
-│                     arcticpnp.sys · аудіодрайвер · Wlansvc · Dhcp  │
+│ МІСТ (наш код)     winewayland.drv (Arctic) · dwmcore · winsrv ·    │
+│                    winebth.sys · winhvplatform · wlanapi · nvcuda   │
 ├────────────────────────────────────────────────────────────────────┤
-│ ХОСТ (невидимий)    arctic-init · hostd · wineserver · udevd ·     │
-│                     iwd · dbus · Mesa · NVIDIA userspace · alsa-lib│
+│ ХОСТ (невидимий)   arctic-init · wineserver (ntexec) · udevd · iwd ·│
+│                    arctic-lxss (WSL) · arctic-smbd · Mesa · NVIDIA  │
 ├────────────────────────────────────────────────────────────────────┤
-│ LINUX 7.x           DRM/KMS · ALSA · evdev · netdev · nl80211 ·    │
-│                     USB · NVMe · HID · ntsync · NTFS               │
+│ ЯДРО 7.2.6         win32k · ntimage · ntsync · NTFS · DRM/KMS ·     │
+│                    ALSA · evdev · nl80211 · KVM · zram              │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 Дерево процесів
+### 3.2 Завантаження і процеси
 
 ```
-Linux kernel
-└─ arctic-init                  PID 1, root. Монтування, запуск бекендів, перезапуск NT-світу
-   ├─ udevd                     модулі та прошивки під наявне залізо, гаряче підключення
-   ├─ hostd                     привілейований брокер (розділ 3.10)
-   ├─ iwd, dbus-daemon, (bluetoothd)
-   └─ wineserver -p             uid nt. «Виконавча система NT»: об'єкти, хендли, реєстр, вікна, черги
-      └─ wininit.exe
-         ├─ csrss.exe           Raw Input Thread: libinput → wineserver; кнопка живлення, кришка
-         ├─ dwm.exe             DRM/KMS, композиція, курсор, режими екрана
-         ├─ services.exe
-         │  ├─ svchost.exe      Audiosrv, AudioEndpointBuilder, Dhcp, Dnscache, Wlansvc,
-         │  │                   netprofm, PlugPlay, Themes, W32Time, Spooler …
-         │  ├─ audiodg.exe      мікшер
-         │  └─ winedevice.exe   arcticpnp.sys, mountmgr.sys, winebus.sys, wineusb.sys
-         ├─ lsass.exe
-         └─ winlogon.exe → userinit.exe → explorer.exe → програми
+UEFI (Secure Boot через shim) / BIOS
+└─ Limine → Linux + initrd (~1,4 МБ)
+   └─ /init: екран завантаження Windows 11 (логотип виробника з BGRT), носій або розділ,
+      C: (NTFS), host.sqfs (EROFS) → switch_root
+   └─ arctic-init (PID 1): udevd, налаштування пам'яті (zram, swappiness), iwd, D-Bus,
+      wineserver → wininit.exe
+      ├─ csrss.exe     ввід (RIT), робочий стіл, режими екрана гри
+      ├─ dwm.exe       KMS, композиція (Vulkan), курсор, мініатюри
+      ├─ services.exe → svchost, windevice (mountmgr, winebus, winebth…)
+      ├─ lsass.exe
+      └─ winlogon.exe → userinit → explorer.exe (робочий стіл, панель задач, «Пуск»)
 ```
 
-Перезапуски як у Windows: впав `explorer.exe` — його підніме winlogon; впав `dwm.exe` —
-wininit підніме його знову, а клієнти перепідключаться (у v0.1 допустимо перезапуск сеансу).
-Впав `wineserver` — `arctic-init` перезапускає весь NT-світ і пише журнал.
+- У VM робочий стіл з'являється за ~17 с від увімкнення. Перезапуски як у Windows: впав explorer —
+  піднімає winlogon; dwm має сторожа (20 с) і запобіжник на старті.
+- Фатальна помилка — синій екран Windows 10/11 (`host/init/stop.c`, патч ядра `0001` для паніки).
+- Журнали: `C:\Windows\Logs\Arctic\` — `kernel.log`, `host.log` (щохвилини: пам'ять, процеси),
+  `nt.log`; по 4 попередні запуски; `hang-*.txt` — знімки при зависанні.
 
-### 3.3 Завантаження
+### 3.3 Вікна й USER: win32k у ядрі (з 2026-11-18)
 
-```
-UEFI / BIOS
-└─ Limine                     BIOS+UEFI, ISO-hybrid. Меню: «Arctic», «Arctic — зберігати зміни»
-   └─ Linux + initrd (~1–2 МБ, без модулів: USB/NVMe/AHCI, NTFS, squashfs, device-mapper, zram вбудовані в ядро)
-      └─ /init (наш, статичний)
-         1. ARCTIC.png на simpledrm
-         2. знайти носій за міткою → host.sqfs
-         3. C: — живий режим: знімок dm-snapshot над windows.img (NTFS) зі змінами в zram;
-                 режим збереження: розділ ARCTIC-DATA (NTFS) напряму, з fsck.ntfs, якщо том «брудний»
-         4. mount -t ntfs -o nocase,windows_names → C:, switch_root у host.sqfs
-      └─ arctic-init (PID 1)
-         udevd + coldplug → hostd, iwd, dbus → wineserver -p → wininit.exe
-         dwm.exe забирає екран у splash без чорного кадру (той самий режим KMS)
-```
-
-Фатальна помилка до появи робочого столу (носій не змонтувався, dwm не стартував тричі поспіль):
-init малює на DRM екран з кодом помилки і пише журнал на флешку.
+- **USER виконується в ядрі**, у потоці програми, як у Windows: `kernel/drivers/win32k` — обробники
+  wineserver для вікон, черг, повідомлень, хуків, класів, атомів, буфера обміну, стану робочих
+  столів, перенесені майже 1:1. Системні виклики `0x1000–0x1003`, як друга таблиця сервісів
+  win32k.sys. Подробиці — `docs/win32k.md`.
+- **ntdll** сама відправляє запити USER у ядро (Wine `0144`); решта йде у wineserver.
+- **wineserver — менеджер об'єктів:** window station і робочі столи лишаються його об'єктами з
+  іменами й дескрипторами, а про зміни він повідомляє win32k callout-ами, як Ob у Windows.
+- **Очікування черги** — подія ntsync, яку ставить саме ядро; `MsgWaitForMultipleObjects` працює як раніше.
+- **Перемикач:** `arctic.win32k=0` у рядку ядра повертає USER у wineserver.
+- Стан: ✅ VM (робочий стіл, «Пуск», програми, буфер обміну між процесами, Alt+Tab, Диспетчер
+  завдань, Провідник; у журналі ядра «win32k: USER served here»), 🟡 залізо — встановлено
+  оновленням 18.11, перевіряється.
 
 ### 3.4 Дисплей: dwm.exe
 
-`dwm.exe` — PE-процес Wine з unix-частиною (`dwm.so`), яка:
-
-- знаходить GPU через udev, відкриває DRM-вузол, робить атомарний modesetting;
-- тримає внутрішній сервер буферів на сокеті `/run/arctic/dwm` (доступ лише uid nt);
-- композитить через Vulkan або, якщо GPU немає, через pixman на CPU;
-- керує апаратним курсором, кількома моніторами, гарячим підключенням, VRR.
-
-**Потоки кадрів:**
-
-```
-GDI-вікно (Блокнот)                    D3D-гра
-  win32u малює в DIB                     DXVK / vkd3d-proton → Vulkan
-  (window_surface у memfd)               swapchain на VkSurface від winearctic.drv
-        │ flush: damage + commit                │ dmabuf + drm_syncobj
-        ▼                                       ▼
- ┌──────────────────────────── dwm.exe ─────────────────────────────┐
- │  геометрія і z-order ← спільна пам'ять wineserver (не від клієнта)│
- │  GPU:    Vulkan-композиція, тіні, альфа layered-вікон              │
- │          повноекранний кадр без перекриттів → прямо в KMS-план     │
- │          (0 копій, як Independent Flip у Windows)                  │
- │  CPU:    pixman → dumb-буфер, лише пошкоджені прямокутники        │
- └───────────────────────────────┬──────────────────────────────────┘
-                                 ▼
-                          DRM/KMS (Linux)
-```
-
-**Хто знає, де вікно.** Процеси не кажуть dwm, де стоїть їхнє вікно. `dwm.exe` сам є Wine-процесом
-і читає дерево вікон, z-order та видимі регіони з `wineserver`, як справжній DWM читає їх з win32k.
-Процес лише прив'язує буфер до HWND і комітить вміст із серійним номером конфігурації. Так розмір
-буфера й прямокутник вікна збігаються при зміні розміру, без мерехтіння.
-
-**Внутрішнє з'єднання** — підмножина Wayland-wire на нашому сервері:
-
-| Протокол | Навіщо |
-|---|---|
-| `wl_compositor`, `wl_surface`, `wl_subsurface`, `wl_shm` | поверхні, GDI-буфери у спільній пам'яті |
-| `zwp_linux_dmabuf_v1` (з feedback) | GPU-буфери; dwm підказує формати/модифікатори для прямого сканування |
-| `wp_linux_drm_syncobj_v1` | explicit sync; критично для NVIDIA |
-| `wp_presentation` | реальний час показу → frame pacing DXVK, `DwmGetCompositionTimingInfo` |
-| `wp_fifo_v1`, `wp_commit_timing_v1` | VSync (FIFO) |
-| `wp_tearing_control_v1` | VSync off у іграх |
-| `wp_viewporter` | масштабування низьких роздільностей у повноекранному режимі |
-| `arctic_surface_v1` (наш) | поверхня ↔ HWND, серійні номери конфігурації |
-| `arctic_display_v1` (наш) | GPU, виходи, EDID, режими, зміна режиму, курсор |
-
-**Чого немає:** `xdg-shell`, `wl_seat`, data-device, будь-якого вводу. Буфер-транспорт і нічого більше.
-
-**Режими:**
-
-- **GPU** — є render-вузол і Vulkan. Розподіл площин — libliftoff.
-- **Базовий** — немає render-вузла (QEMU, `nomodeset`, невідомий GPU) або Vulkan не ініціалізувався.
-  Композиція на CPU, як у Windows XP або з «Базовим адаптером дисплея Microsoft». 3D-програми
-  отримують lavapipe (програмний Vulkan) — аналог WARP: DXVK працює, повільно.
-- dwm стартує на тому, що є (simpledrm), і в пізніших версіях переїжджає на справжній GPU,
-  коли udev приносить його DRM-пристрій, — як Windows підхоплює драйвер відеокарти без перезавантаження.
-  У v0.1 достатньо дочекатися coldplug.
-
-**Керування екраном (демонстрація концепції):**
-
-```
-desk.cpl (ReactOS)
-  ChangeDisplaySettingsEx(1920x1080@144)
-    → win32u → winearctic.drv: pChangeDisplaySettings
-      → dwm.exe: atomic TEST_ONLY → commit
-        → KMS перемикає режим → WM_DISPLAYCHANGE усім вікнам
-
-EnumDisplayDevices / EnumDisplaySettingsEx
-    ← win32u ← winearctic.drv: pUpdateDisplayDevices (add_gpu / add_source / add_monitor / add_modes)
-      ← dwm.exe: GPU (PCI ID), конектори, EDID (libdisplay-info), режими, HDR-можливості
-```
-
-Інтерфейс драйвера Wine (`user_driver_funcs`, версія 110) уже має ці точки входу разом з EDID і
-`hdr_enabled`. Нову модель вигадувати не треба — лише реалізувати її поверх KMS.
+- dwm сам робить atomic KMS, тримає сервер буферів і композить через **Vulkan** (GL — лише для
+  сторонніх програм). Повноекранне вікно йде прямо в площину KMS (як Independent Flip), VRR,
+  апаратний курсор, тіні й розмиття заголовків, мініатюри для Alt+Tab і панелі задач, знімки вікон
+  для анімацій згортання.
+- Режими екрана з Панелі керування (`ChangeDisplaySettingsEx` → KMS), кілька моніторів (QEMU),
+  власні частоти оновлення (розгін монітора, i915 `0004`), масштабування менших режимів на GPU
+  (ігри 4:3), DPI 100–200% на льоту, автоматично при старті.
+- Звідки dwm знає геометрію вікон: зі спільної пам'яті USER (тепер — win32k), не від клієнта.
+- Стан: ✅ залізо (Intel HD 630 і GTX 1050 з NVIDIA 580; WebGPU у Chrome 59 к/с; CS2), ✅ VM.
 
 ### 3.5 Ввід: csrss.exe
 
-- **libinput** (path backend, пристрої від udev) у потоці Raw Input Thread.
-- **Клавіатура:** скан-коди → `__wine_send_input` → `wineserver` → черга потоку з фокусом.
-  Це апаратний ввід, без прапорця INJECTED — важливо для ігор. Скан-код → VK через Windows-розкладки
-  (`kbdus`, `kbdur`, `kbdru` — з ReactOS, якщо у Wine немає). Alt+Shift перемикає розкладку
-  у Windows-світі, індикатор у треї — `kbswitch` з ReactOS.
-- **Миша:** відносні дельти → крива «Підвищена точність вказівника» як у Windows, параметри з `main.cpl`.
-  Ігри отримують сирі дельти через `WM_INPUT`. `ClipCursor` і захоплення живуть у `wineserver`.
-- **Курсор** рухається апаратною площиною dwm одразу від RIT, не чекаючи процесів.
-- **Кнопка живлення, кришка** → політика живлення у winlogon. **Ctrl+Alt+Del** ловить сам RIT (до
-  будь-якої програми, Del не доходить нікуди) → подія `Global\ArcticSecureAttention` → окремий
-  потік winlogon відкриває параметри безпеки; вдруге за 10 с — dwm ще й наново вмикає монітори.
-- **Геймпади й HID** — окремо, як у Windows: `winebus.sys` (hidraw/evdev) → HID → XInput,
-  DirectInput, Windows.Gaming.Input.
+- libinput → USER; скан-коди → VK через розкладки Windows; EN/UA/RU, Alt+Shift; Raw Input для ігор.
+- Ctrl+Alt+Del — екран безпеки; Ctrl+Shift+Esc — Диспетчер завдань; клавіша Win → «Пуск»;
+  Win+Shift+S — Ножиці; Win+Ctrl+Shift+B — перезапуск графіки; кнопка живлення й кришка → winlogon.
+- Стан: ✅ залізо.
 
 ### 3.6 Графічні API
 
-| API | Реалізація | Лежить у |
+| API | Реалізація | Стан |
 |---|---|---|
-| GDI / USER | win32u → DIB → dwm | NT-рантайм |
-| D3D 8/9/10/11 | DXVK → Vulkan | `C:\Windows\System32` (+ SysWOW64) як системні DLL |
-| D3D12 | vkd3d-proton → Vulkan | те саме |
-| DXGI / NVAPI | DXVK, dxvk-nvapi (DLSS на NVIDIA) | те саме |
-| OpenGL | opengl32 → EGL на внутрішньому з'єднанні (Mesa / NVIDIA egl-wayland) | згодом — Zink як PE (OpenGL поверх Vulkan, EGL не потрібен) |
-| Vulkan | winevulkan → драйвер GPU | Mesa: radv, anv, nvk, lavapipe; NVIDIA |
-| Відео | VA-API (Wine 11.16), Vulkan Video | — |
-
-Користувач не бачить слів «DXVK» чи «Proton»: це просто `d3d11.dll` у System32.
-
-**Вибір драйвера NVIDIA:** udev-правило для `10de:03xx` пробує `nvidia` (open modules); якщо модуль
-не прив'язався (карта до Turing), вантажиться `nouveau`. Vulkan-завантажувач сам бере ICD, що працює.
-Модулі NVIDIA збираються в CI під конкретне ядро; ця пара версій закріплюється й оновлюється разом.
+| GDI / USER | win32u → DIB → dwm | ✅ |
+| D3D 8–11 | DXVK | ✅ залізо (CS2) |
+| D3D12 | vkd3d-proton зі своїми патчами (NV_dgc для Pascal) | ✅ залізо (WebGPU) |
+| OpenGL | opengl32 → EGL | ✅ |
+| Vulkan | winevulkan → Mesa (anv) / NVIDIA | ✅ |
+| CUDA | `nvcuda` → libcuda (`docs/cuda.md`) | 🟡 |
 
 ### 3.7 Звук
 
-```
-програма ── WASAPI / DirectSound / XAudio2 / waveOut
-              └─ mmdevapi → наш драйвер (PE + unix)
-                   └─ кільцевий буфер у спільній пам'яті на кожен потік
-                        └─ audiodg.exe: мікшування float32, ресемплінг, гучність сеансу
-                             └─ ALSA hw:X (напряму, без dmix)
-```
-
-- Мікшер гучності по програмах справжній: гучність сеансу застосовує audiodg.
-- Exclusive mode: процес відкриває hw напряму, audiodg звільняє пристрій.
-- AudioEndpointBuilder будує IMMDevice з ALSA + UCM-профілів (`alsa-ucm-conf` — без нього
-  не працює звук на ноутбуках із SOF). HDMI-аудіо і USB-гарнітури — з гарячим підключенням.
-- `mmsys.cpl`, `sndvol32` у треї, пристрій за замовчуванням — поверх цього.
-- Bluetooth-аудіо (v0.3): BlueZ → A2DP-транспорт → audiodg; кодування SBC/AAC у Windows-світі.
+- Виходи, флайаут гучності, панель «Звук» (баланс, «Прослуховувати»), мікшер по програмах,
+  приглушення під час дзвінків, екран гучності з керуванням медіа (SMTC, обкладинки).
+- Свого `audiodg` поки немає: звук іде через драйвер Wine на ALSA.
+- Стан: ✅ залізо.
 
 ### 3.8 Мережа
 
-- **Сокети:** `ws2_32` → Linux-сокети напряму. TCP/IP-стек ядра відіграє роль tcpip.sys.
-- **Адреси:** на кабелі — udhcpc від arctic-init, на Wi-Fi — iwd; DNS збирає свій `resolvconf`
-  у `resolv.conf` (служби `Dhcp`/`Dnscache` на PE-боці — пізніше, якщо знадобляться).
-- **Wi-Fi:** `wlanapi.dll` → iwd (D-Bus) → nl80211. Профілі збережених мереж
-  зберігаються як WLAN-профілі в реєстрі Windows; iwd лише асоціюється і робить WPA-рукостискання.
-- **Інтерфейс:** значок мережі в треї — свій `pnidui.dll` (Windows 7), папка «Мережні підключення»
-  — netshell з ReactOS (Windows XP). Деталі — `docs/M5-network.md`.
-- **NLA** (`netprofm`) повідомляє програмам, чи є інтернет.
+- Ethernet, Wi-Fi через `wlanapi` → iwd, флайаут мережі, Центр мереж (IPv4/IPv6/DNS, запасна адреса).
+- Мережні папки (SMB-клієнт, `ntlanman`), власний SMB2-сервер `arctic-smbd` і вкладка «Доступ»
+  (лише гостьовий доступ).
+- Стан: ✅ залізо; спільний доступ з Arctic до справжнього Windows-ПК — 🟡.
 
-### 3.9 Пристрої, диски, Windows-драйвери
+### 3.9 Bluetooth
 
-- **`arcticpnp.sys`** (новий, у winedevice.exe). Unix-частина обходить sysfs, слухає udev і створює
-  в дереві пристроїв Windows вузли з апаратними ID: `PCI\VEN_1002&DEV_67DF&SUBSYS_…&REV_…`,
-  `USB\VID_…&PID_…`, `HDAUDIO\…`, `ACPI\…`. Драйвер вузла — ім'я модуля Linux і його версія.
-  Диспетчер пристроїв (devmgr з ReactOS) показує реальне залізо. «Вимкнути пристрій» →
-  hostd відв'язує Linux-драйвер через sysfs `unbind`.
-- **Диски:** udev на кожен том запускає `arctic-volume` (`host/init/arctic-volume.c`): той монтує
-  ntfs, exfat, vfat, ext4, btrfs, CD (iso9660, udf) у `/run/arctic/drives/<пристрій>` і описує том у
-  `/run/arctic/volumes/<пристрій>`. `mountmgr.sys` стежить за цією текою (inotify, патч Wine 0027)
-  і дає літери D:, E: з гарячим підключенням; провідник дізнається через `WM_DEVICECHANGE`.
-  Приховані, як у Windows: EFI, MSR, розділи відновлення, атрибут GPT «без літери» і власні
-  пристрої хоста (носій завантаження, C:). Усе з записом; том, який драйвер писати не дає
-  (приспаний Windows), — лише для читання.
-- **Windows-драйвери (v0.3):**
-  - USB `.sys`: `ntoskrnl.exe` + `wineusb.sys` вантажать драйвер у користувацькому просторі поверх libusb.
-    Коли для VID/PID встановлено INF, hostd відв'язує від пристрою Linux-драйвер.
-  - User-mode: драйвери принтерів (DLL у спулері), TWAIN-джерела, UMDF.
-  - Ядрові `.sys` для PCI неможливі в принципі.
+- Свій стек на боці Windows (`winebth.sys`): A2DP/SBC, AVRCP, гарнітура HFP, OBEX, батарея Fast
+  Pair, «Пристрої та принтери», флайаути Windows 11. BlueZ і PipeWire не беремо.
+- Стан: 🔨 перший живий тест — пристрій є, звуку немає; журнал `winebth:` у `nt.log`.
 
-### 3.10 Привілеї: hostd
+### 3.10 Диски і пристрої
 
-Увесь Windows-світ працює від одного непривілейованого Linux-uid `nt`. Усередині — NT-токен
-адміністратора, UAC вимкнено, входу немає. Доступ до пристроїв дають udev-правила й групи:
-`/dev/dri`, `/dev/input`, `/dev/snd`, `/dev/ntsync`, `/dev/hidraw*`.
+- Літери D:, E: з гарячим підключенням (`arctic-volume` + `mountmgr`), приховані службові розділи,
+  сирі USB-диски (Rufus записує завантажувальну флешку — ✅ VM), файл підкачки
+  `C:\pagefile.sys` (автоматично), перевірка NTFS (`ntfsck`) на старті.
+- `arcticpnp.sys` (дерево пристроїв із реальними ID) — ⏳.
 
-Те, що потребує root, виконує `hostd` — маленький брокер з фіксованим набором запитів:
+### 3.11 Живлення
 
-- mount / umount, створення розділу збереження;
-- адреси, маршрути, DNS;
-- reboot, poweroff, suspend;
-- системний час і RTC;
-- sysfs bind/unbind драйверів.
+- Флайаут батареї, «Електроживлення», сон, гібернація і швидкий запуск (✅ VM, малювання після
+  пробудження не перевірено), панель «Ігри» з налаштуванням CPU/GPU (undervolt, ліміти потужності) і
+  оверлеєм `gameosd` (🟡 залізо).
 
-Це єдині «двері» з Windows-світу в Linux. Навіщо так: уразливість у браузері не дає автоматично
-root над ядром.
+### 3.12 Оболонка і програми
 
-### 3.11 Файлова система і LiveUSB
+- **Панель задач і «Пуск»** (`startui`): Windows 11 (за центром) або Windows 10, 4 стилі «Пуску»,
+  закріплення перетягуванням, пошук, Task View, віджети (погода, новини), центр сповіщень з
+  календарем, годинник.
+- **Провідник:** вкладки Windows 11 (за замовчуванням), стрічка Windows 10 або класичний; пошук у
+  вікні, «Цей ПК» з плитками, контекстні меню з малюнками Windows 11, один діалог файлів (Windows
+  10) для всіх API, теми значків (We10X).
+- **Панель керування:** сторінки в стилі Windows 11 прямо в Провіднику — Екран, Персоналізація
+  (світла/темна, фон, значки, віджети), Панель задач, Програми, Дата й час, Звук, Мережа, Система.
+- **Програми:** Диспетчер завдань Windows 10 (диски, GPU, пам'ять без подвійного рахунку), WordPad
+  як Word (DOCX), Paint і Фото як у Windows 11, Ножиці, вікно UAC, `winver` з номером збірки.
+- Стан: ✅ залізо для більшості; Task View, пошук, WordPad, Paint/Фото — 🟡.
 
-```
-USB (ISO-hybrid, BIOS + UEFI)
-├─ boot/ (Limine), EFI/BOOT/BOOTX64.EFI
-├─ arctic/vmlinuz, arctic/initrd.img
-├─ arctic/host.sqfs     Linux-хост + PE/unix-модулі Wine + Mono/Gecko (zstd)
-├─ arctic/windows.img   NTFS: C:\Windows, Program Files, Users\Default, реєстр
-└─ ARCTIC-DATA          розділ NTFS, створюється при першому «зберігати зміни»
-```
+### 3.13 WSL і hamam
 
-- **C: завжди справжній NTFS** — і в живому режимі, і в режимі збереження. Overlayfs не використовується:
-  він змішав би семантику двох ФС.
-  - **Живий режим:** device-mapper snapshot над `windows.img`, зміни пишуться в zram (стиснена RAM)
-    і зникають після перезавантаження.
-  - **Режим збереження:** під час першого запуску `windows.img` розгортається в розділ ARCTIC-DATA
-    на вільному місці флешки і розширюється на весь розділ. Далі цей розділ монтується напряму як C:.
-    На будь-якому Windows-ПК він відкривається як звичайний диск.
-- **Опції монтування:** `nocase=1` — ядро шукає імена без урахування регістру, як Windows;
-  `windows_names=1` — не дає створити CON, NUL та інші заборонені Windows імена.
-  Wine поки не знає про `nocase` на NTFS (він перевіряє лише `FS_CASEFOLD_FL` ext4) і при промаху
-  все одно сканує каталог. Невеликий патч у нашому форку прибере це сканування.
-- **Реєстр** зберігається в `C:\Windows\System32\config\` (невеликий патч `wineserver`: шлях до хайвів),
-  як і в справжній Windows. Службовий каталог Wine (`dosdevices`, сокет wineserver) лежить у tmpfs хоста
-  і створюється під час завантаження. **Диск Z: (корінь Linux) не створюється.**
-- **DOS-атрибути й дескриптори безпеки** Wine зараз тримає в xattr. Пізніше — відображати їх на справжні
-  атрибути NTFS і `$Secure`, щоб «прихований» файл був прихованим і на іншому Windows-ПК.
-- Великі PE-модулі Wine живуть у стиснутому `host.sqfs`. DXVK і vkd3d-proton лежать справжніми
-  файлами в System32. Так `windows.img` лишається малим (≈1–1.5 ГБ), навіть без стиснення.
-- Після v0.1 (встановлення на диск): C: — розділ NTFS, `host.sqfs` і ядро — файлами
-  в `C:\Windows\System32\Host\` та ESP. Linux-хост тоді буквально лежить усередині C:\Windows.
+- `wsl`, `bash.exe`, `git.exe` запускають дистрибутив як **контейнер** (свої user/mount/PID
+  namespaces; C:\Windows і /sys лише для читання). Root у ньому — не root машини.
+- `hamam.exe` — єдиний шлях до root на живому ядрі: вікно UAC + пароль HAMAM. Лише для збірки
+  образу, оновлень і діагностики (`docs/linux-gate.md`).
+- Стан: ✅ залізо.
 
-### 3.12 Ідентичність, мова, вигляд
+### 3.14 Оновлення
 
-- **Версія:** Windows 11 25H2, 10.0.26200. Це видно в `RtlGetVersion`, у реєстрі
-  (`CurrentBuild`, `DisplayVersion`, `ProductName`) і в WMI `Win32_OperatingSystem`.
-- **Сумісність:** вкладка «Сумісність» у властивостях EXE → `AppCompatFlags\Layers` → профіль версії
-  Wine для цієї програми.
-- **WMI:** реальні дані заліза: DMI (виробник, модель), CPU, GPU (від dwm), диски.
-- **Брендинг** у `winver` і `sysdm.cpl` — Arctic.
-- **Мова:** uk-UA — і системна, і інтерфейсу. Розкладки EN/UA/RU, Alt+Shift.
-- **Локалізація — через MUI, як у Windows.** Переклади лежать не всередині модулів, а поруч:
-  `C:\Windows\System32\uk-UA\shell32.dll.mui`, `C:\Windows\uk-UA\explorer.exe.mui` тощо. Завантаження
-  ресурсів (`FindResourceEx`, `LoadString`, діалоги, меню) спершу шукає в MUI-файлі мови інтерфейсу, потім
-  у самому модулі — це треба додати в завантажувач Wine. Під час збірки переклади Wine і ReactOS
-  виносяться в MUI-файли; новий переклад — це просто файл у потрібній теці.
-- **Оболонка — з ReactOS, не з Wine.** Explorer Wine занадто урізаний: немає повноцінного робочого столу
-  з елементами, панель задач і «Пуск» не налаштовуються, вікно властивостей з'являється не всюди. Тому беремо
-  й адаптуємо компоненти ReactOS: explorer (робочий стіл, панель задач, «Пуск», трей), shell32, browseui,
-  shdocvw, діалоги властивостей, Панель керування. Проблеми сумісності з рантаймом виправляємо в цих
-  компонентах або в рантаймі, а не відступаємо до explorer Wine. Класичний макет (панель знизу,
-  класичний «Пуск»), visual style Mizu через uxtheme.
-- **Тільки Win32.** Жодних UWP, WinRT, WinUI та інших «сучасних» компонентів Windows. Оболонка, Панель
-  керування, служби й системні програми — класичні Win32-програми, максимально близькі до Windows.
-- **Шрифти:** вільні метрично сумісні (Liberation замість Arial/Times/Courier, Tahoma з Wine)
-  + `FontSubstitutes` для Segoe UI. Кирилиця обов'язкова.
+- Пакет (файли C:\Windows, `host.sqfs`, ядро й initrd, підписані для Secure Boot) кладеться в
+  `C:\Windows\System32\Host\Update`; наступний старт встановлює його з екраном «Робота з
+  оновленнями»; попередня версія лишається в `Host\Previous` для відкату. У «Пуску» з'являється
+  «Оновити та перезавантажити» (`docs/updates.md`).
+- Збирається з самої Arctic: контейнер `arctic-build` (Wine, ядро, ReactOS), образ і пакет — через hamam.
+- Стан: ✅ залізо (усі оновлення з жовтня ставились так).
 
-### 3.13 Журнали
+### 3.15 Віртуалізація
 
-- Консолі немає. Журнали лежать у `C:\Windows\Logs\Arctic\` і відкриваються Блокнотом:
-  `kernel.log` (з `/dev/kmsg`), `host.log`, `dwm.log`, `csrss.log`, журнали Wine з каналами
-  `WINEDEBUG`, заданими в реєстрі. У режимі збереження вони переживають перезавантаження:
-  `host`, `nt`, `kernel` — по 4 попередні запуски (`*.1.log`…), на диск кожні 30 с (fsync), тож
-  сесія, вимкнена кнопкою, лишає свій журнал.
-- **dev-збірка** — прапорець CI, не пункт меню: serial-консоль із shell для QEMU і детальні журнали.
+- `winhvplatform.dll` на KVM: звичайний QEMU для Windows з `-accel whpx` вантажить Arctic за
+  ~17 с; так працюють усі VM-тести (`docs/hypervisor.md`). Стан: ✅ залізо.
+
+### 3.16 Швидкі шляхи NT (2026-11-16)
+
+- Малі запити до wineserver — через спільну пам'ять із коротким очікуванням (`0140`), копія ключа
+  реєстру в процесі (`0139`), власник вікна у спільній пам'яті (`0138`), промах імені на nocase-томі
+  без сканування каталогу (`0137`), образи EXE/DLL розкладає ядро (`ntimage`, `0006` + `0143`).
+- Перемикачі в рядку ядра: `arctic.fastcall=0`, `arctic.regcache=0`, `arctic.win32k=0`.
+- Імена: `ntexec` (wineserver), `ntloader`, змінні `NT*` замість `WINE*`; ключі `Software\Arctic\Runtime`.
 
 ---
 
@@ -389,334 +253,183 @@ USB (ISO-hybrid, BIOS + UEFI)
 
 | Windows API / компонент | Наша реалізація | Linux під капотом |
 |---|---|---|
-| ChangeDisplaySettingsEx, EnumDisplayDevices, EnumDisplaySettings | win32u → winearctic.drv → dwm.exe | DRM atomic KMS, EDID |
-| GDI, USER, вікна | win32u + wineserver → dwm.exe | KMS dumb-буфери / Vulkan |
-| D3D9–11 / D3D12 / DXGI | DXVK / vkd3d-proton | Vulkan: radv, anv, nvk, NVIDIA |
-| OpenGL | opengl32 → EGL | Mesa / NVIDIA |
-| SendInput, Raw Input, повідомлення миші/клавіатури | csrss.exe (RIT) → wineserver | libinput, evdev |
+| ChangeDisplaySettingsEx, EnumDisplayDevices | win32u → драйвер Arctic → dwm.exe | atomic KMS, EDID |
+| USER: вікна, повідомлення, хуки | win32u → **win32k** (ядро) | — |
+| GDI | win32u → dwm.exe | Vulkan / KMS |
+| D3D9–12, DXGI | DXVK, vkd3d-proton | Vulkan: anv, radv, NVIDIA |
+| SendInput, Raw Input | csrss.exe (RIT) → USER | libinput, evdev |
 | XInput, DirectInput, HID | winebus.sys | hidraw, evdev |
-| WASAPI, DirectSound, XAudio2 | mmdevapi → audiodg.exe | ALSA hw |
-| Winsock | ws2_32 | сокети ядра |
-| IP Helper, DHCP, DNS | iphlpapi, служби Dhcp / Dnscache | netlink (через hostd) |
-| WLAN API | wlanapi → Wlansvc | iwd → nl80211 |
-| SetupAPI, CfgMgr32, Диспетчер пристроїв | arcticpnp.sys, PlugPlay | sysfs, udev, bind/unbind |
-| Volume / Mount Manager | mountmgr.sys | udev + hostd mount |
-| Синхронізація NT (події, м'ютекси, семафори) | ntdll | `/dev/ntsync` |
-| ExitWindowsEx, SetSuspendState, GetSystemPowerStatus | winlogon, powrprof | hostd, `/sys/power`, `/sys/class/power_supply` |
-| SetSystemTime, часові пояси | kernel32 → hostd | settimeofday, RTC, tzdata |
-| Bluetooth API (v0.3) | bthserv, bthprops | BlueZ |
-| WinUSB, USB `.sys` (v0.3) | wineusb.sys + ntoskrnl.exe | libusb / usbfs |
-| Друк (v0.3) | спулер + IPP port monitor | мережа (IPP Everywhere) |
+| WASAPI, DirectSound, XAudio2 | mmdevapi | ALSA |
+| Winsock, IP Helper | ws2_32, iphlpapi | сокети, netlink |
+| WLAN API | wlanapi | iwd → nl80211 |
+| Bluetooth API | winebth.sys, bluetoothapis | HCI-сокети ядра |
+| Volume / Mount Manager, сирі диски | mountmgr.sys, fmifs | udev, блокові пристрої |
+| Синхронізація NT | ntdll | `/dev/ntsync` |
+| Секції образів | ntdll | `/dev/ntimage` |
+| WinHvPlatform | winhvplatform.dll | `/dev/kvm` |
+| Живлення, батарея | winlogon, powrprof, batmeter | `/sys/power`, power_supply, RAPL |
+| SMB (клієнт і сервер) | ntlanman, ntshrui | cifs; `arctic-smbd` |
 
 ---
 
-## 5. Що лишається від Linux
+## 5. Що пишемо самі (де шукати)
 
-Хост збирається з бінарних пакетів Arch (glibc того ж покоління), але береться лише замикання
-залежностей наших програм плюс allowlist даних. Це не Arch, а набір файлів.
-
-- **Ядро 7.x:** модулі (усі драйвери — модулями), прошивки (amdgpu, radeon, i915/xe, NVIDIA GSP,
-  iwlwifi, rtw88/89, mt76, ath, brcm, Bluetooth, SOF, Realtek NIC).
-- **База:** glibc, libgcc/libstdc++, kmod (через udevd), ntfsprogs-plus (`mkfs.ntfs`, `fsck.ntfs`;
-  створення й перевірка ARCTIC-DATA), tzdata, ca-certificates.
-- **Пристрої:** udevd + hwdb + правила, libudev, libinput, libevdev, mtdev.
-- **Графіка:** libdrm, Mesa (radv, anv, nvk, lavapipe; radeonsi, iris, llvmpipe; GBM, EGL),
-  vulkan-icd-loader, libglvnd, NVIDIA userspace + egl-wayland, libwayland (лише внутрішній транспорт),
-  pixman, libliftoff, libdisplay-info.
-- **Звук:** alsa-lib, alsa-ucm-conf.
-- **Мережа й Bluetooth:** iwd, dbus-daemon, bluez (v0.3).
-- **Для unix-частини Wine:** freetype, gnutls (+ nettle, gmp, libtasn1, p11-kit), zlib, zstd, xz,
-  libusb, SDL (геймпади), gstreamer + плагіни (медіа), libva.
-- **Немає:** systemd як init, shell (у релізі), coreutils, X11, Wayland-композитора, PipeWire,
-  PulseAudio, NetworkManager, logind, Python, пакетного менеджера.
+| Частина | Де |
+|---|---|
+| `/init`, `arctic-init` (PID 1), WSL-контейнери (`arctic-lxss`), `arctic-volume`, `arctic-smbd`, екран помилки | `host/init/` |
+| Модулі ядра (win32k) і патчі ядра | `kernel/drivers/`, `kernel/patches/` |
+| Модулі Wine: dwm/dwmcore, csrss/winsrv, wininit, winlogon, startui, twinui, панелі керування, taskmgr, wordpad, mspaint, photos, winebth.sys, winhvplatform, hamam, wsl, bash… | `runtime/wine/modules/` |
+| Патчі Wine (144) і ReactOS (123) | `runtime/wine/patches/`, `runtime/reactos/patches/` |
+| Реєстр за замовчуванням (Windows 11, uk-UA) | `runtime/registry/` |
+| Збірка | `ci/`, `tools/wsl/`, `tools/arctic/make-update.sh` |
+| Тести | `tests/vm/` (сценарії VM), `tests/tools/` (ntbench, тестові програми) |
 
 ---
 
-## 6. Що пишемо самі
+## 6. Збірка і тестування
 
-Усе, що стосується NT, живе у форку Wine в **нових модулях**, щоб ребейз на upstream лишався дешевим.
+- **Wine:** `tools/wsl/build-wine.sh` — інкрементно, змінені файли синхронізуються за вмістом.
+- **Ядро:** `tools/wsl/build-kernel.sh` тримає зібране дерево, доки не змінились патчі, конфіг чи
+  версія: зміна win32k збирає лише win32k, модулі й NVIDIA не переустановлюються, якщо не
+  змінились. Свіже дерево — ~пів години навіть із ccache.
+- **ReactOS:** `tools/wsl/build-reactos.sh`.
+- **Образ** (`tools/wsl/build-image.sh`, через hamam) — ~15 хв; **оновлення** —
+  `make-update.sh --windows --host --boot` через hamam.
+- **VM:** `python tools/vm-test.py [--usb] [--script tests/vm/…] [--disk out/test-local/tools.img]
+  [--append "…"]`, видиме вікно QEMU, знімки в `out/test-local/`. Диск `tools.img` несе тестові
+  програми (`ntbench`, `user32_test` …).
+- **Виміри:** `ntbench` (`tests/tools/ntbench.c`); тести Wine (`user32_test`, `ntdll_test` …) у
+  контейнері й у VM.
+- **CI:** GitHub Actions збирає все з нуля (ядро, Wine, rootfs, образ) і робить smoke-тест у QEMU.
 
-| Модуль | Де | Мова |
+---
+
+## 7. Виміри
+
+### 7.1 Виклики NT (ntbench, мкс, медіана)
+
+| | 2026-11-16, залізо, до швидких шляхів | 2026-11-18, VM 4 vCPU: win32k / wineserver |
 |---|---|---|
-| `/init` (initrd), `arctic-init` (PID 1), `hostd`, splash і екран помилки | `host/init/` | C, статично |
-| `winearctic.drv` — дисплейний драйвер (форк winewayland.drv без xdg-shell, seat, clipboard) | `wine/dlls/winearctic.drv` | C (PE + unix) |
-| `dwm.exe` + `dwm.so` — KMS, сервер буферів, Vulkan/pixman-композиція | `wine/programs/dwm` | C |
-| `csrss.exe` — RIT, libinput, кнопки живлення | `wine/programs/csrss` | C |
-| `wininit.exe`, `winlogon.exe`, `userinit.exe` — старт сеансу, SAS, завершення роботи | `wine/programs/*` | C |
-| Аудіо: драйвер mmdevapi, `Audiosrv`, `AudioEndpointBuilder`, `audiodg.exe` | `wine/dlls/…`, `wine/programs/audiodg` | C |
-| Мережа: `Dhcp`, `Dnscache`, `Wlansvc` + `wlanapi.dll` (iwd), `netprofm`, Wi-Fi-flyout у треї | `wine/dlls/…` | C |
-| `arcticpnp.sys`; Linux-бекенд для `mountmgr.sys` | `wine/dlls/…` | C |
-| Реєстр за замовчуванням: Windows 11, uk-UA, Mizu, автологін, служби, без Z: | `windows/registry/` | .reg |
-| Збірка образу, CI, одноразовий збирач GCE | `image/`, `ci/` | shell |
+| Запит до wineserver | 6,6 | — |
+| CreateWindowEx + DestroyWindow | 2830 | **609** / 1311 |
+| SetWindowPos (p99) | — | **58 (149)** / 85 (2090) |
+| PostMessage + PeekMessage | — | **8,0** / 9,2 |
+| SendMessage в інший потік (p99) | — | 40 (**101–209**) / 40 (192–860) |
+| CreateThread | 350 | ~900 у VM (обидва режими) |
+| CreateProcess | 33 мс | ~70 мс у VM |
 
-Зміни в `win32u`, `wineserver`, `ntdll` — мінімальні: хук для dwm на дерево вікон, машинний
-`wineserver` без таймауту, прибраний Z:, хайви реєстру в `C:\Windows\System32\config\`,
-розпізнавання `nocase` на NTFS. Кожна — окремим комітом.
+### 7.2 Пам'ять після старту (2026-11-18, залізо, 16 ГБ)
 
----
+Через ~25 с після старту arctic-init пише «14 043 з 15 884 МБ вільно», тобто «зайнято» ~1,8 ГБ.
+`free` тут — `MemAvailable` ядра; так само рахують Диспетчер завдань і `GlobalMemoryStatusEx`.
 
-## 7. Репозиторій і збірка
-
-### 7.1 Структура
-
-```
-arctic/                          приватний GitHub-репозиторій (Pro зі студентського пакета)
-├─ docs/PLAN.md
-├─ kernel/        arctic.config (фрагмент поверх конфігу Arch), версії ядра і NVIDIA
-├─ host/
-│  ├─ init/       /init, arctic-init, hostd, splash
-│  └─ rootfs/     packages.txt, allowlist, udev-правила, конфіги iwd/dbus
-├─ runtime/
-│  ├─ wine/       submodule → форк upstream Wine, гілка arctic
-│  └─ manifest.toml   DXVK, vkd3d-proton, dxvk-nvapi, Wine Mono, Wine Gecko: версії + sha256
-├─ reactos/       що беремо з нічних збірок ReactOS (x86 і x64); пізніше — власний форк
-├─ windows/       registry/, fonts/
-├─ image/         host.sqfs, windows.img, initrd, ISO (Limine + xorriso), ARCTIC.png
-├─ ci/            workflows GitHub Actions, gce/
-└─ tools/         завантажити ISO, запустити QEMU, записати флешку
-```
-
-### 7.2 Конвеєр
-
-```
-push → GitHub Actions, контейнер archlinux:latest
-  1. kernel   кеш за хешем (версія + конфіг) → vmlinuz, модулі; nvidia-open під це ядро
-  2. wine     ccache; --enable-archs=i386,x86_64 (новий WoW64); mingw → PE, gcc → unix .so
-  3. rootfs   pacstrap у staging → відбір за ELF-залежностями + allowlist → host.sqfs
-  4. prefix   wineboot у контейнері без дисплея → реєстр, C:\Windows → windows.img (mkfs.ntfs)
-  5. image    initrd + Limine + xorriso → arctic-<commit>.iso
-  6. smoke    QEMU: завантаження до робочого столу, маркери в serial-журналі, знімок екрана
-  → артефакт: ISO + знімок → `gh run download` у out/ на цій машині
-```
-
-- **GitHub Actions:** 3000 хв/міс у приватному репозиторії (Pro). Кешуються ядро (за хешем конфігу)
-  і ccache Wine, тож повна збірка буває рідко.
-- **Google Cloud:** `ci/gce/build.sh` піднімає spot-VM з `--max-run-duration` і
-  `--instance-termination-action=DELETE`. Вона збирає, кладе ISO в GitHub Release або Cloud Storage
-  і видаляється сама, навіть якщо щось зависло. Використовується для повних збірок без кешу,
-  або якщо раннеру GitHub не вистачить диска (~14 ГБ вільних за замовчуванням) чи 6-годинного ліміту.
-  Бюджету ~$100 вистачить на десятки збірок.
-- **Ця машина:** лише ISO (≈2.5–3.5 ГБ, в `out/` тримаємо тільки останній), QEMU у `tools/`
-  для базового режиму, флешка для заліза. Нічого важкого, нічого на C:.
-
-### 7.3 Тестування
-
-- **QEMU TCG тут:** базовий режим (bochs / virtio-gpu 2D, композиція на CPU, lavapipe для Vulkan).
-  Журнали через serial.
-- **Залізо:** RX 580 (radv), RTX 5070 (nvidia-open; nouveau+NVK як запасний), RTX 3060, Intel iGPU на ноутбуці.
-- **CI:** кожен push завантажує образ у QEMU і перевіряє, що dwm показав перший кадр,
-  а explorer створив панель задач.
-
----
-
-## 8. Етапи до v0.1
-
-Порядок обрано так, щоб найбільші технічні ризики знялися першими. Терміни — порядок величини, не обіцянка.
-
-**Стан на 2026-10-14** (старт 19.09; 26 днів, 270 комітів):
-
-| Етап | Оцінка | Зайняло | Стан | Готово |
-|---|---|---|---|---|
-| M0 Інфраструктура | 1–2 тиж. | 1 день | ✅ CI і QEMU; 21.09 перше завантаження на залізі (`docs/boot.md`) | 100% |
-| M1 Перші пікселі | 4–8 тиж. | 3 дні | ✅ закрито 2026-09-21: вікна, ввід, сеанс, розкладки, оболонка ReactOS, тема Mizu | 100% |
-| M2 Екран у Панелі керування | 2–3 тиж. | ~5 днів | 🔨 уся дорога від desk.cpl до KMS, кілька моніторів у QEMU, масштаб, масштабування менших режимів; лишились два монітори на залізі, deskadp/deskmon | 90% |
-| M3 GPU | 4–8 тиж. | ~8 днів | 🔨 драйвер для будь-якої карти, NVIDIA 580 для Pascal, page flip, dmabuf, пряме сканування, VRR, dwm на Vulkan, WebGPU (`docs/M3-gpu.md`); лишились syncobj, presentation/tearing, модифікатори, кілька GPU, приймання FPS | 75% |
-| M4 Звук | 3–5 тиж. | ~4 дні | 🔨 виходи, флайаут, панель «Звук», OSD і SMTC, мікшер по програмах, ducking (`docs/M4-sound.md`); лишились свої Audiosrv/audiodg | 75% |
-| M5 Мережа | 3–5 тиж. | ~3 дні | 🔨 Ethernet, Wi-Fi (iwd), флайаут, Центр мереж, TCP/IP, SMB-клієнт і свій SMB2-сервер (`docs/M5-network.md`); лишились категорії мереж, паролі спільного доступу | 85% |
-| M6 v0.1 | 2–4 тиж. | частково | 🔨 збереження, автомонтування дисків, вимкнення з «Пуску», журнали; немає arcticpnp.sys і прогону на 4 машинах | 50% |
-| **Разом до v0.1** | **5–9 міс.** | **3,7 тиж.** | | **~80%** |
-
-Поза етапами вже зроблено частину v0.2–v0.5: установлення на диск поряд із Windows,
-оновлення з відкатом, DPI, Alt+Tab з мініатюрами, батарея, сон і гібернація, Chrome і
-Electron, WinHvPlatform, UAC; свій браузерний рушій (`docs/browser.md`) у роботі.
-
-Поза списком етапів уже зроблено: BSOD у стилі Windows 10 (і для помилок завантаження/NT, і для
-паніки ядра), шпалери за замовчуванням, локальний цикл збірки (WSL2 + zig + QEMU з WHPX).
-
-### M0 — Інфраструктура (≈1–2 тижні) — ✅ пройдено 2026-09-19
-
-Перший зелений CI (ISO 698 МБ): завантаження через BIOS і UEFI, C: на NTFS у живому режимі,
-NT-світ (services.exe, plugplay, svchost, winedevice) готовий за ~4 с після старту ядра в CI і
-~14 с у локальному QEMU з WHPX. BSOD перевірено і в initrd, і після старту NT.
-
-- Репозиторій, кроки конвеєра 1–6 з upstream Wine без змін.
-- Ланцюжок: ядро → arctic-init → wineserver → wineboot → services.exe, у serial-журналі маркер готовності.
-- ARCTIC.png на екрані від початку завантаження.
-- **Приймання:** ISO з CI, скачаний сюди, стартує в QEMU і на RX 580. Розмір ISO і час завантаження заміряно.
-
-### M1 — Перші пікселі (≈4–8 тижнів) — ✅ закрито 2026-09-21
-
-Кроки (детально — `docs/M1-display.md`):
-
-| # | Крок | Стан |
+| Що | ≈ МБ | Чиє |
 |---|---|---|
-| 1 | Патч wineserver: список вікон у z-order + лічильник композиції (`0001`) | ✅ працює: `dwm.exe` ставить і складає вікна так, як їх має wineserver, і малює курсор там, де він у wineserver |
-| 2 | `dwm.exe` + `dwmcore.dll`: KMS, сервер буферів, композиція на CPU | ✅ працює (2026-09-19) |
-| 3 | `winearctic.drv`: позиції й z-order від wineserver, без xdg-shell і вводу через Wayland | ✅ поки патчем `0003` до winewayland.drv (`arctic_shell_v1`: поверхня ↔ HWND; переміщення робить win32u); окремий `winearctic.drv` — пізніше |
-| 4 | `csrss.exe`: власник робочого столу + ввід (libinput → wineserver) | ✅ `csrss.exe` + `winsrv.dll`: робочий стіл, RIT на libinput, повтор клавіш; win32u запускає csrss замість explorer (`0004`) і піднімає активне вікно (`0006`) |
-| 5 | `wininit` / `winlogon` / `userinit`, порядок старту | ✅ arctic-init → wininit → dwm, csrss, winlogon → userinit → оболонка; Ctrl+Shift+Esc — Диспетчер завдань; Ctrl+Alt+Del — екран безпеки як у Windows 10 |
-| 6 | Реєстр: драйвер `arctic`, uk-UA, розкладки, Mizu | ✅ `runtime/registry/arctic.reg`: драйвер, розкладки EN/UA/RU (Alt+Shift у RIT, таблиці з `kbd*.dll` — патч `0007`), тема Mizu з її системними кольорами. MUI-ресурси — у задачах оболонки (`docs/shell.md`) |
-| 7 | Оболонка ReactOS: explorer + shell32/browseui/shdocvw | ✅ працює: робочий стіл, панель задач, «Пуск», вікна провідника; один explorer.exe у `C:\Windows`. Патчі до Wine: `0008` shlwapi, `0011` shlwapi+cfgmgr32, `0012` повідомлення оболонці (shell hook), `0013` ExitWindowsEx → winlogon |
-| 8 | Ранній тест Vulkan-вікна через lavapipe | ➡️ перенесено в M3, до відеодрайверів |
+| Резерв вільних сторінок, який `MemAvailable` не рахує (високі водяні знаки при `watermark_scale_factor 125`) | 580 | фізично вільна пам'ять |
+| Частина файлового кешу, яку `MemAvailable` вважає зайнятою | ~230 | кеш, віддається за потреби |
+| Буфери GPU dwm (i915 GEM, закріплені: `Unevictable`) | 210 | dwm: кадри, поверхні, знімки |
+| Пікселі вікон у спільній пам'яті (memfd dwm ↔ explorer) | ~100 | оболонка |
+| Драйвер NVIDIA в ядрі (модуль 106 + виділення 48) | 155 | дискретна GPU |
+| Решта ядра: код модулів, таблиця zram (10 ГБ), стеки, таблиці сторінок, slab | ~200 | ядро |
+| Процеси: wineserver 44 (з них 20 — huge pages), remoting_host 45, explorer 31, dwm 31, arctic-init 15, 32 простоюючі udev-worker 13, csrss, служби | ~250 | |
 
-- `winearctic.drv`, `dwm.exe` у базовому режимі, `csrss.exe`, `wininit` / `winlogon` / `userinit`.
-- ReactOS explorer + shell32/browseui як оболонка — сумісність перевіряємо й виправляємо на старті етапу;
-  Блокнот, Диспетчер задач, regedit.
-- uk-UA, розкладки EN/UA/RU, Alt+Shift, Mizu.
-- Ранній тест: Vulkan-вікно через lavapipe, щоб перевірити шлях WSI до етапу GPU.
-- **Приймання:** у QEMU — робочий стіл без X і Wayland. Вікна рухаються, перекриваються, фокус
-  правильний, український текст у Блокноті. У Диспетчері задач видно csrss.exe, dwm.exe, explorer.exe.
-
-### M2 — Екран у Панелі керування (≈2–3 тижні)
-
-Кроки (детально — `docs/M2-display.md`):
-
-| # | Крок | Стан |
-|---|---|---|
-| 1 | `dwm.exe`: усі конектори картки, EDID, списки режимів, зміна режиму, гаряче підключення | ✅ у QEMU: 20 режимів монітора, EDID 256 байт |
-| 2 | Протокол `arctic_display_v1` + `xdg_output`: монітори, їхні позиції та EDID у клієнта | ✅ |
-| 3 | `pChangeDisplaySettings` у драйвері: `ChangeDisplaySettingsEx` доходить до KMS (патч `0029`) | ✅ екран реально перемикається |
-| 4 | Вибір режиму при завантаженні: рідна роздільність і найвища частота; збережена розкладка має перевагу | ✅ 1280x800@75 сам |
-| 5 | `desk.cpl` з ReactOS: частота оновлення під роздільністю, назва моделі монітора (патч ReactOS `0013`) | ✅ зміна роздільності з підтвердженням як у Windows |
-| 6 | Робочий стіл і панель задач стежать за екраном; робоча область належить екрану | 🔨 |
-| 7 | Кілька моніторів і гаряче підключення | 🔨 у QEMU (virtio-gpu): перетягування моніторів реально перемикає екрани (`tests/vm/m2-layout.txt`); на залізі — далі |
-
-- **Приймання:** на залізі зміна роздільності й частоти в desk.cpl реально перемикає монітор;
-  другий монітор підхоплюється на льоту з правильною назвою моделі.
-
-### M3 — GPU (≈4–8 тижнів)
-
-Кроки (детально — `docs/M3-gpu.md`):
-
-| # | Крок | Стан |
-|---|---|---|
-| 1 | Драйвер для будь-якої карти: Mesa (radv, anv, NVK), відкриті модулі NVIDIA під наше ядро, автовибір nvidia ↔ nouveau (`arctic-gpu`), GCN 1.0/1.1 → amdgpu | 🔨 зібрано, на залізі — далі |
-| 2 | dwm: atomic KMS, два буфери на монітор і page flip, темп від vblank | 🔨 |
-| 3 | `zwp_linux_dmabuf_v1`: GPU-буфери програм, CPU-композиція лінійних | 🔨 |
-| 4 | Пряме сканування повноекранного вікна + апаратний курсор; VRR на ньому (налаштування Windows `VRROptimizeEnable`) | 🔨 |
-| 5 | Vulkan-композиція, модифікатори, explicit sync, presentation / tearing, libliftoff | ⏳ |
-| 6 | DXVK, vkd3d-proton, dxvk-nvapi у System32 | ⏳ |
-
-- Перший крок: Vulkan-вікно через lavapipe (`vktest.exe`, перенесено з M1) — перевірка шляху WSI.
-- Vulkan-композиція, dmabuf, syncobj, presentation / fifo / tearing, пряме сканування, libliftoff.
-- Автовибір драйвера NVIDIA; Mesa для AMD та Intel.
-- DXVK, vkd3d-proton, dxvk-nvapi у System32. Автоматичний базовий режим, коли GPU недоступний.
-- **Приймання:** на RX 580, RTX 5070, RTX 3060 та Intel повноекранна D3D11-гра йде через пряме
-  сканування, FPS у межах ~5% від тієї ж гри в Proton на звичайному Linux на тій самій машині.
-  У QEMU все працює в базовому режимі.
-
-### M4 — Звук (≈3–5 тижнів)
-- Драйвер mmdevapi, Audiosrv, AudioEndpointBuilder, audiodg.exe на ALSA hw, UCM.
-- mmsys.cpl, sndvol32 у треї, мікшер по програмах.
-- **Приймання:** звук з гри і браузера одночасно; перемикання HDMI ↔ аналог у mmsys.cpl;
-  USB-гарнітура підхоплюється на льоту.
-
-### M5 — Мережа (≈3–5 тижнів)
-- Dhcp, Dnscache, Wlansvc + wlanapi на iwd, netprofm, ncpa.cpl, Wi-Fi-список у треї.
-- **Приймання:** Ethernet піднімається сам; Wi-Fi WPA2/WPA3 підключається з трею і пам'ятається
-  в режимі збереження; `ipconfig` і `ping` показують правду.
-
-### M6 — v0.1 (≈2–4 тижні)
-- arcticpnp.sys і Диспетчер пристроїв (перегляд + вимкнення), автомонтування флешок і дисків як D:/E:.
-- Режим збереження (ARCTIC-DATA), завершення роботи й перезавантаження з Пуску, журнали.
-- Прогін на всіх чотирьох машинах.
-- **Приймання:** повний сценарій на кожній машині — завантажитись, підключити Wi-Fi, змінити
-  роздільність, увімкнути звук, пограти в D3D11-гру, вимкнути ПК з Пуску.
-
-**Разом до v0.1: ≈5–9 місяців.**
+Отже, реально система тримає ~1 ГБ, із нього ~0,45 ГБ — графіка (dwm і NVIDIA). Ще ~0,8 ГБ показується
+зайнятим лише через спосіб підрахунку. Для порівняння: Windows 11 після входу ~2–3 ГБ. Що
+виправити — розділ 8.2.
 
 ---
 
-## 9. Після v0.1
+## 8. Що далі
 
-- **v0.2 — ігри й браузер.** Windows-клієнт Steam як звичайна програма: ігри говорять з ним напряму,
-  тож мости Proton `lsteamclient` і `steam.exe` не потрібні. Міст EAC/BattlEye з Proton. Chrome,
-  а в dwm — DirectComposition (`dcomp.dll`), якої Wine не має: композитор у нас свій. Профілі
-  сумісності у властивостях EXE.
-- **v0.3 — пристрої.** Bluetooth через BlueZ (пари, HID, геймпади, A2DP в audiodg). USB `.sys`
-  і user-mode драйвери Windows. Друк IPP.
-- **v0.4 — встановлення на диск.** Інсталятор як Windows-програма, C: на розділі NTFS,
-  A/B-оновлення хоста з відкатом.
-- **v0.5 — можливості dwm і живлення.** Мініатюри Alt+Tab і панелі задач, DWM API, HDR, DPI (VRR зроблено раніше, у M3);
-  сон, батарея, яскравість; жести тачпада. Переїзд dwm з simpledrm на GPU без перезавантаження.
-- **Віртуалізація: Windows Hypervisor Platform на KVM** (`winhvplatform.dll`, docs/hypervisor.md).
-  Зроблено 2026-10-10: звичайний QEMU для Windows з `-accel whpx -smp 2` вантажить Linux. Бракує:
-  - пристроїв з адресами вище 4 ГБ (64-бітні BAR): доступ до них зараз не обслуговується;
-  - відстеження брудних сторінок (`WHvQueryGpaRangeDirtyBitmap`, міграція, відео);
-  - `WinHvEmulation.dll` — емулятор інструкцій WHP, на ньому емулятор Android;
-  - перевірки VirtualBox і VMware Workstation у режимі Hyper-V (їм потрібні й інші частини Hyper-V API);
-  - швидкості: `KVM_CAP_SYNC_REGS` замість трьох ioctl на кожен вихід, менше переходів до програми
-    на портах і MMIO;
-  - пункту «Платформа віртуальних машин» у «Компонентах Windows», як у Windows.
-- **Відкрите з ноутбука (2026-10-10).**
-  - Значки на панелі задач часом зникають і з'являються лише при наведенні.
-  - mstsc з ReactOS (Підключення до віддаленого робочого стола): вікно є, сеанс стає після
-    обміну можливостями; поки не в образі.
-  - Синій екран з курсором після 10–15 хв YouTube на весь екран: виправлення (CRTC замість DPMS,
-    Ctrl+Alt+Del з RIT) не перевірені на справжньому відео.
-  - Мерехтіння яскравості раз на ~хвилину: точна причина не знайдена, журнал `winlogon: power:` покаже.
-- **Далі.** Zink як PE, ARM64 (FEX + ARM64EC).
+### 8.1 win32k — закінчити
+
+1. ✅ Конформанс-тести user32, усі 25 частин, у VM з win32k і без — однакові (2026-11-20,
+   `docs/win32k.md`); виправлено `SetWinEventHook` out-of-context і шість місць, де потік без
+   черги валив би ядро. Оновлення ядра стоїть у черзі (Boot, 20.11).
+2. ✅ `w32_reset` у живому ядрі з 19.11.
+3. Закомітити (ядро `0007` + `drivers/win32k`, Wine `0144`, docs).
+4. Знайдене тестами в оболонці (не win32k): Alt+Tab із `SendInput`, меню консолі блокує вивід,
+   новий робочий стіл без вікна робочого столу, передній план для програм із консолі.
+5. Без копіювання: shm win32u без зайвих копій, масштабування вікон без DPI на GPU (`M3-gpu.md`).
+
+### 8.2 Пам'ять
+
+1. **Підрахунок як у Windows:** «Доступно» = вільне + кеш, який можна віддати (не `MemAvailable` із
+   відніманням водяних знаків) — у ntdll (`GlobalMemoryStatusEx`) і Диспетчері завдань. На старті
+   показуватиме ~1 ГБ зайнятим замість 1,8.
+2. **Transparent Huge Pages:** `always` + `max_ptes_none 511` роздуває малі купи до 2 МБ (wineserver,
+   arctic-init; під навантаженням `AnonHugePages` бувало 4 ГБ) → `madvise`, виміряти ігри до/після.
+3. **udevd:** 32 простоюючі воркери → обмежити (`children_max`) або відпускати після простою.
+4. **dwm:** 210 МБ буферів GPU у спокої — розібрати, які поверхні й знімки тримаються довше, ніж треба.
+
+### 8.3 Решта wineserver — у ядро (порядок за впливом на швидкість, `docs/win32k.md`)
+
+| Компонент Windows | Файли wineserver | Запитів |
+|---|---|---|
+| Менеджер об'єктів і дескриптори (Ob) | handle, object, directory, symlink | 19 |
+| Файли й ввід-вивід (Io) | fd, file, async, change | 27 |
+| Реєстр (Cm) | registry | 15 |
+| Процеси, потоки, токени (Ps, Se) | process, thread, token | 60 |
+| Решта: канали, сокети, пристрої, секції, налагодження, консоль, ALPC, dxgkrnl | | ~80 |
+
+Коли перейде все, wineserver зникає, а NT-частина — набір модулів ядра, як ntoskrnl.
+
+### 8.4 До v0.1
+
+- Два монітори на залізі, `arcticpnp.sys` і Диспетчер пристроїв, свій `audiodg`.
+- Прогін повного сценарію на кількох машинах (завантаження, Wi-Fi, роздільність, звук, гра, вимкнення з «Пуску»).
+- Закомітити накопичене з 13.11 (Task View, пошук, Paint/Фото, WordPad, пам'ять, розгін монітора, win32k).
+
+### 8.5 Далі
+
+- Свій браузерний рушій (`docs/browser.md`): JS, фрейми, float, z-index, фони готові; Google
+  відкривається через reCAPTCHA.
+- Живі шпалери (`docs/live-wallpaper.md`), HDR, Zink як PE, ARM64.
+- Античит (EAC/BattlEye) — після бази.
 
 ---
 
-## 10. Ризики і ранні перевірки
+## 9. Відомі проблеми
+
+| Проблема | Стан |
+|---|---|
+| Тести user32 у контейнері без win32k: `win` — 426 помилок проти 23 на 16.11; у тестовому префіксі немає панелі задач (`Shell_TrayWnd`) | не з `0144` (його код вимкнений без win32k); причина не знайдена — з'явилось між 16.11 і 18.11 |
+| Chrome WebGL ~20 к/с із ривками (на Windows краще при тому ж CPU) | wineserver, IPC, KSM виключені; далі — профіль `perf`, шлях `Atomics.wait` |
+| Bluetooth-аудіо без звуку | перший живий тест, журнал `winebth:` |
+| Смерть dwm на YouTube (FPE/ABRT) | захищено, причину не знайдено (`dwm: signal` у журналі) |
+| Win+R `chrome about:version` — «файл не знайдено» | давнє, не виправлено |
+| Малювання після пробудження з гібернації | не перевірено |
+
+---
+
+## 10. Ризики
 
 | Ризик | Як знімаємо |
 |---|---|
-| Vulkan WSI драйверів GPU (особливо NVIDIA + explicit sync) на нашому мінімальному сервері буферів | Тест на lavapipe вже в M1; на початку M3 першою — NVIDIA |
-| win32u без зовнішнього віконного менеджера | Це режим «віртуального робочого столу» Wine, він зрілий. Ризик у деталях (ресайз, layered-вікна) — закриваємо серійними номерами конфігурації |
-| ReactOS explorer у Wine вже раз зависав у browseui | Перевірка на старті M1. Беремо разом з ним browseui/shell32 з ReactOS і виправляємо несумісності — explorer Wine не є запасним варіантом |
-| Модулі NVIDIA під нове ядро | Версії ядра і nvidia-open закріплені парою, оновлюються разом |
-| NTFS-драйвер без журналювання: після раптового вимкнення живлення C: може пошкодитися | Живий режим не страждає: зміни в RAM, `windows.img` лише для читання. У режимі збереження: `fsck.ntfs` на кожному старті, якщо том «брудний»; кнопка живлення завжди веде до коректного завершення з розмонтуванням; флешку можна перевірити `chkdsk` на будь-якому Windows-ПК. Коли в драйвері з'явиться журналювання — просто оновлюємо ядро |
-| Новий драйвер NTFS вийшов у червні 2026 | Запасний варіант у тому ж ядрі — `ntfs3`; вибір драйвера — одна опція в init |
-| Злиття з upstream Wine | Код у нових модулях, правки ядра рантайму окремими комітами, ребейз на кожен dev-реліз або щомісяця |
-| Ліміти CI (диск, 6 год) | Кеші + GCE |
-| Ввід від мишей 1000+ Гц через wineserver | Заміряти в M3 |
-| Обсяг роботи | Кожен етап закінчується ISO; порядок M1 → M3 знімає найбільші ризики першими |
+| Помилка в win32k валить усе ядро, а не один процес | Обробники перенесені з wineserver майже 1:1 і перевіряються тими самими тестами; перемикач `arctic.win32k=0`; VM перед кожним оновленням |
+| Перехід на нове ядро (8.x) | Патчі ядра малі (`0007` — 4 файли, структури ядра не змінені), модулі самодостатні |
+| NTFS без журналювання | `ntfsck` на старті, коректне вимкнення з кнопки, `chkdsk` на будь-якому Windows-ПК |
+| Злиття з upstream Wine | Код у модулях, правки ядра рантайму окремими патчами |
+| Модулі NVIDIA під нове ядро | Версії ядра й NVIDIA закріплені парою |
+| root на живій машині | Лише hamam із паролем; правила роботи з ним — `docs/linux-gate.md` |
 
 ---
 
 ## 11. Ліцензії
 
 - Wine — LGPL-2.1+. ReactOS — переважно GPL-2.0+ / LGPL. DXVK — zlib. vkd3d-proton — LGPL-2.1.
-  Mesa — MIT. Linux — GPL-2.0.
-- NVIDIA userspace — ліцензія NVIDIA (дистрибутиви її розповсюджують; умови перечитати перед
-  публічним ISO). Прошивки — кожна зі своєю ліцензією.
-- Поки репозиторій приватний і ISO ніде не публікується, питань немає. Публічний ISO означає обов'язок
-  опублікувати сирці: наші зміни Wine, ReactOS і конфіг ядра.
-- Наш код — LGPL-2.1+, як у Wine, щоб його можна було вільно переносити між форком і власними модулями.
+  Mesa — MIT. Linux і наші модулі ядра — GPL-2.0 (win32k — LGPL-2.1+, як код wineserver, з якого він).
+- NVIDIA userspace — ліцензія NVIDIA (перечитати перед публічним ISO). Прошивки — кожна зі своєю.
+- Публічний ISO означає обов'язок опублікувати сирці: наші зміни Wine, ReactOS, ядра.
+- Наш код — LGPL-2.1+, як у Wine.
 
 ---
 
-## 12. Наступний крок
+## Документи за темами
 
-**M0:** створити приватний репозиторій, написати кроки конвеєра 1–6 і отримати перший ISO,
-який доходить до `services.exe` в QEMU.
-
-Для цього потрібно:
-1. Назва репозиторію і перевірка `gh auth status`.
-2. Пізніше, для GCE: ID проєкту Google Cloud і сервісний акаунт з правом створювати VM.
-
----
-
-## Джерела (стан на 2026-09-19)
-
-- Wine 11.0: NTSYNC, завершений WoW64 — https://www.phoronix.com/news/Wine-11.0-January-2026 ,
-  https://9to5linux.com/wine-11-officially-released-with-ntsync-support-vulkan-h-264-decoding-and-more
-- Wine 11.15 / 11.16 (VA-API) — https://www.winehq.org/news/2026080801 ,
-  https://alternativeto.net/news/2026/8/wine-11-16-brings-va-api-hardware-video-decoding-improved-arm64-support-and-35-bug-fixes/
-- Wine 11.5, Syscall User Dispatch — https://www.phoronix.com/news/Wine-11.5-Released
-- Zink як PE у Wine (пропозиція) — https://www.gamingonlinux.com/2026/04/a-future-wine-release-could-use-zink-to-run-opengl-via-vulkan/
-- Інтерфейс дисплейного драйвера Wine — https://github.com/wine-mirror/wine/blob/master/include/wine/gdi_driver.h ,
-  https://github.com/wine-mirror/wine/blob/master/include/wine/vulkan_driver.h
-- Proton 11.0-1 — https://www.gamingonlinux.com/2026/07/proton-11-0-1-officially-released-to-expand-windows-games-on-steamos-linux/
-- Linux 7.1 (новий NTFS) і 7.2 — https://www.linuxjournal.com/content/linux-kernel-71-officially-released-new-ntfs-driver-intel-fred-and-major-code-cleanup ,
-  https://www.phoronix.com/news/Linux-7.2-Released
-- Новий драйвер NTFS: опції монтування (`nocase`, `windows_names`) — https://docs.kernel.org/7.1/filesystems/ntfs.html ;
-  можливості, ntfsprogs-plus, статус журналювання — https://lwn.net/Articles/1048627/ ,
-  https://linuxiac.com/linux-kernel-7-1-merges-new-ntfs-driver-with-full-write-support/
-- Wine і `EXT4_CASEFOLD_FL` (чому Wine не знає про `nocase`) — https://www.winehq.org/pipermail/wine-devel/2019-June/147467.html
-- NVK і Blackwell — https://docs.mesa3d.org/drivers/nvk.html , https://www.phoronix.com/review/nvidia-nvk-linux-618-mesa-26
-- ReactOS 0.4.16 — https://reactos.org/project-news/reactos-0416-released/ ; теми (Mizu) — https://github.com/reactos/reactos/tree/master/media/themes
-- Longene (єдиний попередник) — https://en.wikipedia.org/wiki/Longene
-- Ціни GitHub Actions 2026 — https://github.com/resources/insights/2026-pricing-changes-for-github-actions
+`boot.md` (завантаження, Secure Boot) · `install.md` (на диск) · `persistence.md` (збереження) ·
+`updates.md` (оновлення) · `build.md` (збірка) · `win32k.md` (USER у ядрі) · `nt-speed.md` (швидкі
+шляхи) · `M1-display.md`…`M5-network.md` (етапи) · `dpi.md` · `games.md` · `power.md` ·
+`hibernation.md` · `disks.md` · `bluetooth.md` · `hypervisor.md` · `wsl.md`, `linux-gate.md` (WSL,
+hamam) · `shell.md`, `start-menu.md`, `network-flyout.md` · `wordpad.md`, `paint-photos.md` ·
+`browser.md` · `cuda.md` · `live-wallpaper.md`

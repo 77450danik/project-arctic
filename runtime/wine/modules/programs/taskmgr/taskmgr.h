@@ -57,6 +57,7 @@ struct proc
     BOOL     suspended, seen;
     int      icon;                 /* index in the small image list, -1 for the default */
     LONG     priority;
+    BOOL     pseudo;               /* the system's own memory, not a process to act on */
 };
 
 enum { KIND_APP, KIND_BACKGROUND, KIND_WINDOWS };

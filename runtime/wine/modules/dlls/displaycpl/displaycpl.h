@@ -101,6 +101,22 @@
 #define IDS_FAILED              104
 #define IDS_RESTART             105
 
+/* custom refresh rates (Advanced display) */
+#define IDS_CUSTOM_GROUP        110
+#define IDS_CUSTOM_TRY          111
+#define IDS_CUSTOM_TRY_HINT     112
+#define IDS_CUSTOM_TEST         113
+#define IDS_CUSTOM_ON           114
+#define IDS_CUSTOM_ON_HINT      115
+#define IDS_CUSTOM_REMOVE       116
+#define IDS_CUSTOM_FAILED       117
+#define IDS_CUSTOM_KEPT         118
+#define IDS_CUSTOM_BLANK        109
+#define IDS_CUSTOM_BLANK_HINT   119
+#define IDS_BLANK_NATIVE        106   /* then the short and the shortest */
+#define IDS_BLANK_SHORT         107
+#define IDS_BLANK_MIN           108
+
 /* Personalization */
 #define IDS_MODE_GROUP          120
 #define IDS_MODE_LIGHT          121
@@ -286,6 +302,19 @@ extern const int scale_steps[12];
 
 void monitor_write_vrr( const struct monitor *m );
 void monitor_write_scaling( const struct monitor *m );
+
+/* refresh rates above the monitor's own, kept per monitor: mHz, and in the
+ * top four bits the blank (0 the monitor's own, 1 short horizontal, 2 short
+ * vertical too: dwmcore's kms.c) */
+#define CUSTOM_MAX 4
+#define CUSTOM_RATE( hz, blank ) ((DWORD)(hz) * 1000 | (DWORD)(blank) << 28)
+#define CUSTOM_HZ( rate )        ((((rate) & 0x0fffffff) + 500) / 1000)
+#define CUSTOM_BLANK( rate )     ((rate) >> 28)
+UINT monitor_custom_rates( const struct monitor *m, DWORD *rates, UINT max );
+void monitor_custom_set_rates( const struct monitor *m, const DWORD *rates, UINT count );
+BOOL monitor_custom_on( const struct monitor *m );
+void monitor_custom_set_on( const struct monitor *m, BOOL on );
+void monitor_custom_trial( const struct monitor *m, DWORD rate );  /* 0: none */
 DWORD desktop_icon_size(void);
 void desktop_icon_size_set( DWORD size );
 

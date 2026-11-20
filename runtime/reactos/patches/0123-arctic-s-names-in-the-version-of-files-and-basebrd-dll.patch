@@ -1,0 +1,81 @@
+From: Arctic <arctic@localhost>
+Subject: [PATCH] Arctic's names in the version of files, and basebrd.dll.
+
+The properties of explorer.exe, shell32.dll, comctl32.dll, uxtheme.dll,
+desk.cpl, sysdm.cpl and the rest said "ReactOS Project", "ReactOS Operating
+System": they say what Arctic's Wine modules say, "Microsoft Corporation"
+and "Arctic". The copyright stays: the code is the ReactOS authors'.
+
+The branding DLL is basebrd.dll, as Windows names its own (ci/build-reactos.sh
+installs rosbrand's build under that name); the shell loads it by that name.
+---
+diff --git a/dll/branding/rosbrand/rosbrand.rc b/dll/branding/rosbrand/rosbrand.rc
+--- a/dll/branding/rosbrand/rosbrand.rc
++++ b/dll/branding/rosbrand/rosbrand.rc
+@@ -1,9 +1,9 @@
+ #include <reactos/rosbrand.h>
+ 
+ #define REACTOS_VERSION_DLL
+-#define REACTOS_STR_FILE_DESCRIPTION  "ReactOS Branding Resources"
+-#define REACTOS_STR_INTERNAL_NAME     "rosbrand"
+-#define REACTOS_STR_ORIGINAL_FILENAME "rosbrand.dll"
++#define REACTOS_STR_FILE_DESCRIPTION  "Arctic Branding Resources"
++#define REACTOS_STR_INTERNAL_NAME     "basebrd"
++#define REACTOS_STR_ORIGINAL_FILENAME "basebrd.dll"
+ #include <reactos/version.rc>
+ 
+ /* Resources */
+diff --git a/dll/win32/msgina/gui.c b/dll/win32/msgina/gui.c
+--- a/dll/win32/msgina/gui.c
++++ b/dll/win32/msgina/gui.c
+@@ -75,7 +75,7 @@
+ static VOID
+ LoadBrandingBitmaps(VOID)
+ {
+-    HMODULE hBrand = LoadLibraryExW(L"rosbrand.dll", NULL, LOAD_LIBRARY_AS_DATAFILE);
++    HMODULE hBrand = LoadLibraryExW(L"basebrd.dll", NULL, LOAD_LIBRARY_AS_DATAFILE);
+ 
+     if (!hBrand)
+         return;
+diff --git a/dll/win32/shell32/wine/shell32_main.c b/dll/win32/shell32/wine/shell32_main.c
+--- a/dll/win32/shell32/wine/shell32_main.c
++++ b/dll/win32/shell32/wine/shell32_main.c
+@@ -1090,7 +1090,7 @@
+                 WCHAR szAuthorsText[20];
+ 
+                 // Preload the ROS bitmap
+-                HMODULE hBrand = LoadLibraryExW(L"rosbrand.dll", NULL, LOAD_LIBRARY_AS_DATAFILE);
++                HMODULE hBrand = LoadLibraryExW(L"basebrd.dll", NULL, LOAD_LIBRARY_AS_DATAFILE);
+                 if (hBrand)
+                 {
+                     hLogoBmp = LoadImage(hBrand,
+diff --git a/dll/win32/syssetup/install.c b/dll/win32/syssetup/install.c
+--- a/dll/win32/syssetup/install.c
++++ b/dll/win32/syssetup/install.c
+@@ -785,7 +785,7 @@
+                 SetWindowLongPtrW(hwndDlg, DWLP_USER, (LONG_PTR)pDlgData);
+ 
+                 /* Load bitmaps */
+-                HMODULE hBrand = LoadLibraryExW(L"rosbrand.dll", NULL, LOAD_LIBRARY_AS_DATAFILE);
++                HMODULE hBrand = LoadLibraryExW(L"basebrd.dll", NULL, LOAD_LIBRARY_AS_DATAFILE);
+                 if (hBrand)
+                 {
+                     pDlgData->hLogoBitmap = LoadImageW(hBrand,
+diff --git a/sdk/include/reactos/version.rc b/sdk/include/reactos/version.rc
+--- a/sdk/include/reactos/version.rc
++++ b/sdk/include/reactos/version.rc
+@@ -16,11 +16,11 @@
+ #include "buildno.h"
+ 
+ /* Define some defaults (shouldn't be overwritten by applications) */
+-#define REACTOS_DEFAULT_STR_COMPANY_NAME    "ReactOS Project"
+-#define REACTOS_DEFAULT_STR_DESCRIPTION     "ReactOS Core Component"
++#define REACTOS_DEFAULT_STR_COMPANY_NAME    "Microsoft Corporation"  /* Arctic: as its Wine modules say */
++#define REACTOS_DEFAULT_STR_DESCRIPTION     "Arctic Core Component"
+ #define REACTOS_DEFAULT_STR_INTERNAL_NAME   ""
+ #define REACTOS_DEFAULT_STR_LEGAL_COPYRIGHT "(C) 1996-" COPYRIGHT_YEAR " ReactOS Project"
+-#define REACTOS_DEFAULT_STR_PRODUCT_NAME    "ReactOS Operating System"
++#define REACTOS_DEFAULT_STR_PRODUCT_NAME    "Arctic"
+ 
+ /* Set defaults for everything, unless overridden */
+ #ifndef REACTOS_FILEVERSION

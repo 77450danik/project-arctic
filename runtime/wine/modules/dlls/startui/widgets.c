@@ -2068,7 +2068,7 @@ static void button_menu( POINT pt )
     widgets_hide();
     look_load_taskbar( &menu_look );
     chosen = popup_track( GetAncestor( button, GA_ROOT ), pt, TPM_LEFTALIGN | TPM_BOTTOMALIGN, items, ARRAY_SIZE(items),
-                          taskbar_style11() ? POPUP_WIN11 : POPUP_WIN10, &menu_look );
+                          (taskbar_style11() ? POPUP_WIN11 : POPUP_WIN10) | POPUP_TASKBAR, &menu_look );
     switch (chosen)
     {
     case ID_SHOW_BOTH: ArcticWidgetSetShow( 2 ); changed_width(); break;

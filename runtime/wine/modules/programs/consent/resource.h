@@ -26,6 +26,15 @@
 #define IDS_WAIT              16
 #define IDS_YES               17
 #define IDS_NO                18
+#define IDS_PROGRAM_HAMAM     19
+#define IDS_HEADING_HOST      20
+#define IDS_HEADING_SETTINGS  21
+#define IDS_ACCESS            22
+#define IDS_ACCESS_HOST       23
+#define IDS_ACCESS_SETTINGS   24
+#define IDS_ACCESS_ADMIN      25
+#define IDS_VIA               26
+#define IDS_PASSWORD_PROMPT_HOST 27
 
 #define IDD_CONSENT           100
 #define IDC_SHIELD            101
@@ -46,3 +55,5 @@
 #define IDC_MESSAGE           116
 #define IDC_ANSWER_YES        117
 #define IDC_ANSWER_NO         118
+#define IDC_ACCESS_LABEL      119
+#define IDC_ACCESS            120

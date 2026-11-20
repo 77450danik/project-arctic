@@ -48,9 +48,18 @@ STRINGTABLE
     IDS_WAIT             "Too many incorrect passwords. Try again in %d s."
     IDS_YES              "&Yes"
     IDS_NO               "&No"
+    IDS_PROGRAM_HAMAM    "HAMAM"
+    IDS_HEADING_HOST     "Do you want to allow ""%s"" direct root access to the system kernel?"
+    IDS_HEADING_SETTINGS "Do you want to change the settings of direct access to the kernel?"
+    IDS_ACCESS           "Access:"
+    IDS_ACCESS_HOST      "root on the host kernel, outside the WSL containers: disks, drivers, firmware, every process"
+    IDS_ACCESS_SETTINGS  "the HAMAM password and whether it is asked for"
+    IDS_ACCESS_ADMIN     "the administrator's rights in Windows"
+    IDS_VIA              "%s, through %s"
+    IDS_PASSWORD_PROMPT_HOST "Type the HAMAM password, and then click Yes."
 }
 
-IDD_CONSENT DIALOGEX 0, 0, 290, 190
+IDD_CONSENT DIALOGEX 0, 0, 290, 226
 STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "User Account Control"
 FONT 8, "MS Shell Dlg"
@@ -58,21 +67,23 @@ FONT 8, "MS Shell Dlg"
     ICON "", IDC_SHIELD, 10, 12, 21, 20, SS_ICON | SS_REALSIZEIMAGE
     LTEXT "", IDC_HEADING, 40, 10, 242, 20
     LTEXT "", IDC_PROGRAM_LABEL, 40, 38, 88, 9
-    LTEXT "", IDC_PROGRAM, 132, 38, 150, 9
+    LTEXT "", IDC_PROGRAM, 132, 38, 150, 9, SS_ENDELLIPSIS
     LTEXT "", IDC_PUBLISHER_LABEL, 40, 50, 88, 9
     LTEXT "", IDC_PUBLISHER, 132, 50, 150, 9
-    LTEXT "", IDC_REQUESTER_LABEL, 40, 62, 88, 9
-    LTEXT "", IDC_REQUESTER, 132, 62, 150, 9
-    LTEXT "", IDC_LOCATION_LABEL, 40, 74, 88, 9
-    LTEXT "", IDC_LOCATION, 132, 74, 150, 9
-    LTEXT "", IDC_COMMAND_LABEL, 40, 86, 88, 9
-    LTEXT "", IDC_COMMAND, 132, 86, 150, 9
-    PUSHBUTTON "", IDC_DETAILS, 40, 100, 90, 14
-    LTEXT "", IDC_PASSWORD_PROMPT, 40, 120, 242, 9
-    EDITTEXT IDC_PASSWORD, 40, 132, 130, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
-    LTEXT "", IDC_MESSAGE, 40, 150, 242, 9
-    DEFPUSHBUTTON "", IDC_ANSWER_YES, 174, 166, 52, 14
-    PUSHBUTTON "", IDC_ANSWER_NO, 230, 166, 52, 14
+    LTEXT "", IDC_ACCESS_LABEL, 40, 62, 88, 9
+    LTEXT "", IDC_ACCESS, 132, 62, 150, 18
+    LTEXT "", IDC_REQUESTER_LABEL, 40, 82, 88, 9
+    LTEXT "", IDC_REQUESTER, 132, 82, 150, 18
+    LTEXT "", IDC_COMMAND_LABEL, 40, 102, 88, 9
+    LTEXT "", IDC_COMMAND, 132, 102, 150, 18
+    LTEXT "", IDC_LOCATION_LABEL, 40, 122, 88, 9
+    LTEXT "", IDC_LOCATION, 132, 122, 150, 9, SS_PATHELLIPSIS
+    PUSHBUTTON "", IDC_DETAILS, 40, 136, 90, 14
+    LTEXT "", IDC_PASSWORD_PROMPT, 40, 156, 242, 9
+    EDITTEXT IDC_PASSWORD, 40, 168, 130, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "", IDC_MESSAGE, 40, 186, 242, 9
+    DEFPUSHBUTTON "", IDC_ANSWER_YES, 174, 202, 52, 14
+    PUSHBUTTON "", IDC_ANSWER_NO, 230, 202, 52, 14
 }
 
 LANGUAGE LANG_UKRAINIAN, SUBLANG_DEFAULT
@@ -98,9 +109,18 @@ STRINGTABLE
     IDS_WAIT             "Забагато неправильних паролів. Спробуйте за %d с."
     IDS_YES              "&Так"
     IDS_NO               "&Ні"
+    IDS_PROGRAM_HAMAM    "HAMAM"
+    IDS_HEADING_HOST     "Дозволити «%s» прямий доступ root до ядра системи?"
+    IDS_HEADING_SETTINGS "Змінити параметри прямого доступу до ядра?"
+    IDS_ACCESS           "Доступ:"
+    IDS_ACCESS_HOST      "root на ядрі хоста, поза контейнерами WSL: диски, драйвери, прошивка, усі процеси"
+    IDS_ACCESS_SETTINGS  "пароль HAMAM і те, чи його питати"
+    IDS_ACCESS_ADMIN     "права адміністратора Windows"
+    IDS_VIA              "%s, через %s"
+    IDS_PASSWORD_PROMPT_HOST "Введіть пароль HAMAM і натисніть «Так»."
 }
 
-IDD_CONSENT DIALOGEX 0, 0, 310, 190
+IDD_CONSENT DIALOGEX 0, 0, 310, 226
 STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Контроль облікових записів користувачів"
 FONT 8, "MS Shell Dlg"
@@ -108,19 +128,21 @@ FONT 8, "MS Shell Dlg"
     ICON "", IDC_SHIELD, 10, 12, 21, 20, SS_ICON | SS_REALSIZEIMAGE
     LTEXT "", IDC_HEADING, 40, 10, 262, 20
     LTEXT "", IDC_PROGRAM_LABEL, 40, 38, 96, 9
-    LTEXT "", IDC_PROGRAM, 140, 38, 162, 9
+    LTEXT "", IDC_PROGRAM, 140, 38, 162, 9, SS_ENDELLIPSIS
     LTEXT "", IDC_PUBLISHER_LABEL, 40, 50, 96, 9
     LTEXT "", IDC_PUBLISHER, 140, 50, 162, 9
-    LTEXT "", IDC_REQUESTER_LABEL, 40, 62, 96, 9
-    LTEXT "", IDC_REQUESTER, 140, 62, 162, 9
-    LTEXT "", IDC_LOCATION_LABEL, 40, 74, 96, 9
-    LTEXT "", IDC_LOCATION, 140, 74, 162, 9
-    LTEXT "", IDC_COMMAND_LABEL, 40, 86, 96, 9
-    LTEXT "", IDC_COMMAND, 140, 86, 162, 9
-    PUSHBUTTON "", IDC_DETAILS, 40, 100, 100, 14
-    LTEXT "", IDC_PASSWORD_PROMPT, 40, 120, 262, 9
-    EDITTEXT IDC_PASSWORD, 40, 132, 140, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
-    LTEXT "", IDC_MESSAGE, 40, 150, 262, 9
-    DEFPUSHBUTTON "", IDC_ANSWER_YES, 190, 166, 54, 14
-    PUSHBUTTON "", IDC_ANSWER_NO, 248, 166, 54, 14
+    LTEXT "", IDC_ACCESS_LABEL, 40, 62, 96, 9
+    LTEXT "", IDC_ACCESS, 140, 62, 162, 18
+    LTEXT "", IDC_REQUESTER_LABEL, 40, 82, 96, 9
+    LTEXT "", IDC_REQUESTER, 140, 82, 162, 18
+    LTEXT "", IDC_COMMAND_LABEL, 40, 102, 96, 9
+    LTEXT "", IDC_COMMAND, 140, 102, 162, 18
+    LTEXT "", IDC_LOCATION_LABEL, 40, 122, 96, 9
+    LTEXT "", IDC_LOCATION, 140, 122, 162, 9, SS_PATHELLIPSIS
+    PUSHBUTTON "", IDC_DETAILS, 40, 136, 100, 14
+    LTEXT "", IDC_PASSWORD_PROMPT, 40, 156, 262, 9
+    EDITTEXT IDC_PASSWORD, 40, 168, 140, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "", IDC_MESSAGE, 40, 186, 262, 9
+    DEFPUSHBUTTON "", IDC_ANSWER_YES, 190, 202, 54, 14
+    PUSHBUTTON "", IDC_ANSWER_NO, 248, 202, 54, 14
 }

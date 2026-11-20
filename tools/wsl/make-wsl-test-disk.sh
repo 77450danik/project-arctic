@@ -1,19 +1,20 @@
 #!/bin/bash
 # A disk with two tiny WSL distributions, for the VM (vm-test.py --disk):
-# NTFS, labelled "WSL", with gate.vhdx and free.vhdx in its root. One stands
-# for the gate distribution (arctic-build, behind UAC and the password) and
-# the other for an ordinary one (arctic-ros, free), which is what the gate
-# tests need: two different disks, so arctic-lxss cannot take them for the
-# same distribution (host/init/arctic-lxss.c, is_gate_target).
+# NTFS, labelled "WSL", with gate.vhdx and free.vhdx in its root: arctic-build
+# (HAMAM's, the one gate.conf names) and arctic-ros, two different disks, as
+# the tests of HAMAM and of the containers need (tests/vm/w8-gate.txt,
+# w10-containers.txt).
 #
 # The rootfs inside is the smallest thing that answers "wsl -e id" and
-# "wsl -e uname -sr": bash, a few tools of the build distribution and the
-# libraries they need. Output: out/test-local/wsl-disk.img   (as root)
+# "wsl -e uname -sr", and lets the container test try what it must not be
+# able to do: bash, a few tools of the build distribution and the libraries
+# they need. Output: out/test-local/wsl-disk.img   (as root: hamam)
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=${1:-$ROOT/out/test-local}
-TOOLS="/bin/bash /usr/bin/id /usr/bin/uname /usr/bin/ls /usr/bin/cat /usr/bin/env /usr/bin/sleep"
+TOOLS="/bin/bash /usr/bin/id /usr/bin/uname /usr/bin/ls /usr/bin/cat /usr/bin/env /usr/bin/sleep
+       /usr/bin/rm /usr/bin/touch /usr/bin/mknod /usr/bin/mkdir /usr/bin/head"
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 mkdir -p "$OUT"

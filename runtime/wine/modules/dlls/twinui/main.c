@@ -1,7 +1,7 @@
 /*
  * Task switching of the shell
  *
- * In Windows 10, Alt+Tab and the thumbnails over taskbar buttons are
+ * In Windows 10, Alt+Tab, Task View and the thumbnails over taskbar buttons are
  * explorer.exe's, drawn by twinui.dll with live pictures of the windows
  * from DWM. Here explorer.exe loads this twinui.dll the same way: it starts
  * the task switcher and tells it which button the pointer is over.
@@ -39,6 +39,24 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
 BOOL WINAPI ArcticStartTaskSwitcher(void)
 {
     return switcher_start();
+}
+
+/***********************************************************************
+ *              ArcticTaskViewToggle (TWINUI.@)
+ *
+ * Task View opens, or closes when it is open: the taskbar's button, Win+Tab.
+ */
+BOOL WINAPI ArcticTaskViewToggle(void)
+{
+    return taskview_toggle();
+}
+
+/***********************************************************************
+ *              ArcticTaskViewVisible (TWINUI.@)
+ */
+BOOL WINAPI ArcticTaskViewVisible(void)
+{
+    return taskview_visible();
 }
 
 /***********************************************************************

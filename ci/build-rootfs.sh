@@ -76,9 +76,9 @@ cp -a "$OUT/wine/usr/." "$RFS/usr/"
 WINE_FONTS="$OUT/wine-fonts"
 rm -rf "$WINE_FONTS"
 mkdir -p "$WINE_FONTS"
-if [ -d "$RFS/usr/share/wine/fonts" ]; then
-    cp -a "$RFS/usr/share/wine/fonts/." "$WINE_FONTS/"
-    rm -f "$RFS"/usr/share/wine/fonts/*
+if [ -d "$RFS/usr/share/nt/fonts" ]; then
+    cp -a "$RFS/usr/share/nt/fonts/." "$WINE_FONTS/"
+    rm -f "$RFS"/usr/share/nt/fonts/*
 fi
 
 INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop,hiberfil,tuning}.c)
@@ -125,14 +125,15 @@ cp "$OUT/initrd/bsod.font" "$RFS/usr/share/arctic/bsod.font"
 # NT prefix, created by the Wine that ships in this very image
 cat > "$RFS/var/tmp/mkprefix.sh" <<'EOF'
 set -e
-export WINEPREFIX=/var/tmp/prefix HOME=/var/tmp/home USER=User LOGNAME=User LANG=uk_UA.UTF-8
-export WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
+export NTPREFIX=/var/tmp/prefix HOME=/var/tmp/home USER=User LOGNAME=User LANG=uk_UA.UTF-8
+export NTDEBUG=-all NTDLLOVERRIDES="mscoree,mshtml="
 mkdir -p "$HOME"
-wine wineboot.exe --init
-wine reg.exe add 'HKCU\Control Panel\Desktop' /v Wallpaper /d 'C:\Windows\Web\Wallpaper\Arctic\img0.jpg' /f
-wine reg.exe add 'HKCU\Control Panel\Desktop' /v WallpaperStyle /d 10 /f
-for reg in /usr/share/arctic/registry/*.reg; do wine reg.exe import "Z:$reg"; done
-wineserver -w
+# the loader and the server by NT's names (ci/wine-names.pl)
+ntloader winboot.exe --init
+ntloader reg.exe add 'HKCU\Control Panel\Desktop' /v Wallpaper /d 'C:\Windows\Web\Wallpaper\Arctic\img0.jpg' /f
+ntloader reg.exe add 'HKCU\Control Panel\Desktop' /v WallpaperStyle /d 10 /f
+for reg in /usr/share/arctic/registry/*.reg; do ntloader reg.exe import "Z:$reg"; done
+ntexec -w
 EOF
 # Arctic's registry settings stay in the image: when an update brings a newer
 # Wine, wineboot brings C:'s registry up to it from wine.inf, and arctic-init
@@ -178,8 +179,8 @@ if [ -d "$REACTOS/Windows" ]; then
     # never runs, so it is not in the image at all. Same for the Display
     # control panel: Wine's desk.cpl is its virtual desktop settings, and the
     # loader would take it over the one in System32
-    rm -f "$PFX/drive_c/windows/system32/explorer.exe" "$RFS"/usr/lib/wine/*-windows/explorer.exe
-    rm -f "$RFS"/usr/lib/wine/*-windows/desk.cpl
+    rm -f "$PFX/drive_c/windows/system32/explorer.exe" "$RFS"/usr/lib/nt/*-windows/explorer.exe
+    rm -f "$RFS"/usr/lib/nt/*-windows/desk.cpl
     # into Wine's resources	hemes, which holds aero: C: shows one Resources folder
     if [ -d "$REACTOS/Windows/Media" ]; then
         mkdir -p "$PFX/drive_c/windows/Media"
@@ -196,6 +197,7 @@ if [ -d "$REACTOS/Windows" ]; then
     cp "$ROOT"/runtime/fonts/*.ttf "$ROOT"/runtime/fonts/*.otf "$PFX/drive_c/windows/Fonts/"
     mkdir -p "$PFX/drive_c/windows/Licenses"
     cp "$ROOT/runtime/fonts/Inter-OFL.txt" "$PFX/drive_c/windows/Licenses/Inter.txt"
+    cp "$ROOT/runtime/fonts/OpenSans-OFL.txt" "$PFX/drive_c/windows/Licenses/OpenSans.txt"
     # the desktop clock's lines (startui gadgets.c)
     cp "$ROOT/runtime/fonts/Quicksand-OFL.txt" "$PFX/drive_c/windows/Licenses/Quicksand.txt"
     # Calibri's and Cambria's measures for Word's documents (wordpad.reg)
@@ -219,12 +221,12 @@ if [ -d "$REACTOS/Windows" ]; then
 set -e
 # in C: ReactOS's DllRegisterServer fails under uk_UA (to be looked into);
 # what it writes does not depend on the locale
-export WINEPREFIX=/var/tmp/prefix HOME=/var/tmp/home USER=User LOGNAME=User LANG=C
-export WINEDEBUG=-all
+export NTPREFIX=/var/tmp/prefix HOME=/var/tmp/home USER=User LOGNAME=User LANG=C
+export NTDEBUG=-all
 for dll in shell32 browseui shdocvw shlwapi comctl32 uxtheme zipfldr stobject netshell; do
-    timeout 120 wine regsvr32.exe /s "$dll.dll" || echo "regsvr32 $dll: $?"
+    timeout 120 ntloader regsvr32.exe /s "$dll.dll" || echo "regsvr32 $dll: $?"
 done
-wineserver -w
+ntexec -w
 EOF
     timeout 900 arch-chroot "$RFS" /usr/bin/busybox sh /var/tmp/register.sh
 fi
@@ -280,10 +282,10 @@ python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Me
 # engine is hardened: this is a shortcut, not a default browser.
 python3 "$ROOT/runtime/browser/build.py" --out "$OUT/browser" \
     --install "$PFX/drive_c/Program Files/Internet Explorer"
-rm -f "$PFX"/drive_c/windows/{system32,syswow64}/iexplore.exe "$RFS"/usr/lib/wine/*-windows/iexplore.exe
+rm -f "$PFX"/drive_c/windows/{system32,syswow64}/iexplore.exe "$RFS"/usr/lib/nt/*-windows/iexplore.exe
 # Wine's own settings program is not Arctic's: the version it set is in
 # runtime/registry/version.reg, the rest has Control Panel
-rm -f "$PFX"/drive_c/windows/{system32,syswow64}/winecfg.exe "$RFS"/usr/lib/wine/*-windows/winecfg.exe
+rm -f "$PFX"/drive_c/windows/{system32,syswow64}/winecfg.exe "$RFS"/usr/lib/nt/*-windows/winecfg.exe
 python3 "$ROOT/ci/mklnk.py" "$PFX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Internet Explorer.lnk" \
     'C:\Program Files\Internet Explorer\iexplore.exe'
 

@@ -85,7 +85,7 @@ if [ "$WINDOWS" = 1 ]; then
     # on C: is ReactOS's still, a native file that Wine would load before its
     # own and that wineboot leaves alone. Wine's goes in its place.
     for name in mmsys.cpl; do
-        wine_file="$BUILD/wine/usr/lib/wine/x86_64-windows/$name"
+        wine_file="$BUILD/wine/usr/lib/nt/x86_64-windows/$name"
         [ -f "$wine_file" ] && [ ! -e "$SRC/System32/$name" ] && [ -f "$C/Windows/System32/$name" ] || continue
         if ! grep -qa "Wine builtin DLL" "$C/Windows/System32/$name" && ! cmp -s "$wine_file" "$C/Windows/System32/$name"; then
             changed+=("System32/$name")
@@ -100,13 +100,20 @@ if [ "$WINDOWS" = 1 ]; then
     PFX="$BUILD/prefix/drive_c/windows"
     if [ -d "$PFX/system32" ]; then
         wine_files=0
-        for dir in system32 syswow64; do
+        # the drivers too: a driver new to the C: (winbus.sys after the
+        # rename) must be there before the start, or PnP loads it before
+        # wineboot has put it there and the bus stays down until a restart
+        for dir in system32 syswow64 system32/drivers; do
             [ -d "$PFX/$dir" ] || continue
             for f in "$PFX/$dir"/*; do
                 [ -f "$f" ] || continue
                 name=${f##*/}
                 # what ReactOS builds is taken above, from out/reactos
-                [ -e "$SRC/System32/$name" ] && continue
+                if [ "$dir" = system32/drivers ]; then
+                    [ -e "$SRC/System32/drivers/$name" ] && continue
+                else
+                    [ -e "$SRC/System32/$name" ] && continue
+                fi
                 cmp -s "$f" "$C/Windows/$dir/$name" 2>/dev/null && continue
                 changed+=("$dir/$name")
                 mkdir -p "$U/Windows/$dir"
@@ -184,12 +191,26 @@ if [ "$HOST" = 1 ]; then
     fi
     # Files of C: the new host has no program for: Linux's git and sh under
     # Windows names (docs/linux-gate.md), Wine would find no builtin behind
-    # them, Git for Windows is the git now; and Wine's winecfg
+    # them, Git for Windows is the git now; Wine's winecfg; and the drivers
+    # and their host under Wine's names, which are Windows' now
+    # (ci/wine-names.pl: windowsbus.sys, windowsdevice.exe...), with the .inf
+    # wineboot took out of them
     gone=()
     for rel in Windows/System32/git.exe Windows/System32/sh.exe Windows/SysWOW64/git.exe Windows/SysWOW64/sh.exe \
-               Windows/System32/winecfg.exe Windows/SysWOW64/winecfg.exe; do
+               Windows/System32/winecfg.exe Windows/SysWOW64/winecfg.exe \
+               Windows/{System32,SysWOW64}/{winedevice,wineboot,winedbg,winebrowser,winefile,winemine,winepath,winemenubuilder,wineconsole,winemsibuilder,winevdm}.exe \
+               Windows/{System32,SysWOW64}/{wined3d,winevulkan,winedmo,winemapi}.dll \
+               Windows/{System32,SysWOW64}/winewayland.drv \
+               Windows/System32/drivers/{winebus,winehid,wineusb,winebth,winexinput}.sys; do
         [ -e "$C/$rel" ] && grep -qa "Wine builtin DLL" "$C/$rel" && gone+=("$rel")
     done
+    for rel in Windows/inf/{winebus,winehid,wineusb,winebth,winexinput}.inf Windows/{System32,SysWOW64}/winevulkan.json; do
+        [ -e "$C/$rel" ] && gone+=("$rel")
+    done
+    # ReactOS's branding DLL is basebrd.dll now (ReactOS patch 0123)
+    if [ -e "$C/Windows/System32/rosbrand.dll" ] && [ -e "$U/Windows/System32/basebrd.dll" ]; then
+        gone+=("Windows/System32/rosbrand.dll")
+    fi
     if [ ${#gone[@]} -gt 0 ]; then
         touch "$U/delete"
         for rel in "${gone[@]}"; do

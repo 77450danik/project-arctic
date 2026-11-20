@@ -155,11 +155,14 @@ ReactOS). Одна збірка, той самий кеш ccache, де б не �
 ```
 wsl -d arctic-ros -u root -- bash "/mnt/d/WORK_YT/project arctic/tools/wsl/build-reactos.sh"
 wsl -d arctic-build -- bash "/mnt/d/WORK_YT/project arctic/tools/wsl/build-wine.sh"
-wsl -d arctic-build -- bash "/mnt/d/WORK_YT/project arctic/tools/wsl/build-image.sh"
-wsl -d arctic-build -- bash "/mnt/d/WORK_YT/project arctic/tools/arctic/make-update.sh" --windows --host --boot
+hamam -d arctic-build -- bash "/mnt/d/WORK_YT/project arctic/tools/wsl/build-image.sh"
+hamam -d arctic-build -- bash "/mnt/d/WORK_YT/project arctic/tools/arctic/make-update.sh" --windows --host --boot
 ```
 
-потім перезавантаження. Із bash Claude Code (він уже в arctic-build) — ті
+`wsl` — контейнер (ReactOS і Wine там збираються як були); образ і пакет
+оновлення — `hamam`, root на хості за UAC (`docs/linux-gate.md`): `pacstrap`
+монтує `sysfs`, а пакет пишеться в `C:\Windows`, якої контейнер не пише.
+Потім перезавантаження. Із bash Claude Code (він уже в arctic-build) — ті
 самі скрипти напряму, ReactOS — через `python3 tools/arctic/wsl.py -d
 arctic-ros -u root -- bash tools/wsl/build-reactos.sh`.
 

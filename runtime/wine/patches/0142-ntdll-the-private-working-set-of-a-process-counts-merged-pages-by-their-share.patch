@@ -1,0 +1,119 @@
+From: Project Arctic
+Subject: ntdll: the private working set of a process counts merged pages by their share.
+
+The Task Manager added up its processes to a few gigabytes while twice as
+much was in use: WorkingSetPrivateSize, the column Windows shows as Memory,
+was never filled, and RssAnon counts a page KSM merged in full in every
+process that has it. It is now the private resident memory of the process,
+a merged page counting by its share, so that the processes add up to what
+they take.
+---
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -1080,6 +1080,59 @@ void fill_vm_counters( VM_COUNTERS_EX *pvmi, int unix_pid )
+     fclose(f);
+ }
+ 
++/* KSM, which Arctic runs as Windows combines memory: of the pages merged in
++ * all processes (merged), only "shared" take memory */
++void get_ksm_pages( ULONGLONG *shared, ULONGLONG *merged )
++{
++    unsigned long long value;
++    FILE *f;
++
++    *shared = *merged = 0;
++    if ((f = fopen( "/sys/kernel/mm/ksm/pages_shared", "r" )))
++    {
++        if (fscanf( f, "%llu", &value ) == 1) *shared = value;
++        fclose( f );
++    }
++    if ((f = fopen( "/sys/kernel/mm/ksm/pages_sharing", "r" )))
++    {
++        if (fscanf( f, "%llu", &value ) == 1) *merged = *shared + value;
++        fclose( f );
++    }
++}
++
++/* The private working set as Windows' Task Manager shows it: the memory of
++ * the process alone that is in RAM (RssAnon). A page KSM merged with pages
++ * of other processes counts by its share, so that the processes add up to
++ * the memory they take and not to more. */
++ULONGLONG get_private_working_set( int unix_pid, ULONGLONG ksm_shared, ULONGLONG ksm_merged )
++{
++    unsigned long long anon = 0, merging = 0, value;
++    char line[256], path[40];
++    FILE *f;
++
++    snprintf( path, sizeof(path), "/proc/%u/status", unix_pid );
++    if (!(f = fopen( path, "r" ))) return 0;
++    while (fgets( line, sizeof(line), f ))
++        if (sscanf( line, "RssAnon: %llu", &value ) == 1) { anon = value * 1024; break; }
++    fclose( f );
++
++    snprintf( path, sizeof(path), "/proc/%u/ksm_stat", unix_pid );
++    if (ksm_merged && (f = fopen( path, "r" )))
++    {
++        while (fgets( line, sizeof(line), f ))
++            if (sscanf( line, "ksm_merging_pages %llu", &value ) == 1) { merging = value; break; }
++        fclose( f );
++    }
++    if (merging)
++    {
++        unsigned long long page = page_size, merged_bytes = merging * page;
++        if (merged_bytes > anon) merged_bytes = anon;
++        anon -= merged_bytes;
++        anon += (ULONGLONG)((double)merged_bytes * ksm_shared / ksm_merged);
++    }
++    return anon;
++}
++
+ #elif defined(HAVE_LIBPROCSTAT)
+ 
+ void fill_vm_counters( VM_COUNTERS_EX *pvmi, int unix_pid )
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -3292,6 +3292,9 @@ static unsigned int get_system_process_info( SYSTEM_INFORMATION_CLASS class, voi
+     unsigned int pos = 0;
+     char *buffer = NULL;
+     unsigned int ret;
++#ifdef linux
++    ULONGLONG ksm_shared, ksm_merged;
++#endif
+ 
+ C_ASSERT( sizeof(struct thread_info) <= sizeof(SYSTEM_THREAD_INFORMATION) );
+ C_ASSERT( sizeof(struct process_info) <= sizeof(SYSTEM_PROCESS_INFORMATION) );
+@@ -3325,6 +3328,9 @@ C_ASSERT( sizeof(struct process_info) <= sizeof(SYSTEM_PROCESS_INFORMATION) );
+         return ret;
+     }
+ 
++#ifdef linux
++    get_ksm_pages( &ksm_shared, &ksm_merged );
++#endif
+     for (i = 0; i < process_count; i++)
+     {
+         SYSTEM_PROCESS_INFORMATION *nt_process = (SYSTEM_PROCESS_INFORMATION *)((char *)info + *len);
+@@ -3365,6 +3371,10 @@ C_ASSERT( sizeof(struct process_info) <= sizeof(SYSTEM_PROCESS_INFORMATION) );
+             nt_process->HandleCount = server_process->handle_count;
+             get_thread_times( server_process->unix_pid, -1, &nt_process->KernelTime, &nt_process->UserTime );
+             fill_vm_counters( &nt_process->vmCounters, server_process->unix_pid );
++#ifdef linux
++            nt_process->WorkingSetPrivateSize.QuadPart =
++                get_private_working_set( server_process->unix_pid, ksm_shared, ksm_merged );
++#endif
+             fill_io_counters( &nt_process->ioCounters, server_process->unix_pid );
+         }
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -366,6 +366,8 @@ extern NTSTATUS signal_set_full_context( CONTEXT *context );
+ extern NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size );
+ extern NTSTATUS set_thread_wow64_context( HANDLE handle, const void *ctx, ULONG size );
+ extern void fill_vm_counters( VM_COUNTERS_EX *pvmi, int unix_pid );
++extern ULONGLONG get_private_working_set( int unix_pid, ULONGLONG ksm_shared, ULONGLONG ksm_merged );
++extern void get_ksm_pages( ULONGLONG *shared, ULONGLONG *merged );
+ extern NTSTATUS open_hkcu_key( const char *path, HANDLE *key );
+ 
+ extern NTSTATUS sync_ioctl( HANDLE file, ULONG code, void *in_buffer, ULONG in_size,

@@ -155,7 +155,7 @@ static void nt_stop(const char *code, const char *what)
     stop_screen(-1, FONT, code, what, dev_mode);
 }
 
-static char winedebug[256] = "WINEDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
+static char winedebug[256] = "NTDEBUG=fixme-all"; /* arctic.winedebug= on the kernel command line */
 /* set_clock: the system's time zone, for the log; programs take it from
  * /etc/localtime, which follows a change (apply_zone) */
 static char tz_env[128] = "ARCTIC_TIME_ZONE=Europe/Kyiv";
@@ -163,12 +163,20 @@ static char dev_program[128];                        /* arctic.run= */
 /* C: on a stick: writes go to it in the background, nobody waits for it
  * (docs/persistence.md, "Повільна флешка"). A flush returns at once (Wine
  * 0058) and the registry is saved every 4 minutes (0057), in a child. */
-static char lazy_flush[] = "WINE_LAZY_FLUSH=0";
-static char dll_overrides[64] = "WINEDLLOVERRIDES="; /* for wineboot: no Mono or Gecko installers */
-static char save_period[] = "WINE_REGISTRY_SAVE_PERIOD=30 ";
+static char lazy_flush[] = "NT_LAZY_FLUSH=0";
+static char dll_overrides[64] = "NTDLLOVERRIDES="; /* for wineboot: no Mono or Gecko installers */
+static char save_period[] = "NT_REGISTRY_SAVE_PERIOD=30 ";
+/* The NT fast paths (Wine 0139, 0140), on unless the kernel command line
+ * says arctic.fastcall=0 / arctic.regcache=0: small requests through shared
+ * memory, registry reads from a process's copy of the key */
+static char fastcall_env[] = "NT_FASTCALL=1";
+static char regcache_env[] = "NT_REGCACHE=1";
+/* USER in the kernel (win32k, Wine 0144, docs/win32k.md), on unless
+ * arctic.win32k=0: then wineserver keeps it, as before */
+static char win32k_env[] = "NT_WIN32K=1";
 
 static char *const nt_env[] = {
-    "WINEPREFIX=" PREFIX,
+    "NTPREFIX=" PREFIX,
     "HOME=" PREFIX "/home",
     "USER=User",
     "LOGNAME=User",
@@ -194,8 +202,11 @@ static char *const nt_env[] = {
     lazy_flush,
     save_period,
     dll_overrides,
+    fastcall_env,
+    regcache_env,
+    win32k_env,
     /* images Wine cannot map from their file, shared by every process (Wine 0059) */
-    "WINE_IMAGE_CACHE=" PREFIX "/imagecache",
+    "NT_IMAGE_CACHE=" PREFIX "/imagecache",
     "XDG_RUNTIME_DIR=" PREFIX "/xdg",
     "WAYLAND_DISPLAY=" WAYLAND_SOCKET,
     NULL,
@@ -1167,7 +1178,7 @@ static void log_memory(void)
 static void protect_system_processes(void)
 {
     static const struct { const char *name; const char *adj; } keep[] = {
-        {"wineserver", "-1000"}, {"dwm.exe", "-1000"},      {"csrss.exe", "-1000"},   {"winlogon.exe", "-1000"},
+        {"ntexec", "-1000"}, {"dwm.exe", "-1000"},      {"csrss.exe", "-1000"},   {"winlogon.exe", "-1000"},
         {"wininit.exe", "-1000"}, {"services.exe", "-900"}, {"explorer.exe", "-500"},
     };
     DIR *proc = opendir("/proc");
@@ -1207,6 +1218,36 @@ static void protect_system_processes(void)
         write_sysfs(path, want);
     }
     closedir(proc);
+}
+
+/* compressed memory before the paging file, as Windows squeezes pages before
+ * it writes them out */
+#define SWAP_PRIO_ZRAM 100
+#define SWAP_PRIO_PAGEFILE 10
+
+/* How the kernel behaves when memory runs short, closer to Windows. On
+ * 2026-11-16 a session with 16 GB filled up and every program hung for
+ * minutes: with swappiness 60 the kernel threw out the code of programs
+ * rather than squeeze their data, and code here comes from squashfs, read
+ * and unpacked again at every fault (hang-*.txt: threads in
+ * squashfs_decompress). Windows keeps code and pages data out.
+ * - swappiness 150: data goes to compressed memory before code is dropped
+ *   (above 100 means anonymous pages are the cheaper ones, as on zram);
+ * - page-cluster 0: zram reads one page at a time, read-ahead only costs;
+ * - watermark_scale_factor 125: kswapd starts freeing at about 200 MB free
+ *   instead of 16, so programs seldom have to free memory themselves;
+ * - min_free_kbytes is left to the kernel. */
+static void tune_memory(void)
+{
+    static const struct { const char *path, *value; } knobs[] = {
+        {"/proc/sys/vm/swappiness", "150"},
+        {"/proc/sys/vm/page-cluster", "0"},
+        {"/proc/sys/vm/watermark_scale_factor", "125"},
+    };
+
+    for (size_t i = 0; i < sizeof(knobs) / sizeof(knobs[0]); i++)
+        if (write_sysfs(knobs[i].path, knobs[i].value))
+            say("memory: %s: %s", knobs[i].path, strerror(errno));
 }
 
 /* Memory compression, as Windows 10 has it: a swap on zram, which keeps
@@ -1251,7 +1292,9 @@ static void start_memory_compression(void)
         return;
     }
     close(fd);
-    if (swapon(path, 0))
+    /* first, always: with the paging file at the same priority the kernel
+     * took the two in turn, and half of what was squeezed went to the disk */
+    if (swapon(path, SWAP_FLAG_PREFER | (SWAP_PRIO_ZRAM << SWAP_FLAG_PRIO_SHIFT)))
         say("memory compression: swapon: %s", strerror(errno));
     else
         say("memory compression: up to %llu MB on %s", strtoull(size, NULL, 10) >> 20, path);
@@ -1430,7 +1473,7 @@ static void start_paging_file(void)
         say("paging file: its attributes: %s", strerror(errno));
     fsetxattr(fd, "user.DOSATTRIB", "0x6", 3, 0);
     close(fd);
-    if (swapon(PAGEFILE, 0)) {
+    if (swapon(PAGEFILE, SWAP_FLAG_PREFER | (SWAP_PRIO_PAGEFILE << SWAP_FLAG_PRIO_SHIFT))) {
         say("paging file: swapon: %s", strerror(errno));
         unlink(PAGEFILE);
         return;
@@ -1595,7 +1638,7 @@ static void power_off(int restart)
         usleep(100000);
     }
     if (wineserver_pid)
-        say("wineserver did not end in %.0f s", wait_s);
+        say("ntexec did not end in %.0f s", wait_s);
     kill_all_but(screen, SIGKILL);
     stop_paging_file();
     sync();
@@ -1651,9 +1694,9 @@ static void child_exited(pid_t pid, int status)
         say("arctic-smbd exited (status %d)", status);
         smbd_pid = 0;
     } else if (pid == wineserver_pid) {
-        say("wineserver exited (status %d)", status);
+        say("ntexec exited (status %d)", status);
         wineserver_pid = 0;
-        nt_stop("CRITICAL_PROCESS_DIED", "wineserver");
+        nt_stop("CRITICAL_PROCESS_DIED", "ntexec");
     } else if (pid == wininit_pid) {
         int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 
@@ -1780,7 +1823,7 @@ static void reapply_registry(void)
                     break;
             close(out);
             snprintf(winpath, sizeof(winpath), "C:\\Windows\\Temp\\Arctic\\%s", de->d_name);
-            char *import[] = {"/usr/bin/wine", "reg.exe", "import", winpath, NULL};
+            char *import[] = {"/usr/bin/ntloader", "reg.exe", "import", winpath, NULL};
             run(import, 1, ntlog, 60);
             unlink(to);
         }
@@ -2038,8 +2081,59 @@ static const char *const wine_device_names[][2] = {
 };
 static const char *const wine_device_values[] = {"\"DeviceDesc\"", "\"Mfg\"", "\"DisplayName\"", "\"Description\""};
 
+/* The drivers and their host, and the programs and libraries named after
+ * Wine (wineboot, winevulkan, winewayland.drv...), are Windows'
+ * (ci/wine-names.pl): winebus,
+ * WineBus, WINEBUS... are winbus, WinBus, WINBUS (winedbg and wineusb are
+ * windowsdbg, windowsusb), in keys and in values (Wine writes multi-strings
+ * as str(7):"..." text), and so are the root devices of the buses
+ * (ROOT\WINE\ is ROOT\WIN\, ##?#ROOT#WINE# is ##?#ROOT#WIN#). A new string, or
+ * NULL when the line has none of them. */
+static char *driver_names(const char *line)
+{
+    static const char *const words[] = {"bus", "hid", "usb", "bth", "xinput", "device", "plugplay", "_comp_",
+                                        "boot", "dbg", "browser", "file", "mine", "path", "menubuilder", "console",
+                                        "msibuilder", "d3d", "vulkan", "wayland", "dmo", "mapi"};
+    size_t len = strlen(line), o = 0;
+    char *out = NULL;
+
+    for (size_t i = 0; i < len; i++) {
+        int hit = 0, full = 0;
+        if (!strncasecmp(line + i, "wine", 4)) {
+            for (size_t w = 0; w < sizeof(words) / sizeof(*words) && !hit; w++)
+                if ((hit = !strncasecmp(line + i + 4, words[w], strlen(words[w]))))
+                    /* windbg is Microsoft's debugger, winusb.sys the WinUSB
+                     * driver: those two are "windows", the rest "win" */
+                    full = !strcmp(words[w], "dbg") || !strcmp(words[w], "usb");
+            /* ROOT\WINE\ of a key or a value, ROOT#WINE# of a device's path */
+            if (!hit && i >= 6 && !strncasecmp(line + i - 6, "root\\\\", 6) && !strncmp(line + i + 4, "\\\\", 2))
+                hit = 1;
+            if (!hit && i >= 5 && !strncasecmp(line + i - 5, "root#", 5) && line[i + 4] == '#')
+                hit = 1;
+        }
+        if (hit && !out) {
+            if (!(out = malloc(len * 2 + 1)))
+                return NULL;
+            memcpy(out, line, i);
+            o = i;
+        }
+        if (hit) {
+            int upper = !strncmp(line + i, "WINE", 4), lower = !strncmp(line + i, "wine", 4);
+            const char *as = full ? (upper ? "WINDOWS" : lower ? "windows" : "Windows")
+                                  : (upper ? "WIN" : lower ? "win" : "Win");
+            memcpy(out + o, as, strlen(as));
+            o += strlen(as);
+            i += 3;
+        } else if (out)
+            out[o++] = line[i];
+    }
+    if (out)
+        out[o] = 0;
+    return out;
+}
+
 /* the line, with a key of Wine's as Arctic's; 1 when it changed */
-static int rename_wine_line(const char *line, int in_system, FILE *out)
+static int rename_wine_keys_line(const char *line, int in_system, FILE *out)
 {
     if (line[0] == '[') {
         for (size_t i = 0; i < sizeof(wine_keys) / sizeof(*wine_keys); i++) {
@@ -2078,13 +2172,34 @@ static int rename_wine_line(const char *line, int in_system, FILE *out)
     return 0;
 }
 
+/* Wine's keys first (Software\Wine\WineDbg is ...\Debugger, not WindowsDbg),
+ * then the names of the drivers and programs */
+static int rename_wine_line(const char *line, int in_system, FILE *out)
+{
+    char *mid = NULL, *renamed;
+    size_t size = 0;
+    FILE *m = open_memstream(&mid, &size);
+    int moved;
+
+    if (!m)
+        return rename_wine_keys_line(line, in_system, out);
+    moved = rename_wine_keys_line(line, in_system, m);
+    fclose(m);
+    renamed = driver_names(mid);
+    fputs(renamed ? renamed : mid, out);
+    moved = moved || renamed;
+    free(renamed);
+    free(mid);
+    return moved;
+}
+
 static void rename_wine_keys(void)
 {
     char stamp[32] = "", path[256], tmp[264];
     struct stat inf;
 
     read_line(REG_DIR "/.update-timestamp", stamp, sizeof(stamp));
-    if (stat("/usr/share/wine/wine.inf", &inf) || strtoull(stamp, NULL, 10) == (unsigned long long)inf.st_mtime)
+    if (stat("/usr/share/nt/nt.inf", &inf) || strtoull(stamp, NULL, 10) == (unsigned long long)inf.st_mtime)
         return;
     for (size_t i = 0; i < sizeof(hives) / sizeof(*hives); i++) {
         char *line = NULL;
@@ -2259,6 +2374,10 @@ static void start_image_cache_sweep(void)
 {
     struct sched_param param = {0};
 
+    /* the kernel lays images out itself (fs/ntimage.c): the cache in /run is
+     * left for a kernel without it */
+    say("images: %s", access("/dev/ntimage", F_OK) ? "copied to /run/nt/imagecache"
+                                                   : "laid out by the kernel (/dev/ntimage)");
     if (fork())
         return;
     sched_setscheduler(0, SCHED_IDLE, &param);
@@ -3022,7 +3141,7 @@ static void read_cmdline(void)
     const char *debug = strstr(cmdline_buf, "arctic.winedebug=");
     if (debug) {
         size_t n = strcspn(debug += strlen("arctic.winedebug="), " \t\n");
-        snprintf(winedebug, sizeof(winedebug), "WINEDEBUG=%.*s", (int)n, debug);
+        snprintf(winedebug, sizeof(winedebug), "NTDEBUG=%.*s", (int)n, debug);
     }
 
     const char *run = strstr(cmdline_buf, "arctic.run=");
@@ -3030,6 +3149,13 @@ static void read_cmdline(void)
         size_t n = strcspn(run += strlen("arctic.run="), " \t\n");
         snprintf(dev_program, sizeof(dev_program), "%.*s", (int)n, run);
     }
+
+    if (strstr(cmdline_buf, "arctic.fastcall=0"))
+        fastcall_env[sizeof(fastcall_env) - 2] = '0';
+    if (strstr(cmdline_buf, "arctic.regcache=0"))
+        regcache_env[sizeof(regcache_env) - 2] = '0';
+    if (strstr(cmdline_buf, "arctic.win32k=0"))
+        win32k_env[sizeof(win32k_env) - 2] = '0';
 }
 
 /* The session: wininit.exe starts dwm.exe, csrss.exe and winlogon.exe.
@@ -3039,7 +3165,7 @@ static void read_cmdline(void)
  * the start, and again after a fast startup woke the machine. */
 static void start_session(const char *drm_debug)
 {
-    char *wininit[] = {"/usr/bin/wine", "wininit.exe", NULL};
+    char *wininit[] = {"/usr/bin/ntloader", "wininit.exe", NULL};
 
     wait_for_display();
     bootanim_send(anim, "release");
@@ -3060,7 +3186,7 @@ static void start_session(const char *drm_debug)
 
     /* a program named on the command line, for tests */
     if (served && dev_program[0]) {
-        char *program[] = {"/usr/bin/wine", dev_program, NULL};
+        char *program[] = {"/usr/bin/ntloader", dev_program, NULL};
         say("%s pid %d", dev_program, spawn(program, 1, ntlog));
     }
 }
@@ -3077,7 +3203,7 @@ static void start_session(const char *drm_debug)
 /* a DWORD of the registry, through reg.exe while wineserver still runs */
 static int registry_flag(const char *key, const char *value)
 {
-    char *query[] = {"/usr/bin/wine", "reg.exe", "query", (char *)key, "/v", (char *)value, NULL};
+    char *query[] = {"/usr/bin/ntloader", "reg.exe", "query", (char *)key, "/v", (char *)value, NULL};
     char *out = capture(query, 30), *p = strstr(out, "REG_DWORD");
 
     if (!p) {
@@ -3186,7 +3312,7 @@ static int write_mapped(int disk, const struct hib_extent *ext, uint32_t count, 
 /* What is left of the session goes, as Windows logs session 1 off before
  * it hibernates session 0: csrss.exe, dwm.exe and anything else of the
  * session's that outlived winlogon. NT's system part stays: wineserver,
- * services.exe and the services (winedevice, plugplay, rpcss...). */
+ * services.exe and the services (windevice, plugplay, rpcss...). */
 static void end_session_processes(void)
 {
     enum { MAX = 4096 };
@@ -3222,7 +3348,7 @@ static void end_session_processes(void)
         closedir(proc);
     /* NT's session 0, by name: Wine starts every process with a double
      * fork, so a service's parent is not services.exe but arctic-init */
-    static const char *const system[] = {"wineserver", "services.exe", "winedevice.exe", "plugplay.exe",
+    static const char *const system[] = {"ntexec", "services.exe", "windevice.exe", "plugplay.exe",
                                          "svchost.exe", "rpcss.exe", "spoolsv.exe", NULL};
     for (int i = 0; i < n; i++) {
         keep[i] = 0;
@@ -3330,7 +3456,7 @@ static int sleep_to_disk(int mode, int restart)
             read_line(path, st, sizeof(st));
             char *end = strrchr(st, ')');
             int ppid = 0;
-            saving = strstr(st, "(wineserver)") && end && sscanf(end + 1, " %*c %d", &ppid) == 1 &&
+            saving = strstr(st, "(ntexec)") && end && sscanf(end + 1, " %*c %d", &ppid) == 1 &&
                      ppid == wineserver_pid;
         }
         if (proc)
@@ -3730,12 +3856,15 @@ static void serve_power(void)
 
 /* Game mode, as Windows has it (docs/games.md): while dwm.exe says a game
  * fills a monitor (POWER_DIR/game, its process id), memory combining stops
- * scanning and the game's group of processes gets more of the CPU than the
- * programs beside it. The pages already combined stay so. */
+ * scanning; the pages already combined stay so. No CPU share for that
+ * process: the one that shows the frames is not always the one that makes
+ * them (a browser game runs in its tab, Chrome's GPU process shows it, and a
+ * share for the GPU process starved the game), and threads already get the
+ * CPU by their NT priorities (no autogroups, see main). */
 static void serve_game_mode(void)
 {
     static pid_t game, seen; /* seen: what dwm says, game mode on or off */
-    char line[32] = "", path[64];
+    char line[32] = "";
     pid_t now = 0;
 
     if (!access(POWER_DIR "/game", F_OK)) {
@@ -3749,15 +3878,6 @@ static void serve_game_mode(void)
         now = 0; /* turned off in the Games panel: the overlay still counts frames */
     if (now == game)
         return;
-    if (game) {
-        snprintf(path, sizeof(path), "/proc/%d/autogroup", game);
-        write_sysfs(path, "0"); /* gone already if the game ended */
-    }
-    if (now) {
-        snprintf(path, sizeof(path), "/proc/%d/autogroup", now);
-        if (write_sysfs(path, "-10"))
-            say("game mode: no priority for %d: %s", now, strerror(errno));
-    }
     write_sysfs("/sys/kernel/mm/ksm/run", now ? "0" : "1");
     say("game mode %s%s", now ? "on for process " : "off", now ? line : "");
     game = now;
@@ -3888,7 +4008,7 @@ int main(void)
     c_installed = c_env && !strcmp(c_env, "disk");
     if (c_env && !strcmp(c_env, "stick")) {
         lazy_flush[sizeof(lazy_flush) - 2] = '1';
-        snprintf(save_period, sizeof(save_period), "WINE_REGISTRY_SAVE_PERIOD=240");
+        snprintf(save_period, sizeof(save_period), "NT_REGISTRY_SAVE_PERIOD=240");
     }
     /* The boot screen's command pipe came from the initrd across exec on
      * purpose, but no child may inherit it: the boot screen ends when the
@@ -3932,6 +4052,14 @@ int main(void)
     struct rlimit nice_range = {40, 40};
     if (setrlimit(RLIMIT_NICE, &nice_range))
         say("nice limit: %s", strerror(errno));
+    /* ...and the CPU shared among threads by those priorities, as NT does,
+     * not among processes: every Windows process is a session of its own
+     * (Wine's setsid), so the kernel's autogroups gave each the same share
+     * whatever its threads. A WebGPU game's tab got no more than Chrome's
+     * GPU process, whose shader compiler took the rest, and nice values
+     * counted only inside one process. */
+    if (write_sysfs("/proc/sys/kernel/sched_autogroup_enabled", "0"))
+        say("autogroups: %s", strerror(errno));
     /* Every stretch of memory a program commits, frees or protects apart from
      * its neighbours is a mapping of its own under Wine: Chrome's YouTube tab
      * passed the kernel's 65530 in 20 minutes and its next 40 KB failed
@@ -3957,6 +4085,7 @@ int main(void)
     keep_host_state();
     set_clock();
     sync_time();
+    tune_memory();
     start_memory_compression();
     start_paging_file();
     start_memory_combining();
@@ -4013,9 +4142,9 @@ int main(void)
     /* The NT world */
     prepare_nt();
     start_image_cache_sweep();
-    char *wineserver[] = {"/usr/bin/wineserver", "-f", "-p", NULL};
+    char *wineserver[] = {"/usr/bin/ntexec", "-f", "-p", NULL};
     wineserver_pid = spawn(wineserver, 1, ntlog);
-    say("wineserver pid %d", wineserver_pid);
+    say("ntexec pid %d", wineserver_pid);
 
     /* WSL: wsl.exe and bash.exe run commands in the distributions of
      * C:\ProgramData\Arctic\Lxss\distros through it (docs/updates.md) */
@@ -4056,12 +4185,12 @@ int main(void)
      * Windows; wineboot started them too, before the session, and each program
      * ran twice (two Antigravity IDEs on one profile: its webviews found the
      * Service Worker store taken and could not register theirs). */
-    char *wineboot[] = {"/usr/bin/wine", "wineboot.exe", "-r", NULL};
+    char *wineboot[] = {"/usr/bin/ntloader", "winboot.exe", "-r", NULL};   /* wineboot, by its Windows name (ci/wine-names.pl) */
     char stamp[32] = "";
     struct stat inf;
     int updating = 0;
     read_line(REG_DIR "/.update-timestamp", stamp, sizeof(stamp));
-    if (!stat("/usr/share/wine/wine.inf", &inf) && strtoull(stamp, NULL, 10) != (unsigned long long)inf.st_mtime &&
+    if (!stat("/usr/share/nt/nt.inf", &inf) && strtoull(stamp, NULL, 10) != (unsigned long long)inf.st_mtime &&
         strncmp(stamp, "disable", 7)) {
         say("the registry is brought up to this Wine (%s -> %llu)", stamp, (unsigned long long)inf.st_mtime);
         updating = 1;
@@ -4077,7 +4206,7 @@ int main(void)
     /* Only then: the programs of HKLM\RunOnce, which wineboot still starts,
      * keep the variable, and a .NET program without mscoree loads no assembly */
     if (updating)
-        snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=mscoree,mshtml=");
+        snprintf(dll_overrides, sizeof(dll_overrides), "NTDLLOVERRIDES=mscoree,mshtml=");
     /* Arctic's own settings go in before wineboot as well as after it: a
      * service the update brings (Appinfo, the broker of User Account Control)
      * is in these .reg files, and services.exe - which wineboot starts - reads
@@ -4100,7 +4229,7 @@ int main(void)
     }
     if (updating)
         reapply_registry();
-    snprintf(dll_overrides, sizeof(dll_overrides), "WINEDLLOVERRIDES=");
+    snprintf(dll_overrides, sizeof(dll_overrides), "NTDLLOVERRIDES=");
     if (progress > 0) {
         kill(progress, SIGKILL);
         waitpid(progress, NULL, 0);
@@ -4112,7 +4241,7 @@ int main(void)
     if (rc == 126 || rc == 127)
         nt_stop("SESSION3_INITIALIZATION_FAILED", "wineboot");
 
-    char *ver[] = {"/usr/bin/wine", "cmd.exe", "/c", "ver", NULL};
+    char *ver[] = {"/usr/bin/ntloader", "cmd.exe", "/c", "ver", NULL};
     char *out = capture(ver, 120);
     for (char *p = out; *p; p++)
         if (*p == '\r' || *p == '\n')
@@ -4121,7 +4250,7 @@ int main(void)
     /* Arctic's registry says Windows 11; an empty one, Wine's Windows 10 */
     arctic_registry = strstr(out, "10.0.22") != NULL;
 
-    char *tasklist[] = {"/usr/bin/wine", "tasklist.exe", NULL};
+    char *tasklist[] = {"/usr/bin/ntloader", "tasklist.exe", NULL};
     out = capture(tasklist, 120);
     for (char *line = strtok(out, "\r\n"); line; line = strtok(NULL, "\r\n"))
         announce("  %s", line);

@@ -22,9 +22,15 @@ REGEDIT4
 "ServiceDll"="C:\\Windows\\System32\\appinfo.dll"
 "ServiceDllUnloadOnStop"=dword:00000001
 
-; the group svchost.exe -k netsvcs loads: "Appinfo" as a REG_MULTI_SZ
+; the group svchost.exe -k netsvcs loads, a REG_MULTI_SZ: wine.inf's members
+; (scardsvr, BITS, lanmanserver, fontcache, Schedule) and "Appinfo". A .reg
+; cannot append to a list, so all of them are written here: with "Appinfo"
+; alone every other service of the group started as Appinfo (sechost ignores
+; the name when its table has one service), BITS never registered its class
+; and every CoCreateInstance of it spun a core for 30 s (Chrome's component
+; updater does that over and over)
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Svchost]
-"netsvcs"=hex(7):41,70,70,69,6e,66,6f,00,00
+"netsvcs"=hex(7):73,63,61,72,64,73,76,72,00,42,49,54,53,00,6c,61,6e,6d,61,6e,73,65,72,76,65,72,00,66,6f,6e,74,63,61,63,68,65,00,53,63,68,65,64,75,6c,65,00,41,70,70,69,6e,66,6f,00,00
 
 ; What Windows programs read to know that UAC is on and that it asks on the
 ; secure desktop (installers look at EnableLUA). Arctic's own gate keeps its

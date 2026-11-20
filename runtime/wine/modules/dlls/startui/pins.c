@@ -196,10 +196,35 @@ static void order_save( WCHAR (*links)[MAX_PATH], UINT count )
     free( data );
 }
 
-/* before anything is pinned: File Explorer, as in Windows */
+/* a shortcut of All programs onto the taskbar, under its own name */
+static void default_from_start( const WCHAR *folder, const WCHAR *name, WCHAR (*links)[MAX_PATH], UINT *count )
+{
+    WCHAR programs[MAX_PATH], source[MAX_PATH];
+
+    if (SHGetFolderPathW( NULL, CSIDL_COMMON_PROGRAMS, NULL, SHGFP_TYPE_CURRENT, programs )) return;
+    swprintf( source, MAX_PATH, L"%s\\%s.lnk", programs, name );
+    if (GetFileAttributesW( source ) == INVALID_FILE_ATTRIBUTES) return;
+    free_name( folder, name, L".lnk", links[*count] );
+    if (CopyFileW( source, links[*count], TRUE )) (*count)++;
+}
+
+/* a program of the system onto the taskbar */
+static void default_program( const WCHAR *folder, UINT name, const WCHAR *file, WCHAR (*links)[MAX_PATH], UINT *count )
+{
+    WCHAR path[MAX_PATH];
+
+    GetWindowsDirectoryW( path, ARRAY_SIZE(path) );
+    lstrcatW( path, file );
+    if (GetFileAttributesW( path ) == INVALID_FILE_ATTRIBUTES) return;
+    free_name( folder, load_string( name ), L".lnk", links[*count] );
+    if (link_make( links[*count], path, NULL, NULL )) (*count)++;
+}
+
+/* before anything is pinned: File Explorer, the browser, the Task Manager
+ * and Arctic WordPad */
 static void taskbar_defaults( const WCHAR *folder, WCHAR (*links)[MAX_PATH], UINT *count )
 {
-    WCHAR pattern[MAX_PATH], explorer[MAX_PATH];
+    WCHAR pattern[MAX_PATH];
     WIN32_FIND_DATAW data;
     HANDLE find;
 
@@ -210,10 +235,10 @@ static void taskbar_defaults( const WCHAR *folder, WCHAR (*links)[MAX_PATH], UIN
         FindClose( find );
         return;
     }
-    GetWindowsDirectoryW( explorer, ARRAY_SIZE(explorer) );
-    lstrcatW( explorer, L"\\explorer.exe" );
-    free_name( folder, load_string( IDS_EXPLORER ), L".lnk", links[*count] );
-    if (link_make( links[*count], explorer, NULL, NULL )) (*count)++;
+    default_program( folder, IDS_EXPLORER, L"\\explorer.exe", links, count );
+    default_from_start( folder, L"Google Chrome", links, count );
+    default_program( folder, IDS_TASKMGR, L"\\system32\\taskmgr.exe", links, count );
+    default_from_start( folder, L"Arctic WordPad", links, count );
 }
 
 /* the shortcuts of the pins, in their order */
@@ -425,7 +450,7 @@ BOOL WINAPI ArcticTaskbarPinMenu( HWND owner, LPCWSTR link, const RECT *button )
     else pt.y = button->bottom + (style == POPUP_WIN11 ? px( 8 ) : 0);
 
     look_load_taskbar( &look );
-    chosen = popup_track( root, pt, align, items, 2, style, &look );
+    chosen = popup_track( root, pt, align, items, 2, style | POPUP_TASKBAR, &look );
     if (icon) DeleteObject( icon );
     if (previous && previous != root && IsWindow( previous )) SetForegroundWindow( previous );
     if (chosen == 1) ShellExecuteW( NULL, NULL, link, NULL, NULL, SW_SHOWNORMAL );

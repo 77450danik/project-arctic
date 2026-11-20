@@ -1,0 +1,100 @@
+From: Project Arctic
+Subject: d3d12: render targets keep VRAM when the driver cannot page it.
+---
+diff --git a/libs/vkd3d/memory.c b/libs/vkd3d/memory.c
+--- a/libs/vkd3d/memory.c
++++ b/libs/vkd3d/memory.c
+@@ -1063,6 +1063,75 @@
+     return !!(heap_mask & (heap_mask - 1u));
+ }
+ 
++/* Arctic: a driver that cannot page video memory (no pageable device-local
++ * memory, as NVIDIA on Linux) puts what no longer fits in VRAM into system
++ * memory silently, whatever it is. Once a game's textures fill VRAM, render
++ * targets made later (a resize, full screen) land there and every pixel of
++ * every frame crosses PCI-e. Windows keeps what draws in VRAM and pages the
++ * rest out. Without paging, ordinary data stops short of the budget and goes
++ * to system memory on purpose past it; the last quarter of the heap stays for
++ * render targets and depth buffers, which may use all of it. */
++static bool vkd3d_memory_leave_vram_for_drawing(struct d3d12_device *device,
++        const struct vkd3d_allocate_memory_info *info, VkMemoryPropertyFlags type_flags,
++        uint32_t type_mask, VkDeviceSize size)
++{
++    const VkPhysicalDeviceMemoryProperties *props = &device->memory_properties;
++    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
++    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget_info;
++    VkPhysicalDeviceMemoryProperties2 props2;
++    uint32_t i, mask, heap = UINT32_MAX;
++    static uint32_t told;
++    bool system_type = false;
++    VkDeviceSize reserve;
++
++    if (!device->vk_info.EXT_memory_budget ||
++            device->device_info.pageable_device_memory_features.pageableDeviceLocalMemory)
++        return false;
++    /* VRAM only; ReBAR (device-local and host-visible) has a budget of its own */
++    if (!(type_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) || (type_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
++        return false;
++    /* what draws, shared surfaces and vkd3d's own scratch keep VRAM */
++    if (info->host_ptr || (info->heap_flags & (D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES | D3D12_HEAP_FLAG_SHARED)) ||
++            (info->flags & VKD3D_ALLOCATION_FLAG_INTERNAL_SCRATCH))
++        return false;
++
++    for (mask = type_mask; mask && heap == UINT32_MAX;)
++    {
++        i = vkd3d_bitmask_iter32(&mask);
++        if (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
++            heap = props->memoryTypes[i].heapIndex;
++    }
++    if (heap == UINT32_MAX)
++        return false;
++    /* somewhere else to go: an integrated GPU has no system memory heap */
++    for (i = 0; i < props->memoryTypeCount; i++)
++        if (!(props->memoryHeaps[props->memoryTypes[i].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT))
++            system_type = true;
++    if (!system_type)
++        return false;
++
++    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
++    props2.pNext = &budget_info;
++    budget_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
++    budget_info.pNext = NULL;
++    VK_CALL(vkGetPhysicalDeviceMemoryProperties2(device->vk_physical_device, &props2));
++
++    reserve = props->memoryHeaps[heap].size / 4u;
++    if (budget_info.heapUsage[heap] + size + reserve <= budget_info.heapBudget[heap])
++        return false;
++
++    if (!vkd3d_atomic_uint32_exchange_explicit(&told, 1, vkd3d_memory_order_relaxed))
++    {
++        FIXME("VRAM nearly full (usage %"PRIu64" MiB of a %"PRIu64" MiB budget): ordinary resources now go "
++                "to system memory, the last %"PRIu64" MiB stay for render targets and depth buffers.\n",
++                budget_info.heapUsage[heap] / (1024 * 1024), budget_info.heapBudget[heap] / (1024 * 1024),
++                reserve / (1024 * 1024));
++    }
++    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
++        INFO("%"PRIu64" bytes to system memory to leave VRAM for drawing.\n", size);
++    return true;
++}
++
+ HRESULT vkd3d_allocate_device_memory(struct d3d12_device *device,
+         VkDeviceSize size, VkMemoryPropertyFlags type_flags, uint32_t type_mask,
+         void *pNext, bool respect_budget, struct vkd3d_device_memory_allocation *allocation)
+@@ -1432,6 +1501,17 @@
+         vk_prepend_struct(&flags_info, &priority_info);
+     }
+ 
++    if (!host_ptr && vkd3d_memory_leave_vram_for_drawing(device, info, type_flags, type_mask, memory_requirements.size))
++    {
++        if (info->flags & VKD3D_ALLOCATION_FLAG_NO_FALLBACK)
++        {
++            /* a chunk of VRAM: the suballocator takes one of system memory instead */
++            VK_CALL(vkDestroyBuffer(device->vk_device, allocation->resource.vk_buffer, NULL));
++            return E_OUTOFMEMORY;
++        }
++        type_flags &= ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++    }
++
+     if (host_ptr)
+     {
+         hr = vkd3d_import_host_memory(device, host_ptr, memory_requirements.size,

@@ -1592,12 +1592,61 @@ static void image_c_drive(void)
     char loop[64], img[64];
 
     if (loop_attach(MEDIA "/arctic/windows.sqfs", loop, sizeof(loop)) ||
-        mount(loop, WINDOWS, "squashfs", MS_RDONLY, NULL))
+        (mount(loop, WINDOWS, "squashfs", MS_RDONLY, "threads=percpu") &&
+         mount(loop, WINDOWS, "squashfs", MS_RDONLY, NULL)))
         fatal("UNMOUNTABLE_BOOT_VOLUME", "windows.sqfs", "mount windows.sqfs");
     if (loop_attach(WINDOWS "/windows.img", img, sizeof(img)))
         fatal("UNMOUNTABLE_BOOT_VOLUME", "windows.img", "attach windows.img");
     snapshot_c(img, "windows.img");
     mount_c(C_DEV, 0);
+}
+
+/* The host image (still named host.sqfs: updates and Previous go by that
+ * name). Since 2026-11-17 it is EROFS, lz4 in 16 KB clusters, as CompactOS
+ * keeps Windows' own files: a page of code costs one small cluster, where
+ * squashfs unpacked a block of 1 MB with one decompressor for the whole
+ * system. It is mounted straight from its file, reading it past the page
+ * cache when the disk's driver can (directio): through a loop device the
+ * compressed image was cached as well as what it unpacks to. An image of an
+ * older build (Previous, after a rollback) is squashfs. */
+#define EROFS_SUPER_MAGIC 0xe0f5e1e2u
+
+static void mount_host_image(const char *host)
+{
+    char loop[64];
+    uint32_t magic = 0;
+    int fd = open(host, O_RDONLY | O_CLOEXEC);
+
+    if (fd >= 0) {
+        if (pread(fd, &magic, sizeof(magic), 1024) != (ssize_t)sizeof(magic))
+            magic = 0;
+        close(fd);
+    }
+    if (magic == EROFS_SUPER_MAGIC) {
+        if (!mount(host, NEWROOT, "erofs", MS_RDONLY, "directio")) {
+            say("host image: EROFS, from its file, direct");
+            return;
+        }
+        if (!mount(host, NEWROOT, "erofs", MS_RDONLY, NULL)) {
+            say("host image: EROFS, from its file");
+            return;
+        }
+        if (loop_attach(host, loop, sizeof(loop)))
+            fatal("INACCESSIBLE_BOOT_DEVICE", "host.sqfs", "attach host.sqfs");
+        if (mount(loop, NEWROOT, "erofs", MS_RDONLY, NULL))
+            fatal("INACCESSIBLE_BOOT_DEVICE", "host.sqfs", "mount host.sqfs (EROFS)");
+        say("host image: EROFS, through %s", loop);
+        return;
+    }
+    if (loop_attach(host, loop, sizeof(loop)))
+        fatal("INACCESSIBLE_BOOT_DEVICE", "host.sqfs", "attach host.sqfs");
+    /* a decompressor for every CPU: with the one of "single", every process
+     * that touched code not in memory waited for the others, and when memory
+     * ran short the whole session stood in squashfs_decompress (2026-11-16) */
+    if (mount(loop, NEWROOT, "squashfs", MS_RDONLY, "threads=percpu") &&
+        mount(loop, NEWROOT, "squashfs", MS_RDONLY, NULL))
+        fatal("INACCESSIBLE_BOOT_DEVICE", "host.sqfs", "mount host.sqfs");
+    say("host image: squashfs");
 }
 
 static void move_into(const char *from, const char *to)
@@ -1608,7 +1657,6 @@ static void move_into(const char *from, const char *to)
 
 int main(void)
 {
-    char loop[64];
     char animenv[48];
 
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
@@ -1643,10 +1691,7 @@ int main(void)
 
     /* the host: on a stick it lies in C:\Windows, on the ISO next to C: */
     const char *host = root_partuuid[0] ? CDRIVE HOST_SQFS : MEDIA "/arctic/host.sqfs";
-    if (loop_attach(host, loop, sizeof(loop)))
-        fatal("INACCESSIBLE_BOOT_DEVICE", "host.sqfs", "attach host.sqfs");
-    if (mount(loop, NEWROOT, "squashfs", MS_RDONLY, NULL))
-        fatal("INACCESSIBLE_BOOT_DEVICE", "host.sqfs", "mount host.sqfs");
+    mount_host_image(host);
     if (mount("tmpfs", NEWROOT "/run", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") ||
         mount("tmpfs", NEWROOT "/tmp", "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777"))
         fatal("PHASE1_INITIALIZATION_FAILED", "tmpfs", "tmpfs");

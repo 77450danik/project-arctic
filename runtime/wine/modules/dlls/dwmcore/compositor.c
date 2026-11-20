@@ -107,6 +107,11 @@ static uint32_t                attribute_count;
  * "Діагностика кадрів" makes (docs/games.md) */
 static bool                    frame_diagnostics;
 static bool                    animating;    /* frames keep coming until every animation ends */
+/* The time a frame composed now is seen: the next vertical blank. Animations
+ * move by it, not by the moment they are drawn, which wandered against the
+ * refresh with the timer's whole milliseconds (14 ms against 14.7 at 68 Hz)
+ * so that every few frames one step was twice as long. */
+static uint64_t                frame_clock;
 
 /* Aero Snap: where a window dragged to a screen edge would go */
 #define SNAP_GROW_MS 200
@@ -808,6 +813,7 @@ static void window_effects( struct window_draw *draw, const struct window_state 
     draw->caption = 0;
     draw->strength = 0;
     draw->content_alpha = 1.0f;
+    draw->backdrop_fade = ws && ws->has_attr ? ws->attr.backdrop_fade / 255.0f : 0.0f;
     if (shadow_style && draw->w && draw->w->class_atom == 0x8000)
     {
         /* the menus of programs with Windows 11's style: their colour is the
@@ -995,6 +1001,8 @@ static void animate_in( struct window_state *ws, const struct dwm_window *w )
     }
 }
 
+static void snapshot_last( struct window_state *ws, const struct dwm_window *w );
+
 /* a window that went is drawn from what it showed last, if that was kept */
 static void animate_out( struct window_state *ws, const struct dwm_window *w )
 {
@@ -1003,7 +1011,7 @@ static void animate_out( struct window_state *ws, const struct dwm_window *w )
 
     if (transition == TRANSITION_NONE) return;
     if (!ws->snapshot_valid || !rect_equal(&ws->snapshot_rect, &(RECT){ w->left, w->top, w->right, w->bottom } ))
-        gpu_snapshot( ws, w );
+        snapshot_last( ws, w );
     if (!ws->snapshot_valid)
     {
         TRACE( "%08x went without a last frame\n", ws->hwnd );
@@ -1063,7 +1071,7 @@ static void update_window_states(void)
             {
                 if (!ws->snapshot_valid || !rect_equal(&ws->snapshot_rect, &(RECT){ ws->last.left, ws->last.top,
                                                                                   ws->last.right, ws->last.bottom } ))
-                    gpu_snapshot( ws, &ws->last );
+                    snapshot_last( ws, &ws->last );
                 if (ws->snapshot_valid)
                 {
                     struct frect r = frect_from( ws->snapshot_rect.left, ws->snapshot_rect.top,
@@ -1081,14 +1089,20 @@ static void update_window_states(void)
                          ws->last.right != w->right || ws->last.bottom != w->bottom;
             uint64_t now = kms_now();
 
-            if ((ws->last.style ^ w->style) & WS_MAXIMIZE)
+            /* A maximized window restored from its button: Wine clears
+             * WS_MINIMIZE and sets WS_MAXIMIZE in two steps, and the morph
+             * that followed cut its restore short - it grew from the button
+             * like no other window (2026-11-18). The restore follows the
+             * window to its rectangle by itself, from the frame kept. */
+            if (ws->anim == ANIM_RESTORE) ws->maximize_time = 0;
+            else if ((ws->last.style ^ w->style) & WS_MAXIMIZE)
             {
                 ws->maximize_time = now;
                 ws->maximize_from = window_frect( &ws->last );
                 /* what it shows before it redraws at the new size is stretched meanwhile */
                 if (!ws->snapshot_valid || !rect_equal( &ws->snapshot_rect, &(RECT){ ws->last.left, ws->last.top,
                                                                                    ws->last.right, ws->last.bottom } ))
-                    gpu_snapshot( ws, &ws->last );
+                    snapshot_last( ws, &ws->last );
             }
             if (moved && ws->maximize_time && now - ws->maximize_time < 300000)
             {
@@ -1153,18 +1167,86 @@ static bool update_animations( uint64_t now )
 
 static bool has_content( const struct surface *s );
 
-/* the window's own surface holds a frame of its current size */
-static bool window_has_content( const struct dwm_window *w, bool full_size )
+/* the size a surface shows at: its viewport's destination, else the part of
+ * the buffer it shows, else the buffer */
+static void surface_shown_size( const struct surface *s, int *width, int *height )
 {
-    struct surface *s;
+    *width = s->width;
+    *height = s->height;
+    if (s->src_width > 0 && s->src_height > 0)
+    {
+        *width = min( s->src_width, s->width );
+        *height = min( s->src_height, s->height );
+    }
+    if (s->dst_width > 0 && s->dst_height > 0)
+    {
+        *width = s->dst_width;
+        *height = s->dst_height;
+    }
+}
+
+/* the window's own surface with something on it */
+static struct surface *window_toplevel_surface( uint32_t hwnd )
+{
+    struct surface *s, *other = NULL, *sub = NULL;
 
     wl_list_for_each( s, &all_surfaces, all_link )
     {
-        if (s->hwnd != w->hwnd || !has_content( s ) || s->subsurface) continue;
-        if (!full_size || !s->xdg_toplevel) return true;
-        return s->width == w->right - w->left && s->height == w->bottom - w->top;
+        if (s->hwnd != hwnd || !has_content( s )) continue;
+        /* menus, tooltips and drop-down lists: Wine's driver makes them
+         * subsurfaces of their owner. Passed over, every menu waited the
+         * 400 ms an animation gives a window that never draws, and then
+         * showed at once without it (2026-11-18). */
+        if (s->subsurface)
+        {
+            if (!sub) sub = s;
+            continue;
+        }
+        if (s->xdg_toplevel) return s;
+        if (!other) other = s;  /* what another process draws in it */
     }
-    return false;
+    return other ? other : sub;
+}
+
+/* the window's own surface holds a frame of its current size */
+static bool window_has_content( const struct dwm_window *w, bool full_size )
+{
+    struct surface *s = window_toplevel_surface( w->hwnd );
+    int width, height;
+
+    if (!s) return false;
+    if (!full_size || !s->xdg_toplevel) return true;
+    surface_shown_size( s, &width, &height );
+    return width == w->right - w->left && height == w->bottom - w->top;
+}
+
+/* What the window shows, kept for its animations and the thumbnails of it
+ * minimized, at the size its frame has. wineserver's rectangle changes before
+ * the program draws at the new size: a snapshot of the new rectangle took the
+ * corner of the old, larger frame, which the restore then stretched over the
+ * whole window and thumbnails squeezed (2026-11-17, Explorer). */
+static bool take_snapshot( struct window_state *ws, const struct dwm_window *w )
+{
+    struct surface *s = window_toplevel_surface( w->hwnd );
+    struct dwm_window at = *w;
+    int width, height;
+
+    if (!s) return false;
+    if (s->xdg_toplevel)
+    {
+        surface_shown_size( s, &width, &height );
+        if (width <= 0 || height <= 0) return false;
+        at.right = at.left + width;
+        at.bottom = at.top + height;
+    }
+    return gpu_snapshot( ws, &at );
+}
+
+/* the window went away or was minimized: its frame now is what it showed,
+ * if that frame is of the size it had; else the last one kept stays */
+static void snapshot_last( struct window_state *ws, const struct dwm_window *w )
+{
+    if (window_has_content( w, true ) || !ws->snapshot_valid) take_snapshot( ws, w );
 }
 
 static float lerp( float a, float b, float t )
@@ -1339,6 +1421,16 @@ static bool fill_draw( struct window_draw *draw, const struct dwm_window *w, str
             /* it shows once it has drawn itself, where it stands */
             if (!window_has_content( w, false ) || !on_screen( w )) return false;
             ws->anim_start = now;
+            /* A window that moved since it was shown (the Start menu is shown
+             * off the screen to draw itself first) comes in to where it is
+             * now, along the same way */
+            if (!resized && (ws->anim_to.left != base.left || ws->anim_to.top != base.top))
+            {
+                float dx = base.left - ws->anim_to.left, dy = base.top - ws->anim_to.top;
+
+                ws->anim_from = moved( ws->anim_from, dx, dy );
+                ws->anim_to = moved( ws->anim_to, dx, dy );
+            }
         }
         if (animation_frame( ws, now, &shown, &alpha ))
         {
@@ -1370,7 +1462,7 @@ static bool fill_draw( struct window_draw *draw, const struct dwm_window *w, str
 
 uint32_t scene_windows( struct window_draw *draws, uint32_t max )
 {
-    uint64_t now = kms_now();
+    uint64_t now = frame_clock ? frame_clock : kms_now();
     struct window_state *ws;
     uint32_t count = 0;
     bool previewed = false;
@@ -1945,6 +2037,22 @@ static void game_seen( struct surface *content, uint64_t now )
  * there: the monitor then waits for the game's frames. */
 static uint64_t no_direct_until;  /* after a fault: composed frames only, for a while */
 
+static uint64_t next_vblank( uint64_t now )
+{
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        struct kms_output *o = &kms.outputs[i];
+        uint64_t period, t;
+
+        if (!o->connector_id || !o->enabled || !o->done_time || o->fake_vblank) continue;
+        period = kms_frame_time( o );
+        t = o->done_time + period;
+        if (t < now) t += ((now - t) / period + 1) * period;
+        return t;
+    }
+    return now;
+}
+
 static void repaint(void)
 {
     struct { struct output *output; struct surface *content; bool vrr; } ready[KMS_MAX_OUTPUTS];
@@ -1953,7 +2061,8 @@ static void repaint(void)
     int count = 0;
     bool composed = false, gpu = gpu_active();
 
-    animating = update_animations( now );
+    frame_clock = next_vblank( now );
+    animating = update_animations( frame_clock );
     /* a dark display shows nothing: the frames wait for it to light again */
     if (monitors_off) return;
     wl_list_for_each( output, &outputs, link )
@@ -1998,12 +2107,46 @@ static void repaint(void)
     }
 }
 
+/* the vertical blanks of the primary monitor, for programs (arctic_dwm.h) */
+static struct arctic_dwm_timing *vblank_timing;
+
+static void publish_vblank( const struct kms_output *o )
+{
+    struct timespec raw;
+    uint64_t now;
+    INT64 qpc_now;
+
+    if (!vblank_timing || !o->done_time || o->fake_vblank) return;
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        /* the first monitor lit is the one programs pace by */
+        if (!kms.outputs[i].connector_id || !kms.outputs[i].enabled) continue;
+        if (&kms.outputs[i] != o) return;
+        break;
+    }
+    /* QueryPerformanceCounter counts CLOCK_MONOTONIC_RAW in 100 ns; the blank
+     * is in CLOCK_MONOTONIC microseconds: taken over at the same moment */
+    clock_gettime( CLOCK_MONOTONIC_RAW, &raw );
+    now = kms_now();
+    qpc_now = (INT64)raw.tv_sec * 10000000 + raw.tv_nsec / 100;
+    InterlockedIncrement( &vblank_timing->seq );
+    vblank_timing->vblank = qpc_now - (INT64)(now - o->done_time) * 10;
+    vblank_timing->period = (INT64)kms_frame_time( o ) * 10;
+    vblank_timing->count++;
+    InterlockedIncrement( &vblank_timing->seq );
+}
+
 void compositor_flip_done( struct kms_output *o, void *buffer )
 {
     struct output *output = o->user;
 
+    publish_vblank( o );
+
     if (buffer && !gpu_frame_released( buffer )) dmabuf_unref( buffer );
     if (output && o->fake_vblank) output->not_before = o->done_time + kms_frame_time( o );
+    /* an animation gets a frame for every refresh, composed right after the
+     * blank the last one landed on, not on the next tick of the timer */
+    if (animating) damage();
     send_frame_callbacks();
 }
 
@@ -2194,9 +2337,44 @@ static void surface_attach( struct wl_client *client, struct wl_resource *resour
     if (buffer) wl_resource_add_destroy_listener( buffer, &s->pending_buffer_destroy );
 }
 
+/* a rectangle added to another: left, top, right, bottom; right <= left is none */
+static void rect_add( int r[4], int64_t left, int64_t top, int64_t right, int64_t bottom )
+{
+    const int64_t limit = 1 << 16;
+
+    left = max( left, 0 );
+    top = max( top, 0 );
+    right = min( right, limit );
+    bottom = min( bottom, limit );
+    if (right <= left || bottom <= top) return;
+    if (r[2] <= r[0] || r[3] <= r[1])
+    {
+        r[0] = left; r[1] = top; r[2] = right; r[3] = bottom;
+        return;
+    }
+    r[0] = min( r[0], left );
+    r[1] = min( r[1], top );
+    r[2] = max( r[2], right );
+    r[3] = max( r[3], bottom );
+}
+
+/* surface coordinates: the buffer's own, unless a viewport scales it */
 static void surface_damage( struct wl_client *client, struct wl_resource *resource,
                             int32_t x, int32_t y, int32_t width, int32_t height )
 {
+    struct surface *s = get_surface( resource );
+
+    if (!s) return;
+    if (s->dst_width || s->src_width > 0) s->pending_damage_all = true;
+    else rect_add( s->pending_damage, x, y, (int64_t)x + width, (int64_t)y + height );
+}
+
+static void surface_damage_buffer( struct wl_client *client, struct wl_resource *resource,
+                                   int32_t x, int32_t y, int32_t width, int32_t height )
+{
+    struct surface *s = get_surface( resource );
+
+    if (s) rect_add( s->pending_damage, x, y, (int64_t)x + width, (int64_t)y + height );
 }
 
 static void callback_destroyed( struct wl_resource *callback )
@@ -2227,28 +2405,48 @@ static void copy_buffer( struct surface *s, struct wl_resource *buffer )
     struct wl_shm_buffer *shm = wl_shm_buffer_get( buffer );
     const uint8_t *data;
     int width, height, stride;
+    /* Only what the client damaged is copied, and later uploaded: a caret
+     * that blinks in Notepad copied the whole window twice and sent all of
+     * it to the GPU. The rest of the pixels are those of its last buffer. */
+    int x0 = s->pending_damage[0], y0 = s->pending_damage[1];
+    int x1 = s->pending_damage[2], y1 = s->pending_damage[3];
+    bool all = s->pending_damage_all || x1 <= x0 || y1 <= y0 ||  /* no damage said: all of it */
+               s->pixels_from_gpu;
 
     if (!shm)
     {
         FIXME( "only shm buffers are supported so far\n" );
         return;
     }
+    s->pixels_from_gpu = false;
     width = wl_shm_buffer_get_width( shm );
     height = wl_shm_buffer_get_height( shm );
     stride = wl_shm_buffer_get_stride( shm );
+
     if (width != s->width || height != s->height || !s->pixels)
     {
         free( s->pixels );
         if (!(s->pixels = malloc( (size_t)width * height * 4 ))) width = height = 0;
         s->width = width;
         s->height = height;
+        all = true;
     }
+    if (all)
+    {
+        x0 = y0 = 0;
+        x1 = width;
+        y1 = height;
+    }
+    x1 = min( x1, width );
+    y1 = min( y1, height );
     wl_shm_buffer_begin_access( shm );
     data = wl_shm_buffer_get_data( shm );
-    for (int y = 0; y < height; y++)
-        memcpy( s->pixels + (size_t)y * width, data + (size_t)y * stride, (size_t)width * 4 );
+    for (int y = y0; y < y1 && x0 < x1; y++)
+        memcpy( s->pixels + (size_t)y * width + x0, data + (size_t)y * stride + (size_t)x0 * 4,
+                (size_t)(x1 - x0) * 4 );
     wl_shm_buffer_end_access( shm );
     s->alpha = wl_shm_buffer_get_format( shm ) == WL_SHM_FORMAT_ARGB8888;
+    rect_add( s->stale_rect, x0, y0, x1, y1 );
 }
 
 /* A game that draws faster than the monitor shows (VSync off, a mailbox swap
@@ -2352,6 +2550,10 @@ static void keep_last_frame( struct surface *s, struct dmabuf *buffer )
 
     if (!s->hwnd || !s->xdg_toplevel || !has_content( s )) return;
     if (!(ws = window_state( s->hwnd )) || !ws->shown) return;
+    /* a restore or a maximize draws from the snapshot it started with: a
+     * maximized window restored is drawn at its normal size for a moment,
+     * and that frame took the place of the maximized one mid-animation */
+    if (ws->anim == ANIM_RESTORE || ws->anim == ANIM_MORPH) return;
     if (buffer)
     {
         width = buffer->width;
@@ -2368,7 +2570,9 @@ static void keep_last_frame( struct surface *s, struct dmabuf *buffer )
      * behind the window: one a tenth of a second at most. A minimize or a
      * hide comes later than that after a drag, and is taken as before. */
     if (width && height && ws->snapshot_valid && kms_now() - ws->snapshot_time < 100000) return;
-    gpu_snapshot( ws, &ws->last );
+    /* the frame being replaced, at its own size: wineserver may have the
+     * window at the new size already */
+    take_snapshot( ws, &ws->last );
     ws->snapshot_time = kms_now();
 }
 
@@ -2400,6 +2604,7 @@ static void surface_commit( struct wl_client *client, struct wl_resource *resour
             s->height = buffer->height;
             s->alpha = buffer->alpha;
             s->stale = true;
+            s->pixels_from_gpu = true;
             wl_list_remove( &s->pending_buffer_destroy.link );
             wl_list_init( &s->pending_buffer_destroy.link );
         }
@@ -2420,6 +2625,8 @@ static void surface_commit( struct wl_client *client, struct wl_resource *resour
         s->pending_buffer = NULL;
         s->pending_attach = false;
     }
+    memset( s->pending_damage, 0, sizeof(s->pending_damage) );
+    s->pending_damage_all = false;
     wl_list_insert_list( s->frames.prev, &s->pending_frames );
     wl_list_init( &s->pending_frames );
 
@@ -2455,7 +2662,7 @@ static const struct wl_surface_interface surface_impl =
     .commit = surface_commit,
     .set_buffer_transform = surface_set_buffer_transform,
     .set_buffer_scale = surface_set_buffer_scale,
-    .damage_buffer = surface_damage,
+    .damage_buffer = surface_damage_buffer,
     .offset = surface_offset,
 };
 
@@ -2467,7 +2674,7 @@ static void surface_destroyed( struct wl_resource *resource )
 
     /* a window closing: what it showed stays for its animation */
     if (s->hwnd && s->xdg_toplevel && has_content( s ) && (ws = window_state( s->hwnd )) && ws->shown)
-        gpu_snapshot( ws, &ws->last );
+        take_snapshot( ws, &ws->last );
     gpu_surface_gone( s );
     if (s == game_content) game_content = NULL;
     unmap_toplevel( s );
@@ -3300,14 +3507,133 @@ static void bind_xdg_output_manager( struct wl_client *client, void *data, uint3
  *          arctic_display_v1
  */
 
+/* A custom refresh rate on trial (Advanced display): what the monitor showed
+ * before, to go back to unless the rate is kept within 20 seconds, the
+ * Control Panel asking for 15 of them. It goes back at once when the frames
+ * stop coming or the driver says the link failed. This holds when the Control
+ * Panel does not: it hangs, it is ended, the screen is dark and nobody can
+ * answer it. */
+static struct
+{
+    uint32_t                 connector;  /* 0: none */
+    uint64_t                 since, checked;
+    struct dwm_output_config back;
+} trial;
+
+#define TRIAL_SECONDS 20
+
+static bool on_trial( const struct kms_output *o )
+{
+    return o->enabled && o->mode_count && o->modes[o->mode].custom && !o->modes[o->mode].confirmed;
+}
+
+static uint32_t current_configs( struct dwm_output_config *configs )
+{
+    uint32_t count = 0;
+
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        const struct kms_output *o = &kms.outputs[i];
+        const struct kms_mode *mode;
+
+        if (!o->connector_id || !o->enabled || !o->mode_count) continue;
+        mode = &o->modes[o->mode];
+        configs[count].id = o->connector_id;
+        configs[count].enabled = 1;
+        configs[count].x = o->x;
+        configs[count].y = o->y;
+        configs[count].width = mode->width;
+        configs[count].height = mode->height;
+        configs[count].refresh = on_trial( o ) ? 0 : mode->refresh;
+        count++;
+    }
+    return count;
+}
+
+/* after a change: a monitor that went to a rate on trial starts its time */
+static void watch_trial( const struct dwm_output_config *before, uint32_t before_count )
+{
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        const struct kms_output *o = &kms.outputs[i];
+
+        if (!o->connector_id || !on_trial( o )) continue;
+        if (trial.connector == o->connector_id) return;
+        memset( &trial, 0, sizeof(trial) );
+        for (uint32_t k = 0; k < before_count; k++)
+            if (before[k].id == o->connector_id && before[k].refresh) trial.back = before[k];
+        if (!trial.back.id)
+        {
+            /* it was off, or on trial already: its own size and the fastest
+             * rate it has of its own there */
+            const struct kms_mode *native = &o->modes[o->preferred];
+
+            trial.back.id = o->connector_id;
+            trial.back.enabled = 1;
+            trial.back.x = o->x;
+            trial.back.y = o->y;
+            trial.back.width = native->width;
+            trial.back.height = native->height;
+            trial.back.refresh = native->refresh;
+            for (uint32_t k = 0; k < o->base_count; k++)
+                if (o->modes[k].width == native->width && o->modes[k].height == native->height &&
+                    o->modes[k].refresh > trial.back.refresh)
+                    trial.back.refresh = o->modes[k].refresh;
+        }
+        trial.connector = o->connector_id;
+        trial.since = trial.checked = kms_now();
+        MESSAGE( "dwm: %s tries %u mHz: back to %ux%u in %u seconds unless kept\n", o->name, o->modes[o->mode].refresh,
+                 trial.back.width, trial.back.height, TRIAL_SECONDS );
+        return;
+    }
+    trial.connector = 0;
+}
+
+static bool apply_configuration( const struct dwm_output_config *configs, uint32_t count, bool test, bool persist );
+
+static void check_trial(void)
+{
+    const struct kms_output *o = NULL;
+    const char *why = NULL;
+    uint64_t now;
+
+    if (!trial.connector) return;
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+        if (kms.outputs[i].connector_id == trial.connector) o = &kms.outputs[i];
+    if (!o || !on_trial( o ))
+    {
+        if (o && o->enabled && o->mode_count && o->modes[o->mode].confirmed)
+            MESSAGE( "dwm: %s keeps %u mHz\n", o->name, o->modes[o->mode].refresh );
+        trial.connector = 0;
+        return;
+    }
+    now = kms_now();
+    if (now - trial.checked < 250000) return;
+    trial.checked = now;
+    if (now - trial.since > TRIAL_SECONDS * 1000000ull) why = "was not kept";
+    else if (o->queued_fb && now - o->submit_time > 1000000) why = "shows no frames";
+    else if (kms_link_bad( o )) why = "lost the link";
+    if (!why) return;
+
+    MESSAGE( "dwm: %s %s at %u mHz: back to %ux%u\n", o->name, why, o->modes[o->mode].refresh,
+             trial.back.width, trial.back.height );
+    trial.connector = 0;
+    if (!apply_configuration( &trial.back, 1, false, true ))
+        ERR( "%s: cannot go back from the custom refresh rate\n", o->name );
+    pending_events |= DWM_EVENT_TRIAL;
+}
+
 /* Modes and positions for every monitor at once, the way
  * ChangeDisplaySettingsEx changes them. */
 static bool apply_configuration( const struct dwm_output_config *configs, uint32_t count, bool test, bool persist )
 {
+    struct dwm_output_config before[KMS_MAX_OUTPUTS];
+    uint32_t before_count = test ? 0 : current_configs( before );
     struct output *output;
 
     if (!kms_apply( configs, count, test )) return false;
     if (test) return true;
+    watch_trial( before, before_count );
 
     update_globals();
     update_screen();
@@ -3613,6 +3939,8 @@ static NTSTATUS dwm_start( void *args )
     background = 0xff000000 | ((params->background & 0xff) << 16) | (params->background & 0xff00) |
                  ((params->background >> 16) & 0xff);
 
+    vblank_timing = (struct arctic_dwm_timing *)(UINT_PTR)params->timing;
+    if (vblank_timing) vblank_timing->version = 1;
     if (kms_open()) return STATUS_DEVICE_NOT_CONNECTED;
 
     wl_list_init( &all_surfaces );
@@ -3668,6 +3996,7 @@ static NTSTATUS dwm_dispatch( void *args )
     }
     wl_event_loop_dispatch( wl_display_get_event_loop( display ), (int)params->timeout_ms );
     repaint();
+    check_trial();
     wl_display_flush_clients( display );
     reap_outputs();
     params->events = pending_events;
@@ -3842,7 +4171,8 @@ static NTSTATUS dwm_get_outputs( void *args )
             info->modes[k].width = o->modes[k].width;
             info->modes[k].height = o->modes[k].height;
             info->modes[k].refresh = o->modes[k].refresh;
-            info->modes[k].flags = k == o->preferred ? DWM_MODE_PREFERRED : 0;
+            info->modes[k].flags = (k == o->preferred ? DWM_MODE_PREFERRED : 0) |
+                                   (o->modes[k].custom ? DWM_MODE_CUSTOM : 0);
         }
         info->vrr_capable = o->vrr_capable;
         info->edid_len = min( o->edid_len, DWM_MAX_EDID );
@@ -3909,6 +4239,33 @@ static NTSTATUS dwm_set_options( void *args )
     /* a game in a smaller mode shows the way the Display panel says now */
     for (uint32_t i = 0; i < min( params->scaling_count, ARRAY_SIZE(params->scaling) ); i++)
         if (kms_set_scaling( params->scaling_id[i], params->scaling[i] )) compose_afresh();
+    /* custom refresh rates (Advanced display, Win+Ctrl+Shift+B): a monitor
+     * showing one that goes goes back to its own first */
+    {
+        bool modes_changed = false;
+
+        for (uint32_t i = 0; i < min( params->custom_count, ARRAY_SIZE(params->custom_id) ); i++)
+        {
+            uint32_t count = min( params->custom_rates[i], DWM_MAX_CUSTOM );
+            struct dwm_output_config instead;
+
+            if (kms_custom_leaving( params->custom_id[i], params->custom[i], count, params->custom_trial[i], &instead ))
+            {
+                MESSAGE( "dwm: connector %u: the custom refresh rate it shows is gone: back to %u mHz\n",
+                         instead.id, instead.refresh );
+                if (!apply_configuration( &instead, 1, false, true ))
+                    ERR( "connector %u: cannot leave the custom refresh rate\n", instead.id );
+            }
+            if (kms_set_custom( params->custom_id[i], params->custom[i], count, params->custom_trial[i] ))
+                modes_changed = true;
+        }
+        if (modes_changed)
+        {
+            struct output *output;
+
+            wl_list_for_each( output, &outputs, link ) output_send_state( output, NULL );
+        }
+    }
     damage();
     return STATUS_SUCCESS;
 }

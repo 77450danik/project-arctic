@@ -1,0 +1,9 @@
+MODULE    = hamam.exe
+IMPORTS   = ws2_32
+EXTRADLLFLAGS = -mconsole -municode
+PARENTSRC = ../wsl
+
+VER_FILEDESCRIPTION_STR = "Host Authority Management Activity Moderator"
+
+SOURCES = \
+	main.c

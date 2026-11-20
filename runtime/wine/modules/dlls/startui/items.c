@@ -506,27 +506,30 @@ static void multi_change( const WCHAR *name, const WCHAR *change, BOOL add )
     free( old );
 }
 
-/* what is pinned before anybody pins anything: the file manager, the
- * browser, and Windows' tools the reference menu shows */
+/* a shortcut of the common All programs, by its key, if the image has it */
+static const WCHAR *common_program( WCHAR *key, const WCHAR *name )
+{
+    if (SHGetFolderPathW( NULL, CSIDL_COMMON_PROGRAMS, NULL, SHGFP_TYPE_CURRENT, key )) return NULL;
+    lstrcatW( key, L"\\" );
+    lstrcatW( key, name );
+    lstrcatW( key, L".lnk" );
+    CharLowerW( key );
+    return GetFileAttributesW( key ) != INVALID_FILE_ATTRIBUTES ? key : NULL;
+}
+
+/* what is pinned before anybody pins anything: the programs of the
+ * taskbar (File Explorer, the browser, the Task Manager, Arctic WordPad),
+ * Paint and Photos, then Windows' tools the reference menu shows */
 static WCHAR *default_pins(void)
 {
-    const WCHAR *keys[] = { L"builtin:explorer.exe", NULL, NULL, L"builtin:notepad.exe", L"builtin:pwsh.exe",
-                                   L"builtin:snippingtool.exe" };
-    WCHAR chrome[MAX_PATH] = L"", wordpad[MAX_PATH] = L"", *data, *p;
+    WCHAR chrome[MAX_PATH], wordpad[MAX_PATH], paint[MAX_PATH], photos[MAX_PATH], *data, *p;
+    const WCHAR *keys[] = { L"builtin:explorer.exe", common_program( chrome, L"Google Chrome" ),
+                            L"builtin:taskmgr.exe", common_program( wordpad, L"Arctic WordPad" ),
+                            common_program( paint, L"Paint" ), common_program( photos, L"Фотографії" ),
+                            L"builtin:notepad.exe", L"builtin:pwsh.exe", L"builtin:snippingtool.exe" };
     DWORD chars = 1;
 
-    if (!SHGetFolderPathW( NULL, CSIDL_COMMON_PROGRAMS, NULL, SHGFP_TYPE_CURRENT, chrome ))
-    {
-        lstrcpyW( wordpad, chrome );
-        lstrcatW( chrome, L"\\Google Chrome.lnk" );
-        CharLowerW( chrome );
-        if (GetFileAttributesW( chrome ) != INVALID_FILE_ATTRIBUTES) keys[1] = chrome;
-        /* Arctic WordPad, the word processor of Word's documents */
-        lstrcatW( wordpad, L"\\Arctic WordPad.lnk" );
-        CharLowerW( wordpad );
-        if (GetFileAttributesW( wordpad ) != INVALID_FILE_ATTRIBUTES) keys[2] = wordpad;
-    }
-    if (!find_item( L"builtin:pwsh.exe" )) keys[4] = L"builtin:cmd.exe";
+    if (!find_item( L"builtin:pwsh.exe" )) keys[7] = L"builtin:cmd.exe";
     for (UINT i = 0; i < ARRAY_SIZE(keys); i++) if (keys[i]) chars += lstrlenW( keys[i] ) + 1;
     if (!(p = data = calloc( chars, sizeof(WCHAR) ))) return NULL;
     for (UINT i = 0; i < ARRAY_SIZE(keys); i++)

@@ -33,6 +33,11 @@ parser.add_argument("--append", default="")
 parser.add_argument("--timeout", type=int, default=60,
                     help="seconds to wait for the desktop: a normal start takes 15 to 20")
 parser.add_argument("--headless", action="store_true", help="no window (the screenshot is still taken)")
+parser.add_argument("--kernel-irqchip", default="on", choices=["on", "off", "split"],
+                    help="where the guest's APIC lives: 'on' (QEMU's default) the hypervisor's, KVM's in-kernel "
+                         "LAPIC through winhvplatform; 'off' QEMU's own, every APIC access, interrupt and IPI a trip "
+                         "to QEMU: 2026-11-16 that made CreateThread 18x and CreateProcess 10x slower, server "
+                         "requests stalled for 4 ms at p99 (it was left from the VMs on Windows 10 of M1)")
 parser.add_argument("--tcg", action="store_true",
                     help="emulate the processor instead of using the hypervisor: slow, but the only way from "
                          "inside Arctic until WinHvPlatform serves the MMIO of devices above 4 GB (the guest's "
@@ -50,6 +55,8 @@ parser.add_argument("--pull", action="store_true",
                     help="end by pulling the stick out (QEMU killed) instead of the power button (--usb)")
 parser.add_argument("--no-reboot", action="store_true", help="QEMU exits when the guest restarts")
 parser.add_argument("--initrd", help="with --append: this initrd instead of the image's (tools/wsl/make-dev-initrd.sh)")
+parser.add_argument("--kernel", help="with --append: this bzImage instead of the image's, e.g. a driver built in "
+                                     "(win32k) just now; the image's modules must still fit it")
 parser.add_argument("--film", type=float, default=0,
                     help="seconds from power on to take a picture of every ~0.15 s (out/test-local/film)")
 parser.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
@@ -73,7 +80,7 @@ for path in (serial, shot):
     if os.path.exists(path):
         os.remove(path)
 
-cmd = [QEMU] + ([] if args.tcg else ["-accel", "whpx,kernel-irqchip=off"]) + ["-accel", "tcg", "-m", "4096", "-smp", "4",
+cmd = [QEMU] + ([] if args.tcg else ["-accel", "whpx,kernel-irqchip=" + args.kernel_irqchip]) + ["-accel", "tcg", "-m", "4096", "-smp", "4",
        "-display", "egl-headless" if args.headless and args.gpu else "none" if args.headless
        else "sdl,gl=on" if args.gpu else "gtk",
        "-rtc", "base=localtime",  # as a PC that Windows runs on keeps its clock
@@ -145,20 +152,28 @@ if args.uefi:
     cmd += ["-drive", "if=pflash,unit=0,format=raw,readonly=on,file=" + os.path.join(fw, "edk2-x86_64-code.fd"),
             "-drive", "if=pflash,unit=1,format=raw,file=" + nvram]
 if args.append:
-    kernel_dir = os.path.join(RES, "kernel")
+    # the kernel goes to the user's temporary folder: in the build distro's
+    # container only C:\Users is writable (docs/wsl.md), and wsl.exe passes no
+    # argument with a space in one piece, so the commands go in a script
+    kernel_dir = os.path.join(os.environ.get("TEMP", RES), "arctic-vm-kernel")
     os.makedirs(kernel_dir, exist_ok=True)
     wsl = lambda p: "/mnt/" + p[0].lower() + p[2:].replace("\\", "/")
+    quote = lambda s: "'" + s.replace("'", "'\\''") + "'"
     root = ""
     if args.iso.endswith(".img") or args.boot_disk:
         # the stick or the installed disk: its EFI system partition, with
         # mtools in the build distro; C: is the partition its limine.conf names
         part = wsl(os.path.abspath(args.boot_disk or args.iso)) + "@@1M"
         conf = "EFI/Arctic/limine.conf" if args.boot_disk else "boot/limine/limine.conf"
-        for src, name in (("EFI/Arctic/vmlinuz", "vmlinuz"), ("EFI/Arctic/initrd.img", "initrd.img"),
-                          (conf, "limine.conf")):
-            # -n: no question before overwriting the copy from the last run
-            subprocess.run(["wsl.exe", "-d", "arctic-build", "--", "mcopy", "-n", "-o", "-i", part, "::" + src,
-                            wsl(os.path.join(kernel_dir, name))], check=True, stdin=subprocess.DEVNULL)
+        script = os.path.join(kernel_dir, "get-kernel.sh")
+        with open(script, "w", newline="\n") as f:
+            for src, name in (("EFI/Arctic/vmlinuz", "vmlinuz"), ("EFI/Arctic/initrd.img", "initrd.img"),
+                              (conf, "limine.conf")):
+                # -n: no question before overwriting the copy from the last run
+                f.write("mcopy -n -o -i %s %s %s || exit 1\n" % (quote(part), quote("::" + src),
+                                                              quote(wsl(os.path.join(kernel_dir, name)))))
+        subprocess.run(["wsl.exe", "-d", "arctic-build", "--", "sh", wsl(script)], check=True,
+                       stdin=subprocess.DEVNULL)
         found = re.search(r"arctic\.root=\S+", open(os.path.join(kernel_dir, "limine.conf")).read())
         root = found.group(0) + " " if found else ""
     elif not os.path.exists("C:/Program Files/7-Zip/7z.exe"):
@@ -168,7 +183,7 @@ if args.append:
     else:
         subprocess.run(["C:/Program Files/7-Zip/7z.exe", "e", "-y", "-bso0", "-o" + kernel_dir, args.iso,
                         "arctic/vmlinuz", "arctic/initrd.img"], check=True)
-    cmd += ["-kernel", os.path.join(kernel_dir, "vmlinuz"),
+    cmd += ["-kernel", os.path.abspath(args.kernel) if args.kernel else os.path.join(kernel_dir, "vmlinuz"),
             "-initrd", os.path.abspath(args.initrd) if args.initrd else os.path.join(kernel_dir, "initrd.img"),
             "-append", "console=ttyS0,115200 loglevel=6 arctic.dev=1 " + root + args.append]
 

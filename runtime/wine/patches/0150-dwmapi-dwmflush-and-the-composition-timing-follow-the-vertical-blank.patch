@@ -1,0 +1,134 @@
+From: Project Arctic
+Subject: dwmapi: DwmFlush and the composition timing follow the vertical blank.
+
+Both made the screen's timing up from its refresh rate, as if the frames
+began at counter zero: what a program animated or paced by them was
+sampled at the wrong moment of every frame, and Chrome read the display
+mode on each call. dwm.exe now writes every vertical blank of the primary
+monitor to a section (wine/arctic_dwm.h): DwmGetCompositionTimingInfo
+gives the real last blank and refresh period, and DwmFlush waits for the
+next blank, as Windows' does. Without dwm.exe, the old estimate stays.
+---
+diff --git a/dlls/dwmapi/dwmapi_main.c b/dlls/dwmapi/dwmapi_main.c
+index aa5f244..04d0783 100644
+--- a/dlls/dwmapi/dwmapi_main.c
++++ b/dlls/dwmapi/dwmapi_main.c
+@@ -541,6 +541,54 @@ static int get_display_frequency(void)
+     }
+ }
+ 
++/* Arctic: the vertical blanks as dwm.exe sees them (wine/arctic_dwm.h): the
++ * last one and how long a refresh takes, in QPC ticks. FALSE without dwm.exe. */
++static BOOL read_vblank( INT64 *vblank, INT64 *period, UINT64 *count )
++{
++    static const struct arctic_dwm_timing *timing;
++    static BOOL tried;
++    LONG seq;
++
++    if (!timing && !tried)
++    {
++        HANDLE mapping = OpenFileMappingW( FILE_MAP_READ, FALSE, ARCTIC_DWM_TIMING_SECTION );
++
++        tried = TRUE;
++        if (mapping)
++        {
++            timing = MapViewOfFile( mapping, FILE_MAP_READ, 0, 0, sizeof(*timing) );
++            CloseHandle( mapping );
++        }
++    }
++    if (!timing || timing->version != 1) return FALSE;
++    for (int i = 0; i < 100; i++)
++    {
++        seq = timing->seq;
++        if (seq & 1) continue;
++        __atomic_thread_fence( __ATOMIC_ACQUIRE );
++        *vblank = timing->vblank;
++        *period = timing->period;
++        *count = timing->count;
++        __atomic_thread_fence( __ATOMIC_ACQUIRE );
++        if (timing->seq == seq) return *period > 0 && *vblank > 0;
++    }
++    return FALSE;
++}
++
++/* the vertical blank to come: when the next frame the compositor makes shows */
++static BOOL next_vblank( INT64 *next, INT64 *period )
++{
++    LARGE_INTEGER qpc;
++    INT64 vblank;
++    UINT64 count;
++
++    if (!read_vblank( &vblank, period, &count )) return FALSE;
++    QueryPerformanceCounter( &qpc );
++    *next = vblank + *period;
++    if (*next <= qpc.QuadPart) *next += ((qpc.QuadPart - *next) / *period + 1) * *period;
++    return TRUE;
++}
++
+ /**********************************************************************
+  *           DwmGetCompositionTimingInfo         (DWMAPI.@)
+  */
+@@ -548,6 +596,8 @@ HRESULT WINAPI DwmGetCompositionTimingInfo(HWND hwnd, DWM_TIMING_INFO *info)
+ {
+     LARGE_INTEGER performance_frequency, qpc;
+     static int i, display_frequency;
++    INT64 vblank, period;
++    UINT64 count;
+ 
+     if (!info)
+         return E_INVALIDARG;
+@@ -555,11 +605,35 @@ HRESULT WINAPI DwmGetCompositionTimingInfo(HWND hwnd, DWM_TIMING_INFO *info)
+     if (info->cbSize != sizeof(DWM_TIMING_INFO))
+         return MILERR_MISMATCHED_SIZE;
+ 
+-    if(!i++) FIXME("(%p %p)\n", hwnd, info);
+-
+     memset(info, 0, info->cbSize);
+     info->cbSize = sizeof(DWM_TIMING_INFO);
+ 
++    /* Arctic: the real blanks, when dwm.exe composes */
++    if (read_vblank( &vblank, &period, &count ))
++    {
++        QueryPerformanceFrequency(&performance_frequency);
++        info->rateRefresh.uiNumerator = (UINT32)(performance_frequency.QuadPart * 1000 / period);
++        info->rateRefresh.uiDenominator = 1000;
++        info->rateCompose = info->rateRefresh;
++        info->qpcRefreshPeriod = period;
++        info->qpcVBlank = vblank;
++        info->cRefresh = count;
++        info->cDXRefresh = count;
++        info->qpcCompose = vblank;
++        info->cFrame = count;
++        info->cDXPresent = count;
++        info->cRefreshFrame = count;
++        info->cFrameSubmitted = count;
++        info->cDXPresentSubmitted = count;
++        info->cFrameConfirmed = count;
++        info->cDXPresentConfirmed = count;
++        info->cRefreshConfirmed = count;
++        info->cDXRefreshConfirmed = count;
++        return S_OK;
++    }
++
++    if(!i++) FIXME("(%p %p)\n", hwnd, info);
++
+     display_frequency = get_display_frequency();
+     info->rateRefresh.uiNumerator = display_frequency;
+     info->rateRefresh.uiDenominator = 1;
+@@ -584,6 +658,16 @@ HRESULT WINAPI DwmFlush(void)
+     LONG64 qpc_refresh_period;
+     int display_frequency;
+     static BOOL once;
++    INT64 next, period;
++
++    /* Arctic: until the next vertical blank, when what was drawn is composed */
++    if (next_vblank( &next, &period ))
++    {
++        QueryPerformanceCounter( &qpc );
++        delay.QuadPart = -(next - qpc.QuadPart);  /* QPC ticks are 100 ns */
++        if (delay.QuadPart < 0) NtDelayExecution( FALSE, &delay );
++        return S_OK;
++    }
+ 
+     if (!once++)
+         FIXME("stub.\n");

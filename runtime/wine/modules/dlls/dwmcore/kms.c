@@ -420,6 +420,7 @@ static bool read_connector( uint32_t id, struct kms_output *out )
         }
         keep_lit_mode( out );
         if (out->mode_count) add_scaled_modes( out );
+        out->base_count = out->mode_count;
         ok = out->mode_count && out->possible_crtcs;
         if (!ok)
         {
@@ -528,11 +529,14 @@ static void free_output( struct kms_output *out )
     memset( out, 0, sizeof(*out) );
 }
 
+/* a: the slot as it is, its custom modes after the rest; b: read just now */
 static bool same_monitor( const struct kms_output *a, const struct kms_output *b )
 {
     return a->edid_len == b->edid_len && (!a->edid_len || !memcmp( a->edid, b->edid, a->edid_len )) &&
-           a->mode_count == b->mode_count && !memcmp( a->modes, b->modes, a->mode_count * sizeof(*a->modes) );
+           a->base_count == b->base_count && !memcmp( a->modes, b->modes, a->base_count * sizeof(*a->modes) );
 }
+
+static void forget_custom( uint32_t connector );
 
 bool kms_probe(void)
 {
@@ -581,6 +585,9 @@ bool kms_probe(void)
             continue;
         }
         if (found.crtc_id && crtc_index( found.crtc_id ) < 0) found.crtc_id = 0;
+        /* the custom refresh rates were another monitor's: the Windows side
+         * gives this one its own before it gets a mode */
+        forget_custom( found.connector_id );
         kms.outputs[free_slot] = found;
         seen[free_slot] = true;
         changed = true;
@@ -1013,6 +1020,292 @@ static bool same_timings( const struct drm_mode_modeinfo *a, const struct drm_mo
            a->vtotal == b->vtotal && a->vscan == b->vscan && a->flags == b->flags;
 }
 
+/**********************************************************************
+ *          Custom refresh rates
+ *
+ * A refresh rate above the monitor's own, as Windows tools make them for a
+ * laptop panel or a 144 Hz monitor: the native mode's timings at a higher
+ * pixel clock, as a mode the user made (DRM_MODE_TYPE_USERDEF: i915 keeps
+ * its timings on a built-in panel, kernel/patches/0004). Every size scaled
+ * to the native timings gets it too, so a game that runs 1280x960 on the
+ * panel offers the new rate there as well. One the card refuses (the link
+ * carries fewer pixels per second) is tried with a short horizontal blank.
+ * The Windows side keeps the rates per monitor and says which one is on
+ * trial: the compositor takes that one back unless it is kept in time.
+ */
+
+/* A rate as the Windows side gives it: mHz, and in the top bits the blank
+ * the user chose (Advanced display): 0 the native timings' own; 1 a short
+ * horizontal blank; 2 a short vertical one besides. A panel whose own
+ * electronics take no higher pixel clock (a 60 Hz TN laptop panel stops near
+ * 166 MHz with its 2250x1132 timings) goes faster only with less blank. */
+#define RATE_MHZ(v)   ((v) & 0x0fffffff)
+#define RATE_BLANK(v) ((v) >> 28)
+
+static struct custom_set
+{
+    uint32_t connector;                   /* 0: free */
+    uint32_t count;
+    uint32_t rates[DWM_MAX_CUSTOM];       /* kept, as given */
+    uint32_t trial;                       /* as given, 0 if none */
+    uint32_t reduced[DWM_MAX_CUSTOM + 1]; /* mHz the card took only with the short blank */
+} custom_sets[KMS_MAX_OUTPUTS];
+
+static struct custom_set *find_custom( uint32_t connector, bool create )
+{
+    struct custom_set *free_set = NULL;
+
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+    {
+        if (custom_sets[i].connector == connector) return &custom_sets[i];
+        if (!custom_sets[i].connector && !free_set) free_set = &custom_sets[i];
+    }
+    if (!create || !free_set) return NULL;
+    memset( free_set, 0, sizeof(*free_set) );
+    free_set->connector = connector;
+    return free_set;
+}
+
+static void forget_custom( uint32_t connector )
+{
+    struct custom_set *set = find_custom( connector, false );
+
+    if (set) memset( set, 0, sizeof(*set) );
+}
+
+static struct kms_output *output_of( uint32_t connector )
+{
+    for (int i = 0; i < KMS_MAX_OUTPUTS; i++)
+        if (connector && kms.outputs[i].connector_id == connector) return &kms.outputs[i];
+    return NULL;
+}
+
+/* the native timings at refresh (mHz); with blank 1 a horizontal blank of
+ * 80 pixels (CVT reduced blanking v2: front porch 8, sync 32); with blank 2
+ * a vertical one of 20 lines besides, the front porch and sync kept */
+static bool custom_timings( const struct drm_mode_modeinfo *base, uint32_t refresh, uint32_t blank,
+                            struct drm_mode_modeinfo *out )
+{
+    uint64_t clock;
+
+    *out = *base;
+    if (blank >= 1)
+    {
+        if (base->htotal - base->hdisplay <= 80) return false;
+        out->hsync_start = base->hdisplay + 8;
+        out->hsync_end = out->hsync_start + 32;
+        out->htotal = base->hdisplay + 80;
+    }
+    if (blank >= 2)
+    {
+        uint32_t vtotal = max( base->vdisplay + 20, base->vsync_end + 6 );
+
+        if (vtotal < base->vtotal) out->vtotal = vtotal;
+    }
+    clock = ((uint64_t)out->htotal * out->vtotal * (out->vscan > 1 ? out->vscan : 1) * refresh + 500000) / 1000000;
+    if (!clock || clock > 0xffffffffu) return false;
+    out->clock = clock;
+    out->vrefresh = whole_hz( refresh );
+    out->type = DRM_MODE_TYPE_USERDEF;
+    snprintf( out->name, sizeof(out->name), "%ux%u", out->hdisplay, out->vdisplay );
+    return true;
+}
+
+static bool rate_listed( const uint32_t *rates, uint32_t count, uint32_t refresh )
+{
+    for (uint32_t i = 0; i < count; i++)
+        if (rates[i] && whole_hz( RATE_MHZ( rates[i] ) ) == whole_hz( RATE_MHZ( refresh ) )) return true;
+    return false;
+}
+
+/* the fastest mode of the monitor's own size: what a custom rate is made
+ * from (a 144 Hz monitor often prefers 60 Hz, with a long blank) */
+static const struct kms_mode *fastest_native( const struct kms_output *out )
+{
+    const struct kms_mode *native = &out->modes[out->preferred], *fastest = native;
+
+    for (uint32_t k = 0; k < out->base_count; k++)
+    {
+        const struct kms_mode *m = &out->modes[k];
+
+        if (m->info.hdisplay != native->info.hdisplay || m->info.vdisplay != native->info.vdisplay ||
+            is_scaled( m ) || m->custom)
+            continue;
+        if (m->refresh > fastest->refresh) fastest = m;
+    }
+    return fastest;
+}
+
+/* the native mode and its scaled sizes again at each custom rate, after the
+ * monitor's own modes */
+static void add_custom_modes( struct kms_output *out, const struct custom_set *set )
+{
+    uint32_t rates[DWM_MAX_CUSTOM + 1], count = 0, capacity;
+    struct kms_mode native, fastest, *modes;
+
+    out->mode_count = out->base_count;
+    if (!set || !out->base_count) return;
+    for (uint32_t i = 0; i < set->count; i++) rates[count++] = set->rates[i];
+    if (set->trial && !rate_listed( rates, count, set->trial )) rates[count++] = set->trial;
+    if (!count) return;
+
+    native = out->modes[out->preferred];
+    fastest = *fastest_native( out );
+    capacity = min( out->base_count * (count + 1), DWM_MAX_MODES );
+    if (!(modes = realloc( out->modes, capacity * sizeof(*modes) ))) return;
+    out->modes = modes;
+
+    for (uint32_t r = 0; r < count; r++)
+    {
+        struct drm_mode_modeinfo info, alt;
+        uint32_t mhz = RATE_MHZ( rates[r] ), blank = RATE_BLANK( rates[r] ), refresh;
+        bool has_alt;
+
+        /* the card refused the native blank before */
+        if (!blank && rate_listed( set->reduced, ARRAY_SIZE(set->reduced), mhz )) blank = 1;
+        /* above the monitor's own, and no more than twice it */
+        if (whole_hz( mhz ) <= whole_hz( fastest.refresh ) || mhz > fastest.refresh * 2) continue;
+        if (!custom_timings( &fastest.info, mhz, blank, &info )) continue;
+        has_alt = !blank && custom_timings( &fastest.info, mhz, 1, &alt );
+        refresh = mode_refresh( &info );
+
+        /* the native size and those scaled to it */
+        for (uint32_t k = 0; k < out->base_count && out->mode_count < capacity; k++)
+        {
+            struct kms_mode *m;
+
+            if (!same_timings( &out->modes[k].info, &native.info )) continue;
+            m = &out->modes[out->mode_count++];
+            *m = out->modes[k];
+            m->info = info;
+            m->refresh = refresh;
+            m->custom = true;
+            m->confirmed = rate_listed( set->rates, set->count, rates[r] );
+            m->has_alt = has_alt;
+            if (has_alt) m->alt = alt;
+        }
+    }
+}
+
+bool kms_custom_leaving( uint32_t connector, const uint32_t *rates, uint32_t count, uint32_t trial,
+                         struct dwm_output_config *instead )
+{
+    struct kms_output *out = output_of( connector );
+    const struct kms_mode *m;
+
+    if (!out || !out->enabled || !out->mode_count) return false;
+    m = &out->modes[out->mode];
+    if (!m->custom) return false;
+    count = min( count, DWM_MAX_CUSTOM );
+    if (rate_listed( rates, count, m->refresh ) || rate_listed( &trial, 1, m->refresh )) return false;
+    instead->id = connector;
+    instead->enabled = 1;
+    instead->x = out->x;
+    instead->y = out->y;
+    instead->width = m->width;
+    instead->height = m->height;
+    instead->refresh = fastest_native( out )->refresh;
+    /* a scaled size has only the preferred rate */
+    if (m->width != m->info.hdisplay || m->height != m->info.vdisplay)
+        instead->refresh = out->modes[out->preferred].refresh;
+    return true;
+}
+
+bool kms_set_custom( uint32_t connector, const uint32_t *rates, uint32_t count, uint32_t trial )
+{
+    struct custom_set *set;
+    struct kms_output *out;
+    struct kms_mode shown = { 0 };
+    bool had_shown;
+
+    count = min( count, DWM_MAX_CUSTOM );
+    if (!(set = find_custom( connector, count || trial ))) return false;
+    if (set->count == count && set->trial == trial && !memcmp( set->rates, rates, count * sizeof(*rates) ))
+        return false;
+    set->count = count;
+    memcpy( set->rates, rates, count * sizeof(*rates) );
+    set->trial = trial;
+    for (uint32_t i = 0; i < ARRAY_SIZE(set->reduced); i++)
+        if (set->reduced[i] && !rate_listed( rates, count, set->reduced[i] ) && !rate_listed( &trial, 1, set->reduced[i] ))
+            set->reduced[i] = 0;
+    for (uint32_t i = 0; i < count; i++)
+        MESSAGE( "dwm: monitor on connector %u: custom refresh rate %u Hz kept, blank %u\n", connector,
+                 whole_hz( RATE_MHZ( rates[i] ) ), RATE_BLANK( rates[i] ) );
+    if (trial)
+        MESSAGE( "dwm: monitor on connector %u: custom refresh rate %u Hz on trial, blank %u\n", connector,
+                 whole_hz( RATE_MHZ( trial ) ), RATE_BLANK( trial ) );
+
+    if (!(out = output_of( connector )) || !out->base_count) return false;
+    if ((had_shown = out->mode_count != 0)) shown = out->modes[out->mode];
+    add_custom_modes( out, set );
+    /* the mode it shows, where it is in the list now (kms_custom_leaving
+     * moved it off a rate that went) */
+    if (had_shown)
+    {
+        uint32_t k;
+
+        for (k = 0; k < out->mode_count; k++)
+        {
+            const struct kms_mode *m = &out->modes[k];
+
+            if (m->width == shown.width && m->height == shown.height && m->custom == shown.custom &&
+                whole_hz( m->refresh ) == whole_hz( shown.refresh ))
+                break;
+        }
+        if (k < out->mode_count)
+        {
+            /* the timings on screen stay what they are (a short blank taken) */
+            if (shown.custom)
+            {
+                bool confirmed = out->modes[k].confirmed;
+
+                out->modes[k] = shown;
+                out->modes[k].confirmed = confirmed;
+            }
+            out->mode = k;
+        }
+        else out->mode = min( out->mode, out->base_count - 1 );
+    }
+    return true;
+}
+
+/* The card refused the custom timings: the same rate with the short
+ * horizontal blank, for every size of it. */
+static bool use_reduced_blank( struct kms_output *out, uint32_t refresh )
+{
+    struct custom_set *set = find_custom( out->connector_id, false );
+    bool any = false;
+
+    for (uint32_t k = out->base_count; k < out->mode_count; k++)
+    {
+        struct kms_mode *m = &out->modes[k];
+
+        if (!m->custom || !m->has_alt || whole_hz( m->refresh ) != whole_hz( refresh )) continue;
+        m->info = m->alt;
+        m->refresh = mode_refresh( &m->info );
+        m->has_alt = false;
+        any = true;
+    }
+    if (any && set)
+        for (uint32_t i = 0; i < ARRAY_SIZE(set->reduced); i++)
+            if (!set->reduced[i])
+            {
+                set->reduced[i] = refresh;
+                break;
+            }
+    return any;
+}
+
+bool kms_link_bad( const struct kms_output *out )
+{
+    static const char *const name[] = { "link-status" };
+    uint32_t id;
+    uint64_t value = 0;
+
+    object_properties( out->connector_id, DRM_MODE_OBJECT_CONNECTOR, name, 1, &id, &value );
+    return id && value == DRM_MODE_LINK_STATUS_BAD;
+}
+
 /* Whether the card scales a frame of the mode's size up to the timings the
  * monitor shows now: the way the user picked, else its shape kept, else
  * stretched. A card that cannot (no atomic modesetting, a plane without a
@@ -1204,14 +1497,22 @@ bool kms_apply( const struct dwm_output_config *configs, uint32_t count, bool te
     for (i = 0; i < KMS_MAX_OUTPUTS; i++)
     {
         struct kms_output *out = &kms.outputs[i];
+        struct kms_mode *mode;
 
         if (!next[i].modeset) continue;
-        if (!set_crtc( next[i].crtc, out->connector_id, next[i].fb.fb_id, &out->modes[next[i].mode].info ))
+        mode = &out->modes[next[i].mode];
+        if (!set_crtc( next[i].crtc, out->connector_id, next[i].fb.fb_id, &mode->info ) &&
+            !(mode->custom && mode->has_alt && use_reduced_blank( out, mode->refresh ) &&
+              set_crtc( next[i].crtc, out->connector_id, next[i].fb.fb_id, &mode->info )))
         {
             ERR( "%s: the monitor does not take %ux%u@%u: %s\n", out->name, out->modes[next[i].mode].info.hdisplay,
                  out->modes[next[i].mode].info.vdisplay, whole_hz( out->modes[next[i].mode].refresh ), strerror( errno ) );
             goto restore;
         }
+        if (mode->custom)
+            MESSAGE( "dwm: %s custom timings: %u kHz, %u/%u/%u/%u x %u/%u/%u/%u (%u mHz)\n", out->name, mode->info.clock,
+                     mode->info.hdisplay, mode->info.hsync_start, mode->info.hsync_end, mode->info.htotal,
+                     mode->info.vdisplay, mode->info.vsync_start, mode->info.vsync_end, mode->info.vtotal, mode->refresh );
     }
 
     for (i = 0; i < KMS_MAX_OUTPUTS; i++)

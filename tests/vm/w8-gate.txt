@@ -1,5 +1,6 @@
-# The Linux gate (docs/linux-gate.md): the consent window of the Application
-# Information service, the password once a boot, consent once a program.
+# HAMAM (docs/linux-gate.md): the consent window of the Application Information
+# service for hamam.exe, the password once a boot, consent once a program;
+# wsl.exe is a container and asks nothing.
 #   tools/wsl/make-wsl-test-disk.sh                        (two tiny distributions)
 #   vm-test.py --usb --uefi --disk out/test-local/wsl-disk.img --script tests/vm/w8-gate.txt
 # D:\gate.vhdx goes in as arctic-build, which gate.conf names as the gate, and
@@ -13,12 +14,8 @@
 # other distribution answers with no window at all.
 # (A comment after "type" would be typed in: they go on their own line.)
 sleep 5
-move 27 789
-click
-sleep 3
-# "Виконати..." of the Start menu
-move 330 679
-click
+# "Виконати" (Win+R): the Start button moved to the middle with the Windows 11 taskbar
+key win-r
 sleep 3
 type cmd
 key ret
@@ -36,7 +33,7 @@ type vol D: & wsl -l
 key ret
 sleep 4
 shot w8-gate-distros
-type wsl -d arctic-build -e id
+type hamam -e id
 key ret
 sleep 12
 shot w8-gate-consent
@@ -48,23 +45,19 @@ type 0000
 key ret
 sleep 20
 shot w8-gate-id
-type wsl -d arctic-build -e id
+type hamam -e id
 key ret
 sleep 10
 shot w8-gate-again
 # the same console again: no window, the grant is its own
 # a program with no grant of its own is asked again, and the password of this
 # boot is not asked for a second time
-move 27 789
-click
-sleep 3
-move 330 679
-click
+key win-r
 sleep 3
 type cmd
 key ret
 sleep 6
-type wsl -d arctic-build -e id
+type hamam -e id
 key ret
 sleep 10
 shot w8-gate-second
@@ -78,8 +71,8 @@ type echo exit=%errorlevel%
 key ret
 sleep 3
 shot w8-gate-cancelled
-# a distribution that is not the gate asks nothing, as WSL on Windows does
-type wsl -d arctic-ros -e uname -sr
+# wsl asks nothing, as WSL on Windows does: every distribution is a container
+type wsl -d arctic-build -e id & wsl -d arctic-ros -e uname -sr
 key ret
 sleep 20
 shot w8-gate-free

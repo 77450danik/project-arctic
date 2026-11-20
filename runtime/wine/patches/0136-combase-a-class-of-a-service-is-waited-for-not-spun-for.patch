@@ -1,0 +1,45 @@
+From: Project Arctic
+Subject: combase: a class of a service is waited for, not spun for.
+---
+diff --git a/dlls/combase/rpc.c b/dlls/combase/rpc.c
+--- a/dlls/combase/rpc.c
++++ b/dlls/combase/rpc.c
+@@ -632,6 +632,7 @@
+     int tries = 0;
+     ULONG length;
+     HRESULT hr;
++    HANDLE idle = NULL;
+     static const int MAXTRIES = 30; /* 30 seconds */
+ 
+     TRACE("clsid %s, riid %s\n", debugstr_guid(rclsid), debugstr_guid(riid));
+@@ -651,20 +652,28 @@
+                 return hr;
+         }
+ 
+-        /* Wait for one second, even if messages arrive. */
++        /* Wait for one second, even if messages arrive. A service started
++         * for the class gives no process to wait for, and with no handle
++         * CoWaitForMultipleHandles returns at once: the loop spun a core
++         * for all 30 tries. It waits on an event nobody sets instead. */
++        if (!process && !idle) idle = CreateEventW(NULL, TRUE, FALSE, NULL);
+         start_ticks = GetTickCount();
+         do
+         {
+-            if (SUCCEEDED(CoWaitForMultipleHandles(0, 1000, (process != 0), &process, &index)) && process && !index)
++            if (!process && !idle)
++                Sleep(100);
++            else if (SUCCEEDED(CoWaitForMultipleHandles(0, 1000, 1, process ? &process : &idle, &index)) && process && !index)
+             {
+                 WARN("Server for %s failed to start.\n", debugstr_guid(rclsid));
+                 CloseHandle(process);
++                if (idle) CloseHandle(idle);
+                 return E_NOINTERFACE;
+             }
+         } while (GetTickCount() - start_ticks < 1000);
+ 
+         if (process) CloseHandle(process);
+     }
++    if (idle) CloseHandle(idle);
+ 
+     if (!objref || tries >= MAXTRIES)
+         return E_NOINTERFACE;

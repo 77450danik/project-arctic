@@ -300,25 +300,62 @@ static void close_screen( BOOL restore_foreground )
 }
 
 /* Tells every program the session ends, as ExitWindowsEx does, without
- * letting one of them stop it. */
+ * letting one of them stop it. Every window at once, the answers waited for
+ * together: one window after the other, five seconds each for a program
+ * that is slow to answer, the restart took minutes with Chrome, an editor
+ * and Steam open, and the button seemed dead (2026-11-18). */
+#define END_SESSION_WAIT_MS 5000
+
+BOOL session_ending;
+static UINT unanswered;
+
+static void CALLBACK end_session_answered( HWND hwnd, UINT msg, ULONG_PTR data, LRESULT result )
+{
+    if (unanswered) unanswered--;
+}
+
 static BOOL CALLBACK end_session_window( HWND hwnd, LPARAM lparam )
 {
-    DWORD_PTR result;
+    UINT msg = LOWORD(lparam);
     DWORD pid;
 
     GetWindowThreadProcessId( hwnd, &pid );
     if (pid == GetCurrentProcessId()) return TRUE;
-    SendMessageTimeoutW( hwnd, WM_QUERYENDSESSION, 0, 0, SMTO_ABORTIFHUNG, 5000, &result );
-    SendMessageTimeoutW( hwnd, WM_ENDSESSION, TRUE, 0, SMTO_ABORTIFHUNG, 5000, &result );
+    if (SendMessageCallbackW( hwnd, msg, msg == WM_ENDSESSION, 0, end_session_answered, 0 )) unanswered++;
     return TRUE;
+}
+
+static void end_session_round( UINT msg )
+{
+    DWORD start = GetTickCount(), elapsed;
+    UINT told;
+    MSG m;
+
+    unanswered = 0;
+    EnumWindows( end_session_window, msg );
+    told = unanswered;
+    while (unanswered && (elapsed = GetTickCount() - start) < END_SESSION_WAIT_MS)
+    {
+        MsgWaitForMultipleObjects( 0, NULL, FALSE, END_SESSION_WAIT_MS - elapsed, QS_ALLINPUT );
+        while (PeekMessageW( &m, 0, 0, 0, PM_REMOVE )) DispatchMessageW( &m );
+    }
+    MESSAGE( "winlogon: %s to %u windows, %u did not answer in %lu ms\n",
+             msg == WM_ENDSESSION ? "WM_ENDSESSION" : "WM_QUERYENDSESSION", told, unanswered,
+             GetTickCount() - start );
 }
 
 /* ends the session and tells wininit.exe what to do with the machine */
 void end_session( int exit_code )
 {
-    EnumWindows( end_session_window, 0 );
+    if (session_ending) return;  /* the button pressed again meanwhile */
+    session_ending = TRUE;
+    MESSAGE( "winlogon: the session ends (%s)\n", exit_code == WINLOGON_EXIT_RESTART ? "restart" :
+             exit_code == WINLOGON_EXIT_SHUTDOWN ? "shut down" : "sign out" );
+    end_session_round( WM_QUERYENDSESSION );
+    end_session_round( WM_ENDSESSION );
     if (exit_code == WINLOGON_EXIT_LOGOFF)
     {
+        session_ending = FALSE;
         run_userinit(); /* one user and no logon screen: the shell starts again */
         return;
     }

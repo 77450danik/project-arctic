@@ -1,0 +1,15 @@
+# Wine's user32 conformance tests, all 25 units, with win32k and with
+# --append arctic.win32k=0 (docs/win32k.md "Тести user32"). The test disk is a
+# copy of out/test-local/tools.img with ut.cmd on it (D:); every unit writes
+# D:\ut\<mode>-<unit>.txt and the run ends with D:\ut\<mode>-done.txt, read
+# from the disk image with mtools while the VM runs (vm-test.py --keep).
+# The msg unit stops at test_restore_messages (Alt+Tab through SendInput,
+# the shell's switcher) in both modes; input of a test that has no foreground
+# can open the console's menu, which holds cmd until Esc.
+sleep 10
+key win-r
+sleep 2
+type D:\ut.cmd w32k
+key ret
+sleep 8
+shot ut-start

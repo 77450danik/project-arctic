@@ -120,6 +120,133 @@ static void publish_vrr_capability(void)
     }
 }
 
+/**********************************************************************
+ *          Custom refresh rates
+ *
+ * Rates above a monitor's own that the user tried and kept on the page
+ * Advanced display (displaycpl.dll), in its key of the monitor data store:
+ * CustomRefresh, the mHz kept (binary, a DWORD each); CustomRefreshTrial,
+ * the one on trial, which the compositor takes back unless it is kept;
+ * CustomRefreshOff, the rates not offered. Nothing can leave the screen dark
+ * for good:
+ *   - a trial never outlives dwm.exe: it is dropped at every start;
+ *   - a start that shows a custom rate marks it (CustomRefreshStarting,
+ *     flushed to the disk); two minutes later the mark goes. A start that
+ *     finds the mark (the computer was turned off on a dark screen) turns
+ *     the custom rates off;
+ *   - Win+Ctrl+Shift+B (csrss.exe: ResetRefresh in the volatile display key)
+ *     turns them off at any time, blind.
+ */
+
+static BOOL read_outputs(void);
+
+static const WCHAR custom_starting[] = L"CustomRefreshStarting";
+static DWORD boot_guard_until;
+static DWORD reset_refresh;
+static BOOL  reset_refresh_known;
+
+/* every monitor's key: the trial dropped; with off, its kept rates not offered */
+static void custom_refresh_clear( BOOL off )
+{
+    WCHAR name[64];
+    DWORD len;
+
+    if (!monitor_store) return;
+    for (DWORD i = 0; len = ARRAY_SIZE(name), !RegEnumKeyExW( monitor_store, i, name, &len, NULL, NULL, NULL, NULL ); i++)
+    {
+        HKEY hkey;
+        DWORD one = 1;
+
+        if (RegOpenKeyExW( monitor_store, name, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &hkey )) continue;
+        RegDeleteValueW( hkey, L"CustomRefreshTrial" );
+        if (off && !RegQueryValueExW( hkey, L"CustomRefresh", NULL, NULL, NULL, NULL ))
+        {
+            MESSAGE( "dwm: custom refresh rates of %s turned off\n", debugstr_w( name ) );
+            RegSetValueExW( hkey, L"CustomRefreshOff", 0, REG_DWORD, (BYTE *)&one, sizeof(one) );
+        }
+        RegCloseKey( hkey );
+    }
+}
+
+/* at start, before the monitors get their modes */
+static void custom_refresh_start(void)
+{
+    if (!monitor_store) return;
+    if (!RegQueryValueExW( monitor_store, custom_starting, NULL, NULL, NULL, NULL ))
+    {
+        MESSAGE( "dwm: the last start with a custom refresh rate did not last: custom rates off\n" );
+        custom_refresh_clear( TRUE );
+        RegDeleteValueW( monitor_store, custom_starting );
+        RegFlushKey( monitor_store );
+    }
+    else custom_refresh_clear( FALSE );
+}
+
+/* once the monitors have their modes: the mark, if one shows a custom rate */
+static void custom_refresh_arm(void)
+{
+    DWORD one = 1;
+
+    if (!monitor_store || !read_outputs()) return;
+    for (UINT i = 0; i < output_count; i++)
+    {
+        const struct dwm_output *output = &outputs[i];
+
+        if (!output->enabled || output->mode >= output->mode_count ||
+            !(output->modes[output->mode].flags & DWM_MODE_CUSTOM))
+            continue;
+        RegSetValueExW( monitor_store, custom_starting, 0, REG_DWORD, (BYTE *)&one, sizeof(one) );
+        RegFlushKey( monitor_store );
+        boot_guard_until = (GetTickCount() + 120000) | 1;
+        return;
+    }
+}
+
+static void custom_refresh_tick(void)
+{
+    if (!boot_guard_until || (LONG)(GetTickCount() - boot_guard_until) < 0) return;
+    boot_guard_until = 0;
+    RegDeleteValueW( monitor_store, custom_starting );
+    RegFlushKey( monitor_store );
+}
+
+static void custom_refresh_options( struct dwm_set_options_params *params )
+{
+    WCHAR id[16];
+    DWORD size, value = 0;
+
+    /* Win+Ctrl+Shift+B */
+    size = sizeof(value);
+    if (display_power) RegQueryValueExW( display_power, L"ResetRefresh", NULL, NULL, (BYTE *)&value, &size );
+    if (reset_refresh_known && value != reset_refresh)
+    {
+        MESSAGE( "dwm: Win+Ctrl+Shift+B: monitors back to their own refresh rates\n" );
+        custom_refresh_clear( TRUE );
+    }
+    reset_refresh = value;
+    reset_refresh_known = TRUE;
+
+    for (UINT i = 0; i < output_count && params->custom_count < ARRAY_SIZE(params->custom_id); i++)
+    {
+        UINT n = params->custom_count++;
+        DWORD off = 0, trial = 0, rates[DWM_MAX_CUSTOM];
+
+        params->custom_id[n] = outputs[i].id;
+        if (!monitor_store || !monitor_pnp_id( &outputs[i], id, ARRAY_SIZE(id) )) continue;
+        size = sizeof(off);
+        RegGetValueW( monitor_store, id, L"CustomRefreshOff", RRF_RT_REG_DWORD, NULL, &off, &size );
+        size = sizeof(trial);
+        if (!RegGetValueW( monitor_store, id, L"CustomRefreshTrial", RRF_RT_REG_DWORD, NULL, &trial, &size ))
+            params->custom_trial[n] = trial;
+        size = sizeof(rates);
+        if (!off && !RegGetValueW( monitor_store, id, L"CustomRefresh", RRF_RT_REG_BINARY, NULL, rates, &size ))
+        {
+            params->custom_rates[n] = size / sizeof(DWORD);
+            memcpy( params->custom[n], rates, params->custom_rates[n] * sizeof(DWORD) );
+        }
+    }
+}
+
 static void update_options(void)
 {
     struct dwm_set_options_params params = { .vrr = TRUE };
@@ -179,6 +306,7 @@ static void update_options(void)
         value[size / sizeof(WCHAR)] = 0;
         if (swscanf( value, L"%u %u %u", &r, &g, &b ) == 3) params.menu_light = r * 299 + g * 587 + b * 114 >= 128000;
     }
+    custom_refresh_options( &params );
     WINE_UNIX_CALL( unix_dwm_set_options, &params );
     if (display_power) RegNotifyChangeKeyValue( display_power, FALSE, REG_NOTIFY_CHANGE_LAST_SET, options_changed, TRUE );
     if (gpu_preferences)
@@ -303,6 +431,8 @@ static const struct dwm_mode *mode_for_attempt( const struct dwm_output *output,
         {
             const struct dwm_mode *m = &output->modes[i];
 
+            /* a custom rate only where the user put it (the layout kept) */
+            if (m->flags & DWM_MODE_CUSTOM) continue;
             if (m->width != native->width || m->height != native->height) continue;
             if (m->refresh >= refresh) continue;
             if (!mode || m->refresh > mode->refresh) mode = m;
@@ -763,6 +893,14 @@ DWORD WINAPI DwmCoreRun(void)
     struct dwm_start_params params = { .background = desktop_color() };
     struct dwm_dispatch_params dispatch = { .timeout_ms = 8 };
     NTSTATUS status;
+    HANDLE timing;
+
+    /* the vertical blanks, for every process to read (DwmFlush): the handle
+     * stays open as long as dwm.exe lives */
+    if ((timing = CreateFileMappingW( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
+                                      sizeof(struct arctic_dwm_timing), ARCTIC_DWM_TIMING_SECTION )))
+        params.timing = (UINT_PTR)MapViewOfFile( timing, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0 );
+    else ERR( "cannot create the timing section: %lu\n", GetLastError() );
 
     if ((status = WINE_UNIX_CALL( unix_dwm_start, &params )))
     {
@@ -772,11 +910,11 @@ DWORD WINAPI DwmCoreRun(void)
     /* the display layout is kept in HKLM, as Windows keeps it */
     if ((status = NtSetInformationProcess( GetCurrentProcess(), ProcessWineGrantAdminToken, NULL, 0 )))
         WARN( "no admin token: %#lx\n", status );
-    configure_monitors();
     RegCreateKeyExW( HKEY_CURRENT_USER, L"Software\\Microsoft\\DirectX\\UserGpuPreferences", 0, NULL, 0,
                      KEY_QUERY_VALUE | KEY_NOTIFY, NULL, &gpu_preferences, NULL );
     RegCreateKeyExW( HKEY_LOCAL_MACHINE, monitor_store_keyW, 0, NULL, 0,
-                     KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_NOTIFY, NULL, &monitor_store, NULL );
+                     KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY,
+                     NULL, &monitor_store, NULL );
     /* volatile: a display left dark by a crash is lit at the next start */
     RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Power\\ArcticDisplay", 0, NULL,
                      REG_OPTION_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_NOTIFY, NULL, &display_power, NULL );
@@ -785,8 +923,14 @@ DWORD WINAPI DwmCoreRun(void)
                      KEY_QUERY_VALUE | KEY_NOTIFY, NULL, &theme_manager, NULL );
     RegCreateKeyExW( HKEY_CURRENT_USER, L"Control Panel\\Colors", 0, NULL, 0, KEY_QUERY_VALUE | KEY_NOTIFY, NULL, &colors, NULL );
     options_changed = CreateEventW( NULL, FALSE, FALSE, NULL );
+    /* the custom refresh rates are among the modes before the layout kept
+     * for these monitors is looked for */
+    custom_refresh_start();
+    if (read_outputs()) update_options();
+    configure_monitors();
     publish_vrr_capability();
     update_options();
+    custom_refresh_arm();
     create_shared();
     capture_request = CreateEventW( NULL, FALSE, FALSE, ARCTIC_CAPTURE_REQUEST );
     capture_done = CreateEventW( NULL, FALSE, FALSE, ARCTIC_CAPTURE_DONE );
@@ -821,11 +965,16 @@ DWORD WINAPI DwmCoreRun(void)
         }
         if (dispatch.events & DWM_EVENT_HOTPLUG)
         {
+            /* a monitor that came gets its custom rates before its mode */
+            if (read_outputs()) update_options();
             configure_monitors();
             publish_vrr_capability();
             update_options();
         }
         if (dispatch.events & DWM_EVENT_SAVE) save_monitors();
+        /* the compositor took a rate on trial back: the trial is over */
+        if (dispatch.events & DWM_EVENT_TRIAL) custom_refresh_clear( FALSE );
+        custom_refresh_tick();
         if (!WaitForSingleObject( options_changed, 0 )) update_options();
         if (capture_request && !WaitForSingleObject( capture_request, 0 )) serve_capture();
         /* attributes first: a window shown cloaked is never drawn */

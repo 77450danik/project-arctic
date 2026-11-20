@@ -45,6 +45,11 @@ const struct arctic_taskbar_window *find_taskbar_row( const struct arctic_taskba
 /* switcher.c */
 BOOL switcher_start(void);
 
+/* taskview.c: Task View, in the switcher's thread */
+void taskview_init(void);
+BOOL taskview_toggle(void);
+BOOL taskview_visible(void);
+
 /* flyout.c */
 void flyout_hover( const HWND *hwnds, UINT count, const RECT *button, DWORD flags );
 

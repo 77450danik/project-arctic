@@ -1,0 +1,177 @@
+From: Project Arctic
+Subject: win32u: Windows 11's menus are drawn smooth.
+
+With the visual style's size "Windows 11", the box under the pointer was
+GDI's RoundRect, its corners in stairs, and a submenu had the old filled
+triangle of Windows 95 (2026-11-18). The box and Windows 11's thin open
+chevron are drawn with every pixel sampled 4x4 and mixed with what is
+under them, and no access key is underlined, as in Windows 11.
+---
+diff --git a/dlls/win32u/menu.c b/dlls/win32u/menu.c
+index 64f7c06..59a0584 100644
+--- a/dlls/win32u/menu.c
++++ b/dlls/win32u/menu.c
+@@ -2268,11 +2268,132 @@ UINT get_menu_bar_height( HWND hwnd, UINT width, INT org_x, INT org_y )
+     return menu->Height;
+ }
+ 
++/* Arctic: Windows 11's menus are drawn smooth, as its own are: the box under
++ * the pointer and the chevron of a submenu, every pixel sampled 4x4 and
++ * mixed with what is under it. The box of GDI's RoundRect had stairs for
++ * corners, and the arrow was the old filled triangle (2026-11-18). */
++static COLORREF mix_color( COLORREF under, COLORREF over, float t )
++{
++    return RGB( GetRValue( under ) + (GetRValue( over ) - GetRValue( under )) * t + 0.5f,
++                GetGValue( under ) + (GetGValue( over ) - GetGValue( under )) * t + 0.5f,
++                GetBValue( under ) + (GetBValue( over ) - GetBValue( under )) * t + 0.5f );
++}
++
++static BOOL in_round_box( float x, float y, float l, float t, float r, float b, float radius )
++{
++    float dx = 0, dy = 0;
++
++    if (x < l || x > r || y < t || y > b) return FALSE;
++    if (x < l + radius) dx = l + radius - x;
++    else if (x > r - radius) dx = x - (r - radius);
++    if (y < t + radius) dy = t + radius - y;
++    else if (y > b - radius) dy = y - (b - radius);
++    return dx * dx + dy * dy <= radius * radius;
++}
++
++/* the distance of a point from a segment, squared */
++static float segment_distance2( float px, float py, float ax, float ay, float bx, float by )
++{
++    float vx = bx - ax, vy = by - ay, wx = px - ax, wy = py - ay;
++    float t = (vx * wx + vy * wy) / (vx * vx + vy * vy);
++
++    if (t < 0) t = 0;
++    else if (t > 1) t = 1;
++    wx -= t * vx;
++    wy -= t * vy;
++    return wx * wx + wy * wy;
++}
++
++static void put_pixels( HDC hdc, int x, int y, int w, int h, const DWORD *pixels )
++{
++    HBITMAP bitmap = NtGdiCreateBitmap( w, h, 1, 32, pixels );
++    HDC mem_hdc;
++
++    if (!bitmap) return;
++    mem_hdc = NtGdiCreateCompatibleDC( hdc );
++    NtGdiSelectBitmap( mem_hdc, bitmap );
++    NtGdiBitBlt( hdc, x, y, w, h, mem_hdc, 0, 0, SRCCOPY, 0, 0 );
++    NtGdiDeleteObjectApp( mem_hdc );
++    NtGdiDeleteObjectApp( bitmap );
++}
++
++static DWORD pixel_of( COLORREF color )
++{
++    return (GetRValue( color ) << 16) | (GetGValue( color ) << 8) | GetBValue( color );
++}
++
++/* the box under the pointer, over the item's background */
++static void draw_smooth_box( HDC hdc, const RECT *box, float radius, COLORREF under, COLORREF color )
++{
++    int w = box->right - box->left, h = box->bottom - box->top;
++    DWORD *pixels;
++
++    if (w <= 0 || h <= 0 || !(pixels = malloc( w * h * sizeof(*pixels) ))) return;
++    for (int y = 0; y < h; y++)
++    {
++        for (int x = 0; x < w; x++)
++        {
++            int inside = 0;
++
++            for (int sy = 0; sy < 4; sy++)
++                for (int sx = 0; sx < 4; sx++)
++                    inside += in_round_box( x + (sx + 0.5f) / 4, y + (sy + 0.5f) / 4, 0, 0, w, h, radius );
++            pixels[y * w + x] = pixel_of( mix_color( under, color, inside / 16.0f ) );
++        }
++    }
++    put_pixels( hdc, box->left, box->top, w, h, pixels );
++    free( pixels );
++}
++
++/* Windows 11's chevron of a submenu: thin, open, a little larger */
++static void draw_chevron( HDC hdc, const RECT *item, COLORREF color )
++{
++    float s = get_system_dpi() / 96.0f, half = 4.0f * s, wide = 4.0f * s, stroke = max( 1.0f, 1.0f * s );
++    float cx = item->right - 16.0f * s, cy = (item->top + item->bottom) / 2.0f, r2 = stroke * stroke / 4;
++    int left = (int)(cx - wide / 2 - stroke - 1), top = (int)(cy - half - stroke - 1);
++    int w = (int)(wide + 2 * stroke + 3), h = (int)(2 * half + 2 * stroke + 3);
++    COLORREF under = NtGdiGetPixel( hdc, left, top );
++    DWORD *pixels;
++
++    if (under == CLR_INVALID || !(pixels = malloc( w * h * sizeof(*pixels) ))) return;
++    for (int y = 0; y < h; y++)
++    {
++        for (int x = 0; x < w; x++)
++        {
++            int inside = 0;
++
++            for (int sy = 0; sy < 4; sy++)
++            {
++                for (int sx = 0; sx < 4; sx++)
++                {
++                    float px = left + x + (sx + 0.5f) / 4, py = top + y + (sy + 0.5f) / 4;
++
++                    inside += segment_distance2( px, py, cx - wide / 2, cy - half, cx + wide / 2, cy ) <= r2 ||
++                              segment_distance2( px, py, cx + wide / 2, cy, cx - wide / 2, cy + half ) <= r2;
++                }
++            }
++            /* what is under it is read once: an item's background is plain */
++            pixels[y * w + x] = pixel_of( mix_color( under, color, inside / 16.0f ) );
++        }
++    }
++    put_pixels( hdc, left, top, w, h, pixels );
++    free( pixels );
++}
++
+ static void draw_popup_arrow( HDC hdc, RECT rect, UINT arrow_width, UINT arrow_height )
+ {
+-    HDC mem_hdc = NtGdiCreateCompatibleDC( hdc );
++    HDC mem_hdc;
+     HBITMAP prev_bitmap;
+ 
++    if (menu_style_11())
++    {
++        DWORD color = 0;
++
++        NtGdiGetDCDword( hdc, NtGdiGetTextColor, &color );
++        draw_chevron( hdc, &rect, color );
++        return;
++    }
++    mem_hdc = NtGdiCreateCompatibleDC( hdc );
+     prev_bitmap = NtGdiSelectBitmap( mem_hdc, get_arrow_bitmap() );
+     NtGdiBitBlt( hdc, rect.right - arrow_width - 1,
+                  (rect.top + rect.bottom - arrow_height) / 2,
+@@ -2593,15 +2714,11 @@ static void draw_menu_item( HWND hwnd, struct menu *menu, HWND owner, HDC hdc,
+     if ((item->fState & MF_HILITE) && !menu_bar && menu_style_11())
+     {
+         UINT dpi = get_system_dpi();
+-        int inset = 3 * dpi / 96, round = 8 * dpi / 96;
+-        HPEN old_pen = NtGdiSelectPen( hdc, GetStockObject( NULL_PEN ));
+-        HBRUSH old_brush;
++        int inset = 4 * dpi / 96;
++        RECT box = { rect.left + inset, rect.top + 1, rect.right - inset, rect.bottom - 1 };
+ 
+         fill_rect( hdc, &rect, get_sys_color_brush( bkgnd ));
+-        old_brush = NtGdiSelectBrush( hdc, get_sys_color_brush( COLOR_MENUHILIGHT ));
+-        NtGdiRoundRect( hdc, rect.left + inset, rect.top + 1, rect.right - inset + 1, rect.bottom, round, round );
+-        NtGdiSelectBrush( hdc, old_brush );
+-        NtGdiSelectPen( hdc, old_pen );
++        draw_smooth_box( hdc, &box, 4.0f * dpi / 96, get_sys_color( bkgnd ), get_sys_color( COLOR_MENUHILIGHT ) );
+     }
+     else if (item->fState & MF_HILITE)
+     {
+@@ -2778,6 +2895,10 @@ static void draw_menu_item( HWND hwnd, struct menu *menu, HWND owner, HDC hdc,
+             DT_CENTER | DT_VCENTER | DT_SINGLELINE :
+             DT_LEFT | DT_VCENTER | DT_SINGLELINE;
+
++        /* Arctic: Windows 11's menus underline no access keys */
++        if (!menu_bar && menu_style_11())
++            format |= DT_HIDEPREFIX;
++
+         if (!(menu->dwStyle & MNS_CHECKORBMP))
+             rect.left += menu->textOffset;
+ 

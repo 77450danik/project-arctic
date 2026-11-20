@@ -1,0 +1,9 @@
+# A start and a window, for the kernel's log (vm-test.py --append loglevel=7):
+# "win32k: USER served here" shows whether wineserver registered with win32k
+sleep 5
+key win-r
+sleep 2
+type notepad
+key ret
+sleep 5
+shot m20-quick

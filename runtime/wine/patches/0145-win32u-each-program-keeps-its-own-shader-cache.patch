@@ -1,0 +1,115 @@
+From: Project Arctic
+Subject: win32u: each program keeps its own shader cache.
+
+The NVIDIA driver keeps its shader cache by program, and here every
+program is the same loader: all of them shared one cache, and its file
+was numbered anew whenever another process (the browser's GPU process,
+dwm.exe, an editor) had the last one open. CS2 found its shaders in
+another file on every start and compiled them all again: five compiler
+threads for the first minutes of every match, the processor at 95 C and
+throttling (2026-11-18). Each program now gets its own folder under the
+cache, named after its .exe, as each program has its own cache on
+Windows. The folder is made first: the driver writes no cache into a
+folder that is not there.
+---
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index 8fd0c6f..07683d1 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -1532,11 +1532,15 @@ static void dump_extensions( const char *list )
+     TRACE( "%s\n", start );
+ }
+ 
++/* vulkan.c: the GPU driver's shader cache, by program */
++extern void shader_cache_per_program(void);
++
+ static BOOL egl_init( const struct opengl_driver_funcs **driver_funcs )
+ {
+     struct opengl_funcs *funcs = &display_funcs;
+     const char *extensions;
+ 
++    shader_cache_per_program();
+     if (!(funcs->egl_handle = dlopen( SONAME_LIBEGL, RTLD_NOW | RTLD_GLOBAL )))
+     {
+         ERR( "Failed to load %s: %s\n", SONAME_LIBEGL, dlerror() );
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index e600337..30c6150 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -25,7 +25,12 @@
+ #include "config.h"
+ 
+ #include <dlfcn.h>
++#include <errno.h>
++#include <limits.h>
+ #include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/stat.h>
+ #include <unistd.h>
+ 
+ #include "ntstatus.h"
+@@ -3390,6 +3395,55 @@ static const struct vulkan_driver_funcs lazydrv_funcs =
+     .p_map_device_extensions = lazydrv_map_device_extensions,
+ };
+ 
++/* Arctic: the shader cache of the GPU driver, by program (the .exe of the
++ * process), under the folder the host names for all of them. The host's
++ * folder is kept in ARCTIC_SHADER_CACHE_ROOT, so that it is not lost once
++ * the driver's own variable names the program's folder. */
++static void shader_cache_init_once(void)
++{
++    const RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
++    const WCHAR *image, *name, *end;
++    const char *root;
++    char path[PATH_MAX], program[64];
++    unsigned int i;
++
++    if (!(root = getenv( "ARCTIC_SHADER_CACHE_ROOT" )))
++    {
++        if (!(root = getenv( "__GL_SHADER_DISK_CACHE_PATH" )) || !*root) return;
++        setenv( "ARCTIC_SHADER_CACHE_ROOT", root, 1 );
++        if (!(root = getenv( "ARCTIC_SHADER_CACHE_ROOT" ))) return;
++    }
++    if (!params || !params->ImagePathName.Buffer || !params->ImagePathName.Length) return;
++
++    image = params->ImagePathName.Buffer;
++    end = image + params->ImagePathName.Length / sizeof(WCHAR);
++    for (name = image; image < end; image++) if (*image == '\\' || *image == '/') name = image + 1;
++    for (i = 0; name + i < end && i < sizeof(program) - 1; i++)
++    {
++        WCHAR c = name[i];
++        if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
++        program[i] = ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_') ? c : '_';
++    }
++    program[i] = 0;
++    if (!i) return;
++
++    if (snprintf( path, sizeof(path), "%s/%s", root, program ) >= (int)sizeof(path)) return;
++    if (mkdir( path, 0777 ) && errno != EEXIST)
++    {
++        WARN( "cannot make the shader cache %s: %s\n", debugstr_a(path), strerror( errno ) );
++        return;
++    }
++    setenv( "__GL_SHADER_DISK_CACHE_PATH", path, 1 );
++    TRACE( "shader cache %s\n", debugstr_a(path) );
++}
++
++/* before the GPU driver is loaded: it reads the variable once */
++void shader_cache_per_program(void)
++{
++    static pthread_once_t once = PTHREAD_ONCE_INIT;
++    pthread_once( &once, shader_cache_init_once );
++}
++
+ static void vulkan_init_once(void)
+ {
+     struct vulkan_instance_extensions extensions = {0};
+@@ -3397,6 +3451,7 @@ static void vulkan_init_once(void)
+     uint32_t count = 0;
+     VkResult res;
+ 
++    shader_cache_per_program();
+ #ifdef SONAME_LIBVULKAN
+     vulkan_handle = dlopen( SONAME_LIBVULKAN, RTLD_NOW );
+     if (!vulkan_handle) ERR( "Failed to load %s\n", SONAME_LIBVULKAN );

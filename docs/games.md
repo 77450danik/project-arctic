@@ -33,8 +33,13 @@ Intel чи AMD, відеокарта NVIDIA/AMD/Intel, кнопки клавіа
 - **Ігровий режим.** dwm: вікно, що 2 с закриває монітор GPU-буфером, —
   гра; 3 с без цього — ні. Пише PID процесу (облікові дані Wayland-клієнта)
   у `/run/arctic/power/game` (`dwm: game mode on/off` у журналі).
-  arctic-init (головний цикл, 200 мс): KSM `run=0`, autogroup гри — nice −10;
-  після — `run=1`, autogroup 0.
+  arctic-init (головний цикл, 200 мс): KSM `run=0`, після — `run=1`.
+  Частки процесора процесу гри більше немає: показує кадри не завжди той,
+  хто їх робить (гра в браузері — у вкладці, показує GPU-процес Chrome), а
+  nice −10 для GPU-процесу морив гру голодом. Процесор ділиться між потоками
+  за їхніми пріоритетами NT, як у Windows: autogroups вимкнено
+  (`kernel.sched_autogroup_enabled=0`), wineserver переводить пріоритети в
+  nice (`RLIMIT_NICE` 40).
 - **Ліміт кадрів.** `DXVK_CONFIG_FILE=C:\ProgramData\Arctic\dxvk.conf` для
   всіх NT-процесів; панель пише туди `dxgi.maxFrameRate` /
   `d3d9.maxFrameRate`. Без файла — без ліміту. Діє для гри, запущеної

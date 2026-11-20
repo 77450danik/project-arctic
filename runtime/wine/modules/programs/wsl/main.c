@@ -1,17 +1,22 @@
 /*
- * wsl.exe and bash.exe: Linux in Arctic, as WSL gives it on Windows
+ * wsl.exe, bash.exe and hamam.exe: Linux in Arctic
  *
- * One program under two names, as in Windows 10. It asks the host's
- * arctic-lxss (host/init/arctic-lxss.c) to run a command in a WSL
- * distribution and passes stdin, stdout, stderr and the exit code through,
- * the way WSL's wsl.exe does over its own socket. Linux is reached only with
- * the user's consent (docs/linux-gate.md): when it is refused, the program
- * says what Windows says for a cancelled elevation.
+ * One program under three names. It asks the host's arctic-lxss
+ * (host/init/arctic-lxss.c) to run a command and passes stdin, stdout,
+ * stderr and the exit code through, the way WSL's wsl.exe does over its own
+ * socket (docs/linux-gate.md):
  *
- *   wsl.exe   wsl [-d name] [-u user] [--cd dir] [-e cmd args | -- cmd | cmd],
- *             wsl -l, wsl --shutdown, wsl -t name
- *   bash.exe  bash with these arguments in the default distribution, the
- *             drives under /c, /d as well as /mnt/c, /mnt/d
+ *   wsl.exe    in a WSL distribution, a container as on Windows: its root is
+ *              no root of the system, nothing is asked
+ *              wsl [-d name] [-u user] [--cd dir] [-e cmd args | -- cmd | cmd],
+ *              wsl -l, wsl --shutdown, wsl -t name
+ *   bash.exe   bash with these arguments in the default distribution, the
+ *              drives under /c, /d as well as /mnt/c, /mnt/d
+ *   hamam.exe  Host Authority Management Activity Moderator: root on the
+ *              host kernel itself, with a distribution's programs, only with
+ *              the user's consent (UAC, the HAMAM password); the same
+ *              arguments as wsl. When it is refused, the program says what
+ *              Windows says for a cancelled elevation.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -30,6 +35,7 @@ enum { F_STDIN, F_STDIN_EOF, F_STDOUT, F_STDERR, F_EXIT, F_ERROR, F_SIGNAL, F_DE
 #define REQ_SHUTDOWN 1
 #define REQ_GITBASH 2
 #define REQ_TERMINATE 4
+#define REQ_HOST 16       /* hamam.exe: root on the host, behind the consent window */
 
 static SOCKET sock = INVALID_SOCKET;
 static CRITICAL_SECTION send_lock;
@@ -240,7 +246,11 @@ static int pass_variable(const WCHAR *entry)
             return 0;
     memcpy(name, entry, len * sizeof(WCHAR));
     name[len] = 0;
+    /* the NT runtime's own (NTPREFIX, NTDEBUG, NT_HOST_PATH, NT_FASTCALL...,
+     * WINE* before the names of 2026-11-16) are not the distribution's */
     if (!_wcsnicmp(name, L"PROCESSOR_", 10) || !_wcsnicmp(name, L"WINE", 4) || !_wcsnicmp(name, L"=", 1))
+        return 0;
+    if (!_wcsnicmp(name, L"NT", 2) && len > 2 && (iswupper(name[2]) || name[2] == L'_'))
         return 0;
     for (int i = 0; windows_only[i]; i++)
         if (!_wcsicmp(name, windows_only[i]))
@@ -270,8 +280,20 @@ static void cancelled(void)
         WriteFile(err, bytes, (DWORD)n, &written, NULL);
 }
 
-static void usage(void)
+static void usage(int host)
 {
+    if (host) {
+        message("Usage: hamam.exe [Options...] [CommandLine]\n\n"
+                "Runs the command as root on the host kernel itself, outside the WSL containers,\n"
+                "with the programs of a distribution. Asks for consent (and the HAMAM password).\n"
+                "Use it only for what a container cannot do: drivers, disks, the kernel.\n\n"
+                "    -d, --distribution <name>   whose programs to use (the HAMAM one by default)\n"
+                "    -u, --user <name>           run as that user\n"
+                "    --cd <dir>                  start in that folder (Windows or Linux path, ~ for home)\n"
+                "    -e, --exec <cmd> [args]     run the command without the shell\n"
+                "    -- <command line>           run the rest through the shell\n");
+        return;
+    }
     message("Usage: wsl.exe [Argument] [Options...] [CommandLine]\n\n"
             "    -d, --distribution <name>   run in that distribution\n"
             "    -u, --user <name>           run as that user\n"
@@ -320,6 +342,10 @@ int __cdecl wmain(int argc, WCHAR *argv[])
     GetCurrentDirectoryW(ARRAY_SIZE(cwd_w), cwd_w);
     cwd = utf8(cwd_w);
 
+    int host = !_wcsicmp(base, L"hamam.exe");
+
+    if (host)
+        flags |= REQ_HOST;
     if (!_wcsicmp(base, L"bash.exe")) {
         flags |= REQ_GITBASH;
         args[nargs++] = "bash";
@@ -335,17 +361,17 @@ int __cdecl wmain(int argc, WCHAR *argv[])
                 user = utf8(argv[++i]);
             else if (!wcscmp(a, L"--cd") && i + 1 < argc)
                 cwd = utf8(argv[++i]);
-            else if (!wcscmp(a, L"-l") || !wcscmp(a, L"--list"))
+            else if (!host && (!wcscmp(a, L"-l") || !wcscmp(a, L"--list")))
                 return list_distros();
             else if (!wcscmp(a, L"-v") || !wcscmp(a, L"--verbose"))
                 continue;
-            else if (!wcscmp(a, L"--shutdown"))
+            else if (!host && !wcscmp(a, L"--shutdown"))
                 flags |= REQ_SHUTDOWN;
-            else if ((!wcscmp(a, L"-t") || !wcscmp(a, L"--terminate")) && i + 1 < argc) {
+            else if (!host && (!wcscmp(a, L"-t") || !wcscmp(a, L"--terminate")) && i + 1 < argc) {
                 flags |= REQ_TERMINATE;
                 distro = utf8(argv[++i]);
-            } else if (!wcscmp(a, L"-h") || !wcscmp(a, L"--help")) {
-                usage();
+            } else if (!wcscmp(a, L"-h") || !wcscmp(a, L"--help") || (host && !wcscmp(a, L"/?"))) {
+                usage(host);
                 return 0;
             } else if (!wcscmp(a, L"-e") || !wcscmp(a, L"--exec")) {
                 exec = 1;
@@ -376,6 +402,14 @@ int __cdecl wmain(int argc, WCHAR *argv[])
         }
     }
 
+    /* the consent window comes from a service, not from here: as a program
+     * that starts an elevation lets the window of it come to the front, so
+     * that it has the keyboard and not the console behind it */
+    if (host) { /* user32 only for hamam: wsl, bash and git start without it */
+        BOOL (WINAPI *allow)(DWORD) = (void *)GetProcAddress(LoadLibraryW(L"user32.dll"), "AllowSetForegroundWindow");
+        if (allow)
+            allow(ASFW_ANY);
+    }
     if (connect_service(token))
         return 1;
     InitializeCriticalSection(&send_lock);

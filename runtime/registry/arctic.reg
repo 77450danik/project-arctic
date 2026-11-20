@@ -52,7 +52,7 @@ REGEDIT4
 "comctl32"="native,builtin"
 ; the picture viewer of ReactOS: Wine's shimgvw is a stub without a window
 "shimgvw"="native,builtin"
-"winemenubuilder.exe"=""
+"winmenubuilder.exe"=""
 ; Wine's mshtml is a shell over wine-gecko, which this image does not carry:
 ; a program that asked for it got the "download Gecko" box, which has hung
 ; the start before (host/init/arctic-init.c). Off until our own mshtml
@@ -149,6 +149,14 @@ REGEDIT4
 "Inter Bold Italic (TrueType)"="Inter-BoldItalic.ttf"
 "Inter Light (TrueType)"="Inter-Light.ttf"
 "Inter SemiBold (TrueType)"="Inter-SemiBold.ttf"
+; Open Sans, the interface font of the Windows 11 style since 2026-11-18:
+; Segoe UI's own designer, with Cyrillic (Selawik, Microsoft's stand-in for
+; Segoe UI, has none)
+"Open Sans (TrueType)"="OpenSans-Regular.ttf"
+"Open Sans Italic (TrueType)"="OpenSans-Italic.ttf"
+"Open Sans Bold (TrueType)"="OpenSans-Bold.ttf"
+"Open Sans Light (TrueType)"="OpenSans-Light.ttf"
+"Open Sans SemiBold (TrueType)"="OpenSans-SemiBold.ttf"
 "Quicksand Bold (OpenType)"="Quicksand-Bold.otf"
 ; Arial, Times New Roman and Courier New, made from Liberation (ci/windows-fonts.py)
 "Arial (TrueType)"="arial.ttf"
