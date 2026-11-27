@@ -2,14 +2,13 @@
   const I18N = {
     uk: {
       pageTitle: "Project Arctic — Гібридна ОС нового покоління для x86",
+      "nav.highlights": "Переваги",
       "nav.experience": "Можливості",
-      "nav.performance": "Продуктивність",
-      "nav.architecture": "Архітектура",
+      "nav.capabilities": "Особливості",
       "nav.download": "Завантажити",
       "nav.cta": "Завантажити ISO",
-      "hero.eyebrow": "Операційна система нового покоління для x86",
       "hero.title": "Знайомий комфорт.<br/>Нова швидкість.",
-      "hero.subtitle": "Унікальна гібридна операційна система для x86, що поєднує найвищі результати продуктивності, нативну підтримку Windows-програм і бездоганну зручність щоденного користування.",
+      "hero.subtitle": "Унікальна гібридна операційна система нового покоління для x86: максимальна продуктивність, усі драйвери з коробки та бездоганна зручність щоденного користування.",
       "hero.download": "Завантажити Live CD (ISO)",
       "hero.github": "Відкрити на GitHub",
       "hero.meta": "Останній реліз Live CD · x86-64 · UEFI Secure Boot та BIOS",
@@ -17,22 +16,20 @@
       "hero.modeLight": "Світлий режим",
       "hero.modeDesktop": "Робочий стіл",
       "common.vmNote": "Реальний знімок екрана з віртуальної машини QEMU (1920×1080)",
-      "metrics.title": "Створена для максимальної швидкодії",
-      "metrics.subtitle": "Підсистема Windows NT працює безпосередньо на рівні ядра — без зайвих прошарків та втрат.",
-      "metrics.gb": "ГБ",
-      "metrics.us": "мкс",
-      "metrics.ramLabel": "Споживання ОЗП у спокої",
-      "metrics.ramDesc": "Швидкий холодний старт та легка система, готова до ігор і роботи.",
-      "metrics.win32kLabel": "win32k у ядрі (4.6× швидше)",
-      "metrics.win32kDesc": "Створення та керування вікнами напряму в потоці програми через ядро.",
-      "metrics.fastpathLabel": "Швидкі шляхи NT-реєстру",
-      "metrics.fastpathDesc": "Спільна пам’ять і кешування ключів без очікування міжпроцесного обміну.",
-      "metrics.gfxLabel": "Нативний композитор DWM",
-      "metrics.gfxDesc": "Прямий вивід на atomic KMS, апаратний курсор, VRR і розмиття Acrylic на GPU.",
+      "pillars.title": "Створена для всього, що ви робите",
+      "pillars.subtitle": "Мінімум зайвого — максимум результату в щоденній роботі та найвимогливіших іграх.",
+      "pillars.fastTitle": "Швидка",
+      "pillars.fastDesc": "Миттєвий старт, нативні виклики NT у ядрі та прямий композитор без затримок.",
+      "pillars.effTitle": "Ефективна",
+      "pillars.effDesc": "Удвічі менше споживання ОЗП у спокої й легке навантаження на систему.",
+      "pillars.workTitle": "Для роботи",
+      "pillars.workDesc": "Провідник із вкладками, Chrome, PowerShell 7, Git, WSL і віртуалізація KVM.",
+      "pillars.gameTitle": "Для ігор",
+      "pillars.gameDesc": "Багато ігор працюють швидше й стабільніше, ніж на Windows — DXVK, vkd3d і Vulkan.",
       "showcase.title": "Зручність, яку відчуваєш одразу",
       "showcase.subtitle": "Знайомий дизайн у стандартах Windows 11: закруглені вікна, вкладки, ефект Acrylic і миттєвий відгук.",
       "showcase.tab1": "Провідник із вкладками",
-      "showcase.tab2": "Багатовіконність і Snap",
+      "hero.snapTab": "Багатовіконність і Snap",
       "showcase.tab3": "Диспетчер завдань",
       "showcase.tab4": "Персоналізація та теми",
       "showcase.tab1Desc": "Провідник у стилі Windows 11 із вкладками, швидким доступом і нативним диском C: на NTFS.",
@@ -48,15 +45,17 @@
       "gallery.card3Title": "Гнучка персоналізація",
       "gallery.card3Desc": "Миттєве перемикання світлого, темного й комбінованого режимів, ефектів заголовків і значків.",
       "bento.title": "Справжній гібрид без компромісів",
-      "bento.subtitle": "Єдиний світ Windows NT поверх сучасного ядра Linux — без віртуальних прошарків поверх робочого столу.",
-      "bento.c1Title": "Гібридне ядро NT + Linux",
-      "bento.c1Desc": "Модулі ядра win32k, ntos, ntimage та ntsync виконують системні виклики Windows напряму. Ніякого X11 чи стороннього Wayland-композитора — екран належить dwm.exe, а ввід — csrss.exe.",
-      "bento.c2Title": "Ігри, GPU та KVM",
-      "bento.c2Desc": "Direct3D 8–12 через DXVK і vkd3d-proton, Vulkan, CUDA, нативна підтримка WinHvPlatform на KVM та контейнери WSL.",
-      "bento.c3Title": "Live CD, Live USB та Secure Boot",
-      "bento.c3Desc": "Запуск безпосередньо з Live CD ISO або з флешки зі збереженням на реальний диск C: (NTFS), підписом Secure Boot та відкатом оновлень.",
+      "bento.subtitle": "Усе необхідне працює одразу після запуску та налаштовується під ваші вподобання.",
+      "bento.c1Title": "Ігри краще, ніж на Windows",
+      "bento.c1Desc": "Багато сучасних ігор демонструють вищу плавність і стабільніший FPS завдяки прямому стеку Vulkan, DXVK, vkd3d-proton, ігровому режиму та керуванню GPU.",
+      "bento.c2Title": "Усі драйвери вже з коробки",
+      "bento.c2Desc": "Відеокарти Intel, AMD і NVIDIA, Wi-Fi, звук, мережа й периферія запрацюють одразу з Live CD або Live USB — без ручного пошуку й зайвих інсталяторів.",
+      "bento.c3Title": "Великі можливості кастомізації",
+      "bento.c3Desc": "Світла, темна й змішана теми, налаштування прозорості та розмиття Acrylic/Mica, стилі меню «Пуск», панелі задач, Провідника та набори значків.",
+      "bento.c4Title": "Гібридне ядро, WSL та Secure Boot",
+      "bento.c4Desc": "Модулі NT у ядрі Linux, нативний WinHvPlatform на KVM, контейнери WSL, підтримка UEFI Secure Boot та збереження даних на реальний диск C: (NTFS).",
       "download.title": "Спробуйте Project Arctic вже зараз",
-      "download.subtitle": "Завантажте актуальний Live CD образ для віртуальної машини або сучасного ПК x86-64.",
+      "download.subtitle": "Завантажте найновіший Live CD образ для віртуальної машини або сучасного ПК x86-64.",
       "download.isoBtn": "Завантажити arctic.iso",
       "download.usbBtn": "Образ для USB (.img.xz)",
       "download.releaseBtn": "Сторінка релізу",
@@ -68,14 +67,13 @@
     },
     en: {
       pageTitle: "Project Arctic — Next-Generation Hybrid OS for x86",
+      "nav.highlights": "Highlights",
       "nav.experience": "Experience",
-      "nav.performance": "Performance",
-      "nav.architecture": "Architecture",
+      "nav.capabilities": "Features",
       "nav.download": "Download",
       "nav.cta": "Download ISO",
-      "hero.eyebrow": "Next-generation operating system for x86",
       "hero.title": "Familiar comfort.<br/>Next-level speed.",
-      "hero.subtitle": "A unique hybrid operating system for x86 combining top-tier performance, native Windows application compatibility, and effortless everyday usability.",
+      "hero.subtitle": "A unique next-generation hybrid OS for x86: peak performance, all drivers out of the box, and effortless everyday usability.",
       "hero.download": "Download Live CD (ISO)",
       "hero.github": "View on GitHub",
       "hero.meta": "Latest Live CD release · x86-64 · UEFI Secure Boot & BIOS",
@@ -83,22 +81,20 @@
       "hero.modeLight": "Light mode",
       "hero.modeDesktop": "Desktop",
       "common.vmNote": "Real screenshot captured inside a QEMU virtual machine (1920×1080)",
-      "metrics.title": "Engineered for peak performance",
-      "metrics.subtitle": "The Windows NT subsystem runs directly at the kernel level — without heavy desktop intermediaries.",
-      "metrics.gb": "GB",
-      "metrics.us": "µs",
-      "metrics.ramLabel": "Idle memory footprint",
-      "metrics.ramDesc": "Fast cold boot and a lean footprint ready for demanding apps and games.",
-      "metrics.win32kLabel": "In-kernel win32k (4.6× faster)",
-      "metrics.win32kDesc": "Window creation and messaging executed straight inside the caller thread via kernel syscalls.",
-      "metrics.fastpathLabel": "Shared-memory NT registry",
-      "metrics.fastpathDesc": "In-process key caching and shared-memory fastpaths eliminate IPC stalls.",
-      "metrics.gfxLabel": "Native Vulkan DWM compositor",
-      "metrics.gfxDesc": "Direct atomic KMS output, hardware cursor, VRR, and GPU-accelerated Acrylic blur.",
+      "pillars.title": "Built for everything you do",
+      "pillars.subtitle": "Less clutter, more real results across everyday productivity and demanding PC gaming.",
+      "pillars.fastTitle": "Fast",
+      "pillars.fastDesc": "Instant cold boot, native in-kernel NT calls, and direct GPU compositing with zero lag.",
+      "pillars.effTitle": "Efficient",
+      "pillars.effDesc": "Half the idle RAM footprint and lean system overhead built for modern hardware.",
+      "pillars.workTitle": "For work",
+      "pillars.workDesc": "Tabbed File Explorer, Chrome, PowerShell 7, Git, WSL containers, and KVM acceleration.",
+      "pillars.gameTitle": "For gaming",
+      "pillars.gameDesc": "Many games run faster and smoother than on Windows — powered by DXVK, vkd3d, and Vulkan.",
       "showcase.title": "Effortless usability from the first click",
       "showcase.subtitle": "Authentic Windows 11 design standards: rounded geometry, tabbed Explorer, Acrylic glass, and instant response.",
       "showcase.tab1": "Tabbed File Explorer",
-      "showcase.tab2": "Multitasking & Snap",
+      "hero.snapTab": "Multitasking & Snap",
       "showcase.tab3": "Task Manager",
       "showcase.tab4": "Personalization & Themes",
       "showcase.tab1Desc": "Windows 11-style File Explorer with browser tabs, Quick Access, and a real NTFS C: drive.",
@@ -114,13 +110,15 @@
       "gallery.card3Title": "Tailored Personalization",
       "gallery.card3Desc": "Instant switching for system/app theme modes, window title effects, and control styles.",
       "bento.title": "A true hybrid without compromises",
-      "bento.subtitle": "One unified Windows NT world on a modern Linux kernel — no X11 or external Wayland desktop.",
-      "bento.c1Title": "Hybrid NT + Linux Kernel",
-      "bento.c1Desc": "Kernel modules win32k, ntos, ntimage, and ntsync handle Windows syscalls natively. No X11 or third-party Wayland compositor — dwm.exe owns the display and csrss.exe owns input.",
-      "bento.c2Title": "Gaming, GPU & KVM",
-      "bento.c2Desc": "Direct3D 8–12 via DXVK and vkd3d-proton, Vulkan, CUDA, native WinHvPlatform on KVM, and WSL containers.",
-      "bento.c3Title": "Live CD, Live USB & Secure Boot",
-      "bento.c3Desc": "Boot straight from the Live CD ISO or persist everything on a real NTFS C: USB partition with Secure Boot and rollback.",
+      "bento.subtitle": "Everything works out of the box and adapts effortlessly to your personal style.",
+      "bento.c1Title": "Games faster than Windows",
+      "bento.c1Desc": "Many titles deliver higher frame pacing and smoother FPS thanks to direct Vulkan, DXVK, vkd3d-proton, built-in Game Mode, and GPU tuning.",
+      "bento.c2Title": "All drivers out of the box",
+      "bento.c2Desc": "Intel, AMD, and NVIDIA GPUs, Wi-Fi, audio, Ethernet, and peripherals work straight from Live CD or Live USB — zero manual driver hunting.",
+      "bento.c3Title": "Deep customization",
+      "bento.c3Desc": "Light, Dark, and Mixed modes, Acrylic/Mica blur controls, Start Menu styles, Taskbar layouts, Explorer views, and custom icon themes.",
+      "bento.c4Title": "Hybrid NT kernel, WSL & Secure Boot",
+      "bento.c4Desc": "In-kernel NT subsystems on Linux, native WinHvPlatform on KVM, WSL containers, UEFI Secure Boot, and persistent NTFS C: storage.",
       "download.title": "Experience Project Arctic today",
       "download.subtitle": "Download the latest Live CD image for your virtual machine or modern x86-64 PC.",
       "download.isoBtn": "Download arctic.iso",
@@ -137,6 +135,7 @@
   let currentLang = "uk";
   let currentShowcaseKey = "showcase.tab1Desc";
   let releaseMeta = null;
+  let userPickedHero = false;
 
   function detectInitialLang() {
     const params = new URLSearchParams(window.location.search);
@@ -198,17 +197,24 @@
 
   async function fetchLatestRelease() {
     try {
-      const res = await fetch("https://api.github.com/repos/77450danik/project-arctic/releases/tags/dev", {
+      const res = await fetch("https://api.github.com/repos/77450danik/project-arctic/releases?per_page=10", {
         headers: { Accept: "application/vnd.github+json" }
       });
       if (!res.ok) return;
-      const data = await res.json();
-      const assets = Array.isArray(data.assets) ? data.assets : [];
+      const releases = await res.json();
+      if (!Array.isArray(releases) || releases.length === 0) return;
+
+      const latest = releases.find((r) =>
+        !r.draft && Array.isArray(r.assets) &&
+        r.assets.some((a) => a.name === "arctic.iso" || /^arctic\.iso\.\d{3}$/.test(a.name))
+      ) || releases.find((r) => !r.draft) || releases[0];
+
+      const assets = Array.isArray(latest.assets) ? latest.assets : [];
       const isoAsset = assets.find((a) => a.name === "arctic.iso");
       const splitIso = assets.find((a) => /^arctic\.iso\.\d{3}$/.test(a.name));
       const usbAsset = assets.find((a) => a.name === "arctic-usb.img.xz");
 
-      const isoUrl = isoAsset ? isoAsset.browser_download_url : (data.html_url || "https://github.com/77450danik/project-arctic/releases/tag/dev");
+      const isoUrl = isoAsset ? isoAsset.browser_download_url : (latest.html_url || "https://github.com/77450danik/project-arctic/releases/tag/dev");
       document.querySelectorAll(".js-iso-link").forEach((a) => {
         a.href = isoUrl;
       });
@@ -219,9 +225,9 @@
         });
       }
 
-      if (data.html_url) {
+      if (latest.html_url) {
         document.querySelectorAll(".js-release-url").forEach((a) => {
-          a.href = data.html_url;
+          a.href = latest.html_url;
         });
       }
 
@@ -234,13 +240,30 @@
       }
 
       releaseMeta = {
-        name: data.name || "Arctic dev",
+        name: latest.name || latest.tag_name || "Arctic dev",
         sizeText
       };
       renderReleaseMetadata();
     } catch (_) {
-      // Keep direct static fallback URLs cleanly intact
+      // Keep direct static fallback URLs intact
     }
+  }
+
+  // Sync hero screenshot with device Light/Dark theme automatically unless manually changed
+  const heroImg = document.getElementById("hero-preview-img");
+  function syncHeroWithDeviceTheme(isDark) {
+    if (userPickedHero || !heroImg) return;
+    const targetSrc = isDark ? "assets/hero-start-dark.webp" : "assets/start-light.webp";
+    heroImg.src = targetSrc;
+    document.querySelectorAll("[data-hero-src]").forEach((p) => {
+      p.classList.toggle("is-active", p.dataset.heroSrc === targetSrc);
+    });
+  }
+
+  const colorSchemeMedia = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+  if (colorSchemeMedia) {
+    syncHeroWithDeviceTheme(colorSchemeMedia.matches);
+    colorSchemeMedia.addEventListener("change", (e) => syncHeroWithDeviceTheme(e.matches));
   }
 
   // Language buttons
@@ -252,9 +275,9 @@
   });
 
   // Hero Light/Dark screenshot pills
-  const heroImg = document.getElementById("hero-preview-img");
   document.querySelectorAll("[data-hero-src]").forEach((pill) => {
     pill.addEventListener("click", () => {
+      userPickedHero = true;
       document.querySelectorAll("[data-hero-src]").forEach((p) => p.classList.remove("is-active"));
       pill.classList.add("is-active");
       if (heroImg) heroImg.src = pill.dataset.heroSrc;
