@@ -9,7 +9,7 @@
   <meta property="og:title" content="Project Arctic — Next-generation hybrid OS for x86" />
   <meta property="og:description" content="Fast, efficient, built for work and gaming with drivers out of the box and deep Windows 11-style customization." />
   <meta property="og:image" content="assets/hero-start-dark.webp" />
-  <link rel="icon" type="image/png" href="assets/arctic-logo.png" />
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -34,6 +34,15 @@
       </nav>
 
       <div class="header-actions">
+        <button type="button" class="theme-toggle-btn" id="theme-toggle" aria-label="Перемкнути тему" title="Перемкнути тему">
+          <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M12 2V4.5M12 19.5V22M4.93 4.93L6.7 6.7M17.3 17.3L19.07 19.07M2 12H4.5M19.5 12H22M4.93 19.07L6.7 17.3M17.3 6.7L19.07 4.93" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M20.35 14.95A8.5 8.5 0 0 1 9.05 3.65a8.5 8.5 0 1 0 11.3 11.3Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
         <div class="lang-switch" role="group" aria-label="Language switcher">
           <button type="button" class="lang-btn is-active" data-lang="uk">UA</button>
           <button type="button" class="lang-btn" data-lang="en">EN</button>
@@ -252,11 +261,11 @@
         <div class="bento-grid">
           <article class="bento-card">
             <div class="bento-icon-wrap">
-              <img src="assets/icons/gaming.png" alt="" width="44" height="44" />
+              <img src="assets/icons/speedometer.svg" alt="" width="44" height="44" />
             </div>
-            <h3 data-i18n="bento.c1Title">Ігри краще, ніж на Windows</h3>
+            <h3 data-i18n="bento.c1Title">Зручно для ігрового ПК</h3>
             <p data-i18n="bento.c1Desc">
-              Багато сучасних ігор демонструють вищу плавність і стабільніший FPS завдяки прямому стеку Vulkan, DXVK, vkd3d-proton, ігровому режиму та керуванню GPU.
+              Вбудовані інструменти тюнінгу, моніторингу та оптимізації вже з коробки: андервольт і ліміти потужності ЦП, розгін і частоти ГП, ігровий оверлей (FPS, час кадру, температури), обмежувач кадрів і автоматичний ігровий режим.
             </p>
           </article>
 

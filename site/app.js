@@ -46,8 +46,8 @@
       "gallery.card3Desc": "Миттєве перемикання світлого, темного й комбінованого режимів, ефектів заголовків і значків.",
       "bento.title": "Справжній гібрид без компромісів",
       "bento.subtitle": "Усе необхідне працює одразу після запуску та налаштовується під ваші вподобання.",
-      "bento.c1Title": "Ігри краще, ніж на Windows",
-      "bento.c1Desc": "Багато сучасних ігор демонструють вищу плавність і стабільніший FPS завдяки прямому стеку Vulkan, DXVK, vkd3d-proton, ігровому режиму та керуванню GPU.",
+      "bento.c1Title": "Зручно для ігрового ПК",
+      "bento.c1Desc": "Вбудовані інструменти тюнінгу, моніторингу та оптимізації вже з коробки: андервольт і ліміти потужності ЦП, розгін і частоти ГП, ігровий оверлей (FPS, час кадру, температури), обмежувач кадрів і автоматичний ігровий режим.",
       "bento.c2Title": "Усі драйвери вже з коробки",
       "bento.c2Desc": "Відеокарти Intel, AMD і NVIDIA, Wi-Fi, звук, мережа й периферія запрацюють одразу з Live CD або Live USB — без ручного пошуку й зайвих інсталяторів.",
       "bento.c3Title": "Великі можливості кастомізації",
@@ -112,8 +112,8 @@
       "gallery.card3Desc": "Instant switching for system/app theme modes, window title effects, and control styles.",
       "bento.title": "A true hybrid without compromises",
       "bento.subtitle": "Everything works out of the box and adapts effortlessly to your personal style.",
-      "bento.c1Title": "Games faster than Windows",
-      "bento.c1Desc": "Many titles deliver higher frame pacing and smoother FPS thanks to direct Vulkan, DXVK, vkd3d-proton, built-in Game Mode, and GPU tuning.",
+      "bento.c1Title": "Built for gaming PCs",
+      "bento.c1Desc": "Tuning, monitoring, and optimization tools built right out of the box: CPU undervolting and power limits, GPU tuning and clocks, live OSD overlay (FPS, frametime, temperatures), frame-rate cap, and automatic Game Mode.",
       "bento.c2Title": "All drivers out of the box",
       "bento.c2Desc": "Intel, AMD, and NVIDIA GPUs, Wi-Fi, audio, Ethernet, and peripherals work straight from Live CD or Live USB — zero manual driver hunting.",
       "bento.c3Title": "Deep customization",
@@ -174,6 +174,13 @@
     document.querySelectorAll(".lang-btn").forEach((btn) => {
       btn.classList.toggle("is-active", btn.dataset.lang === currentLang);
     });
+
+    const tBtn = document.getElementById("theme-toggle");
+    if (tBtn) {
+      const tLabel = currentLang === "en" ? "Toggle light/dark theme" : "Перемкнути світлу й темну тему";
+      tBtn.setAttribute("aria-label", tLabel);
+      tBtn.setAttribute("title", tLabel);
+    }
 
     renderReleaseMetadata();
 
@@ -251,9 +258,18 @@
     }
   }
 
-  // Sync hero screenshot with device Light/Dark theme automatically unless manually changed
+  // Theme switcher (defaults to device prefers-color-scheme, smooth manual toggle)
   const heroImg = document.getElementById("hero-preview-img");
-  function syncHeroWithDeviceTheme(isDark) {
+  const themeToggleBtn = document.getElementById("theme-toggle");
+  const colorSchemeMedia = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+
+  function getEffectiveTheme() {
+    const attr = document.documentElement.getAttribute("data-theme");
+    if (attr === "dark" || attr === "light") return attr;
+    return colorSchemeMedia && colorSchemeMedia.matches ? "dark" : "light";
+  }
+
+  function syncHeroWithTheme(isDark) {
     if (userPickedHero || !heroImg) return;
     const targetSrc = isDark ? "assets/hero-start-dark.webp" : "assets/start-light.webp";
     heroImg.src = targetSrc;
@@ -262,10 +278,48 @@
     });
   }
 
-  const colorSchemeMedia = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+  function applyTheme(theme, persist = false) {
+    if (theme === "dark" || theme === "light") {
+      document.documentElement.setAttribute("data-theme", theme);
+      if (persist) {
+        try { localStorage.setItem("arctic_theme", theme); } catch (_) {}
+      }
+      syncHeroWithTheme(theme === "dark");
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+      syncHeroWithTheme(Boolean(colorSchemeMedia && colorSchemeMedia.matches));
+    }
+    if (themeToggleBtn) {
+      const label = currentLang === "en" ? "Toggle light/dark theme" : "Перемкнути світлу й темну тему";
+      themeToggleBtn.setAttribute("aria-label", label);
+      themeToggleBtn.setAttribute("title", label);
+    }
+  }
+
+  try {
+    const savedTheme = localStorage.getItem("arctic_theme");
+    if (savedTheme === "dark" || savedTheme === "light") {
+      applyTheme(savedTheme, false);
+    } else {
+      applyTheme(null, false);
+    }
+  } catch (_) {
+    applyTheme(null, false);
+  }
+
   if (colorSchemeMedia) {
-    syncHeroWithDeviceTheme(colorSchemeMedia.matches);
-    colorSchemeMedia.addEventListener("change", (e) => syncHeroWithDeviceTheme(e.matches));
+    colorSchemeMedia.addEventListener("change", () => {
+      if (!document.documentElement.getAttribute("data-theme")) {
+        syncHeroWithTheme(colorSchemeMedia.matches);
+      }
+    });
+  }
+
+  if (themeToggleBtn) {
+    themeToggleBtn.addEventListener("click", () => {
+      const next = getEffectiveTheme() === "dark" ? "light" : "dark";
+      applyTheme(next, true);
+    });
   }
 
   // Language buttons
