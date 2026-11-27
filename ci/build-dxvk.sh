@@ -26,7 +26,7 @@ fi
 
 if [ -z "${SKIP_DEPS:-}" ]; then
     source "$ROOT/ci/arch-prep.sh"
-    pacman -Syu --noconfirm --needed git mingw-w64-gcc meson ninja glslang python
+    pacman -Syu --noconfirm --needed git mingw-w64-gcc meson ninja glslang python rsync
 fi
 
 # Pristine upstream with its submodules (Khronos headers, SPIR-V), fetched once per tag
