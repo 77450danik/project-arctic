@@ -1,0 +1,10 @@
+# The wineserver side (vm-test.py --append arctic.ntos=0): ntbench to
+# D:\nt\bench-wineserver.txt, then the units that failed under ntos
+# (D:\nw.cmd, put on the test disk for the run), beside n2-ntbench-ntos.txt's
+sleep 25
+key win-r
+sleep 2
+type D:\nw.cmd
+key ret
+sleep 5
+shot n2-wineserver

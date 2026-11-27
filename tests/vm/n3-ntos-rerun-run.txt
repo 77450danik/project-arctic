@@ -1,0 +1,7 @@
+# n3-ntos-rerun.txt's commands alone, for a VM already at the desktop
+key win-r
+sleep 2
+type D:\nn.cmd
+key ret
+sleep 5
+shot n3-ntos

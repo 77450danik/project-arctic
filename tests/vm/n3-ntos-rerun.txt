@@ -1,0 +1,9 @@
+# NT's executive in the kernel again, with its fixes: the units still failing
+# (D:\nn.cmd, put on the test disk for the run) to D:\nt\ntos3-*.txt
+sleep 25
+key win-r
+sleep 2
+type D:\nn.cmd
+key ret
+sleep 5
+shot n3-ntos

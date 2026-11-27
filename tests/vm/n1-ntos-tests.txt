@@ -1,0 +1,15 @@
+# NT's executive in the kernel (ntos, docs/ntos.md): Wine's conformance tests
+# of what it serves, run once as is (ntos) and once with --append
+# arctic.ntos=0 (wineserver): the same failures in both or a bug of ntos. The
+# test disk is tools/wsl/make-nt-test-disk.sh's (D:); every test writes
+# D:\nt\<mode>-<test>.txt, the run ends with D:\nt\<mode>-done.txt, read from
+# the image with mtools while the VM runs (vm-test.py --keep). The serial log
+# says "NT's executive is in the kernel" (or why not).
+sleep 10
+shot n1-desktop
+key win-r
+sleep 2
+type D:\nt.cmd ntos
+key ret
+sleep 10
+shot n1-start

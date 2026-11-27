@@ -542,13 +542,145 @@ static WCHAR *default_pins(void)
     return data;
 }
 
-UINT items_pinned( struct item ***list )
+/* Windows 11's menu keeps pins in folders: "folder:Name|key|key" among the
+ * keys. The other menus have no folders and show what is in them in their
+ * place. */
+#define FOLDER_PREFIX L"folder:"
+
+BOOL items_pin_is_folder( const WCHAR *entry )
+{
+    return !wcsncmp( entry, FOLDER_PREFIX, ARRAY_SIZE(FOLDER_PREFIX) - 1 );
+}
+
+/* the list as kept, or the defaults when nothing was ever pinned */
+static WCHAR *pins_raw(void)
 {
     BOOL present;
     WCHAR *pins = read_multi( L"Pinned", &present );
-    UINT count = 0;
 
     if (!present) pins = default_pins();
+    return pins;
+}
+
+static DWORD multi_chars( const WCHAR *multi )
+{
+    DWORD chars = 1;
+
+    for (const WCHAR *p = multi; p && *p; p += lstrlenW( p ) + 1) chars += lstrlenW( p ) + 1;
+    return chars;
+}
+
+/* the keys, those in folders where the folder is */
+static WCHAR *pins_flat(void)
+{
+    WCHAR *raw = pins_raw(), *flat, *out;
+
+    if (!(out = flat = calloc( multi_chars( raw ) + 1, sizeof(WCHAR) )))
+    {
+        free( raw );
+        return NULL;
+    }
+    for (const WCHAR *p = raw; p && *p; p += lstrlenW( p ) + 1)
+    {
+        if (!items_pin_is_folder( p ))
+        {
+            lstrcpyW( out, p );
+            out += lstrlenW( p ) + 1;
+            continue;
+        }
+        for (const WCHAR *k = wcschr( p, '|' ); k; k = wcschr( k + 1, '|' ))
+        {
+            const WCHAR *next = wcschr( k + 1, '|' );
+            int n = next ? next - (k + 1) : lstrlenW( k + 1 );
+
+            if (!n) continue;
+            memcpy( out, k + 1, n * sizeof(WCHAR) );
+            out += n;
+            *out++ = 0;
+        }
+    }
+    *out = 0;
+    free( raw );
+    return flat;
+}
+
+/* a key unpinned: from the list and from the folders; a folder left with one
+ * pin is that pin again, as in Windows 11 */
+static void pins_remove( const WCHAR *key )
+{
+    WCHAR *raw = pins_raw(), *new, *out, *entry;
+    DWORD chars = multi_chars( raw );
+
+    if (!(out = new = calloc( chars + 1, sizeof(WCHAR) )) || !(entry = malloc( chars * sizeof(WCHAR) )))
+    {
+        free( new );
+        free( raw );
+        return;
+    }
+    for (const WCHAR *p = raw; p && *p; p += lstrlenW( p ) + 1)
+    {
+        const WCHAR *bar = wcschr( p, '|' ), *last = NULL;
+        int kept = 0, len;
+
+        if (!items_pin_is_folder( p ) || !bar)
+        {
+            if (!wcscmp( p, key )) continue;
+            lstrcpyW( out, p );
+            out += lstrlenW( p ) + 1;
+            continue;
+        }
+        len = bar - p;
+        memcpy( entry, p, len * sizeof(WCHAR) );
+        for (const WCHAR *k = bar; k; k = wcschr( k + 1, '|' ))
+        {
+            const WCHAR *next = wcschr( k + 1, '|' );
+            int n = next ? next - (k + 1) : lstrlenW( k + 1 );
+
+            if (!n || ((int)lstrlenW( key ) == n && !wcsncmp( k + 1, key, n ))) continue;
+            entry[len++] = '|';
+            memcpy( entry + len, k + 1, n * sizeof(WCHAR) );
+            last = entry + len;
+            len += n;
+            kept++;
+        }
+        entry[len] = 0;
+        if (kept >= 2) lstrcpyW( out, entry );
+        else if (kept == 1) lstrcpyW( out, last );
+        else continue;
+        out += lstrlenW( out ) + 1;
+    }
+    *out++ = 0;
+    write_multi( L"Pinned", new, out - new );
+    free( entry );
+    free( new );
+    free( raw );
+}
+
+/* for Windows 11's menu: the list as kept, folders and all; written back
+ * whole */
+WCHAR *items_pin_entries(void)
+{
+    if (!root) items_reload();
+    return pins_raw();
+}
+
+void items_pin_entries_save( const WCHAR *multi )
+{
+    write_multi( L"Pinned", multi, multi_chars( multi ) );
+    items_sync_classic();
+}
+
+struct item *items_find( const WCHAR *key )
+{
+    if (!root) items_reload();
+    return find_item( key );
+}
+
+UINT items_pinned( struct item ***list )
+{
+    WCHAR *pins = pins_flat();
+    UINT count = 0;
+
     for (const WCHAR *p = pins; p && *p; p += lstrlenW( p ) + 1)
     {
         struct item *item = find_item( p );
@@ -561,10 +693,9 @@ UINT items_pinned( struct item ***list )
 
 BOOL items_is_pinned( const struct item *item )
 {
-    BOOL present, pinned;
-    WCHAR *pins = read_multi( L"Pinned", &present );
+    WCHAR *pins = pins_flat();
+    BOOL pinned;
 
-    if (!present) pins = default_pins();
     pinned = multi_has( pins, item->key );
     free( pins );
     return pinned;
@@ -583,7 +714,8 @@ void items_pin( struct item *item, BOOL pin )
         write_multi( L"Pinned", pins, chars );
     }
     free( pins );
-    multi_change( L"Pinned", item->key, pin );
+    if (pin) multi_change( L"Pinned", item->key, TRUE );
+    else pins_remove( item->key );
     items_sync_classic();
 }
 
@@ -649,6 +781,57 @@ BOOL items_pin_file( const WCHAR *path )
     return TRUE;
 }
 
+/* what a file stands for in the menu: what its shortcut starts, or itself */
+static void file_meaning( const WCHAR *path, WCHAR *out, int size )
+{
+    WCHAR expanded[MAX_PATH];
+
+    if (!ExpandEnvironmentStringsW( path, expanded, ARRAY_SIZE(expanded) )) lstrcpynW( expanded, path, ARRAY_SIZE(expanded) );
+    if (!wcsicmp( path_extension( expanded ), L".lnk" ) && link_target( expanded, out, size )) return;
+    lstrcpynW( out, expanded, size );
+}
+
+/* the pin a file stands for: the file itself, a pin of the same program or
+ * folder, or the copy of it pinned from elsewhere */
+static struct item *pinned_item_of_file( const WCHAR *path )
+{
+    WCHAR want[MAX_PATH], have[MAX_PATH];
+    struct item *found = NULL;
+    WCHAR *pins;
+
+    if (!root) items_reload();
+    file_meaning( path, want, ARRAY_SIZE(want) );
+    pins = pins_flat();
+    for (const WCHAR *p = pins; p && *p && !found; p += lstrlenW( p ) + 1)
+    {
+        struct item *item = find_item( p );
+
+        if (!item || item->kind != ITEM_PROGRAM) continue;
+        if (!wcsicmp( item->path, path )) found = item;
+        else if (!item->args[0])
+        {
+            file_meaning( item->path, have, ARRAY_SIZE(have) );
+            if (!wcsicmp( have, want )) found = item;
+        }
+    }
+    free( pins );
+    return found;
+}
+
+BOOL items_file_pinned( const WCHAR *path )
+{
+    return pinned_item_of_file( path ) != NULL;
+}
+
+BOOL items_unpin_file( const WCHAR *path )
+{
+    struct item *item = pinned_item_of_file( path );
+
+    if (!item) return FALSE;
+    items_pin( item, FALSE );
+    return TRUE;
+}
+
 /* the taskbar's shortcut of an item's program, if it is pinned there */
 BOOL items_taskbar_pinned( struct item *item, WCHAR *link )
 {
@@ -703,8 +886,7 @@ void items_sync_classic(void)
     if (!(kept = calloc( kept_size, sizeof(WCHAR) ))) return;
     busy = TRUE;
     copies = read_multi( CLASSIC_COPIES, &present );
-    pins = read_multi( L"Pinned", &present );
-    if (!present) pins = default_pins();
+    pins = pins_flat();
 
 #define KEEP( name, key ) \
     do { \
@@ -727,7 +909,7 @@ void items_sync_classic(void)
             if (multi_has( pins, bar + 1 ))
             {
                 pins_materialize();
-                multi_change( L"Pinned", bar + 1, FALSE );
+                pins_remove( bar + 1 );
             }
             continue;
         }
@@ -763,8 +945,7 @@ void items_sync_classic(void)
 
     /* the pins with no copy get one */
     free( pins );
-    pins = read_multi( L"Pinned", &present );
-    if (!present) pins = default_pins();
+    pins = pins_flat();
     for (const WCHAR *p = pins; p && *p; p += lstrlenW( p ) + 1)
     {
         struct item *item;

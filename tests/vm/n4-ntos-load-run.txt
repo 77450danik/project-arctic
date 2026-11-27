@@ -1,0 +1,7 @@
+# n4-ntos-load.txt's commands alone, for a VM already at the desktop
+key win-r
+sleep 2
+type cmd /c mkdir D:\nt & D:\nn.cmd
+key ret
+sleep 5
+shot n4-ntos

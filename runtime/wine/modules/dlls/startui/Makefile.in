@@ -22,6 +22,7 @@ SOURCES = \
 	search.c \
 	search11.c \
 	settings.c \
+	shellext.c \
 	startpage.c \
 	taskbar.c \
 	taskbtn.c \

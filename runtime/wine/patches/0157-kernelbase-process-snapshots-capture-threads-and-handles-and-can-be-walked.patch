@@ -1,0 +1,701 @@
+From: Project Arctic
+Subject: kernelbase: process snapshots capture threads and handles, and can be walked.
+
+PssCaptureSnapshot, PssQuerySnapshot and PssFreeSnapshot were stubs that
+failed, and the walk (PssWalkSnapshot, PssWalkMarker*) was not exported at
+all: Logitech G HUB's agent imports PssWalkSnapshot, PssWalkMarkerCreate
+and PssWalkMarkerFree, and did not start (c0000135), so its installer
+waited for it for ever. A snapshot now holds the process's information
+(basic, times, memory counters, image name), its threads (from the
+system's process list) and its handles (from the system's handle list,
+with their type, basic counts and name when asked for), kept in the
+calling process until it is freed; a walk marker goes through threads or
+handles as Windows' does. The address space is not cloned: its walks end
+at once (ERROR_NO_MORE_ITEMS).
+---
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index 49bdaa8..b08c273 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -1194,6 +1194,12 @@
+ @ stdcall -import PssCaptureSnapshot(ptr long long ptr)
+ @ stdcall -import PssFreeSnapshot(ptr ptr)
+ @ stdcall -import PssQuerySnapshot(ptr long ptr long)
++@ stdcall -import PssWalkMarkerCreate(ptr ptr)
++@ stdcall -import PssWalkMarkerFree(ptr)
++@ stdcall -import PssWalkMarkerGetPosition(ptr ptr)
++@ stdcall -import PssWalkMarkerSeekToBeginning(ptr)
++@ stdcall -import PssWalkMarkerSetPosition(ptr long)
++@ stdcall -import PssWalkSnapshot(ptr long ptr ptr long)
+ @ stdcall -import PulseEvent(long)
+ @ stdcall -import PurgeComm(long long)
+ @ stdcall -i386 -private -norelay QT_Thunk() krnl386.exe16.QT_Thunk
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index e75305e..b55752c 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -1225,12 +1225,12 @@
+ # @ stub PssDuplicateSnapshot
+ @ stdcall PssFreeSnapshot(ptr ptr)
+ @ stdcall PssQuerySnapshot(ptr long ptr long)
+-# @ stub PssWalkMarkerCreate
+-# @ stub PssWalkMarkerFree
+-# @ stub PssWalkMarkerGetPosition
+-# @ stub PssWalkMarkerSeekToBeginning
+-# @ stub PssWalkMarkerSetPosition
+-# @ stub PssWalkSnapshot
++@ stdcall PssWalkMarkerCreate(ptr ptr)
++@ stdcall PssWalkMarkerFree(ptr)
++@ stdcall PssWalkMarkerGetPosition(ptr ptr)
++@ stdcall PssWalkMarkerSeekToBeginning(ptr)
++@ stdcall PssWalkMarkerSetPosition(ptr long)
++@ stdcall PssWalkSnapshot(ptr long ptr ptr long)
+ # @ stub PublishStateChangeNotification
+ @ stdcall PulseEvent(long)
+ @ stdcall PurgeComm(long long)
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index b05144f..3d5d11f 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -2179,13 +2179,293 @@ BOOL WINAPI DECLSPEC_HOTPATCH CompareObjectHandles( HANDLE first, HANDLE second
+     return set_ntstatus( NtCompareObjects( first, second ));
+ }
+ 
++/* A process snapshot: the process's information, and its threads and
++ * handles as they were, kept in this process until PssFreeSnapshot. The
++ * address space is not cloned (PSS_CAPTURE_VA_CLONE): nothing walks it. */
++#define PSS_SNAPSHOT_MAGIC 0x53535050  /* "PPSS" */
++
++struct pss_snapshot
++{
++    DWORD                   magic;
++    PSS_CAPTURE_FLAGS       flags;
++    PSS_PROCESS_INFORMATION process;
++    DWORD                   thread_count;
++    PSS_THREAD_ENTRY       *threads;
++    DWORD                   handle_count;
++    PSS_HANDLE_ENTRY       *handles;
++};
++
++struct pss_walk_marker
++{
++    ULONG_PTR     position;
++    PSS_ALLOCATOR allocator;
++};
++
++static struct pss_snapshot *pss_get( HPSS handle )
++{
++    struct pss_snapshot *snapshot = (struct pss_snapshot *)handle;
++    if (!snapshot || snapshot->magic != PSS_SNAPSHOT_MAGIC) return NULL;
++    return snapshot;
++}
++
++static void *pss_query_system( SYSTEM_INFORMATION_CLASS class )
++{
++    ULONG size = 0x10000, needed;
++    void *buffer;
++    NTSTATUS status;
++
++    for (;;)
++    {
++        if (!(buffer = HeapAlloc( GetProcessHeap(), 0, size ))) return NULL;
++        status = NtQuerySystemInformation( class, buffer, size, &needed );
++        if (!status) return buffer;
++        HeapFree( GetProcessHeap(), 0, buffer );
++        if (status != STATUS_INFO_LENGTH_MISMATCH && status != STATUS_BUFFER_TOO_SMALL) return NULL;
++        size = max( size * 2, needed + 0x1000 );
++    }
++}
++
++static void pss_filetime( FILETIME *ft, const LARGE_INTEGER *li )
++{
++    ft->dwLowDateTime = li->u.LowPart;
++    ft->dwHighDateTime = li->u.HighPart;
++}
++
++static void pss_capture_process( struct pss_snapshot *snapshot, HANDLE process )
++{
++    PSS_PROCESS_INFORMATION *info = &snapshot->process;
++    PROCESS_BASIC_INFORMATION basic;
++    KERNEL_USER_TIMES times;
++    VM_COUNTERS_EX vm;
++    ULONG_PTR wow64 = 0;
++    DWORD size = ARRAY_SIZE(info->ImageFileName);
++
++    if (!NtQueryInformationProcess( process, ProcessBasicInformation, &basic, sizeof(basic), NULL ))
++    {
++        info->ExitStatus = basic.ExitStatus;
++        info->PebBaseAddress = basic.PebBaseAddress;
++        info->AffinityMask = basic.AffinityMask;
++        info->BasePriority = basic.BasePriority;
++        info->ProcessId = basic.UniqueProcessId;
++        info->ParentProcessId = basic.InheritedFromUniqueProcessId;
++    }
++    if (!NtQueryInformationProcess( process, ProcessTimes, &times, sizeof(times), NULL ))
++    {
++        pss_filetime( &info->CreateTime, &times.CreateTime );
++        pss_filetime( &info->ExitTime, &times.ExitTime );
++        pss_filetime( &info->KernelTime, &times.KernelTime );
++        pss_filetime( &info->UserTime, &times.UserTime );
++    }
++    if (!NtQueryInformationProcess( process, ProcessVmCounters, &vm, sizeof(vm), NULL ))
++    {
++        info->PeakVirtualSize = vm.PeakVirtualSize;
++        info->VirtualSize = vm.VirtualSize;
++        info->PageFaultCount = vm.PageFaultCount;
++        info->PeakWorkingSetSize = vm.PeakWorkingSetSize;
++        info->WorkingSetSize = vm.WorkingSetSize;
++        info->QuotaPeakPagedPoolUsage = vm.QuotaPeakPagedPoolUsage;
++        info->QuotaPagedPoolUsage = vm.QuotaPagedPoolUsage;
++        info->QuotaPeakNonPagedPoolUsage = vm.QuotaPeakNonPagedPoolUsage;
++        info->QuotaNonPagedPoolUsage = vm.QuotaNonPagedPoolUsage;
++        info->PagefileUsage = vm.PagefileUsage;
++        info->PeakPagefileUsage = vm.PeakPagefileUsage;
++        info->PrivateUsage = vm.PrivateUsage;
++    }
++    if (!NtQueryInformationProcess( process, ProcessWow64Information, &wow64, sizeof(wow64), NULL ) && wow64)
++        info->Flags |= PSS_PROCESS_FLAGS_WOW64;
++    info->PriorityClass = GetPriorityClass( process );
++    if (!QueryFullProcessImageNameW( process, 0, info->ImageFileName, &size )) info->ImageFileName[0] = 0;
++}
++
++static void pss_capture_threads( struct pss_snapshot *snapshot, DWORD pid, const FILETIME *now )
++{
++    SYSTEM_PROCESS_INFORMATION *spi, *all = pss_query_system( SystemProcessInformation );
++    DWORD i;
++
++    if (!all) return;
++    for (spi = all; ; spi = (SYSTEM_PROCESS_INFORMATION *)((char *)spi + spi->NextEntryOffset))
++    {
++        if (HandleToUlong( spi->UniqueProcessId ) == pid)
++        {
++            snapshot->threads = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY,
++                                           max( spi->dwThreadCount, 1 ) * sizeof(*snapshot->threads) );
++            if (!snapshot->threads) break;
++            for (i = 0; i < spi->dwThreadCount; i++)
++            {
++                PSS_THREAD_ENTRY *entry = &snapshot->threads[i];
++                const SYSTEM_THREAD_INFORMATION *ti = &spi->ti[i];
++                THREAD_BASIC_INFORMATION basic;
++                HANDLE thread;
++
++                entry->ExitStatus = STILL_ACTIVE;
++                entry->ProcessId = pid;
++                entry->ThreadId = HandleToUlong( ti->ClientId.UniqueThread );
++                entry->Priority = ti->dwCurrentPriority;
++                entry->BasePriority = ti->dwBasePriority;
++                pss_filetime( &entry->CreateTime, &ti->CreateTime );
++                pss_filetime( &entry->KernelTime, &ti->KernelTime );
++                pss_filetime( &entry->UserTime, &ti->UserTime );
++                entry->Win32StartAddress = ti->StartAddress;
++                entry->CaptureTime = *now;
++                if ((thread = OpenThread( THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry->ThreadId )))
++                {
++                    if (!NtQueryInformationThread( thread, ThreadBasicInformation, &basic, sizeof(basic), NULL ))
++                    {
++                        entry->ExitStatus = basic.ExitStatus;
++                        entry->TebBaseAddress = basic.TebBaseAddress;
++                        entry->AffinityMask = basic.AffinityMask;
++                    }
++                    CloseHandle( thread );
++                }
++            }
++            snapshot->thread_count = spi->dwThreadCount;
++            break;
++        }
++        if (!spi->NextEntryOffset) break;
++    }
++    HeapFree( GetProcessHeap(), 0, all );
++}
++
++static const WCHAR *pss_copy_string( const UNICODE_STRING *str, WORD *len )
++{
++    WCHAR *copy;
++
++    *len = 0;
++    if (!str->Length || !(copy = HeapAlloc( GetProcessHeap(), 0, str->Length + sizeof(WCHAR) ))) return NULL;
++    memcpy( copy, str->Buffer, str->Length );
++    copy[str->Length / sizeof(WCHAR)] = 0;
++    *len = str->Length;
++    return copy;
++}
++
++static PSS_OBJECT_TYPE pss_object_type( const WCHAR *name )
++{
++    static const struct { const WCHAR *name; PSS_OBJECT_TYPE type; } types[] =
++    {
++        { L"Process", PSS_OBJECT_TYPE_PROCESS }, { L"Thread", PSS_OBJECT_TYPE_THREAD },
++        { L"Mutant", PSS_OBJECT_TYPE_MUTANT }, { L"Event", PSS_OBJECT_TYPE_EVENT },
++        { L"Section", PSS_OBJECT_TYPE_SECTION }, { L"Semaphore", PSS_OBJECT_TYPE_SEMAPHORE },
++    };
++    unsigned int i;
++
++    if (name)
++        for (i = 0; i < ARRAY_SIZE(types); i++)
++            if (!wcscmp( name, types[i].name )) return types[i].type;
++    return PSS_OBJECT_TYPE_UNKNOWN;
++}
++
++static void pss_capture_handles( struct pss_snapshot *snapshot, HANDLE process, DWORD pid,
++                                 PSS_CAPTURE_FLAGS flags, const FILETIME *now )
++{
++    SYSTEM_HANDLE_INFORMATION_EX *all = pss_query_system( SystemExtendedHandleInformation );
++    BYTE buffer[sizeof(OBJECT_TYPE_INFORMATION) + 1024];
++    ULONG_PTR i, count = 0;
++
++    if (!all) return;
++    for (i = 0; i < all->NumberOfHandles; i++)
++        if (all->Handles[i].UniqueProcessId == pid) count++;
++    if (!(snapshot->handles = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, max( count, 1 ) * sizeof(*snapshot->handles) )))
++    {
++        HeapFree( GetProcessHeap(), 0, all );
++        return;
++    }
++    for (i = 0; i < all->NumberOfHandles; i++)
++    {
++        const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *src = &all->Handles[i];
++        PSS_HANDLE_ENTRY *entry;
++        HANDLE dup = NULL;
++
++        if (src->UniqueProcessId != pid) continue;
++        entry = &snapshot->handles[snapshot->handle_count++];
++        entry->Handle = (HANDLE)src->HandleValue;
++        entry->CaptureTime = *now;
++        entry->Attributes = src->HandleAttributes;
++        entry->GrantedAccess = src->GrantedAccess;
++
++        if (!(flags & (PSS_CAPTURE_HANDLE_NAME_INFORMATION | PSS_CAPTURE_HANDLE_BASIC_INFORMATION |
++                       PSS_CAPTURE_HANDLE_TYPE_SPECIFIC_INFORMATION)))
++            continue;
++        if (!DuplicateHandle( process, entry->Handle, GetCurrentProcess(), &dup, 0, FALSE, DUPLICATE_SAME_ACCESS ))
++            continue;
++        if (!NtQueryObject( dup, ObjectTypeInformation, buffer, sizeof(buffer), NULL ))
++        {
++            entry->TypeName = pss_copy_string( &((OBJECT_TYPE_INFORMATION *)buffer)->TypeName, &entry->TypeNameLength );
++            if (entry->TypeName) entry->Flags |= PSS_HANDLE_HAVE_TYPE;
++            entry->ObjectType = pss_object_type( entry->TypeName );
++        }
++        if (flags & PSS_CAPTURE_HANDLE_BASIC_INFORMATION)
++        {
++            OBJECT_BASIC_INFORMATION basic;
++            if (!NtQueryObject( dup, ObjectBasicInformation, &basic, sizeof(basic), NULL ))
++            {
++                entry->HandleCount = basic.HandleCount;
++                entry->PointerCount = basic.PointerCount;
++                entry->PagedPoolCharge = basic.PagedPoolUsage;
++                entry->NonPagedPoolCharge = basic.NonPagedPoolUsage;
++                entry->Flags |= PSS_HANDLE_HAVE_BASIC_INFORMATION;
++            }
++        }
++        /* names of files are asked of their objects; a pipe's could block, as in Windows */
++        if ((flags & PSS_CAPTURE_HANDLE_NAME_INFORMATION) && entry->ObjectType != PSS_OBJECT_TYPE_UNKNOWN)
++        {
++            OBJECT_NAME_INFORMATION *name = (OBJECT_NAME_INFORMATION *)buffer;
++            if (!NtQueryObject( dup, ObjectNameInformation, name, sizeof(buffer), NULL ))
++            {
++                entry->ObjectName = pss_copy_string( &name->Name, &entry->ObjectNameLength );
++                if (entry->ObjectName) entry->Flags |= PSS_HANDLE_HAVE_NAME;
++            }
++        }
++        CloseHandle( dup );
++    }
++    HeapFree( GetProcessHeap(), 0, all );
++}
++
++static void pss_free( struct pss_snapshot *snapshot )
++{
++    DWORD i;
++
++    for (i = 0; i < snapshot->handle_count; i++)
++    {
++        HeapFree( GetProcessHeap(), 0, (void *)snapshot->handles[i].TypeName );
++        HeapFree( GetProcessHeap(), 0, (void *)snapshot->handles[i].ObjectName );
++    }
++    HeapFree( GetProcessHeap(), 0, snapshot->handles );
++    HeapFree( GetProcessHeap(), 0, snapshot->threads );
++    snapshot->magic = 0;
++    HeapFree( GetProcessHeap(), 0, snapshot );
++}
++
+ /***********************************************************************
+  *           PssQuerySnapshot   (kernelbase.@)
+  */
+ DWORD WINAPI PssQuerySnapshot( HPSS handle, PSS_QUERY_INFORMATION_CLASS class, void *buffer, DWORD len )
+ {
+-    FIXME( "(%p %u %p %lu)\n", handle ,class, buffer, len );
+-    return ERROR_NOT_FOUND;
++    struct pss_snapshot *snapshot = pss_get( handle );
++
++    TRACE( "(%p %u %p %lu)\n", handle, class, buffer, len );
++
++    if (!snapshot || !buffer) return ERROR_INVALID_PARAMETER;
++    switch (class)
++    {
++    case PSS_QUERY_PROCESS_INFORMATION:
++        if (len < sizeof(PSS_PROCESS_INFORMATION)) return ERROR_BAD_LENGTH;
++        memcpy( buffer, &snapshot->process, sizeof(snapshot->process) );
++        return ERROR_SUCCESS;
++    case PSS_QUERY_HANDLE_INFORMATION:
++        if (len < sizeof(PSS_HANDLE_INFORMATION)) return ERROR_BAD_LENGTH;
++        if (!(snapshot->flags & PSS_CAPTURE_HANDLES)) return ERROR_NOT_FOUND;
++        ((PSS_HANDLE_INFORMATION *)buffer)->HandlesCaptured = snapshot->handle_count;
++        return ERROR_SUCCESS;
++    case PSS_QUERY_THREAD_INFORMATION:
++        if (len < sizeof(PSS_THREAD_INFORMATION)) return ERROR_BAD_LENGTH;
++        if (!(snapshot->flags & PSS_CAPTURE_THREADS)) return ERROR_NOT_FOUND;
++        ((PSS_THREAD_INFORMATION *)buffer)->ThreadsCaptured = snapshot->thread_count;
++        ((PSS_THREAD_INFORMATION *)buffer)->ContextLength = 0;
++        return ERROR_SUCCESS;
++    default:
++        FIXME( "class %u not captured\n", class );
++        return ERROR_NOT_FOUND;
++    }
+ }
+ 
+ /***********************************************************************
+@@ -2193,7 +2473,13 @@ DWORD WINAPI PssQuerySnapshot( HPSS handle, PSS_QUERY_INFORMATION_CLASS class, v
+  */
+ DWORD WINAPI PssFreeSnapshot( HANDLE hprocess, HPSS handle )
+ {
+-    FIXME( "(%p %p)\n", hprocess , handle );
++    struct pss_snapshot *snapshot = pss_get( handle );
++
++    TRACE( "(%p %p)\n", hprocess, handle );
++
++    if (!snapshot) return ERROR_INVALID_PARAMETER;
++    if (GetProcessId( hprocess ) != GetCurrentProcessId()) return ERROR_INVALID_HANDLE;
++    pss_free( snapshot );
+     return ERROR_SUCCESS;
+ }
+ 
+@@ -2202,6 +2488,124 @@ DWORD WINAPI PssFreeSnapshot( HANDLE hprocess, HPSS handle )
+  */
+ DWORD WINAPI PssCaptureSnapshot( HANDLE hprocess, PSS_CAPTURE_FLAGS flags, DWORD ctx_flags, HPSS *handle )
+ {
+-    FIXME( "(%p %u %lu %p)\n", hprocess , flags, ctx_flags, handle );
+-    return ERROR_NOT_FOUND;
++    struct pss_snapshot *snapshot;
++    FILETIME now;
++    DWORD pid;
++
++    TRACE( "(%p %#x %#lx %p)\n", hprocess, flags, ctx_flags, handle );
++
++    if (!handle) return ERROR_INVALID_PARAMETER;
++    if (!(pid = GetProcessId( hprocess ))) return GetLastError();
++    if (flags & (PSS_CAPTURE_VA_CLONE | PSS_CAPTURE_VA_SPACE | PSS_CAPTURE_THREAD_CONTEXT | PSS_CAPTURE_IPT_TRACE))
++        FIXME( "flags %#x: not captured\n", flags & (PSS_CAPTURE_VA_CLONE | PSS_CAPTURE_VA_SPACE |
++               PSS_CAPTURE_THREAD_CONTEXT | PSS_CAPTURE_IPT_TRACE) );
++    if (!(snapshot = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*snapshot) )))
++        return ERROR_NOT_ENOUGH_MEMORY;
++    snapshot->magic = PSS_SNAPSHOT_MAGIC;
++    snapshot->flags = flags;
++    GetSystemTimeAsFileTime( &now );
++    pss_capture_process( snapshot, hprocess );
++    if (flags & PSS_CAPTURE_THREADS) pss_capture_threads( snapshot, pid, &now );
++    if (flags & PSS_CAPTURE_HANDLES) pss_capture_handles( snapshot, hprocess, pid, flags, &now );
++    *handle = (HPSS)snapshot;
++    return ERROR_SUCCESS;
++}
++
++/***********************************************************************
++ *           PssWalkMarkerCreate   (kernelbase.@)
++ */
++DWORD WINAPI PssWalkMarkerCreate( const PSS_ALLOCATOR *allocator, HPSSWALK *marker )
++{
++    struct pss_walk_marker *walk;
++
++    TRACE( "(%p %p)\n", allocator, marker );
++
++    if (!marker) return ERROR_INVALID_PARAMETER;
++    if (allocator && allocator->AllocRoutine)
++        walk = allocator->AllocRoutine( allocator->Context, sizeof(*walk) );
++    else
++        walk = HeapAlloc( GetProcessHeap(), 0, sizeof(*walk) );
++    if (!walk) return ERROR_NOT_ENOUGH_MEMORY;
++    walk->position = 0;
++    if (allocator) walk->allocator = *allocator;
++    else memset( &walk->allocator, 0, sizeof(walk->allocator) );
++    *marker = (HPSSWALK)walk;
++    return ERROR_SUCCESS;
++}
++
++/***********************************************************************
++ *           PssWalkMarkerFree   (kernelbase.@)
++ */
++DWORD WINAPI PssWalkMarkerFree( HPSSWALK marker )
++{
++    struct pss_walk_marker *walk = (struct pss_walk_marker *)marker;
++
++    TRACE( "(%p)\n", marker );
++
++    if (!walk) return ERROR_INVALID_PARAMETER;
++    if (walk->allocator.FreeRoutine) walk->allocator.FreeRoutine( walk->allocator.Context, walk );
++    else HeapFree( GetProcessHeap(), 0, walk );
++    return ERROR_SUCCESS;
++}
++
++/***********************************************************************
++ *           PssWalkMarkerGetPosition   (kernelbase.@)
++ */
++DWORD WINAPI PssWalkMarkerGetPosition( HPSSWALK marker, ULONG_PTR *position )
++{
++    struct pss_walk_marker *walk = (struct pss_walk_marker *)marker;
++
++    if (!walk || !position) return ERROR_INVALID_PARAMETER;
++    *position = walk->position;
++    return ERROR_SUCCESS;
++}
++
++/***********************************************************************
++ *           PssWalkMarkerSetPosition   (kernelbase.@)
++ */
++DWORD WINAPI PssWalkMarkerSetPosition( HPSSWALK marker, ULONG_PTR position )
++{
++    struct pss_walk_marker *walk = (struct pss_walk_marker *)marker;
++
++    if (!walk) return ERROR_INVALID_PARAMETER;
++    walk->position = position;
++    return ERROR_SUCCESS;
++}
++
++/***********************************************************************
++ *           PssWalkMarkerSeekToBeginning   (kernelbase.@)
++ */
++DWORD WINAPI PssWalkMarkerSeekToBeginning( HPSSWALK marker )
++{
++    return PssWalkMarkerSetPosition( marker, 0 );
++}
++
++/***********************************************************************
++ *           PssWalkSnapshot   (kernelbase.@)
++ */
++DWORD WINAPI PssWalkSnapshot( HPSS handle, PSS_WALK_INFORMATION_CLASS class, HPSSWALK marker,
++                              void *buffer, DWORD len )
++{
++    struct pss_snapshot *snapshot = pss_get( handle );
++    struct pss_walk_marker *walk = (struct pss_walk_marker *)marker;
++
++    TRACE( "(%p %u %p %p %lu)\n", handle, class, marker, buffer, len );
++
++    if (!snapshot || !walk) return ERROR_INVALID_PARAMETER;
++    switch (class)
++    {
++    case PSS_WALK_THREADS:
++        if (walk->position >= snapshot->thread_count) return ERROR_NO_MORE_ITEMS;
++        if (!buffer || len < sizeof(PSS_THREAD_ENTRY)) return ERROR_BAD_LENGTH;
++        memcpy( buffer, &snapshot->threads[walk->position++], sizeof(PSS_THREAD_ENTRY) );
++        return ERROR_SUCCESS;
++    case PSS_WALK_HANDLES:
++        if (walk->position >= snapshot->handle_count) return ERROR_NO_MORE_ITEMS;
++        if (!buffer || len < sizeof(PSS_HANDLE_ENTRY)) return ERROR_BAD_LENGTH;
++        memcpy( buffer, &snapshot->handles[walk->position++], sizeof(PSS_HANDLE_ENTRY) );
++        return ERROR_SUCCESS;
++    default:
++        /* the address space and auxiliary pages are not captured */
++        return ERROR_NO_MORE_ITEMS;
++    }
+ }
+diff --git a/include/processsnapshot.h b/include/processsnapshot.h
+index 91338de..27a2cd2 100644
+--- a/include/processsnapshot.h
++++ b/include/processsnapshot.h
+@@ -61,11 +61,199 @@ typedef enum PSS_QUERY_INFORMATION_CLASS
+     PSS_QUERY_PERFORMANCE_COUNTERS        = 7
+ } PSS_QUERY_INFORMATION_CLASS;
+ 
++typedef enum PSS_WALK_INFORMATION_CLASS
++{
++    PSS_WALK_AUXILIARY_PAGES = 0,
++    PSS_WALK_VA_SPACE        = 1,
++    PSS_WALK_HANDLES         = 2,
++    PSS_WALK_THREADS         = 3
++} PSS_WALK_INFORMATION_CLASS;
++
++typedef enum PSS_PROCESS_FLAGS
++{
++    PSS_PROCESS_FLAGS_NONE        = 0x00000000,
++    PSS_PROCESS_FLAGS_PROTECTED   = 0x00000001,
++    PSS_PROCESS_FLAGS_WOW64       = 0x00000002,
++    PSS_PROCESS_FLAGS_RESERVED_03 = 0x00000004,
++    PSS_PROCESS_FLAGS_RESERVED_04 = 0x00000008,
++    PSS_PROCESS_FLAGS_FROZEN      = 0x00000010
++} PSS_PROCESS_FLAGS;
++
++typedef enum PSS_HANDLE_FLAGS
++{
++    PSS_HANDLE_NONE                          = 0x00000000,
++    PSS_HANDLE_HAVE_TYPE                     = 0x00000001,
++    PSS_HANDLE_HAVE_NAME                     = 0x00000002,
++    PSS_HANDLE_HAVE_BASIC_INFORMATION        = 0x00000004,
++    PSS_HANDLE_HAVE_TYPE_SPECIFIC_INFORMATION = 0x00000008
++} PSS_HANDLE_FLAGS;
++
++typedef enum PSS_OBJECT_TYPE
++{
++    PSS_OBJECT_TYPE_UNKNOWN   = 0,
++    PSS_OBJECT_TYPE_PROCESS   = 1,
++    PSS_OBJECT_TYPE_THREAD    = 2,
++    PSS_OBJECT_TYPE_MUTANT    = 3,
++    PSS_OBJECT_TYPE_EVENT     = 4,
++    PSS_OBJECT_TYPE_SECTION   = 5,
++    PSS_OBJECT_TYPE_SEMAPHORE = 6
++} PSS_OBJECT_TYPE;
++
++typedef enum PSS_THREAD_FLAGS
++{
++    PSS_THREAD_FLAGS_NONE       = 0x0000,
++    PSS_THREAD_FLAGS_TERMINATED = 0x0001
++} PSS_THREAD_FLAGS;
++
+ DECLARE_HANDLE(HPSS);
++DECLARE_HANDLE(HPSSWALK);
++
++typedef struct PSS_PROCESS_INFORMATION
++{
++    DWORD ExitStatus;
++    void *PebBaseAddress;
++    ULONG_PTR AffinityMask;
++    LONG BasePriority;
++    DWORD ProcessId;
++    DWORD ParentProcessId;
++    PSS_PROCESS_FLAGS Flags;
++    FILETIME CreateTime;
++    FILETIME ExitTime;
++    FILETIME KernelTime;
++    FILETIME UserTime;
++    DWORD PriorityClass;
++    ULONG_PTR PeakVirtualSize;
++    ULONG_PTR VirtualSize;
++    DWORD PageFaultCount;
++    ULONG_PTR PeakWorkingSetSize;
++    ULONG_PTR WorkingSetSize;
++    ULONG_PTR QuotaPeakPagedPoolUsage;
++    ULONG_PTR QuotaPagedPoolUsage;
++    ULONG_PTR QuotaPeakNonPagedPoolUsage;
++    ULONG_PTR QuotaNonPagedPoolUsage;
++    ULONG_PTR PagefileUsage;
++    ULONG_PTR PeakPagefileUsage;
++    ULONG_PTR PrivateUsage;
++    DWORD ExecuteFlags;
++    WCHAR ImageFileName[MAX_PATH];
++} PSS_PROCESS_INFORMATION;
++
++typedef struct PSS_HANDLE_INFORMATION
++{
++    DWORD HandlesCaptured;
++} PSS_HANDLE_INFORMATION;
++
++typedef struct PSS_THREAD_INFORMATION
++{
++    DWORD ThreadsCaptured;
++    DWORD ContextLength;
++} PSS_THREAD_INFORMATION;
++
++typedef struct PSS_HANDLE_ENTRY
++{
++    HANDLE Handle;
++    PSS_HANDLE_FLAGS Flags;
++    PSS_OBJECT_TYPE ObjectType;
++    FILETIME CaptureTime;
++    DWORD Attributes;
++    DWORD GrantedAccess;
++    DWORD HandleCount;
++    DWORD PointerCount;
++    DWORD PagedPoolCharge;
++    DWORD NonPagedPoolCharge;
++    FILETIME CreationTime;
++    WORD TypeNameLength;
++    const WCHAR *TypeName;
++    WORD ObjectNameLength;
++    const WCHAR *ObjectName;
++    union
++    {
++        struct
++        {
++            DWORD ExitStatus;
++            void *PebBaseAddress;
++            ULONG_PTR AffinityMask;
++            LONG BasePriority;
++            DWORD ProcessId;
++            DWORD ParentProcessId;
++            DWORD Flags;
++        } Process;
++        struct
++        {
++            DWORD ExitStatus;
++            void *TebBaseAddress;
++            DWORD ProcessId;
++            DWORD ThreadId;
++            ULONG_PTR AffinityMask;
++            int Priority;
++            int BasePriority;
++            void *Win32StartAddress;
++        } Thread;
++        struct
++        {
++            LONG CurrentCount;
++            BOOL Abandoned;
++            DWORD OwnerProcessId;
++            DWORD OwnerThreadId;
++        } Mutant;
++        struct
++        {
++            BOOL ManualReset;
++            BOOL Signaled;
++        } Event;
++        struct
++        {
++            void *BaseAddress;
++            DWORD AllocationAttributes;
++            LARGE_INTEGER MaximumSize;
++        } Section;
++        struct
++        {
++            LONG CurrentCount;
++            LONG MaximumCount;
++        } Semaphore;
++    } TypeSpecificInformation;
++} PSS_HANDLE_ENTRY;
++
++typedef struct PSS_THREAD_ENTRY
++{
++    DWORD ExitStatus;
++    void *TebBaseAddress;
++    DWORD ProcessId;
++    DWORD ThreadId;
++    ULONG_PTR AffinityMask;
++    int Priority;
++    int BasePriority;
++    void *LastSyscallFirstArgument;
++    WORD LastSyscallNumber;
++    FILETIME CreateTime;
++    FILETIME ExitTime;
++    FILETIME KernelTime;
++    FILETIME UserTime;
++    void *Win32StartAddress;
++    FILETIME CaptureTime;
++    PSS_THREAD_FLAGS Flags;
++    WORD SuspendCount;
++    WORD SizeOfContextRecord;
++    CONTEXT *ContextRecord;
++} PSS_THREAD_ENTRY;
++
++typedef struct PSS_ALLOCATOR
++{
++    void *Context;
++    void *(WINAPI *AllocRoutine)(void *context, DWORD size);
++    void (WINAPI *FreeRoutine)(void *context, void *address);
++} PSS_ALLOCATOR;
+ 
+ DWORD WINAPI PssCaptureSnapshot(HANDLE,PSS_CAPTURE_FLAGS,DWORD,HPSS*);
+ DWORD WINAPI PssFreeSnapshot(HANDLE,HPSS);
+ DWORD WINAPI PssQuerySnapshot(HPSS,PSS_QUERY_INFORMATION_CLASS,void*,DWORD);
++DWORD WINAPI PssWalkMarkerCreate(const PSS_ALLOCATOR*,HPSSWALK*);
++DWORD WINAPI PssWalkMarkerFree(HPSSWALK);
++DWORD WINAPI PssWalkMarkerGetPosition(HPSSWALK,ULONG_PTR*);
++DWORD WINAPI PssWalkMarkerSetPosition(HPSSWALK,ULONG_PTR);
++DWORD WINAPI PssWalkMarkerSeekToBeginning(HPSSWALK);
++DWORD WINAPI PssWalkSnapshot(HPSS,PSS_WALK_INFORMATION_CLASS,HPSSWALK,void*,DWORD);
+ 
+ #ifdef __cplusplus
+ }

@@ -50,7 +50,7 @@ static struct window_class *create_class(struct w32_process *process, int local,
 	return class;
 
 failed:
-	kfree(class);
+	free(class);
 	return NULL;
 }
 
@@ -63,7 +63,7 @@ static void destroy_class(struct window_class *class)
 	list_remove(&class->entry);
 	if (class->shared)
 		free_shared_object(class->shared);
-	kfree(class);
+	free(class);
 }
 
 void destroy_process_classes(struct w32_process *process)

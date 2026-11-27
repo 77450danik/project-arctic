@@ -298,16 +298,118 @@
 #define IDS_SEARCH_PLACEHOLDER  400
 #define IDS_NO_RECENT           401
 #define IDS_SEARCH_WIN10        402
+#define IDS_SENDTO_DESKTOP      403
+#define IDS_SENDTO_ZIP          404
+#define IDS_SHORTCUT_NAME       405
+#define IDS_START_FOLDER        406
+
+#define IDS_WW_TITLE            407
+#define IDS_WW_WEATHER          408
+#define IDS_WW_NEWS             409
+#define IDS_WW_ADD              410
+#define IDS_WW_ON_DESKTOP       411
+#define IDS_WW_ON_BOARD         412
+#define IDS_WW_DESKTOP          413
+#define IDS_WW_SIZE             414
+#define IDS_WW_MORE             415
+#define IDS_WW_COPILOT          416
+#define IDS_WW_LEFT             417
+#define IDS_WW_RIGHT            418
+#define IDS_WW_CASE             419
 
 extern HINSTANCE startui_instance;
 
-/* gadgets.c: the widgets of the desktop */
-void gadgets_start(void);
 /* personalize.c: the icon theme, HKCU\Software\Arctic\Icons (user32's Arctic patch) */
 #define ICONS_CHANGED L"ArcticIcons"   /* WM_SETTINGCHANGE's lparam */
-void WINAPI ArcticDesktopWidgetsDialog( HWND parent );
 
 WCHAR *load_string( UINT id );
+struct palette;
+
+/* Windows Widgets: one set of widgets, which stand on the widgets board
+ * (widgets.c, opened from the taskbar) and on the desktop (gadgets.c) alike,
+ * in the same sizes. The weather, the news and Copilot are drawn by
+ * widgets.c, the clock, the monitoring and the battery by gadgets.c; gadgets.c
+ * also keeps the lists, HKCU\Software\Arctic\Widgets: Board and Desktop. */
+enum widget_kind { W_WEATHER, W_NEWS, W_COPILOT, W_CLOCK, W_MONITOR, W_BATTERY, W_KINDS };
+enum widget_size { W_SMALL, W_MEDIUM, W_LARGE, W_SIZES };
+enum widget_host { HOST_BOARD, HOST_DESKTOP };
+
+struct widget
+{
+    enum widget_kind kind;
+    enum widget_size size;
+    BOOL placed;                 /* on the desktop: x, y are where it was put */
+    int x, y;                    /* the clock's x is its middle */
+};
+
+/* what a point of a widget reaches */
+enum widget_hit { HIT_NONE, HIT_CARD, HIT_STORY, HIT_ASK, HIT_SEND, HIT_MORE };
+
+struct widget_target
+{
+    enum widget_hit hit;
+    int index;                   /* the story */
+    RECT rect;
+};
+
+#define WIDGET_TARGETS 8
+#define WIDGET_ASK_MAX 500
+
+/* what is being typed for Copilot */
+struct widget_ask
+{
+    WCHAR text[WIDGET_ASK_MAX + 1];
+    BOOL active, caret;
+    RECT field, send;            /* where they were drawn */
+};
+
+struct widget_paint
+{
+    HDC hdc;
+    const struct palette *pal;
+    RECT rect;
+    enum widget_kind kind;
+    enum widget_size size;
+    BOOL style11;
+    BOOL desktop;                /* a window of its own: no card under it */
+    struct widget_target *targets;
+    int target_count;
+    struct widget_ask *ask;
+};
+
+int widget_gap(void);
+BOOL widget_allows( enum widget_kind kind, enum widget_size size );
+void widget_cells( enum widget_kind kind, enum widget_size size, int *columns, int *rows );
+void widget_extent( enum widget_kind kind, enum widget_size size, int *width, int *height );
+const WCHAR *widget_name( enum widget_kind kind );
+int widgets_load( enum widget_host host, struct widget *list );
+void widgets_save( enum widget_host host, const struct widget *list, int count );
+void widgets_notify(void);
+void widget_add_target( struct widget_paint *p, enum widget_hit hit, int index, const RECT *rect );
+const struct widget_target *widget_hit_test( const struct widget_target *targets, int count, POINT pt );
+void widget_more_button( HDC hdc, const struct palette *pal, const RECT *card, BOOL style11, BOOL hot, BOOL opaque_under );
+void widget_more_rect( const RECT *card, RECT *rect );
+BOOL widget_menu( HWND owner, POINT pt, enum widget_host host, enum widget_kind kind );
+BOOL widget_add_menu( HWND owner, POINT pt, enum widget_host host );
+
+/* gadgets.c: the desktop's widgets, and the thread that keeps the live ones */
+void gadgets_start(void);
+void widget_paint_local( struct widget_paint *p );
+void widgets_desktop_data(void);
+void WINAPI ArcticDesktopWidgetsDialog( HWND parent );
+
+/* widgets.c: the weather, the news, Copilot, and the board */
+enum ask_result { ASK_IGNORED, ASK_CHANGED, ASK_LEAVE, ASK_SEND };
+
+void widget_paint_net( struct widget_paint *p );
+void widget_paint_ask( HDC hdc, const struct palette *pal, struct widget_ask *ask, BOOL send_hot, BOOL style11, int shift );
+enum ask_result widget_ask_input( struct widget_ask *ask, UINT msg, WPARAM wparam, HWND hwnd );
+void widget_activate( enum widget_kind kind, const struct widget_target *t, struct widget_ask *ask );
+void widget_tint( HDC hdc, const RECT *r, int top, COLORREF color, BYTE alpha );
+void widgets_change_location( HWND owner );
+void widgets_refresh(void);
+void widgets_board_reload(void);
+void widgets_board_tick( BOOL minute );
 
 /* taskbar.c: the look of the taskbar and of the Start menus */
 #define LOOK_BLUR_DEFAULT  50
@@ -346,8 +448,9 @@ void taskbar_page_look( struct look *look );
 BOOL system_mode_light(void);
 void personalize_sync(void);
 
-/* widgets.c: the weather on the taskbar and what it opens */
+/* widgets.c: the weather on the taskbar and the board it opens */
 void widgets_hide(void);
+BOOL widgets_board_has( enum widget_kind kind );
 
 /* the controls of a look in a dialog, their ids from a first one */
 enum
@@ -608,16 +711,36 @@ BOOL pinned_folder( const WCHAR *name, WCHAR *path );
 BOOL link_target( const WCHAR *link, WCHAR *target, int size );
 BOOL link_make( const WCHAR *link, const WCHAR *target, const WCHAR *args, const WCHAR *icon );
 void free_name( const WCHAR *folder, const WCHAR *base, const WCHAR *ext, WCHAR *path );
+struct IDataObject;
+UINT dragged_files( struct IDataObject *data, WCHAR (*files)[MAX_PATH], UINT max );
 BOOL taskbar_pin_of( const WCHAR *program, WCHAR *link );
 BOOL taskbar_pin_named( const WCHAR *path, const WCHAR *name );
 BOOL WINAPI ArcticTaskbarPinFile( LPCWSTR path );
 BOOL WINAPI ArcticTaskbarUnpinFile( LPCWSTR link );
 BOOL WINAPI ArcticStartMenuVisible(void);
 BOOL pins_drop_register( HWND hwnd, DWORD where, void (*dropped)( HWND hwnd ) );
+/* a file's context menu (shellext.c): what may be done, and doing it */
+enum { PINS_QUERY, PINS_START_ADD, PINS_START_REMOVE, PINS_TASKBAR_ADD, PINS_TASKBAR_REMOVE };
+#define PINS_START_CAN    1
+#define PINS_ON_START     2
+#define PINS_TASKBAR_CAN  4
+#define PINS_ON_TASKBAR   8
+DWORD pins_file( UINT action, const WCHAR *path );
+BOOL pins_start_dragging(void);
+
+/* shellext.c: Send to's defaults, made once */
+void sendto_defaults(void);
 
 /* items.c: what pinning takes from the Start menu's programs */
 BOOL items_shortcut_of( const WCHAR *program, WCHAR *link );
 BOOL items_pin_file( const WCHAR *path );
+BOOL items_file_pinned( const WCHAR *path );
+/* Windows 11's pins with their folders, "folder:Name|key|key" */
+BOOL items_pin_is_folder( const WCHAR *entry );
+WCHAR *items_pin_entries(void);
+void items_pin_entries_save( const WCHAR *multi );
+struct item *items_find( const WCHAR *key );
+BOOL items_unpin_file( const WCHAR *path );
 BOOL items_taskbar_pinned( struct item *item, WCHAR *link );
 void items_pin_taskbar( struct item *item, BOOL pin );
 void items_sync_classic(void);

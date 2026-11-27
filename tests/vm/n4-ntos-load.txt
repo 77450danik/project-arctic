@@ -1,0 +1,11 @@
+# NT's executive with its finer-lock groundwork (docs/ntos.md, «Замки»):
+# ntbench, the units that failed before and the many-threaded ones
+# (D:\nn.cmd, put on the test disk for the run) to D:\nt\ntos4-*.txt; the
+# lock's totals come in host.log (and the serial log) every half minute
+sleep 8
+key win-r
+sleep 2
+type cmd /c mkdir D:\nt & D:\nn.cmd
+key ret
+sleep 5
+shot n4-ntos

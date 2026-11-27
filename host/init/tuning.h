@@ -15,6 +15,7 @@ struct games_settings {
     int cpu_pl1_w;      /* 0: the firmware's */
     int cpu_pl2_w;
     int cpu_max_mhz;    /* 0: no limit */
+    int cpu_temp_target; /* °C the hottest core is kept at by the top frequency; 0: off */
     int cpu_turbo_ratio; /* 0: the firmware's turbo ratios */
     int gpu_power_w;    /* 0: the card's default */
     int gpu_core_mhz;   /* clock offsets */

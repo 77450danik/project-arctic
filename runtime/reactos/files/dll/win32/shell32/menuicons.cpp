@@ -270,12 +270,10 @@ static HBITMAP PaintPicture(const MENU_PICTURE *pic, UINT iSize, BOOL bDark)
     return hbm;
 }
 
-/* one of our pictures, for the menus of now (size, light or dark) */
-EXTERN_C HBITMAP SHELL_GetMenuPicture(LPCSTR pszName)
+/* one of our pictures at the largest size drawn up to wanted, light or dark */
+static HBITMAP GetPicture(LPCSTR pszName, UINT wanted, BOOL bDark)
 {
     HBITMAP hbm = NULL;
-    BOOL bDark = MenuIsDark();
-    UINT wanted = WantedSize();
 
     MenuIconsLock();
     if (Parse())
@@ -305,6 +303,22 @@ EXTERN_C HBITMAP SHELL_GetMenuPicture(LPCSTR pszName)
     }
     MenuIconsUnlock();
     return hbm;
+}
+
+/* one of our pictures, for the menus of now (size, light or dark) */
+EXTERN_C HBITMAP SHELL_GetMenuPicture(LPCSTR pszName)
+{
+    return GetPicture(pszName, WantedSize(), MenuIsDark());
+}
+
+/* for explorer's command bar: one of our pictures over a light or dark
+   background, at the largest size drawn up to cx. shell32 keeps the bitmap
+   (32 bits, premultiplied); it is good until the next call */
+EXTERN_C HBITMAP WINAPI ArcticGetMenuPicture(LPCSTR pszName, UINT cx, BOOL bDark)
+{
+    if (!pszName || !*pszName)
+        return NULL;
+    return GetPicture(pszName, cx ? cx : WantedSize(), bDark != FALSE);
 }
 
 /* an icon as a bitmap with alpha: drawn on black and on white, the

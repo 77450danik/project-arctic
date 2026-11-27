@@ -244,6 +244,8 @@ def run(qmp, steps):
             if len(words) > 2:
                 device["serial"] = words[2]
             qmp.call("device_add", device)
+        elif cmd == "power":  # the power button, as a PC's: the guest shuts down
+            qmp.call("system_powerdown", {})
         elif cmd == "unplug":
             qmp.call("device_del", {"id": words[0]})
             time.sleep(1)

@@ -129,6 +129,7 @@ void games_load(void)
             KEY("CpuPl1", cpu_pl1_w)
             KEY("CpuPl2", cpu_pl2_w)
             KEY("CpuMaxMhz", cpu_max_mhz)
+            KEY("CpuTempTarget", cpu_temp_target)
             KEY("CpuTurboRatio", cpu_turbo_ratio)
             KEY("GpuPower", gpu_power_w)
             KEY("GpuCoreOffset", gpu_core_mhz)
@@ -143,6 +144,9 @@ void games_load(void)
         s.cpu_core_mv = 0;
     if (s.cpu_cache_mv > 150 || s.cpu_cache_mv < -250)
         s.cpu_cache_mv = 0;
+    /* a target the chip throttles at anyway, or one it never gets below, is no target */
+    if (s.cpu_temp_target && (s.cpu_temp_target < 60 || s.cpu_temp_target > 98))
+        s.cpu_temp_target = 0;
     games = s;
 }
 
@@ -624,13 +628,28 @@ static void write_info(void)
 static int anything_set(void)
 {
     return games.cpu_core_mv || games.cpu_cache_mv || games.cpu_pl1_w || games.cpu_pl2_w || games.cpu_max_mhz ||
-           games.cpu_turbo_ratio ||
+           games.cpu_turbo_ratio || games.cpu_temp_target ||
            games.gpu_power_w || games.gpu_core_mhz || games.gpu_mem_mhz || games.gpu_max_mhz;
+}
+
+/* the top frequency written last, and the one the temperature target holds
+ * now (0: not holding one) */
+static long long applied_max_khz, thermal_khz;
+
+/* the top frequency asked for: the panel's, or the chip's own */
+static long long top_khz(void)
+{
+    long long khz = games.cpu_max_mhz > 0 ? games.cpu_max_mhz * 1000ll : cpu.max_khz;
+
+    if (khz < cpu.min_khz)
+        khz = cpu.min_khz;
+    if (khz > cpu.max_khz)
+        khz = cpu.max_khz;
+    return khz;
 }
 
 static void apply(void)
 {
-    static long long applied_max_khz;
     static int applied_limits;
     char failed[96] = "";
     int fd;
@@ -670,12 +689,8 @@ static void apply(void)
             applied_limits = games.cpu_pl1_w > 0 || games.cpu_pl2_w > 0;
     }
     if (cpu.max_khz > 0) {
-        long long khz = games.cpu_max_mhz > 0 ? games.cpu_max_mhz * 1000ll : cpu.max_khz;
+        long long khz = top_khz();
 
-        if (khz < cpu.min_khz)
-            khz = cpu.min_khz;
-        if (khz > cpu.max_khz)
-            khz = cpu.max_khz;
         /* the power plan sets the limit too: only a change is written */
         if (khz != (applied_max_khz ? applied_max_khz : cpu.max_khz)) {
             if (set_max_khz(khz))
@@ -683,6 +698,8 @@ static void apply(void)
             else
                 strcat(failed, " max");
         }
+        /* the temperature target starts again from the top */
+        thermal_khz = 0;
     }
     if (cpu.turbo) {
         static int applied_turbo;
@@ -705,8 +722,8 @@ static void apply(void)
     } else {
         snprintf(status, sizeof(status), "%s", anything_set() ? "applied" : "none");
         if (anything_set())
-            LOG("tuning: applied (core %d mV, cache %d mV, PL1 %d W, PL2 %d W, max %d MHz, GPU %d W %+d/%+d MHz max %d)",
-                games.cpu_core_mv, games.cpu_cache_mv, games.cpu_pl1_w, games.cpu_pl2_w, games.cpu_max_mhz,
+            LOG("tuning: applied (core %d mV, cache %d mV, PL1 %d W, PL2 %d W, max %d MHz, held at %d C, GPU %d W %+d/%+d MHz max %d)",
+                games.cpu_core_mv, games.cpu_cache_mv, games.cpu_pl1_w, games.cpu_pl2_w, games.cpu_max_mhz, games.cpu_temp_target,
                 games.gpu_power_w, games.gpu_core_mhz, games.gpu_mem_mhz, games.gpu_max_mhz);
     }
     write_info();
@@ -800,6 +817,102 @@ static void serve_voltage(void)
     rename(VOLTAGE_FILE ".new", VOLTAGE_FILE);
 }
 
+/* the hottest of the processor's sensors (coretemp: the package and each
+ * core), in °C; -1 without them */
+static int hottest_core(void)
+{
+    static char dir[PATH_MAX];
+    static int searched;
+    char path[PATH_MAX + 32];
+    int hottest = -1;
+
+    if (!searched) {
+        DIR *d = opendir("/sys/class/hwmon");
+        struct dirent *de;
+        char name[32];
+
+        searched = 1;
+        while (d && (de = readdir(d))) {
+            int fd;
+            ssize_t n;
+
+            if (de->d_name[0] == '.')
+                continue;
+            snprintf(path, sizeof(path), "/sys/class/hwmon/%s/name", de->d_name);
+            if ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0)
+                continue;
+            n = read(fd, name, sizeof(name) - 1);
+            close(fd);
+            name[n > 0 ? n : 0] = 0;
+            if (!strncmp(name, "coretemp", 8) || !strncmp(name, "k10temp", 7) || !strncmp(name, "zenpower", 8)) {
+                snprintf(dir, sizeof(dir), "/sys/class/hwmon/%s", de->d_name);
+                break;
+            }
+        }
+        if (d)
+            closedir(d);
+    }
+    if (!dir[0])
+        return -1;
+    for (int i = 1; i <= 64; i++) {
+        long long mc;
+
+        snprintf(path, sizeof(path), "%s/temp%d_input", dir, i);
+        if (access(path, F_OK))
+            continue;
+        if ((mc = read_ll(path)) / 1000 > hottest)
+            hottest = (int)(mc / 1000);
+    }
+    return hottest;
+}
+
+/* The temperature target (games.ini CpuTempTarget): the hottest core is held
+ * near it by the top frequency, before the chip throttles itself. Intel's own
+ * throttle at its limit (95 °C on this laptop) drops the clock all at once,
+ * and a heavy frame of a game falls into it: in CS2 on a GTX 1050 laptop that
+ * shares its heat pipes, 91 % of the seconds with a hitch were throttled ones,
+ * and below 92 °C there were nearly none (2026-11-23). A fixed top frequency
+ * is either too hot or too slow, as the card's heat and the game's load
+ * change: here it follows the temperature, down quickly, up slowly. */
+static void hold_temperature(void)
+{
+    static double last_up;
+    long long top, khz, step = 0;
+    int t;
+
+    if (!games.cpu_temp_target || cpu.max_khz <= 0 || (t = hottest_core()) < 0) {
+        if (thermal_khz) {
+            /* turned off: the panel's top frequency again */
+            if (set_max_khz(top_khz()))
+                applied_max_khz = top_khz();
+            thermal_khz = 0;
+        }
+        return;
+    }
+    top = top_khz();
+    khz = thermal_khz ? thermal_khz : top;
+    if (t >= games.cpu_temp_target + 2)
+        step = -200000;
+    else if (t >= games.cpu_temp_target)
+        step = -100000;
+    else if (t <= games.cpu_temp_target - 4 && uptime() - last_up >= 1.0) {
+        step = 100000;
+        last_up = uptime();
+    }
+    khz += step;
+    if (khz > top)
+        khz = top;
+    if (khz < 1600000 && khz < top)
+        khz = top < 1600000 ? top : 1600000;
+    if (khz < cpu.min_khz)
+        khz = cpu.min_khz;
+    if (khz != (applied_max_khz ? applied_max_khz : cpu.max_khz)) {
+        if (set_max_khz(khz))
+            applied_max_khz = khz;
+    }
+    thermal_khz = khz;
+}
+
 void tuning_tick(void)
 {
     if (trial_until && uptime() >= trial_until) {
@@ -807,4 +920,5 @@ void tuning_tick(void)
         trial_until = 0;
     }
     serve_voltage();
+    hold_temperature();
 }

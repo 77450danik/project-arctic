@@ -1,0 +1,10 @@
+# ntbench with NT's executive in the kernel (docs/ntos.md): the results to
+# D:\nt\bench-ntos.txt on the test disk (tools/wsl/make-nt-test-disk.sh); the
+# same with --append arctic.ntos=0 is n2-ntbench-wineserver.txt
+sleep 3
+key win-r
+sleep 2
+type cmd /c D:\ntbench.exe ntos > D:\nt\bench-ntos.txt 2>&1
+key ret
+sleep 5
+shot n2-ntos

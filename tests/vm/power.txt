@@ -1,0 +1,3 @@
+# the power button of a running VM (python tools/vmscript.py tests/vm/power.txt):
+# Windows' "shut down", and arctic-init's log of it in the serial log
+power

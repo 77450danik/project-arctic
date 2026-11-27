@@ -1,3 +1,5 @@
+@ stdcall -private DllCanUnloadNow()
+@ stdcall -private DllGetClassObject(ptr ptr ptr)
 @ stdcall ArcticStartMenuToggle(long ptr long)
 @ stdcall ArcticStartMenuHide()
 @ stdcall ArcticStartMenuVisible()

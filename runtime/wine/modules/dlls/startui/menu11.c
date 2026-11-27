@@ -76,12 +76,27 @@
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
 #endif
 
-enum mode { MODE_HOME, MODE_ALL, MODE_LETTERS, MODE_SEARCH, MODE_RECOMMENDED };
+enum mode { MODE_HOME, MODE_ALL, MODE_LETTERS, MODE_SEARCH, MODE_RECOMMENDED, MODE_FOLDER };
 
 enum kind
 {
     K_NONE, K_SEARCH, K_ALL_BUTTON, K_MORE_BUTTON, K_BACK_BUTTON, K_PIN, K_REC, K_ROW, K_LETTER, K_USER, K_FOLDER,
-    K_POWER,
+    K_POWER, K_FOLDER_NAME,
+};
+
+/* a place of the pinned grid: a pin, or a folder of pins (Windows 11 22H2:
+ * one pin dropped on another makes one), kept as items.c has them */
+#define MAX_FOLDER_PINS 24
+#define FOLDER_NAME_MAX 64
+#define FOLDER_PREFIX_11 L"folder:"
+
+struct pin_cell
+{
+    BOOL folder;
+    WCHAR name[FOLDER_NAME_MAX];
+    WCHAR *keys[MAX_FOLDER_PINS];        /* a pin has one */
+    struct item *items[MAX_FOLDER_PINS]; /* NULL for a key with nothing there now */
+    int count;
 };
 
 struct target
@@ -120,8 +135,21 @@ static HFONT font_title, font_item, font_small, font_letter;
 static WCHAR user_name[128], search[MAX_SEARCH + 1];
 static int height;
 
-static struct item *pins[MAX_PINS];
+static struct pin_cell cells[MAX_PINS];
 static int pin_count, page;
+static int open_folder = -1;             /* MODE_FOLDER: its cell */
+static int folder_view[MAX_FOLDER_PINS]; /* the folder's members shown */
+static int folder_view_count;
+static BOOL renaming;                    /* the folder's name is typed */
+static WCHAR rename_text[FOLDER_NAME_MAX];
+
+/* a pin dragged within the grid: shown under the pointer, the others making
+ * room where it would go, or a pin it would make a folder with lit */
+static BOOL drag_armed, dragging;
+static int drag_from;                    /* a cell, or a member of the open folder */
+static POINT drag_down, drag_pt;
+static int drop_at = -1, drop_onto = -1;
+static BOOL drop_out;                    /* out of the open folder */
 static struct recommended recs[MAX_RECOMMENDED];
 static int rec_count;
 static struct row *rows;
@@ -149,9 +177,15 @@ static int rec_rows(void)
     return settings.layout == LAYOUT_MORE_PINS ? 1 : settings.layout == LAYOUT_MORE_RECOMMENDED ? 4 : 3;
 }
 
+/* the places of the grid: the pins, or the open folder's */
+static int grid_count(void)
+{
+    return mode == MODE_FOLDER ? folder_view_count : pin_count;
+}
+
 static int pages(void)
 {
-    return max( 1, (pin_count + COLUMNS * pin_rows() - 1) / (COLUMNS * pin_rows()) );
+    return max( 1, (grid_count() + COLUMNS * pin_rows() - 1) / (COLUMNS * pin_rows()) );
 }
 
 static void free_recommended(void)
@@ -247,14 +281,125 @@ static void load_search(void)
     for (UINT i = 0; i < count; i++) add_row( list[i]->kind == ITEM_HEADER ? ROW_HEADER : ROW_APP, list[i], 0 );
 }
 
+static void free_cells(void)
+{
+    for (int i = 0; i < pin_count; i++)
+        for (int k = 0; k < cells[i].count; k++) free( cells[i].keys[k] );
+    memset( cells, 0, sizeof(cells) );
+    pin_count = 0;
+}
+
+/* one key of a folder's, "folder:Name|key|key" */
+static void cell_add_key( struct pin_cell *cell, const WCHAR *key, int len )
+{
+    WCHAR *copy;
+
+    if (cell->count == MAX_FOLDER_PINS || !len || !(copy = malloc( (len + 1) * sizeof(WCHAR) ))) return;
+    memcpy( copy, key, len * sizeof(WCHAR) );
+    copy[len] = 0;
+    cell->keys[cell->count] = copy;
+    cell->items[cell->count++] = items_find( copy );
+}
+
+static int cell_shown( const struct pin_cell *cell )
+{
+    int n = 0;
+
+    for (int k = 0; k < cell->count; k++) if (cell->items[k]) n++;
+    return n;
+}
+
+static void load_folder_view(void)
+{
+    folder_view_count = 0;
+    if (open_folder < 0 || open_folder >= pin_count || !cells[open_folder].folder) return;
+    for (int k = 0; k < cells[open_folder].count; k++)
+        if (cells[open_folder].items[k]) folder_view[folder_view_count++] = k;
+}
+
 static void load_pins(void)
 {
-    struct item **list;
-    UINT count = items_pinned( &list );
+    WCHAR *entries = items_pin_entries();
 
-    pin_count = min( count, MAX_PINS );
-    memcpy( pins, list, pin_count * sizeof(*pins) );
-    page = min( page, pages() - 1 );
+    free_cells();
+    for (const WCHAR *p = entries; p && *p && pin_count < MAX_PINS; p += lstrlenW( p ) + 1)
+    {
+        struct pin_cell *cell = &cells[pin_count];
+        const WCHAR *bar;
+
+        if (!items_pin_is_folder( p ))
+        {
+            cell_add_key( cell, p, lstrlenW( p ) );
+            if (cell->count && cell->items[0]) pin_count++;
+            else if (cell->count) free( cell->keys[0] ), cell->count = 0;
+            continue;
+        }
+        cell->folder = TRUE;
+        bar = wcschr( p, '|' );
+        lstrcpynW( cell->name, wcschr( p, ':' ) + 1, min( FOLDER_NAME_MAX, (bar ? bar - p : lstrlenW( p )) - 6 ) );
+        for (const WCHAR *k = bar; k; k = wcschr( k + 1, '|' ))
+        {
+            const WCHAR *next = wcschr( k + 1, '|' );
+            cell_add_key( cell, k + 1, next ? next - (k + 1) : lstrlenW( k + 1 ) );
+        }
+        /* a folder of nothing there now is not shown, and goes when the pins
+         * are written again */
+        if (cell_shown( cell )) pin_count++;
+        else
+        {
+            for (int k = 0; k < cell->count; k++) free( cell->keys[k] );
+            memset( cell, 0, sizeof(*cell) );
+        }
+    }
+    free( entries );
+    load_folder_view();
+    if (mode == MODE_FOLDER && folder_view_count < 1)
+    {
+        mode = MODE_HOME;
+        open_folder = -1;
+        renaming = FALSE;
+    }
+    page = max( 0, min( page, pages() - 1 ) );
+}
+
+/* the grid written back as items.c keeps it, and read again */
+static void save_cells(void)
+{
+    DWORD chars = 2;
+    WCHAR *multi, *out;
+
+    for (int i = 0; i < pin_count; i++)
+    {
+        chars += lstrlenW( FOLDER_PREFIX_11 ) + lstrlenW( cells[i].name ) + 2;
+        for (int k = 0; k < cells[i].count; k++) chars += lstrlenW( cells[i].keys[k] ) + 1;
+    }
+    if (!(out = multi = calloc( chars, sizeof(WCHAR) ))) return;
+    for (int i = 0; i < pin_count; i++)
+    {
+        const struct pin_cell *cell = &cells[i];
+
+        if (!cell->count) continue;
+        if (cell->folder && cell->count > 1)
+        {
+            out += swprintf( out, chars - (out - multi), L"%s%s", FOLDER_PREFIX_11, cell->name );
+            for (int k = 0; k < cell->count; k++)
+                out += swprintf( out, chars - (out - multi), L"|%s", cell->keys[k] );
+            out++;
+        }
+        else
+        {
+            /* a folder of one is that pin again */
+            for (int k = 0; k < cell->count; k++)
+            {
+                lstrcpyW( out, cell->keys[k] );
+                out += lstrlenW( out ) + 1;
+            }
+        }
+    }
+    *out = 0;
+    items_pin_entries_save( multi );
+    free( multi );
+    load_pins();
 }
 
 /**********************************************************************
@@ -340,6 +485,38 @@ static void add_header_button( enum kind kind, int top )
     add_target( kind, 0, WIDTH - INSET - width + px( 8 ), y, WIDTH - INSET + px( 8 ), y + BUTTON_HEIGHT );
 }
 
+/* what each place of the grid shows: in order, and while a pin is dragged,
+ * the others making room where it would go */
+static int grid_order( int *order )
+{
+    int count = grid_count(), n = 0;
+
+    if (!dragging || drop_at < 0 || drop_onto >= 0 || drop_out)
+    {
+        for (int i = 0; i < count; i++) order[i] = i;
+        return count;
+    }
+    for (int i = 0; i < count; i++)
+    {
+        if (i == drag_from) continue;
+        if (n == drop_at) order[n++] = drag_from;
+        order[n++] = i;
+    }
+    if (n < count) order[n++] = drag_from;
+    return n;
+}
+
+/* the place of the grid under a point, and whether it is over the icon there */
+static int slot_at( POINT pt, BOOL *on_icon )
+{
+    int col = max( 0, min( (int)(pt.x - SIDE - 1) / CELL_WIDTH, COLUMNS - 1 ) );
+    int row = max( 0, min( (int)(pt.y - pins_top()) / CELL_HEIGHT, pin_rows() - 1 ) );
+    int cx = SIDE + 1 + col * CELL_WIDTH + CELL_WIDTH / 2, cy = pins_top() + row * CELL_HEIGHT + px( 14 ) + ICON / 2;
+
+    *on_icon = abs( (int)pt.x - cx ) <= ICON * 3 / 4 && abs( (int)pt.y - cy ) <= ICON * 3 / 4;
+    return page * COLUMNS * pin_rows() + row * COLUMNS + col;
+}
+
 static void layout(void)
 {
     int top = content_top();
@@ -350,15 +527,22 @@ static void layout(void)
     switch (mode)
     {
     case MODE_HOME:
+    case MODE_FOLDER:
     {
-        int first = page * COLUMNS * pin_rows(), y;
+        int order[MAX_PINS], count = grid_order( order ), first = page * COLUMNS * pin_rows(), y;
 
-        add_header_button( K_ALL_BUTTON, top );
-        for (int i = first; i < pin_count && i < first + COLUMNS * pin_rows(); i++)
+        if (mode == MODE_FOLDER)
         {
-            int cell = i - first, x = SIDE + 1 + (cell % COLUMNS) * CELL_WIDTH;
+            /* the folder's name, which a click lets type, and "< Назад" */
+            add_target( K_FOLDER_NAME, 0, INSET - px( 8 ), top, WIDTH / 2, top + HEADER_HEIGHT );
+            add_header_button( K_BACK_BUTTON, top );
+        }
+        else add_header_button( K_ALL_BUTTON, top );
+        for (int slot = first; slot < count && slot < first + COLUMNS * pin_rows(); slot++)
+        {
+            int cell = slot - first, x = SIDE + 1 + (cell % COLUMNS) * CELL_WIDTH;
             y = pins_top() + (cell / COLUMNS) * CELL_HEIGHT;
-            add_target( K_PIN, i, x, y, x + CELL_WIDTH, y + CELL_HEIGHT );
+            add_target( K_PIN, order[slot], x, y, x + CELL_WIDTH, y + CELL_HEIGHT );
         }
         y = rec_header_top();
         add_header_button( K_MORE_BUTTON, y );
@@ -474,7 +658,7 @@ static void paint_header( HDC hdc, int top, UINT title, enum kind button_kind )
     struct target t = { button_kind, 0 };
 
     SetRect( &text, INSET, top, WIDTH / 2, top + HEADER_HEIGHT );
-    paint_text( hdc, load_string( title ), &text, font_title, pal.text, DT_LEFT );
+    if (title) paint_text( hdc, load_string( title ), &text, font_title, pal.text, DT_LEFT );
     if (!(b = find_target( t ))) return;
     fill_round_rect( hdc, &b->rect, (float)px( 4 ), pal.ink, same( t, hot ) ? 0x1c : 0x0f );
     if (focus_shown && same( t, focus )) highlight( hdc, t, &b->rect, (float)px( 4 ) );
@@ -555,6 +739,73 @@ static void paint_search( HDC hdc )
     }
 }
 
+static const WCHAR *cell_name( const struct pin_cell *cell );
+
+/* the open folder's name in its header; typed in place after a click on it */
+static void paint_folder_name( HDC hdc )
+{
+    struct target t = { K_FOLDER_NAME, 0 };
+    const struct target *box = find_target( t );
+    const WCHAR *name;
+    RECT text;
+
+    if (!box || open_folder < 0) return;
+    name = renaming ? rename_text : cell_name( &cells[open_folder] );
+    if (renaming) fill_round_rect( hdc, &box->rect, (float)px( 4 ), pal.ink, 0x14 );
+    else highlight( hdc, t, &box->rect, (float)px( 4 ) );
+    SetRect( &text, INSET, box->rect.top, box->rect.right - px( 8 ), box->rect.bottom );
+    paint_text( hdc, name, &text, font_title, pal.text, DT_LEFT );
+    if (renaming && caret_on)
+    {
+        HGDIOBJ old = SelectObject( hdc, font_title );
+        SIZE size = { 0 };
+        RECT caret;
+
+        GetTextExtentPoint32W( hdc, rename_text, lstrlenW( rename_text ), &size );
+        SelectObject( hdc, old );
+        SetRect( &caret, text.left + size.cx + 1, box->rect.top + px( 7 ), text.left + size.cx + 2, box->rect.bottom - px( 7 ) );
+        fill_alpha( hdc, &caret, pal.ink, 255 );
+    }
+}
+
+/* the pin a place of the grid shows: a cell's, or a member of the open folder */
+static struct item *grid_item( int index )
+{
+    if (mode == MODE_FOLDER) return cells[open_folder].items[folder_view[index]];
+    return cells[index].folder ? NULL : cells[index].items[0];
+}
+
+static const WCHAR *cell_name( const struct pin_cell *cell )
+{
+    return cell->name[0] ? cell->name : load_string( IDS_START_FOLDER );
+}
+
+/* a folder as Windows 11 draws it: up to four of its icons on a rounded square */
+static void paint_folder_tile( HDC hdc, const struct pin_cell *cell, int cx, int top )
+{
+    int tile = ICON + px( 8 ), mini = px( 16 ), gap = px( 2 ), n = 0;
+    int x0 = cx - tile / 2, y0 = top - px( 4 ), inner = (tile - 2 * mini - gap) / 2;
+    RECT rect = { x0, y0, x0 + tile, y0 + tile };
+
+    fill_round_rect( hdc, &rect, (float)px( 6 ), pal.ink, 0x1c );
+    for (int k = 0; k < cell->count && n < 4; k++)
+    {
+        if (!cell->items[k]) continue;
+        draw_icon_bitmap( hdc, items_icon_sized( cell->items[k], mini ), x0 + inner + (n % 2) * (mini + gap),
+                          y0 + inner + (n / 2) * (mini + gap), mini );
+        n++;
+    }
+}
+
+/* the picture of a place: the icon over its top, or the folder's tile */
+static void paint_grid_art( HDC hdc, int index, int cx, int top )
+{
+    struct item *item = grid_item( index );
+
+    if (item) draw_icon_bitmap( hdc, items_icon_sized( item, ICON ), cx - ICON / 2, top, ICON );
+    else paint_folder_tile( hdc, &cells[index], cx, top );
+}
+
 static void paint_pins( HDC hdc )
 {
     for (int i = 0; i < target_count; i++)
@@ -562,16 +813,27 @@ static void paint_pins( HDC hdc )
         const struct target *t = &targets[i];
         struct item *item;
         RECT text;
+        int cx = (t->rect.left + t->rect.right) / 2;
 
         if (t->kind != K_PIN) continue;
-        item = pins[t->index];
-        highlight( hdc, *t, &t->rect, (float)px( 4 ) );
-        draw_icon_bitmap( hdc, items_icon_sized( item, ICON ), (t->rect.left + t->rect.right - ICON) / 2,
-                          t->rect.top + px( 14 ), ICON );
+        /* the place of the pin being dragged stays empty */
+        if (dragging && t->index == drag_from && !drop_out) continue;
+        if (dragging && t->index == drop_onto)
+        {
+            RECT lit = t->rect;
+
+            InflateRect( &lit, -px( 4 ), -px( 2 ) );
+            fill_round_rect( hdc, &lit, (float)px( 6 ), pal.ink, 0x24 );
+        }
+        else if (!dragging) highlight( hdc, *t, &t->rect, (float)px( 4 ) );
+        paint_grid_art( hdc, t->index, cx, t->rect.top + px( 14 ) );
+        item = grid_item( t->index );
         SetRect( &text, t->rect.left + px( 4 ), t->rect.top + px( 14 ) + ICON + px( 6 ), t->rect.right - px( 4 ),
                  t->rect.top + px( 14 ) + ICON + px( 6 ) + px( 18 ) );
-        paint_text( hdc, item->name, &text, font_small, pal.text, DT_CENTER );
+        paint_text( hdc, item ? item->name : cell_name( &cells[t->index] ), &text, font_small, pal.text, DT_CENTER );
     }
+    /* the pin dragged, under the pointer */
+    if (dragging) paint_grid_art( hdc, drag_from, drag_pt.x, drag_pt.y - ICON / 2 );
     /* the pages, as dots on the right */
     if (pages() > 1)
     {
@@ -761,6 +1023,13 @@ static void on_paint( HWND hwnd )
         paint_header( hdc, rec_header_top(), IDS_RECOMMENDED, K_MORE_BUTTON );
         paint_recommended( hdc, rec_header_top() + HEADER_HEIGHT + px( 8 ) );
         break;
+    case MODE_FOLDER:
+        paint_header( hdc, content_top(), 0, K_BACK_BUTTON );
+        paint_folder_name( hdc );
+        paint_pins( hdc );
+        paint_header( hdc, rec_header_top(), IDS_RECOMMENDED, K_MORE_BUTTON );
+        paint_recommended( hdc, rec_header_top() + HEADER_HEIGHT + px( 8 ) );
+        break;
     case MODE_RECOMMENDED:
         paint_header( hdc, content_top(), IDS_RECOMMENDED, K_BACK_BUTTON );
         paint_recommended( hdc, list_area( TRUE ).top );
@@ -793,14 +1062,20 @@ static void refresh(void)
 
 static void set_mode( enum mode new_mode )
 {
+    if (mode == MODE_FOLDER || new_mode == MODE_FOLDER) page = 0;
     mode = new_mode;
     scroll = 0;
     hot.kind = pressed.kind = K_NONE;
+    renaming = FALSE;
     switch (mode)
     {
     case MODE_HOME:
         search[0] = 0;
+        open_folder = -1;
         load_pins();
+        break;
+    case MODE_FOLDER:
+        load_folder_view();
         break;
     case MODE_ALL:
         load_apps();
@@ -843,6 +1118,179 @@ static void scroll_to_letter( WCHAR letter )
     layout();
 }
 
+/* the folder's name typed: kept (Enter, a click elsewhere) or not (Esc) */
+static void rename_done( BOOL keep )
+{
+    WCHAR name[FOLDER_NAME_MAX], *start = rename_text, *end;
+    int n = 0;
+
+    if (!renaming) return;
+    renaming = FALSE;
+    if (keep && open_folder >= 0 && open_folder < pin_count && cells[open_folder].folder)
+    {
+        while (*start == ' ') start++;
+        for (end = start + lstrlenW( start ); end > start && end[-1] == ' '; end--);
+        /* "|" parts the keys of a folder where it is kept */
+        for (const WCHAR *p = start; p < end && n < FOLDER_NAME_MAX - 1; p++) if (*p != '|') name[n++] = *p;
+        name[n] = 0;
+        if (wcscmp( name, cells[open_folder].name ))
+        {
+            lstrcpyW( cells[open_folder].name, name );
+            save_cells();
+        }
+    }
+    refresh();
+}
+
+static void remove_cell( int index )
+{
+    memmove( &cells[index], &cells[index + 1], (pin_count - index - 1) * sizeof(cells[0]) );
+    pin_count--;
+    memset( &cells[pin_count], 0, sizeof(cells[0]) );
+}
+
+static void insert_cell( int index, const struct pin_cell *cell )
+{
+    index = max( 0, min( index, pin_count ) );
+    memmove( &cells[index + 1], &cells[index], (pin_count - index) * sizeof(cells[0]) );
+    cells[index] = *cell;
+    pin_count++;
+}
+
+/* the pins of one place into another, which becomes a folder */
+static void cell_take( struct pin_cell *to, struct pin_cell *from )
+{
+    for (int k = 0; k < from->count; k++)
+    {
+        if (to->count == MAX_FOLDER_PINS)
+        {
+            free( from->keys[k] );
+            continue;
+        }
+        to->keys[to->count] = from->keys[k];
+        to->items[to->count++] = from->items[k];
+    }
+    from->count = 0;
+}
+
+/* where the dragged pin was let go: moved, made a folder with the pin it was
+ * on, or out of the open folder, next to it */
+static void drop_pin(void)
+{
+    if (mode == MODE_HOME)
+    {
+        if (drop_onto >= 0 && drop_onto != drag_from)
+        {
+            struct pin_cell *onto = &cells[drop_onto];
+
+            if (!onto->folder)
+            {
+                onto->folder = TRUE;
+                onto->name[0] = 0;   /* "Папка" until it is named */
+            }
+            cell_take( onto, &cells[drag_from] );
+            remove_cell( drag_from );
+        }
+        else if (drop_at >= 0 && drop_at != drag_from)
+        {
+            struct pin_cell moved = cells[drag_from];
+
+            remove_cell( drag_from );
+            insert_cell( drop_at, &moved );
+        }
+        else return;
+        save_cells();
+        return;
+    }
+    if (mode == MODE_FOLDER && open_folder >= 0)
+    {
+        struct pin_cell *folder = &cells[open_folder];
+        int member = folder_view[drag_from];
+
+        if (drop_out)
+        {
+            struct pin_cell single = { 0 };
+
+            single.keys[0] = folder->keys[member];
+            single.items[0] = folder->items[member];
+            single.count = 1;
+            memmove( &folder->keys[member], &folder->keys[member + 1], (folder->count - member - 1) * sizeof(WCHAR *) );
+            memmove( &folder->items[member], &folder->items[member + 1],
+                     (folder->count - member - 1) * sizeof(struct item *) );
+            folder->count--;
+            if (pin_count < MAX_PINS) insert_cell( open_folder + 1, &single );
+            else free( single.keys[0] );
+        }
+        else if (drop_at >= 0 && drop_at != drag_from)
+        {
+            WCHAR *keys[MAX_FOLDER_PINS];
+            struct item *items[MAX_FOLDER_PINS];
+            int order[MAX_PINS], count = grid_order( order ), n = 0;
+
+            /* those shown in their new order, then those with nothing there now */
+            for (int i = 0; i < count; i++)
+            {
+                keys[n] = folder->keys[folder_view[order[i]]];
+                items[n++] = folder->items[folder_view[order[i]]];
+            }
+            for (int k = 0; k < folder->count; k++)
+            {
+                if (folder->items[k]) continue;
+                keys[n] = folder->keys[k];
+                items[n++] = NULL;
+            }
+            memcpy( folder->keys, keys, n * sizeof(*keys) );
+            memcpy( folder->items, items, n * sizeof(*items) );
+        }
+        else return;
+        save_cells();
+    }
+}
+
+/* the pin under the pointer while it is dragged */
+static void drag_update( POINT pt )
+{
+    drag_pt = pt;
+    if (mode == MODE_FOLDER && (pt.y < pins_top() - px( 4 ) || pt.y >= pins_top() + pin_rows() * CELL_HEIGHT ||
+                                pt.x < SIDE || pt.x >= WIDTH - SIDE))
+    {
+        drop_out = TRUE;
+        drop_onto = -1;
+    }
+    else
+    {
+        BOOL on_icon;
+        int slot = slot_at( pt, &on_icon ), count = grid_count();
+
+        drop_out = FALSE;
+        drop_onto = -1;
+        if (on_icon && mode == MODE_HOME && slot < count)
+        {
+            /* over another pin's icon: a folder of the two */
+            int order[MAX_PINS];
+
+            grid_order( order );
+            if (order[slot] != drag_from) drop_onto = order[slot];
+        }
+        else drop_at = min( slot, count - 1 );
+    }
+    layout();
+    InvalidateRect( menu, NULL, FALSE );
+}
+
+static void drag_end( BOOL drop )
+{
+    if (!drag_armed && !dragging) return;
+    if (dragging && drop) drop_pin();
+    dragging = drag_armed = FALSE;
+    drop_at = drop_onto = -1;
+    drop_out = FALSE;
+    if (GetCapture() == menu) ReleaseCapture();
+    pressed.kind = K_NONE;
+    layout();
+    InvalidateRect( menu, NULL, FALSE );
+}
+
 static void open_recommended( int index )
 {
     struct recommended *rec = &recs[index];
@@ -866,12 +1314,25 @@ static void activate( struct target t )
         set_mode( MODE_RECOMMENDED );
         break;
     case K_BACK_BUTTON:
+        if (renaming) rename_done( TRUE );
         set_mode( mode == MODE_LETTERS ? MODE_ALL : MODE_HOME );
         break;
     case K_PIN:
+        if (mode == MODE_HOME && cells[t.index].folder)
+        {
+            open_folder = t.index;
+            set_mode( MODE_FOLDER );
+            break;
+        }
         menu11_hide();
-        items_launch( pins[t.index] );
+        items_launch( grid_item( t.index ) );
         return;
+    case K_FOLDER_NAME:
+        if (renaming || open_folder < 0) break;
+        renaming = TRUE;
+        lstrcpynW( rename_text, cell_name( &cells[open_folder] ), ARRAY_SIZE(rename_text) );
+        caret_on = TRUE;
+        break;
     case K_REC:
         open_recommended( t.index );
         return;
@@ -930,13 +1391,14 @@ static void context_menu( struct target t, POINT pt )
 {
     struct item *item = NULL;
 
-    if (t.kind == K_PIN) item = pins[t.index];
+    if (t.kind == K_PIN) item = grid_item( t.index );
     else if (t.kind == K_ROW) item = rows[t.index].item;
     else if (t.kind == K_REC) item = recs[t.index].item;
     if (!item) return;
     ClientToScreen( menu, &pt );
     if (item_popup( menu, item, pt, FALSE, &in_popup, menu11_hide, POPUP_WIN11, &look ) != ACTION_CHANGED) return;
     load_pins();
+    if (mode == MODE_FOLDER) load_folder_view();
     refresh();
 }
 
@@ -953,7 +1415,7 @@ static void set_hot( struct target t )
 
 static void scroll_by( int delta )
 {
-    if (mode == MODE_HOME)
+    if (mode == MODE_HOME || mode == MODE_FOLDER)
     {
         int new_page = max( 0, min( page + (delta > 0 ? 1 : -1), pages() - 1 ) );
         if (new_page == page) return;
@@ -1032,6 +1494,23 @@ static void move_focus( int dx, int dy )
 
 static void on_key( WPARAM key )
 {
+    if (dragging)
+    {
+        if (key == VK_ESCAPE) drag_end( FALSE );
+        return;
+    }
+    if (renaming)
+    {
+        /* the folder's name is typed, nothing else */
+        if (key == VK_ESCAPE || key == VK_RETURN) rename_done( key == VK_RETURN );
+        else if (key == VK_BACK && rename_text[0])
+        {
+            rename_text[lstrlenW( rename_text ) - 1] = 0;
+            caret_on = TRUE;
+            InvalidateRect( menu, NULL, FALSE );
+        }
+        return;
+    }
     switch (key)
     {
     case VK_ESCAPE:
@@ -1066,6 +1545,17 @@ static void on_char( WCHAR ch )
 {
     int len = lstrlenW( search );
 
+    if (renaming)
+    {
+        int n = lstrlenW( rename_text );
+
+        if (ch < 0x20 || ch == 0x7f || ch == '|' || n >= FOLDER_NAME_MAX - 1) return;
+        rename_text[n] = ch;
+        rename_text[n + 1] = 0;
+        caret_on = TRUE;
+        InvalidateRect( menu, NULL, FALSE );
+        return;
+    }
     if (ch < 0x20 || ch == 0x7f || len >= MAX_SEARCH) return;
     if (!len && ch == ' ') return;
     search[len] = ch;
@@ -1082,12 +1572,30 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     switch (msg)
     {
     case WM_MOUSEMOVE:
+        if (drag_armed && !dragging && (abs( (int)(pt.x - drag_down.x) ) > GetSystemMetrics( SM_CXDRAG ) ||
+                                        abs( (int)(pt.y - drag_down.y) ) > GetSystemMetrics( SM_CYDRAG )))
+        {
+            dragging = TRUE;
+            hot.kind = pressed.kind = K_NONE;
+            drop_at = drag_from;
+            drop_onto = -1;
+            drop_out = FALSE;
+        }
+        if (dragging)
+        {
+            drag_update( pt );
+            return 0;
+        }
         if (hot.kind == K_NONE)
         {
             TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
             TrackMouseEvent( &tme );
         }
         set_hot( hit_test( pt ) );
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        if ((HWND)lparam != hwnd) drag_end( FALSE );
         return 0;
 
     case WM_MOUSELEAVE:
@@ -1098,12 +1606,31 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case WM_LBUTTONDOWN:
         pressed = hit_test( pt );
         focus_shown = FALSE;
+        if (renaming && pressed.kind != K_FOLDER_NAME) rename_done( TRUE );
         search_active = pressed.kind == K_SEARCH;
         if (search_active) caret_on = TRUE;
+        /* a pin may be dragged to another place, onto another or out of its folder */
+        if (pressed.kind == K_PIN)
+        {
+            drag_armed = TRUE;
+            drag_from = pressed.index;
+            drag_down = pt;
+            SetCapture( hwnd );
+        }
         InvalidateRect( hwnd, NULL, FALSE );
         return 0;
 
     case WM_LBUTTONUP:
+        if (dragging)
+        {
+            drag_end( TRUE );
+            return 0;
+        }
+        if (drag_armed)
+        {
+            drag_armed = FALSE;
+            if (GetCapture() == hwnd) ReleaseCapture();
+        }
         t = hit_test( pt );
         if (same( t, pressed ) && t.kind != K_NONE && t.kind != K_SEARCH)
         {
@@ -1147,7 +1674,12 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             InvalidateRect( hwnd, NULL, FALSE );
             return 0;
         }
-        if (wparam == TIMER_CARET && (search[0] || search_active))
+        if (wparam == TIMER_CARET && renaming)
+        {
+            caret_on = !caret_on;
+            InvalidateRect( hwnd, NULL, FALSE );
+        }
+        else if (wparam == TIMER_CARET && (search[0] || search_active))
         {
             caret_on = !caret_on;
             InvalidateRect( hwnd, &targets[0].rect, FALSE );
@@ -1165,7 +1697,7 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         break;
 
     case WM_ACTIVATE:
-        if (LOWORD( wparam ) == WA_INACTIVE && !in_popup) menu11_hide();
+        if (LOWORD( wparam ) == WA_INACTIVE && !in_popup && !pins_start_dragging() && !dragging) menu11_hide();
         return 0;
 
     case WM_MOUSEACTIVATE:
@@ -1228,6 +1760,8 @@ BOOL menu11_visible(void)
 void menu11_hide(void)
 {
     if (!menu11_visible()) return;
+    drag_end( FALSE );
+    rename_done( TRUE );
     KillTimer( menu, TIMER_CARET );
     KillTimer( menu, TIMER_UNCLOAK );
     smooth_scroll_stop( &smooth, menu, TIMER_SMOOTH );
@@ -1296,8 +1830,13 @@ void menu11_toggle( HWND tray_window, const RECT *button_rect, BOOL click )
         UpdateWindow( menu );
         SetTimer( menu, TIMER_UNCLOAK, 16, NULL );
     }
-    SetForegroundWindow( menu );
-    SetFocus( menu );
+    /* opened for something dragged onto Start: the program dragged from keeps
+     * the focus until it is dropped (pins.c) */
+    if (!pins_start_dragging())
+    {
+        SetForegroundWindow( menu );
+        SetFocus( menu );
+    }
     search_active = FALSE;
     SetTimer( menu, TIMER_CARET, 530, NULL );
 }

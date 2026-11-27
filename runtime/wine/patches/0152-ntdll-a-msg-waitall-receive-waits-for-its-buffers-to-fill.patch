@@ -1,0 +1,148 @@
+From: Project Arctic
+Subject: ntdll: a MSG_WAITALL receive waits for its buffers to fill.
+
+Wine passed MSG_WAITALL by (a FIXME) and gave a blocking recv() whatever
+had come so far. Windows completes it only when the buffers are full, the
+connection ends or an error comes. scrcpy reads each video frame with one
+recv(MSG_WAITALL) and took a frame that came in two pieces for the end of
+the stream: its virtual desktop (1920x1080 frames of 100 KB and more) quit
+within a second. Now a stream socket's receive keeps what came in its
+buffers (async_recv_ioctl.received) and waits for the rest as any pending
+receive does; what came before an error is still returned. A datagram, a
+peek or a non-blocking socket read once, as before. Nothing new is asked
+of the server.
+---
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 2b48734..b54d401 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -118,6 +118,7 @@ struct async_recv_ioctl
+     int unix_flags;
+     unsigned int count;
+     BOOL icmp_over_dgram;
++    ULONG_PTR received; /* MSG_WAITALL: bytes in the buffers already */
+     struct iovec iov[1];
+ };
+ 
+@@ -786,6 +787,21 @@ static ssize_t fixup_icmp_over_dgram( struct msghdr *hdr, union unix_sockaddr *u
+     return recv_len;
+ }
+ 
++/* MSG_WAITALL: the buffers go on past what came; FALSE when they are full */
++static BOOL consume_recv_buffers( struct async_recv_ioctl *async, size_t len )
++{
++    unsigned int i = 0;
++
++    while (i < async->count && len >= async->iov[i].iov_len)
++        len -= async->iov[i++].iov_len;
++    if (i == async->count) return FALSE;
++    memmove( async->iov, async->iov + i, (async->count - i) * sizeof(*async->iov) );
++    async->count -= i;
++    async->iov[0].iov_base = (char *)async->iov[0].iov_base + len;
++    async->iov[0].iov_len -= len;
++    return TRUE;
++}
++
+ static NTSTATUS try_recv( int fd, struct async_recv_ioctl *async, ULONG_PTR *size )
+ {
+     char control_buffer[512];
+@@ -794,6 +810,10 @@ static NTSTATUS try_recv( int fd, struct async_recv_ioctl *async, ULONG_PTR *siz
+     NTSTATUS status;
+     ssize_t ret;
+ 
++    /* Windows completes a MSG_WAITALL receive of a stream socket only when
++     * its buffers are full or the connection ends: what comes before stays
++     * in them, and the receive waits for the rest like any other */
++again:
+     memset( &hdr, 0, sizeof(hdr) );
+     if (async->addr || async->icmp_over_dgram)
+     {
+@@ -805,7 +825,7 @@ static NTSTATUS try_recv( int fd, struct async_recv_ioctl *async, ULONG_PTR *siz
+     hdr.msg_control = control_buffer;
+     hdr.msg_controllen = sizeof(control_buffer);
+ 
+-    while ((ret = virtual_locked_recvmsg( fd, &hdr, async->unix_flags )) < 0 && errno == EINTR);
++    while ((ret = virtual_locked_recvmsg( fd, &hdr, async->unix_flags & ~MSG_WAITALL )) < 0 && errno == EINTR);
+ 
+     if (ret < 0)
+     {
+@@ -814,10 +834,25 @@ static NTSTATUS try_recv( int fd, struct async_recv_ioctl *async, ULONG_PTR *siz
+         if ((async->unix_flags & MSG_OOB) && errno == EINVAL)
+             errno = EWOULDBLOCK;
+ 
++        if (async->received)
++        {
++            if (errno == EWOULDBLOCK) return STATUS_DEVICE_NOT_READY;
++            /* the data that came before the error is the program's */
++            WARN( "recvmsg after %lu bytes: %s\n", (unsigned long)async->received, strerror( errno ) );
++            *size = async->received;
++            return STATUS_SUCCESS;
++        }
+         if (errno != EWOULDBLOCK) WARN( "recvmsg: %s\n", strerror( errno ) );
+         return sock_errno_to_status( errno );
+     }
+ 
++    if (async->unix_flags & MSG_WAITALL)
++    {
++        async->received += ret;
++        if (ret > 0 && consume_recv_buffers( async, ret )) goto again;
++        ret = async->received;
++    }
++
+     status = (hdr.msg_flags & MSG_TRUNC) ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+     if (async->icmp_over_dgram)
+         ret = fixup_icmp_over_dgram( &hdr, &unix_addr, async->handle, ret, &status );
+@@ -946,6 +981,9 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+     /* the server currently will never succeed immediately */
+     assert(status == STATUS_ALERTED || status == STATUS_PENDING || NT_ERROR(status));
+ 
++    /* a non-blocking receive gives what there is, MSG_WAITALL or not */
++    if (nonblocking && !force_async) async->unix_flags &= ~MSG_WAITALL;
++
+     if (status == STATUS_ALERTED)
+     {
+         ULONG_PTR information;
+@@ -1013,6 +1051,17 @@ static NTSTATUS sock_ioctl_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
+     async->addr_len = addr_len;
+     async->ret_flags = ret_flags;
+     async->icmp_over_dgram = is_icmp_over_dgram( fd );
++    async->received = 0;
++
++    /* MSG_WAITALL is for a stream: a datagram or a peek is one read */
++    if (unix_flags & MSG_WAITALL)
++    {
++        socklen_t len = sizeof(int);
++        int type;
++
++        if ((unix_flags & MSG_PEEK) || getsockopt( fd, SOL_SOCKET, SO_TYPE, (char *)&type, &len ) || type != SOCK_STREAM)
++            async->unix_flags &= ~MSG_WAITALL;
++    }
+ 
+     return sock_recv( handle, event, apc, apc_user, io, fd, async, force_async );
+ }
+@@ -1036,6 +1085,7 @@ NTSTATUS sock_read( HANDLE handle, int fd, HANDLE event, PIO_APC_ROUTINE apc,
+     async->addr_len = NULL;
+     async->ret_flags = NULL;
+     async->icmp_over_dgram = is_icmp_over_dgram( fd );
++    async->received = 0;
+ 
+     return sock_recv( handle, event, apc, apc_user, io, fd, async, 1 );
+ }
+@@ -1755,7 +1805,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+             if (params.msg_flags & AFD_MSG_PEEK)
+                 unix_flags |= MSG_PEEK;
+             if (params.msg_flags & AFD_MSG_WAITALL)
+-                FIXME( "MSG_WAITALL is not supported\n" );
++                unix_flags |= MSG_WAITALL;
+             status = sock_ioctl_recv( handle, event, apc, apc_user, io, fd, params.buffers, params.count, NULL,
+                                       NULL, NULL, NULL, unix_flags, !!(params.recv_flags & AFD_RECV_FORCE_ASYNC) );
+             if (needs_close) close( fd );
+@@ -1782,7 +1832,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+             if (*ws_flags & WS_MSG_PEEK)
+                 unix_flags |= MSG_PEEK;
+             if (*ws_flags & WS_MSG_WAITALL)
+-                FIXME( "MSG_WAITALL is not supported\n" );
++                unix_flags |= MSG_WAITALL;
+             status = sock_ioctl_recv( handle, event, apc, apc_user, io, fd, u64_to_user_ptr(params->buffers_ptr),
+                                       params->count, u64_to_user_ptr(params->control_ptr),
+                                       u64_to_user_ptr(params->addr_ptr), u64_to_user_ptr(params->addr_len_ptr),

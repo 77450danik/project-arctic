@@ -1522,6 +1522,13 @@ static int query_ntree(pid_t unix_pid, struct ntree_entry *entries, int max_entr
     int fd, count = 0;
     char *line, *nl;
 
+    /* NT's executive in the kernel (docs/ntos.md) answers a system call;
+     * ENOENT/ENOSYS: wineserver runs, and its socket does */
+    if ((n = syscall(0x0f05 /* nt_admin */, 2 /* NT_ADMIN_PROCESS_TREE */, (unsigned long)want, reply,
+                     (unsigned int)sizeof(reply) - 1)) >= 0) {
+        total = n;
+        goto parse;
+    }
     if ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
         return 0;
     memcpy(addr.sun_path + 1, name, sizeof(name) - 1);
@@ -1536,6 +1543,7 @@ static int query_ntree(pid_t unix_pid, struct ntree_entry *entries, int max_entr
            (n = recv(fd, reply + total, sizeof(reply) - 1 - (size_t)total, 0)) > 0)
         total += n;
     close(fd);
+parse:
     reply[total > 0 ? total : 0] = 0;
 
     for (line = reply; count < max_entries && (nl = strchr(line, '\n')); line = nl + 1) {

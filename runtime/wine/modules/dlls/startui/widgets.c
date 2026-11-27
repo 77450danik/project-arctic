@@ -1,22 +1,26 @@
 /*
- * The weather on the taskbar and what it opens: Windows 10's "News and
- * interests" or Windows 11's widgets, as the taskbar's buttons are set
+ * Windows Widgets: the weather on the taskbar, the widgets board it opens,
+ * and the widgets of the network (the weather, the news, Copilot)
  *
  * A button in the taskbar shows the weather: explorer puts it at the far left
  * of a centred taskbar and next to the tray otherwise (traywnd.cpp,
- * ArcticPlaceWidget). It opens a panel where it stands: the weather on top,
- * Copilot under it, the news below; from the taskbar's edge in Windows 10's
- * style, with a margin and rounded corners in Windows 11's.
+ * ArcticPlaceWidget). It opens the board where it stands, from the taskbar's
+ * edge in Windows 10's style, with a margin and rounded corners in Windows
+ * 11's: the widgets of the list Board (gadgets.c keeps the lists) in two
+ * columns, each in its size, "..." on each for its sizes and the rest, "+" at
+ * the top for more. The desktop shows the same widgets, drawn by the same
+ * code, in the same sizes.
  *
- * Where the data comes from, every half hour and when the panel opens:
+ * Where the data comes from, every half hour and when the board opens:
  * ipwho.is (the town of this address, unless the user set one),
  * geocoding-api.open-meteo.com (its name in the user's language),
  * api.open-meteo.com (the weather), www.bing.com/news (the headlines and
- * their pictures, in the user's language and country). A link, and what is
- * asked of Copilot, open in the default browser.
+ * their pictures, in the user's language and country; only the stories that
+ * have a picture are kept, three of them). A link, and what is asked of
+ * Copilot, open in the default browser.
  *
  * HKCU\Software\Arctic\Widgets: Show (0 off, 1 the icon, 2 the icon and the
- * text), Hover (the panel opens under the pointer), City, Latitude, Longitude
+ * text), Hover (the board opens under the pointer), City, Latitude, Longitude
  * (the town the user set) and what was last seen, for the next logon.
  *
  * This library is free software; you can redistribute it and/or
@@ -44,6 +48,8 @@
 #define USER_AGENT      L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 #define WM_WIDGET_DATA  (WM_APP + 1)
+#define WM_BOARD_RELOAD (WM_APP + 2)
+#define WM_BOARD_TICK   (WM_APP + 3)
 
 #define TIMER_REFRESH   1
 #define TIMER_FIRST     2
@@ -52,20 +58,12 @@
 #define TIMER_SMOOTH    5
 #define TIMER_CARET     6
 
-#define MAX_NEWS        12
+#define NEWS_COUNT      3       /* the stories shown, each with its picture */
+#define NEWS_SCAN       30      /* the feed's items looked at for them */
 #define MAX_DAYS        5
-#define MAX_CARDS       (MAX_NEWS + 2)
-#define MAX_TARGETS     32
-#define MAX_ASK         500
-
-#define COL_W           px(360)
-#define GAP             px(16)
-#define PANEL_W         (2 * COL_W + 3 * GAP)
-#define IMAGE_H         (COL_W * 9 / 16)
-#define WEATHER_H       px(132)
-#define COPILOT_H       px(96)
-#define HEADER_10       px(52)
-#define HEADER_11       px(76)
+#define PIC_W           px( 640 )
+#define HEADER_10       px( 52 )
+#define HEADER_11       px( 76 )
 
 #define BUTTON_HOT      1       /* as ArcticTaskbarPaintButton takes them */
 #define BUTTON_PRESSED  2
@@ -83,7 +81,7 @@ struct day
 struct news
 {
     WCHAR title[300], source[80], url[1400];
-    UINT32 *pixels;     /* premultiplied, COL_W by IMAGE_H, or NULL */
+    UINT32 *pixels;     /* premultiplied, whole, PIC_W at most, or NULL */
     int width, height;
 };
 
@@ -95,43 +93,24 @@ struct data
     BOOL is_day, imperial;
     struct day days[MAX_DAYS];
     int day_count;
-    struct news news[MAX_NEWS];
+    struct news news[NEWS_COUNT];
     int news_count;
-};
-
-enum kind { K_NONE, K_WEATHER, K_NEWS, K_ASK, K_SEND };
-enum card_kind { CARD_WEATHER, CARD_COPILOT, CARD_NEWS };
-
-struct card
-{
-    enum card_kind kind;
-    int index, column, y, height;   /* column -1: across the whole width */
-};
-
-struct target
-{
-    enum kind kind;
-    int index;
-    RECT rect;
 };
 
 struct fonts
 {
-    HFONT title, body, small_, big, huge_;
+    HFONT title, body, small_, big, huge_, headline;
 };
 
 static HWND button, tray, panel;
 static struct data *data;
-static BOOL button_hot, button_down, panel_hover, style11;
+static SRWLOCK data_lock = SRWLOCK_INIT;   /* the desktop's thread reads data too */
+static BOOL button_hot, button_down, panel_hover, style11, in_popup;
 static DWORD hidden_at, fetched_at;
 static LONG fetching;
 
 static struct palette pal;
 static struct look look;
-static struct card cards[MAX_CARDS];
-static int card_count, content_height, scroll;
-static struct target targets[MAX_TARGETS], hot_target, pressed_target;
-static int target_count;
 
 /**********************************************************************
  *          The registry
@@ -543,9 +522,11 @@ static BOOL xml_text( const char *start, const char *end, const char *tag, WCHAR
     return n > 0;
 }
 
-/* a picture, fit to fill the width and height, its middle kept */
-static BOOL decode_image( const BYTE *bytes, DWORD size, struct news *n, int width, int height )
+/* a picture, whole, no larger than the width and height: each widget crops
+ * what it needs of it (draw_cover) */
+static BOOL decode_image( const BYTE *bytes, DWORD size, struct news *n, int max_w, int max_h )
 {
+    int width, height;
     IWICImagingFactory *factory = NULL;
     IWICStream *stream = NULL;
     IWICBitmapDecoder *decoder = NULL;
@@ -570,9 +551,9 @@ static BOOL decode_image( const BYTE *bytes, DWORD size, struct news *n, int wid
     if (FAILED(IWICFormatConverter_Initialize( converter, (IWICBitmapSource *)frame, &wic_format_pbgra, WICBitmapDitherTypeNone,
                                                NULL, 0.0, WICBitmapPaletteTypeCustom )))
         goto done;
-    fit = max( (double)width / src_w, (double)height / src_h );
-    scaled_w = max( (UINT)width, (UINT)ceil( src_w * fit ) );
-    scaled_h = max( (UINT)height, (UINT)ceil( src_h * fit ) );
+    fit = min( 1.0, min( (double)max_w / src_w, (double)max_h / src_h ) );
+    width = scaled_w = max( 1, (int)floor( src_w * fit + 0.5 ) );
+    height = scaled_h = max( 1, (int)floor( src_h * fit + 0.5 ) );
     if (FAILED(IWICImagingFactory_CreateBitmapScaler( factory, &scaler ))) goto done;
     if (FAILED(IWICBitmapScaler_Initialize( scaler, (IWICBitmapSource *)converter, scaled_w, scaled_h,
                                             WICBitmapInterpolationModeFant )))
@@ -604,16 +585,16 @@ done:
 
 static void fetch_image( struct news *n, const WCHAR *address )
 {
-    int width = COL_W, height = IMAGE_H;
     WCHAR url[1000];
     DWORD size = 0;
     char *body;
 
-    /* bing's own resizer, and over https */
-    swprintf( url, ARRAY_SIZE(url), L"https:%s&w=%d&h=%d&c=7", !wcsncmp( address, L"http:", 5 ) ? address + 5 :
-              !wcsncmp( address, L"https:", 6 ) ? address + 6 : address, width, height );
+    /* bing's own resizer, and over https; the width alone: given a height
+     * too, it pads the picture with white instead of cropping it */
+    swprintf( url, ARRAY_SIZE(url), L"https:%s&w=%d", !wcsncmp( address, L"http:", 5 ) ? address + 5 :
+              !wcsncmp( address, L"https:", 6 ) ? address + 6 : address, PIC_W );
     if (!(body = http_get( url, &size ))) return;
-    decode_image( (const BYTE *)body, size, n, width, height );
+    decode_image( (const BYTE *)body, size, n, PIC_W, PIC_W );
     free( body );
 }
 
@@ -621,6 +602,7 @@ static void fetch_news( struct data *d, const WCHAR *lang, const WCHAR *country 
 {
     WCHAR url[512], encoded[128], query[64], language[20], image[900];
     const char *p, *end;
+    int scanned = 0;
     char *body;
 
     lstrcpynW( query, load_string( IDS_WIDGET_QUERY ), ARRAY_SIZE(query) );
@@ -629,16 +611,20 @@ static void fetch_news( struct data *d, const WCHAR *lang, const WCHAR *country 
     CharLowerW( language );
     swprintf( url, ARRAY_SIZE(url), L"https://www.bing.com/news/search?q=%s&format=rss&setlang=%s&cc=%s", encoded, language, country );
     if (!(body = http_get( url, NULL ))) return;
-    for (p = body; d->news_count < MAX_NEWS && (p = strstr( p, "<item>" )); p = end)
+    for (p = body; d->news_count < NEWS_COUNT && scanned++ < NEWS_SCAN && (p = strstr( p, "<item>" )); p = end)
     {
         struct news *n = &d->news[d->news_count];
 
         if (!(end = strstr( p, "</item>" ))) break;
+        memset( n, 0, sizeof(*n) );
         if (!xml_text( p, end, "title", n->title, ARRAY_SIZE(n->title) ) ||
             !xml_text( p, end, "link", n->url, ARRAY_SIZE(n->url) ))
             continue;
+        /* a story without its picture is not shown: the next one is taken */
+        if (!xml_text( p, end, "News:Image", image, ARRAY_SIZE(image) )) continue;
+        fetch_image( n, image );
+        if (!n->pixels) continue;
         xml_text( p, end, "News:Source", n->source, ARRAY_SIZE(n->source) );
-        if (xml_text( p, end, "News:Image", image, ARRAY_SIZE(image) )) fetch_image( n, image );
         d->news_count++;
     }
     free( body );
@@ -647,7 +633,7 @@ static void fetch_news( struct data *d, const WCHAR *lang, const WCHAR *country 
 static void data_free( struct data *d )
 {
     if (!d) return;
-    for (int i = 0; i < MAX_NEWS; i++) free( d->news[i].pixels );
+    for (int i = 0; i < NEWS_COUNT; i++) free( d->news[i].pixels );
     free( d );
 }
 
@@ -887,6 +873,7 @@ static void fonts_make( struct fonts *f )
     f->small_ = shell_font( px( 12 ), FW_NORMAL );
     f->big = shell_font( px( 28 ), FW_SEMIBOLD );
     f->huge_ = shell_font( px( 48 ), FW_LIGHT );
+    f->headline = shell_font( px( 18 ), FW_SEMIBOLD );
 }
 
 static void fonts_free( struct fonts *f )
@@ -896,6 +883,7 @@ static void fonts_free( struct fonts *f )
     DeleteObject( f->small_ );
     DeleteObject( f->big );
     DeleteObject( f->huge_ );
+    DeleteObject( f->headline );
 }
 
 static int text_width( HDC hdc, HFONT font, const WCHAR *text )
@@ -1013,125 +1001,17 @@ static void paint_button(void)
 }
 
 /**********************************************************************
- *          The panel: where everything goes
- *
- * The weather and Copilot across the whole width, the news under them in
- * two columns. What scrolls is painted once into a bitmap of its full
- * height and only copied while it moves.
+ *          The widgets of the network: what they share
  */
 
-struct layer
+static int card_radius( BOOL eleven )
 {
-    HDC dc;
-    HBITMAP bitmap;
-    HGDIOBJ old;
-};
-
-static struct layer content_layer, header_layer;
-static struct fonts panel_fonts;
-static BOOL fonts_ready, content_dirty, header_dirty, ask_active, caret_on;
-static struct smooth_scroll smooth;
-static WCHAR ask[MAX_ASK + 1];
-static COLORREF panel_accent;
-static RECT ask_rect, send_rect;   /* in the content's coordinates */
-
-static void layer_free( struct layer *l )
-{
-    if (l->dc && l->old) SelectObject( l->dc, l->old );
-    if (l->bitmap) DeleteObject( l->bitmap );
-    if (l->dc) DeleteDC( l->dc );
-    memset( l, 0, sizeof(*l) );
+    return eleven ? px( 8 ) : 0;
 }
 
-static BOOL layer_make( struct layer *l, int width, int height )
+static BYTE card_alpha( const struct palette *p )
 {
-    BITMAPINFO info = { { sizeof(info.bmiHeader), max( width, 1 ), -max( height, 1 ), 1, 32, BI_RGB } };
-    size_t count = (size_t)max( width, 1 ) * max( height, 1 );
-    HDC screen = GetDC( NULL );
-    UINT32 *bits = NULL;
-
-    layer_free( l );
-    l->dc = CreateCompatibleDC( screen );
-    l->bitmap = CreateDIBSection( screen, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0 );
-    ReleaseDC( NULL, screen );
-    if (!l->dc || !l->bitmap)
-    {
-        layer_free( l );
-        return FALSE;
-    }
-    l->old = SelectObject( l->dc, l->bitmap );
-    /* without alpha: black, or white, is the acrylic seen through */
-    for (size_t i = 0; i < count; i++) bits[i] = pal.light ? 0x00ffffff : 0;
-    SetBkMode( l->dc, TRANSPARENT );
-    return TRUE;
-}
-
-static int header_height(void)
-{
-    return style11 ? HEADER_11 : HEADER_10;
-}
-
-static int view_height( const RECT *client )
-{
-    return client->bottom - header_height();
-}
-
-static int max_scroll( const RECT *client )
-{
-    return max( 0, content_height - view_height( client ) );
-}
-
-static int news_height( HDC hdc, const struct fonts *f, const struct news *n )
-{
-    int width = COL_W - 2 * px( 12 ), height = n->pixels ? n->height : 0;
-
-    height += px( 10 ) + text_height( hdc, f->title, n->title, width, 3 );
-    return height + px( 6 ) + px( 16 ) + px( 12 );
-}
-
-static void add_card( enum card_kind kind, int index, int column, int y, int height )
-{
-    if (card_count >= MAX_CARDS) return;
-    cards[card_count].kind = kind;
-    cards[card_count].index = index;
-    cards[card_count].column = column;
-    cards[card_count].y = y;
-    cards[card_count].height = height;
-    card_count++;
-}
-
-static void layout(void)
-{
-    int top = WEATHER_H + GAP + COPILOT_H + GAP, columns[2] = { top, top };
-    HDC hdc;
-
-    card_count = 0;
-    if (!data || !(hdc = GetDC( panel ))) return;
-    add_card( CARD_WEATHER, 0, -1, 0, WEATHER_H );
-    add_card( CARD_COPILOT, 0, -1, WEATHER_H + GAP, COPILOT_H );
-    for (int i = 0; i < data->news_count; i++)
-    {
-        int column = columns[1] < columns[0], height = news_height( hdc, &panel_fonts, &data->news[i] );
-
-        add_card( CARD_NEWS, i, column, columns[column], height );
-        columns[column] += height + GAP;
-    }
-    ReleaseDC( panel, hdc );
-    content_height = max( columns[0], columns[1] ) + px( 4 );
-    content_dirty = TRUE;
-}
-
-/**********************************************************************
- *          The panel: painting
- */
-
-static void add_target( enum kind kind, int index, const RECT *rect )
-{
-    if (target_count >= MAX_TARGETS) return;
-    targets[target_count].kind = kind;
-    targets[target_count].index = index;
-    targets[target_count].rect = *rect;
-    target_count++;
+    return p->light ? 0x0a : 0x10;
 }
 
 static COLORREF mix( COLORREF a, COLORREF b, int t, int range )
@@ -1185,25 +1065,73 @@ static void gradient_card( HDC hdc, const RECT *r, int radius, COLORREF top, COL
     free( pixels );
 }
 
-/* a picture on top of a card: only the card's upper corners are rounded */
-static void draw_picture( HDC hdc, const struct news *n, int x, int y, int radius )
+/* a story's picture filling r, its middle kept; toward the bottom darker,
+ * under its title, when scrim */
+static void draw_cover( HDC hdc, const struct news *n, const RECT *r, int radius, BOOL bottom_round, BOOL scrim )
 {
-    UINT32 *pixels = malloc( n->width * n->height * sizeof(*pixels) );
+    int width = r->right - r->left, height = r->bottom - r->top, taps;
+    float scale, ox, oy;
+    UINT32 *pixels;
 
-    if (!pixels) return;
-    memcpy( pixels, n->pixels, n->width * n->height * sizeof(*pixels) );
-    for (int py = 0; py < min( radius, n->height ); py++)
+    if (!n->pixels || width <= 0 || height <= 0 || !(pixels = malloc( width * height * sizeof(*pixels) ))) return;
+    scale = max( (float)width / n->width, (float)height / n->height );
+    ox = (n->width - width / scale) / 2;
+    oy = (n->height - height / scale) / 2;
+    /* smaller than half: more samples a pixel, or it shimmers */
+    taps = max( 1, min( 6, (int)ceilf( 1 / scale ) ) );
+    for (int y = 0; y < height; y++)
     {
-        for (int px_ = 0; px_ < n->width; px_++)
-        {
-            UINT32 a = corner_coverage( px_, py, n->width, n->height, radius, FALSE ), p = pixels[py * n->width + px_];
+        float dark = 1;
 
-            if (a < 255)
-                pixels[py * n->width + px_] = (((p >> 24) * a / 255) << 24) | ((((p >> 16) & 0xff) * a / 255) << 16) |
-                                              ((((p >> 8) & 0xff) * a / 255) << 8) | ((p & 0xff) * a / 255);
+        if (scrim)
+        {
+            float t = (y - height * 0.35f) / (height * 0.65f);
+
+            if (t > 0) dark = 1 - 0.75f * min( t, 1.f );
+        }
+        for (int x = 0; x < width; x++)
+        {
+            float sum[4] = { 0 };
+            UINT32 a = corner_coverage( x, y, width, height, radius, bottom_round ), out[4];
+
+            for (int j = 0; j < taps; j++)
+            {
+                for (int i = 0; i < taps; i++)
+                {
+                    float sx = ox + (x + (i + 0.5f) / taps) / scale - 0.5f, sy = oy + (y + (j + 0.5f) / taps) / scale - 0.5f;
+                    int x0, y0, x1, y1;
+                    float fx, fy;
+
+                    sx = max( 0.f, min( sx, n->width - 1.f ) );
+                    sy = max( 0.f, min( sy, n->height - 1.f ) );
+                    x0 = (int)sx;
+                    y0 = (int)sy;
+                    x1 = min( x0 + 1, n->width - 1 );
+                    y1 = min( y0 + 1, n->height - 1 );
+                    fx = sx - x0;
+                    fy = sy - y0;
+                    for (int c = 0; c < 4; c++)
+                    {
+                        float p00 = (n->pixels[y0 * n->width + x0] >> (c * 8)) & 0xff;
+                        float p10 = (n->pixels[y0 * n->width + x1] >> (c * 8)) & 0xff;
+                        float p01 = (n->pixels[y1 * n->width + x0] >> (c * 8)) & 0xff;
+                        float p11 = (n->pixels[y1 * n->width + x1] >> (c * 8)) & 0xff;
+
+                        sum[c] += (p00 * (1 - fx) + p10 * fx) * (1 - fy) + (p01 * (1 - fx) + p11 * fx) * fy;
+                    }
+                }
+            }
+            for (int c = 0; c < 4; c++)
+            {
+                float v = sum[c] / (taps * taps);
+
+                if (c < 3) v *= dark;
+                out[c] = (UINT32)(v * a / 255 + 0.5f);
+            }
+            pixels[y * width + x] = (out[3] << 24) | (out[2] << 16) | (out[1] << 8) | out[0];
         }
     }
-    blend_bits( hdc, x, y, n->width, n->height, pixels );
+    blend_bits( hdc, r->left, r->top, width, height, pixels );
     free( pixels );
 }
 
@@ -1244,83 +1172,273 @@ static void card_text( HDC hdc, BOOL opaque, const WCHAR *text, RECT *rect, HFON
     else paint_text( hdc, text, rect, font, color, format );
 }
 
-static int card_radius(void)
+/* the card under a widget of the board; on the desktop its window is the card */
+static void plain_card( const struct widget_paint *p )
 {
-    return style11 ? px( 8 ) : 0;
+    if (!p->desktop) fill_round_rect( p->hdc, &p->rect, (float)card_radius( p->style11 ), p->pal->ink, card_alpha( p->pal ) );
 }
 
-static BYTE card_alpha(void)
+static void no_connection( const struct widget_paint *p, const struct fonts *f )
 {
-    return pal.light ? 0x0a : 0x10;
+    RECT t = p->rect;
+
+    plain_card( p );
+    paint_text( p->hdc, load_string( IDS_WIDGET_NO_DATA ), &t, f->body, p->pal->dim, DT_CENTER );
 }
 
-/* one tile: the place and the weather now at the left, the days at the right */
-static void paint_weather( HDC hdc, const struct fonts *f, const RECT *r )
+/**********************************************************************
+ *          The weather
+ */
+
+struct weather_ink
 {
-    int radius = card_radius(), pad = px( 16 ), x = r->left + pad, y = r->top + px( 12 ), icon = px( 64 );
-    int split = (r->left + r->right) / 2, detail = x + icon + px( 108 );
-    BOOL opaque = style11;
-    COLORREF text = opaque ? RGB( 255, 255, 255 ) : pal.text, dim = opaque ? RGB( 0xe4, 0xee, 0xf8 ) : pal.dim;
+    BOOL opaque, light;
+    COLORREF text, dim, ink;
+};
+
+/* the picture and the degrees, and what it is like beside them */
+static void weather_now( HDC hdc, const struct fonts *f, const struct weather_ink *ink, int x, int y, int right, int icon )
+{
     WCHAR line[64];
+    int temp_w, detail;
+    RECT t;
+
+    draw_weather( hdc, data->code, data->is_day, x, y, icon, ink->light );
+    degrees( line, ARRAY_SIZE(line), data->temp, FALSE );
+    temp_w = text_width( hdc, f->huge_, line );
+    SetRect( &t, x + icon + px( 8 ), y, x + icon + px( 8 ) + temp_w + px( 4 ), y + icon );
+    card_text( hdc, ink->opaque, line, &t, f->huge_, ink->text, DT_LEFT );
+    detail = t.right + px( 14 );
+    SetRect( &t, detail, y + icon / 2 - px( 20 ), right, y + icon / 2 );
+    card_text( hdc, ink->opaque, weather_text( data->code, data->is_day ), &t, f->body, ink->text, DT_LEFT | DT_END_ELLIPSIS );
+    swprintf( line, ARRAY_SIZE(line), load_string( IDS_WIDGET_FEELS ), data->feels );
+    SetRect( &t, detail, y + icon / 2, right, y + icon / 2 + px( 18 ) );
+    card_text( hdc, ink->opaque, line, &t, f->small_, ink->dim, DT_LEFT | DT_END_ELLIPSIS );
+}
+
+/* "Humidity 80%  ·  Wind 12 km/h" */
+static void weather_air( HDC hdc, const struct fonts *f, const struct weather_ink *ink, RECT *t )
+{
+    WCHAR line[128], wind[48];
+    int n;
+
+    n = swprintf( line, ARRAY_SIZE(line), load_string( IDS_WIDGET_HUMIDITY ), data->humidity );
+    swprintf( wind, ARRAY_SIZE(wind), load_string( data->imperial ? IDS_WIDGET_WIND_MPH : IDS_WIDGET_WIND ), data->wind );
+    if (n > 0) swprintf( line + n, ARRAY_SIZE(line) - n, L"  \x00b7  %s", wind );
+    card_text( hdc, ink->opaque, line, t, f->small_, ink->dim, DT_LEFT | DT_END_ELLIPSIS );
+}
+
+/* the days side by side: the name, the picture, the highest and lowest */
+static void weather_days_row( HDC hdc, const struct fonts *f, const struct weather_ink *ink, int left, int right, int top )
+{
+    int cell = data->day_count ? (right - left) / data->day_count : 0, mini = px( 32 );
+    WCHAR line[32];
+    RECT t;
+
+    for (int i = 0; i < data->day_count; i++)
+    {
+        int cx = left + i * cell;
+
+        SetRect( &t, cx, top, cx + cell, top + px( 18 ) );
+        card_text( hdc, ink->opaque, data->days[i].name, &t, f->small_, ink->dim, DT_CENTER );
+        draw_weather( hdc, data->days[i].code, TRUE, cx + (cell - mini) / 2, top + px( 22 ), mini, ink->light );
+        swprintf( line, ARRAY_SIZE(line), L"%d\x00b0 / %d\x00b0", data->days[i].high, data->days[i].low );
+        SetRect( &t, cx, top + px( 58 ), cx + cell, top + px( 76 ) );
+        card_text( hdc, ink->opaque, line, &t, f->small_, ink->text, DT_CENTER );
+    }
+}
+
+/* the days one under the other, each with a bar of its lowest to its
+ * highest among those of all of them */
+static void weather_days_list( HDC hdc, const struct fonts *f, const struct weather_ink *ink, const RECT *area )
+{
+    int low = 1000, high = -1000, rows = data->day_count, row_h, mini = px( 28 );
+    COLORREF bar = ink->opaque ? RGB( 255, 255, 255 ) : ink->ink;
+    WCHAR line[16];
+    RECT t;
+
+    if (!rows) return;
+    for (int i = 0; i < rows; i++)
+    {
+        low = min( low, data->days[i].low );
+        high = max( high, data->days[i].high );
+    }
+    row_h = (area->bottom - area->top) / rows;
+    for (int i = 0; i < rows; i++)
+    {
+        int top = area->top + i * row_h, cy = top + row_h / 2, x = area->left;
+        int bar_left = x + px( 144 ), bar_right = area->right - px( 44 ), span = max( high - low, 1 );
+        RECT track, fill;
+
+        SetRect( &t, x, top, x + px( 60 ), top + row_h );
+        card_text( hdc, ink->opaque, data->days[i].name, &t, f->body, ink->text, DT_LEFT );
+        draw_weather( hdc, data->days[i].code, TRUE, x + px( 62 ), cy - mini / 2, mini, ink->light );
+        degrees( line, ARRAY_SIZE(line), data->days[i].low, FALSE );
+        SetRect( &t, x + px( 96 ), top, bar_left - px( 10 ), top + row_h );
+        card_text( hdc, ink->opaque, line, &t, f->body, ink->dim, DT_RIGHT );
+        SetRect( &track, bar_left, cy - px( 2 ), bar_right, cy + px( 2 ) );
+        fill_round_rect( hdc, &track, (float)px( 2 ), bar, 0x30 );
+        SetRect( &fill, bar_left + (bar_right - bar_left) * (data->days[i].low - low) / span, track.top,
+                 bar_left + (bar_right - bar_left) * (data->days[i].high - low) / span, track.bottom );
+        if (fill.right - fill.left < px( 4 )) fill.right = fill.left + px( 4 );
+        fill_round_rect( hdc, &fill, (float)px( 2 ), bar, 0xd0 );
+        degrees( line, ARRAY_SIZE(line), data->days[i].high, FALSE );
+        SetRect( &t, bar_right + px( 10 ), top, area->right, top + row_h );
+        card_text( hdc, ink->opaque, line, &t, f->body, ink->text, DT_LEFT );
+    }
+}
+
+static void paint_weather( struct widget_paint *p, const struct fonts *f )
+{
+    const RECT *r = &p->rect;
+    int pad = px( 16 ), x = r->left + pad, y = r->top + px( 12 ), more = px( 30 );
+    struct weather_ink ink;
+    HDC hdc = p->hdc;
     RECT t;
 
     if (!data->have_weather)
     {
-        fill_round_rect( hdc, r, (float)radius, pal.ink, card_alpha() );
-        t = *r;
-        paint_text( hdc, load_string( IDS_WIDGET_NO_DATA ), &t, f->body, pal.dim, DT_CENTER );
+        no_connection( p, f );
         return;
     }
-    if (opaque)
+    widget_add_target( p, HIT_CARD, 0, r );
+    ink.opaque = p->style11;
+    ink.light = !ink.opaque && p->pal->light;
+    ink.text = ink.opaque ? RGB( 255, 255, 255 ) : p->pal->text;
+    ink.dim = ink.opaque ? RGB( 0xe4, 0xee, 0xf8 ) : p->pal->dim;
+    ink.ink = p->pal->ink;
+    if (ink.opaque)
     {
         COLORREF top, bottom;
 
         weather_colors( &top, &bottom );
-        gradient_card( hdc, r, radius, top, bottom );
+        gradient_card( hdc, r, card_radius( p->style11 ), top, bottom );
     }
-    else fill_round_rect( hdc, r, (float)radius, pal.ink, card_alpha() );
+    else plain_card( p );
 
-    SetRect( &t, x, y, split, y + px( 20 ) );
-    card_text( hdc, opaque, data->city, &t, f->title, text, DT_LEFT );
-    y += px( 26 );
+    SetRect( &t, x, y, r->right - pad - more, y + px( 20 ) );
+    card_text( hdc, ink.opaque, data->city, &t, f->title, ink.text, DT_LEFT | DT_END_ELLIPSIS );
+    y += px( 28 );
 
-    draw_weather( hdc, data->code, data->is_day, x, y, icon, !opaque && pal.light );
-    degrees( line, ARRAY_SIZE(line), data->temp, FALSE );
-    SetRect( &t, x + icon + px( 8 ), y, detail - px( 4 ), y + icon );
-    card_text( hdc, opaque, line, &t, f->huge_, text, DT_LEFT );
-
-    SetRect( &t, detail, y - px( 2 ), split, y + px( 20 ) );
-    card_text( hdc, opaque, weather_text( data->code, data->is_day ), &t, f->body, text, DT_LEFT );
-    swprintf( line, ARRAY_SIZE(line), load_string( IDS_WIDGET_FEELS ), data->feels );
-    SetRect( &t, detail, y + px( 20 ), split, y + px( 36 ) );
-    card_text( hdc, opaque, line, &t, f->small_, dim, DT_LEFT );
-    swprintf( line, ARRAY_SIZE(line), load_string( IDS_WIDGET_HUMIDITY ), data->humidity );
-    SetRect( &t, detail, y + px( 36 ), split, y + px( 52 ) );
-    card_text( hdc, opaque, line, &t, f->small_, dim, DT_LEFT );
-    swprintf( line, ARRAY_SIZE(line), load_string( data->imperial ? IDS_WIDGET_WIND_MPH : IDS_WIDGET_WIND ), data->wind );
-    SetRect( &t, detail, y + px( 52 ), split, y + px( 68 ) );
-    card_text( hdc, opaque, line, &t, f->small_, dim, DT_LEFT );
-
-    /* the days */
-    if (data->day_count)
+    if (p->size == W_LARGE)
     {
-        int left = split + px( 8 ), cell = (r->right - pad - left) / data->day_count, mini = px( 32 ), top = r->top + px( 10 );
+        int split = (r->left + r->right) / 2;
+        RECT days;
 
-        for (int i = 0; i < data->day_count; i++)
-        {
-            int cx = left + i * cell;
-
-            SetRect( &t, cx, top, cx + cell, top + px( 18 ) );
-            card_text( hdc, opaque, data->days[i].name, &t, f->small_, dim, DT_CENTER );
-            draw_weather( hdc, data->days[i].code, TRUE, cx + (cell - mini) / 2, top + px( 20 ), mini, !opaque && pal.light );
-            swprintf( line, ARRAY_SIZE(line), L"%d\x00b0 / %d\x00b0", data->days[i].high, data->days[i].low );
-            SetRect( &t, cx, top + px( 54 ), cx + cell, top + px( 72 ) );
-            card_text( hdc, opaque, line, &t, f->small_, text, DT_CENTER );
-        }
+        weather_now( hdc, f, &ink, x, y + px( 6 ), split - px( 8 ), px( 88 ) );
+        SetRect( &t, x, y + px( 112 ), split - px( 8 ), y + px( 130 ) );
+        weather_air( hdc, f, &ink, &t );
+        SetRect( &days, split + px( 8 ), r->top + px( 44 ), r->right - pad, r->bottom - px( 40 ) );
+        weather_days_list( hdc, f, &ink, &days );
     }
-    SetRect( &t, split, r->bottom - px( 26 ), r->right - pad, r->bottom - px( 8 ) );
-    card_text( hdc, opaque, load_string( IDS_WIDGET_FORECAST ), &t, f->small_, dim, DT_RIGHT );
+    else
+    {
+        weather_now( hdc, f, &ink, x, y + px( 4 ), r->right - pad, px( 56 ) );
+        SetRect( &t, x, y + px( 72 ), r->right - pad, y + px( 90 ) );
+        weather_air( hdc, f, &ink, &t );
+        if (p->size == W_MEDIUM) weather_days_row( hdc, f, &ink, x, r->right - pad, r->top + px( 184 ) );
+    }
+    if (p->size != W_SMALL)
+    {
+        SetRect( &t, x, r->bottom - px( 30 ), r->right - pad, r->bottom - px( 10 ) );
+        card_text( hdc, ink.opaque, load_string( IDS_WIDGET_FORECAST ), &t, f->small_, ink.dim, DT_RIGHT );
+    }
 }
+
+/**********************************************************************
+ *          The news: three stories, each with its picture
+ */
+
+static int news_wanted( enum widget_size size )
+{
+    return size == W_SMALL ? 1 : NEWS_COUNT;
+}
+
+/* the picture filling the tile, the title over its dark bottom */
+static void story_cover( struct widget_paint *p, const struct fonts *f, int i, const RECT *r, int radius, BOOL bottom_round,
+                         HFONT title_font, int lines )
+{
+    const struct news *n = &data->news[i];
+    int pad = px( 12 ), height;
+    RECT t;
+
+    draw_cover( p->hdc, n, r, radius, bottom_round, TRUE );
+    SetRect( &t, r->left + pad, r->bottom - pad - px( 16 ), r->right - pad, r->bottom - pad );
+    text_over_opaque( p->hdc, n->source, &t, f->small_, RGB( 0xd8, 0xd8, 0xd8 ), DT_LEFT );
+    height = text_height( p->hdc, title_font, n->title, r->right - r->left - 2 * pad, lines );
+    SetRect( &t, r->left + pad, t.top - px( 4 ) - height, r->right - pad, t.top - px( 4 ) );
+    text_over_opaque( p->hdc, n->title, &t, title_font, RGB( 255, 255, 255 ), DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS );
+    widget_add_target( p, HIT_STORY, i, r );
+}
+
+/* a small picture at the left, the title and where it is from beside it */
+static void story_row( struct widget_paint *p, const struct fonts *f, int i, const RECT *r )
+{
+    const struct news *n = &data->news[i];
+    int pad = px( 12 ), thumb = r->bottom - r->top - px( 16 ), height;
+    RECT pic, t;
+
+    SetRect( &pic, r->left + pad, r->top + px( 8 ), r->left + pad + thumb, r->top + px( 8 ) + thumb );
+    draw_cover( p->hdc, n, &pic, px( 6 ), TRUE, FALSE );
+    height = text_height( p->hdc, f->title, n->title, r->right - pic.right - 2 * pad, 2 );
+    SetRect( &t, pic.right + pad, pic.top, r->right - pad, pic.top + height );
+    paint_text( p->hdc, n->title, &t, f->title, p->pal->text, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS );
+    SetRect( &t, pic.right + pad, t.bottom + px( 2 ), r->right - pad, t.bottom + px( 20 ) );
+    paint_text( p->hdc, n->source, &t, f->small_, p->pal->dim, DT_LEFT );
+    widget_add_target( p, HIT_STORY, i, r );
+}
+
+static void paint_news( struct widget_paint *p, const struct fonts *f )
+{
+    const RECT *r = &p->rect;
+    int count = min( data->news_count, news_wanted( p->size ) ), radius = card_radius( p->style11 ), gap = px( 6 );
+    int width = r->right - r->left, height = r->bottom - r->top;
+    RECT a, b, c;
+
+    if (!count)
+    {
+        no_connection( p, f );
+        return;
+    }
+    if (count == 1)
+    {
+        story_cover( p, f, 0, r, radius, TRUE, p->size == W_SMALL ? f->title : f->headline, p->size == W_SMALL ? 2 : 3 );
+        return;
+    }
+    if (p->size == W_MEDIUM)
+    {
+        /* the first over the width, the others in rows under it */
+        int top = height * 54 / 100, row = (height - top) / (count - 1);
+
+        plain_card( p );
+        SetRect( &a, r->left, r->top, r->right, r->top + top );
+        story_cover( p, f, 0, &a, radius, FALSE, f->title, 2 );
+        for (int i = 1; i < count; i++)
+        {
+            SetRect( &b, r->left, a.bottom + (i - 1) * row, r->right, a.bottom + i * row );
+            story_row( p, f, i, &b );
+        }
+        return;
+    }
+    /* large: the first at the left, the others at the right one over the other */
+    SetRect( &a, r->left, r->top, r->left + (width - gap) / 2, r->bottom );
+    if (count == 2)
+    {
+        SetRect( &b, a.right + gap, r->top, r->right, r->bottom );
+        story_cover( p, f, 0, &a, radius, TRUE, f->headline, 3 );
+        story_cover( p, f, 1, &b, radius, TRUE, f->headline, 3 );
+        return;
+    }
+    SetRect( &b, a.right + gap, r->top, r->right, r->top + (height - gap) / 2 );
+    SetRect( &c, a.right + gap, b.bottom + gap, r->right, r->bottom );
+    story_cover( p, f, 0, &a, radius, TRUE, f->headline, 4 );
+    story_cover( p, f, 1, &b, radius, TRUE, f->title, 2 );
+    story_cover( p, f, 2, &c, radius, TRUE, f->title, 2 );
+}
+
+/**********************************************************************
+ *          Copilot
+ */
 
 /* a sparkle with hollow sides, its colour running across it, and a small one
  * beside it: Copilot's mark here */
@@ -1372,142 +1490,141 @@ static void draw_arrow( HDC hdc, int x, int y, int size, COLORREF color )
     free( p );
 }
 
-/* the tile with its field; what is typed is drawn over it, frame by frame */
-static void paint_copilot( HDC hdc, const struct fonts *f, const RECT *r )
+/* a plus, for adding */
+static void draw_plus( HDC hdc, int x, int y, int size, COLORREF color )
 {
-    int radius = card_radius(), pad = px( 16 ), mark = px( 22 ), y = r->top + px( 11 ), side = px( 32 ), inset = px( 4 );
-    RECT t;
+    UINT32 *p = calloc( size * size, sizeof(*p) );
 
-    fill_round_rect( hdc, r, (float)radius, pal.ink, card_alpha() );
-    draw_sparkle( hdc, r->left + pad, y, mark );
-    SetRect( &t, r->left + pad + mark + px( 8 ), y, r->right - pad, y + mark );
-    paint_text( hdc, L"Copilot", &t, f->title, pal.text, DT_LEFT );
-
-    SetRect( &ask_rect, r->left + pad, r->top + px( 42 ), r->right - pad, r->top + px( 82 ) );
-    fill_round_rect( hdc, &ask_rect, (float)(style11 ? px( 6 ) : 0), pal.ink, pal.light ? 0x0d : 0x14 );
-    add_target( K_ASK, 0, &ask_rect );
-
-    SetRect( &send_rect, ask_rect.right - inset - side, ask_rect.top + inset, ask_rect.right - inset, ask_rect.bottom - inset );
-    add_target( K_SEND, 0, &send_rect );
+    if (!p) return;
+    capsule( p, size, 0.2f, 0.5f, 0.8f, 0.5f, 0.045f, color );
+    capsule( p, size, 0.5f, 0.2f, 0.5f, 0.8f, 0.045f, color );
+    blend_bits( hdc, x, y, size, size, p );
+    free( p );
 }
 
-static void paint_news( HDC hdc, const struct fonts *f, const struct news *n, const RECT *r )
+/* the mark and the field; what is typed is drawn over it, frame by frame */
+static void paint_copilot( struct widget_paint *p, const struct fonts *f )
 {
-    int radius = card_radius(), y = r->top, pad = px( 12 ), title;
-    RECT t;
+    const RECT *r = &p->rect;
+    int pad = px( 16 ), mark = px( 22 ), side = px( 32 ), inset = px( 4 ), field_h = px( 40 );
+    int y = r->top + (r->bottom - r->top - (mark + px( 16 ) + field_h)) / 2;
+    RECT t, field, send;
 
-    fill_round_rect( hdc, r, (float)radius, pal.ink, card_alpha() );
-    if (n->pixels)
+    plain_card( p );
+    draw_sparkle( p->hdc, r->left + pad, y, mark );
+    SetRect( &t, r->left + pad + mark + px( 8 ), y, r->right - pad - px( 30 ), y + mark );
+    paint_text( p->hdc, L"Copilot", &t, f->title, p->pal->text, DT_LEFT );
+    SetRect( &field, r->left + pad, y + mark + px( 16 ), r->right - pad, y + mark + px( 16 ) + field_h );
+    fill_round_rect( p->hdc, &field, (float)(p->style11 ? px( 6 ) : 0), p->pal->ink, p->pal->light ? 0x0d : 0x14 );
+    widget_add_target( p, HIT_ASK, 0, &field );
+    SetRect( &send, field.right - inset - side, field.top + inset, field.right - inset, field.bottom - inset );
+    widget_add_target( p, HIT_SEND, 0, &send );
+    if (p->ask)
     {
-        draw_picture( hdc, n, r->left, y, radius );
-        y += n->height;
-    }
-    y += px( 10 );
-    title = text_height( hdc, f->title, n->title, r->right - r->left - 2 * pad, 3 );
-    SetRect( &t, r->left + pad, y, r->right - pad, y + title );
-    paint_text( hdc, n->title, &t, f->title, pal.text, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS );
-    y += title + px( 6 );
-    SetRect( &t, r->left + pad, y, r->right - pad, y + px( 16 ) );
-    paint_text( hdc, n->source, &t, f->small_, pal.dim, DT_LEFT );
-}
-
-/* everything that scrolls, once */
-static void render_content( const RECT *client )
-{
-    target_count = 0;
-    content_dirty = FALSE;
-    if (!layer_make( &content_layer, client->right, content_height )) return;
-    for (int i = 0; i < card_count; i++)
-    {
-        const struct card *c = &cards[i];
-        int x = c->column < 0 ? GAP : GAP + c->column * (COL_W + GAP), width = c->column < 0 ? PANEL_W - 2 * GAP : COL_W;
-        RECT r;
-
-        SetRect( &r, x, c->y, x + width, c->y + c->height );
-        switch (c->kind)
-        {
-        case CARD_WEATHER:
-            add_target( K_WEATHER, 0, &r );
-            paint_weather( content_layer.dc, &panel_fonts, &r );
-            break;
-        case CARD_COPILOT:
-            paint_copilot( content_layer.dc, &panel_fonts, &r );
-            break;
-        case CARD_NEWS:
-            add_target( K_NEWS, c->index, &r );
-            paint_news( content_layer.dc, &panel_fonts, &data->news[c->index], &r );
-            break;
-        }
+        p->ask->field = field;
+        p->ask->send = send;
     }
 }
 
-static void render_header( const RECT *client )
+void widget_paint_ask( HDC hdc, const struct palette *p, struct widget_ask *ask, BOOL send_hot, BOOL eleven, int shift )
 {
-    int header = header_height();
-    WCHAR text[64];
-    RECT r;
-
-    header_dirty = FALSE;
-    if (!layer_make( &header_layer, client->right, header )) return;
-    if (style11)
-    {
-        /* the time in the middle, the user at the right */
-        GetTimeFormatW( LOCALE_USER_DEFAULT, TIME_NOSECONDS, NULL, NULL, text, ARRAY_SIZE(text) );
-        SetRect( &r, 0, px( 18 ), client->right, px( 62 ) );
-        paint_text( header_layer.dc, text, &r, panel_fonts.big, pal.text, DT_CENTER );
-        avatar_draw( header_layer.dc, client->right - px( 48 ), px( 24 ), px( 32 ), &pal );
-    }
-    else
-    {
-        SetRect( &r, GAP, 0, client->right / 2, header );
-        paint_text( header_layer.dc, load_string( IDS_WIDGETS_TITLE ), &r, panel_fonts.title, pal.text, DT_LEFT );
-        GetDateFormatW( LOCALE_USER_DEFAULT, DATE_LONGDATE, NULL, NULL, text, ARRAY_SIZE(text) );
-        SetRect( &r, client->right / 2, 0, client->right - GAP, header );
-        paint_text( header_layer.dc, text, &r, panel_fonts.small_, pal.dim, DT_RIGHT );
-    }
-}
-
-/* where the content's top stands now: the list is on its way there */
-static int shown_scroll( const RECT *client )
-{
-    return max( 0, min( scroll - smooth_scroll_offset( &smooth ), max_scroll( client ) ) );
-}
-
-static void paint_ask( HDC hdc, int shift )
-{
-    const WCHAR *shown = ask;
-    RECT field = ask_rect, send = send_rect, t;
+    HFONT body = shell_font( px( 14 ), FW_NORMAL );
+    const WCHAR *shown = ask->text;
+    RECT field = ask->field, send = ask->send, t;
     int width, arrow = px( 18 );
 
     OffsetRect( &field, 0, shift );
     OffsetRect( &send, 0, shift );
-    if (ask[0]) fill_round_rect( hdc, &send, (float)(style11 ? px( 4 ) : 0), panel_accent, 255 );
-    else if (hot_target.kind == K_SEND) fill_round_rect( hdc, &send, (float)(style11 ? px( 4 ) : 0), pal.ink, 0x14 );
+    if (ask->text[0]) fill_round_rect( hdc, &send, (float)(eleven ? px( 4 ) : 0), accent_color(), 255 );
+    else if (send_hot) fill_round_rect( hdc, &send, (float)(eleven ? px( 4 ) : 0), p->ink, 0x14 );
     draw_arrow( hdc, (send.left + send.right - arrow) / 2, (send.top + send.bottom - arrow) / 2, arrow,
-                ask[0] ? RGB( 255, 255, 255 ) : pal.dim );
+                ask->text[0] ? RGB( 255, 255, 255 ) : p->dim );
     SetRect( &t, field.left + px( 12 ), field.top, field.right - px( 44 ), field.bottom );
     width = t.right - t.left;
-    if (!ask[0]) paint_text( hdc, load_string( IDS_WIDGET_ASK ), &t, panel_fonts.body, pal.dim, DT_LEFT );
+    if (!ask->text[0]) paint_text( hdc, load_string( IDS_WIDGET_ASK ), &t, body, p->dim, DT_LEFT );
     else
     {
         /* the end of a long question: that is where the typing is */
-        while (*shown && text_width( hdc, panel_fonts.body, shown ) > width) shown++;
-        paint_text( hdc, shown, &t, panel_fonts.body, pal.text, DT_LEFT );
+        while (*shown && text_width( hdc, body, shown ) > width) shown++;
+        paint_text( hdc, shown, &t, body, p->text, DT_LEFT );
     }
-    if (ask_active && caret_on)
+    if (ask->active && ask->caret)
     {
-        int x = t.left + (ask[0] ? text_width( hdc, panel_fonts.body, shown ) + 1 : 0);
+        int x = t.left + (ask->text[0] ? text_width( hdc, body, shown ) + 1 : 0);
         RECT caret;
 
         SetRect( &caret, x, field.top + px( 10 ), x + 1, field.bottom - px( 10 ) );
-        fill_alpha( hdc, &caret, pal.ink, 255 );
+        fill_alpha( hdc, &caret, p->ink, 255 );
     }
+    DeleteObject( body );
+}
+
+enum ask_result widget_ask_input( struct widget_ask *ask, UINT msg, WPARAM wparam, HWND hwnd )
+{
+    int len = lstrlenW( ask->text );
+
+    if (msg == WM_CHAR)
+    {
+        if (wparam < 0x20 || wparam == 0x7f || len >= WIDGET_ASK_MAX) return ASK_IGNORED;
+        ask->text[len] = (WCHAR)wparam;
+        ask->text[len + 1] = 0;
+        return ASK_CHANGED;
+    }
+    if (msg != WM_KEYDOWN) return ASK_IGNORED;
+    switch (wparam)
+    {
+    case VK_ESCAPE:
+        if (!ask->text[0]) return ASK_LEAVE;
+        ask->text[0] = 0;
+        return ASK_CHANGED;
+    case VK_RETURN:
+        return ask->text[0] ? ASK_SEND : ASK_IGNORED;
+    case VK_BACK:
+        if (!len) return ASK_IGNORED;
+        ask->text[len - 1] = 0;
+        return ASK_CHANGED;
+    case 'V':
+    {
+        HANDLE handle;
+        const WCHAR *text;
+
+        if (!(GetKeyState( VK_CONTROL ) & 0x8000) || !OpenClipboard( hwnd )) return ASK_IGNORED;
+        if ((handle = GetClipboardData( CF_UNICODETEXT )) && (text = GlobalLock( handle )))
+        {
+            for (; *text && len < WIDGET_ASK_MAX; text++)
+                if (*text >= 0x20 && *text != 0x7f) ask->text[len++] = *text;
+            ask->text[len] = 0;
+            GlobalUnlock( handle );
+        }
+        CloseClipboard();
+        return ASK_CHANGED;
+    }
+    }
+    return ASK_IGNORED;
+}
+
+/**********************************************************************
+ *          The widgets of the network, for both
+ */
+
+void widget_paint_net( struct widget_paint *p )
+{
+    struct fonts f;
+
+    fonts_make( &f );
+    AcquireSRWLockShared( &data_lock );
+    if (p->kind == W_COPILOT) paint_copilot( p, &f );
+    else if (data && p->kind == W_WEATHER) paint_weather( p, &f );
+    else if (data && p->kind == W_NEWS) paint_news( p, &f );
+    else if (!data) no_connection( p, &f );
+    ReleaseSRWLockShared( &data_lock );
+    fonts_free( &f );
 }
 
 /* a card under the pointer, a little lighter: only what has alpha, the card
  * itself and its picture. GDI's text has none, dwm.exe keys it by brightness,
  * and alpha laid over it would turn it into a faint shadow. */
-static void tint_card( HDC hdc, const RECT *r, int top, COLORREF color, BYTE alpha )
+void widget_tint( HDC hdc, const RECT *r, int top, COLORREF color, BYTE alpha )
 {
     UINT32 sr = GetRValue( color ) * alpha / 255, sg = GetGValue( color ) * alpha / 255, sb = GetBValue( color ) * alpha / 255;
     UINT32 inverse = 255 - alpha;
@@ -1516,7 +1633,7 @@ static void tint_card( HDC hdc, const RECT *r, int top, COLORREF color, BYTE alp
 
     GdiFlush();
     if (!bitmap || GetObjectW( bitmap, sizeof(dib), &dib ) != sizeof(dib) || !dib.dsBm.bmBits || dib.dsBm.bmBitsPixel != 32) return;
-    for (int y = max( r->top, top ); y < min( r->bottom, (int)dib.dsBm.bmHeight ); y++)
+    for (int y = max( r->top, top ); y < min( r->bottom, abs( (int)dib.dsBm.bmHeight ) ); y++)
     {
         UINT32 *row = (UINT32 *)((BYTE *)dib.dsBm.bmBits + y * dib.dsBm.bmWidthBytes);
 
@@ -1531,6 +1648,337 @@ static void tint_card( HDC hdc, const RECT *r, int top, COLORREF color, BYTE alp
     }
 }
 
+static void open_link( const WCHAR *url )
+{
+    ShellExecuteW( NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL );
+}
+
+/* Copilot has no interface to talk to from here, and its own page takes no
+ * question from the address: without a sign-in it goes to the login and the
+ * text is lost. Copilot Search runs what the address carries. */
+static void send_ask( struct widget_ask *ask )
+{
+    WCHAR *encoded, *url, lang[8], country[8], language[20];
+    int size = (WIDGET_ASK_MAX + 1) * 12;
+
+    if (!ask || !ask->text[0]) return;
+    encoded = malloc( size * sizeof(WCHAR) );
+    url = malloc( (size + 128) * sizeof(WCHAR) );
+    if (encoded && url)
+    {
+        user_locale( lang, country );
+        swprintf( language, ARRAY_SIZE(language), L"%s-%s", lang, country );
+        CharLowerW( language );
+        url_encode( ask->text, encoded, size );
+        swprintf( url, size + 128, L"https://www.bing.com/copilotsearch?q=%s&setlang=%s&cc=%s", encoded, language, country );
+        ask->text[0] = 0;
+        open_link( url );
+    }
+    free( encoded );
+    free( url );
+}
+
+/* what a click on a widget opens */
+void widget_activate( enum widget_kind kind, const struct widget_target *t, struct widget_ask *ask )
+{
+    WCHAR url[1400], lang[8], country[8];
+
+    switch (t->hit)
+    {
+    case HIT_STORY:
+        url[0] = 0;
+        AcquireSRWLockShared( &data_lock );
+        if (data && t->index >= 0 && t->index < data->news_count) lstrcpynW( url, data->news[t->index].url, ARRAY_SIZE(url) );
+        ReleaseSRWLockShared( &data_lock );
+        if (url[0]) open_link( url );
+        break;
+    case HIT_CARD:
+        if (kind == W_WEATHER)
+        {
+            user_locale( lang, country );
+            swprintf( url, ARRAY_SIZE(url), L"https://www.msn.com/%s-%s/weather/forecast", lang, country );
+            open_link( url );
+        }
+        else if (kind == W_MONITOR) ShellExecuteW( NULL, NULL, L"taskmgr.exe", NULL, NULL, SW_SHOWNORMAL );
+        else if (kind == W_BATTERY) ShellExecuteW( NULL, NULL, L"control.exe", L"powercfg.cpl", NULL, SW_SHOWNORMAL );
+        break;
+    case HIT_SEND:
+        send_ask( ask );
+        break;
+    default:
+        break;
+    }
+}
+
+/**********************************************************************
+ *          The board: the widgets in two columns
+ *
+ * Those of the list Board, in its order, each in the column that is
+ * shorter, the wide ones under both. What scrolls is painted once into a
+ * bitmap of its full height and only copied while it moves; the live
+ * widgets (the clock, the monitoring, the battery) are painted again in it
+ * when the widgets' thread says they changed.
+ */
+
+struct layer
+{
+    HDC dc;
+    HBITMAP bitmap;
+    HGDIOBJ old;
+    UINT32 *bits;
+    int width, height;
+};
+
+struct card
+{
+    int widget;      /* in board[] */
+    RECT rect;       /* in the content */
+};
+
+/* what the pointer is over */
+enum spot_kind { SPOT_NONE, SPOT_CARD, SPOT_TARGET, SPOT_MORE, SPOT_ADD };
+
+struct spot
+{
+    enum spot_kind kind;
+    int card;
+    struct widget_target target;
+};
+
+struct board_target
+{
+    int card;
+    struct widget_target target;
+};
+
+static struct widget board[W_KINDS];
+static int board_count;
+static struct card cards[W_KINDS];
+static int card_count, content_height, scroll;
+static struct board_target targets[W_KINDS * WIDGET_TARGETS];
+static int target_count;
+static struct spot hot_spot, pressed_spot;
+static struct layer content_layer, header_layer;
+static struct fonts panel_fonts;
+static BOOL fonts_ready, content_dirty, header_dirty;
+static struct smooth_scroll smooth;
+static struct widget_ask board_ask;
+static RECT add_rect;    /* in the window */
+
+/* a card carried by the pointer: the others make way, the order is kept */
+static int drag_widget = -1;              /* in board[] */
+static BOOL dragging, drag_ended;
+static POINT drag_start, drag_grab;       /* the grab: where in the card it was taken */
+static enum widget_kind drag_last = W_KINDS;   /* what it last changed places with */
+static struct layer drag_layer;
+
+static BOOL is_live( enum widget_kind kind )
+{
+    return kind == W_CLOCK || kind == W_MONITOR || kind == W_BATTERY;
+}
+
+static void layer_free( struct layer *l )
+{
+    if (l->dc && l->old) SelectObject( l->dc, l->old );
+    if (l->bitmap) DeleteObject( l->bitmap );
+    if (l->dc) DeleteDC( l->dc );
+    memset( l, 0, sizeof(*l) );
+}
+
+/* without alpha: black, or white, is the acrylic seen through */
+static void layer_clear( struct layer *l, const RECT *r )
+{
+    UINT32 back = pal.light ? 0x00ffffff : 0;
+
+    if (!l->bits) return;
+    GdiFlush();
+    for (int y = max( (int)r->top, 0 ); y < min( (int)r->bottom, l->height ); y++)
+        for (int x = max( (int)r->left, 0 ); x < min( (int)r->right, l->width ); x++)
+            l->bits[(size_t)y * l->width + x] = back;
+}
+
+static BOOL layer_make( struct layer *l, int width, int height )
+{
+    BITMAPINFO info = { { sizeof(info.bmiHeader), max( width, 1 ), -max( height, 1 ), 1, 32, BI_RGB } };
+    HDC screen = GetDC( NULL );
+    RECT all;
+
+    layer_free( l );
+    l->dc = CreateCompatibleDC( screen );
+    l->bitmap = CreateDIBSection( screen, &info, DIB_RGB_COLORS, (void **)&l->bits, NULL, 0 );
+    ReleaseDC( NULL, screen );
+    if (!l->dc || !l->bitmap)
+    {
+        layer_free( l );
+        return FALSE;
+    }
+    l->old = SelectObject( l->dc, l->bitmap );
+    l->width = max( width, 1 );
+    l->height = max( height, 1 );
+    SetRect( &all, 0, 0, l->width, l->height );
+    layer_clear( l, &all );
+    SetBkMode( l->dc, TRANSPARENT );
+    return TRUE;
+}
+
+static int header_height(void)
+{
+    return style11 ? HEADER_11 : HEADER_10;
+}
+
+static int view_height( const RECT *client )
+{
+    return client->bottom - header_height();
+}
+
+static int max_scroll( const RECT *client )
+{
+    return max( 0, content_height - view_height( client ) );
+}
+
+static int board_width(void)
+{
+    int width, height;
+
+    widget_extent( W_NEWS, W_LARGE, &width, &height );
+    return width + 2 * widget_gap();
+}
+
+static void layout(void)
+{
+    int gap = widget_gap(), column, height, y[2] = { 0, 0 };
+
+    widget_extent( W_WEATHER, W_SMALL, &column, &height );
+    card_count = 0;
+    for (int i = 0; i < board_count; i++)
+    {
+        int columns, rows, w, h, col, top;
+
+        widget_cells( board[i].kind, board[i].size, &columns, &rows );
+        widget_extent( board[i].kind, board[i].size, &w, &h );
+        if (columns > 1)
+        {
+            col = 0;
+            top = max( y[0], y[1] );
+            y[0] = y[1] = top + h + gap;
+        }
+        else
+        {
+            col = y[1] < y[0];
+            top = y[col];
+            y[col] = top + h + gap;
+        }
+        cards[card_count].widget = i;
+        SetRect( &cards[card_count].rect, gap + col * (column + gap), top, gap + col * (column + gap) + w, top + h );
+        card_count++;
+    }
+    content_height = max( y[0], y[1] ) + px( 4 );
+    content_dirty = TRUE;
+}
+
+static void paint_board_widget( HDC hdc, const RECT *rect, const struct widget *w, struct widget_target *local, int *count,
+                                struct widget_ask *ask )
+{
+    struct widget_paint p = { 0 };
+
+    p.hdc = hdc;
+    p.pal = &pal;
+    p.rect = *rect;
+    p.kind = w->kind;
+    p.size = w->size;
+    p.style11 = style11;
+    p.targets = local;
+    p.ask = ask;
+    if (is_live( w->kind )) widget_paint_local( &p );
+    else widget_paint_net( &p );
+    if (count) *count = p.target_count;
+}
+
+/* a card into the content, its targets with it; the one carried leaves
+ * only its place */
+static void render_card( int i )
+{
+    struct widget_target local[WIDGET_TARGETS];
+    int kept = 0, count = 0;
+
+    for (int j = 0; j < target_count; j++) if (targets[j].card != i) targets[kept++] = targets[j];
+    target_count = kept;
+    if (dragging && cards[i].widget == drag_widget)
+    {
+        fill_round_rect( content_layer.dc, &cards[i].rect, (float)card_radius( style11 ), pal.ink, 0x08 );
+        return;
+    }
+    paint_board_widget( content_layer.dc, &cards[i].rect, &board[cards[i].widget], local, &count, &board_ask );
+    for (int j = 0; j < count && target_count < ARRAY_SIZE(targets); j++)
+    {
+        targets[target_count].card = i;
+        targets[target_count].target = local[j];
+        target_count++;
+    }
+}
+
+/* everything that scrolls, once */
+static void render_content( const RECT *client )
+{
+    target_count = 0;
+    content_dirty = FALSE;
+    if (!layer_make( &content_layer, client->right, content_height )) return;
+    for (int i = 0; i < card_count; i++) render_card( i );
+}
+
+/* the live widgets changed: only their cards again */
+static void render_live(void)
+{
+    if (content_dirty || !content_layer.dc) return;
+    for (int i = 0; i < card_count; i++)
+    {
+        if (!is_live( board[cards[i].widget].kind )) continue;
+        layer_clear( &content_layer, &cards[i].rect );
+        render_card( i );
+    }
+}
+
+static void render_header( const RECT *client )
+{
+    int header = header_height(), size = px( 32 );
+    WCHAR text[64];
+    RECT r;
+
+    header_dirty = FALSE;
+    if (!layer_make( &header_layer, client->right, header )) return;
+    if (style11)
+    {
+        /* the time in the middle, adding and the user at the right */
+        GetTimeFormatW( LOCALE_USER_DEFAULT, TIME_NOSECONDS, NULL, NULL, text, ARRAY_SIZE(text) );
+        SetRect( &r, 0, px( 18 ), client->right, px( 62 ) );
+        paint_text( header_layer.dc, text, &r, panel_fonts.big, pal.text, DT_CENTER );
+        avatar_draw( header_layer.dc, client->right - px( 48 ), px( 24 ), size, &pal );
+        SetRect( &add_rect, client->right - px( 48 ) - px( 12 ) - size, px( 24 ), client->right - px( 48 ) - px( 12 ), px( 24 ) + size );
+    }
+    else
+    {
+        SetRect( &add_rect, client->right - widget_gap() - size, (header - size) / 2, client->right - widget_gap(),
+                 (header - size) / 2 + size );
+        SetRect( &r, widget_gap(), 0, client->right / 2, header );
+        paint_text( header_layer.dc, load_string( IDS_WIDGETS_TITLE ), &r, panel_fonts.title, pal.text, DT_LEFT );
+        GetDateFormatW( LOCALE_USER_DEFAULT, DATE_LONGDATE, NULL, NULL, text, ARRAY_SIZE(text) );
+        SetRect( &r, client->right / 2, 0, add_rect.left - px( 12 ), header );
+        paint_text( header_layer.dc, text, &r, panel_fonts.small_, pal.dim, DT_RIGHT );
+    }
+}
+
+/* where the content's top stands now: the list is on its way there */
+static int shown_scroll( const RECT *client )
+{
+    return max( 0, min( scroll - smooth_scroll_offset( &smooth ), max_scroll( client ) ) );
+}
+
+static int board_index( enum widget_kind kind )
+{
+    for (int i = 0; i < board_count; i++) if (board[i].kind == kind) return i;
+    return -1;
+}
+
 static void on_paint(void)
 {
     PAINTSTRUCT ps;
@@ -1538,7 +1986,7 @@ static void on_paint(void)
     HGDIOBJ old;
     RECT client;
     HDC mem;
-    int header, view, shown, rows;
+    int header, view, shown, rows, plus = px( 16 );
 
     GetClientRect( panel, &client );
     if (content_dirty) render_content( &client );
@@ -1553,16 +2001,32 @@ static void on_paint(void)
 
     SaveDC( mem );
     IntersectClipRect( mem, 0, header, client.right, client.bottom );
-    if (hot_target.kind == K_WEATHER || hot_target.kind == K_NEWS)
+    if (hot_spot.kind == SPOT_TARGET && (hot_spot.target.hit == HIT_STORY || hot_spot.target.hit == HIT_CARD))
     {
-        RECT r = hot_target.rect;
-        BOOL white = hot_target.kind == K_WEATHER && style11;
+        enum widget_kind kind = board[cards[hot_spot.card].widget].kind;
+        BOOL white = kind == W_WEATHER && style11;
+        RECT r = hot_spot.target.rect;
 
         OffsetRect( &r, 0, header - shown );
-        tint_card( mem, &r, header, white ? RGB( 255, 255, 255 ) : pal.ink, white ? 0x14 : 0x0c );
+        widget_tint( mem, &r, header, white ? RGB( 255, 255, 255 ) : pal.ink, white ? 0x14 : 0x0c );
     }
-    paint_ask( mem, header - shown );
+    if (board_index( W_COPILOT ) >= 0)
+        widget_paint_ask( mem, &pal, &board_ask, hot_spot.kind == SPOT_TARGET && hot_spot.target.hit == HIT_SEND, style11,
+                          header - shown );
+    if ((hot_spot.kind == SPOT_CARD || hot_spot.kind == SPOT_TARGET || hot_spot.kind == SPOT_MORE) && hot_spot.card < card_count)
+    {
+        enum widget_kind kind = board[cards[hot_spot.card].widget].kind;
+        RECT r = cards[hot_spot.card].rect;
+
+        OffsetRect( &r, 0, header - shown );
+        widget_more_button( mem, &pal, &r, style11, hot_spot.kind == SPOT_MORE,
+                            kind == W_NEWS || (kind == W_WEATHER && style11) );
+    }
     RestoreDC( mem, -1 );
+
+    /* adding */
+    if (hot_spot.kind == SPOT_ADD) fill_round_rect( mem, &add_rect, (float)(style11 ? px( 4 ) : 0), pal.ink, 0x14 );
+    draw_plus( mem, (add_rect.left + add_rect.right - plus) / 2, (add_rect.top + add_rect.bottom - plus) / 2, plus, pal.ink );
 
     /* how far down it is */
     if (content_height > view)
@@ -1574,11 +2038,100 @@ static void on_paint(void)
         SetRect( &r, client.right - px( 6 ), top, client.right - px( 3 ), top + length );
         fill_round_rect( mem, &r, 1.5f, pal.ink, 0x70 );
     }
+
+    /* the card carried, under the pointer */
+    if (dragging && drag_layer.dc)
+    {
+        POINT cursor;
+
+        GetCursorPos( &cursor );
+        ScreenToClient( panel, &cursor );
+        IntersectClipRect( mem, 0, header, client.right, client.bottom );
+        BitBlt( mem, cursor.x - drag_grab.x, cursor.y - drag_grab.y, drag_layer.width, drag_layer.height, drag_layer.dc, 0, 0,
+                SRCCOPY );
+    }
     paint_end( panel, &ps, mem, bitmap, old );
 }
 
+static void stop_typing(void);
+static void update_hot(void);
+
+/* the pointer in the content's coordinates */
+static POINT content_point( POINT pt )
+{
+    RECT client;
+
+    GetClientRect( panel, &client );
+    pt.y += shown_scroll( &client ) - header_height();
+    return pt;
+}
+
+static void drag_begin( int widget, POINT pt )
+{
+    POINT cp = content_point( pt );
+    RECT rect = cards[widget].rect, local;
+
+    drag_widget = widget;
+    drag_grab.x = cp.x - rect.left;
+    drag_grab.y = cp.y - rect.top;
+    drag_last = W_KINDS;
+    SetRect( &local, 0, 0, rect.right - rect.left, rect.bottom - rect.top );
+    if (layer_make( &drag_layer, local.right, local.bottom ))
+        paint_board_widget( drag_layer.dc, &local, &board[widget], NULL, NULL, NULL );
+    dragging = TRUE;
+    hot_spot.kind = SPOT_NONE;
+    stop_typing();
+    SetCapture( panel );
+    content_dirty = TRUE;
+    InvalidateRect( panel, NULL, FALSE );
+}
+
+/* the pointer over another card: the carried one takes its place */
+static void drag_move( POINT pt )
+{
+    RECT client;
+    POINT cp;
+    int over = -1, edge = px( 48 );
+
+    GetClientRect( panel, &client );
+    /* at the top or the bottom: the list goes along */
+    if (pt.y > client.bottom - edge) scroll = min( scroll + px( 24 ), max_scroll( &client ) );
+    else if (pt.y < header_height() + edge) scroll = max( scroll - px( 24 ), 0 );
+    cp = content_point( pt );
+    for (int i = 0; i < card_count; i++) if (PtInRect( &cards[i].rect, cp )) over = cards[i].widget;
+    if (over < 0 || over == drag_widget) drag_last = W_KINDS;
+    else if (board[over].kind != drag_last)
+    {
+        struct widget carried = board[drag_widget];
+
+        /* changed places with that one: not again until the pointer leaves it,
+         * or two of different sizes would swap back and forth */
+        drag_last = board[over].kind;
+        if (over < drag_widget) memmove( &board[over + 1], &board[over], (drag_widget - over) * sizeof(*board) );
+        else memmove( &board[drag_widget], &board[drag_widget + 1], (over - drag_widget) * sizeof(*board) );
+        board[over] = carried;
+        drag_widget = over;
+        layout();
+    }
+    InvalidateRect( panel, NULL, FALSE );
+}
+
+static void drag_end(void)
+{
+    if (!dragging) return;
+    dragging = FALSE;
+    drag_ended = TRUE;
+    drag_widget = -1;
+    layer_free( &drag_layer );
+    if (GetCapture() == panel) ReleaseCapture();
+    widgets_save( HOST_BOARD, board, board_count );
+    layout();
+    update_hot();
+    InvalidateRect( panel, NULL, FALSE );
+}
+
 /**********************************************************************
- *          The panel: showing it
+ *          The board: showing it
  */
 
 static BOOL panel_visible(void)
@@ -1586,15 +2139,26 @@ static BOOL panel_visible(void)
     return panel && IsWindowVisible( panel );
 }
 
+BOOL widgets_board_has( enum widget_kind kind )
+{
+    return panel_visible() && board_index( kind ) >= 0;
+}
+
+static void stop_typing(void)
+{
+    board_ask.active = FALSE;
+    if (panel) KillTimer( panel, TIMER_CARET );
+}
+
 void widgets_hide(void)
 {
     if (!panel_visible()) return;
     KillTimer( panel, TIMER_PANEL );
-    KillTimer( panel, TIMER_CARET );
+    stop_typing();
     smooth_scroll_stop( &smooth, panel, TIMER_SMOOTH );
     ShowWindow( panel, SW_HIDE );
-    hot_target.kind = pressed_target.kind = K_NONE;
-    panel_hover = ask_active = FALSE;
+    hot_spot.kind = pressed_spot.kind = SPOT_NONE;
+    panel_hover = FALSE;
     hidden_at = GetTickCount();
     if (button) InvalidateRect( button, NULL, FALSE );
 }
@@ -1604,8 +2168,8 @@ void widgets_hide(void)
 static void place_panel(void)
 {
     MONITORINFO info = { sizeof(info) };
+    int x, y, height, avail, width = board_width();
     RECT b;
-    int x, y, height, avail;
 
     GetWindowRect( button, &b );
     GetMonitorInfoW( MonitorFromRect( &b, MONITOR_DEFAULTTONEAREST ), &info );
@@ -1614,7 +2178,7 @@ static void place_panel(void)
     {
         int margin = px( 12 );
 
-        x = taskbar_centered() ? info.rcWork.left + margin : info.rcWork.right - margin - PANEL_W;
+        x = taskbar_centered() ? info.rcWork.left + margin : info.rcWork.right - margin - width;
         y = info.rcWork.top + margin;
         height = avail - 2 * margin;
     }
@@ -1623,11 +2187,11 @@ static void place_panel(void)
         BOOL at_bottom = b.top >= (info.rcMonitor.top + info.rcMonitor.bottom) / 2;
 
         height = min( px( 720 ), avail );
-        x = taskbar_centered() ? b.left : b.right - PANEL_W;
-        x = max( info.rcWork.left, min( x, (int)info.rcWork.right - PANEL_W ) );
+        x = taskbar_centered() ? b.left : b.right - width;
+        x = max( info.rcWork.left, min( x, (int)info.rcWork.right - width ) );
         y = at_bottom ? info.rcWork.bottom - height : info.rcWork.top;
     }
-    SetWindowPos( panel, HWND_TOPMOST, x, y, PANEL_W, height, SWP_NOACTIVATE );
+    SetWindowPos( panel, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE );
 }
 
 static void show_panel( BOOL activate )
@@ -1647,16 +2211,16 @@ static void show_panel( BOOL activate )
     place_panel();
     look_load_taskbar( &look );
     palette_init( &pal, look_apply( panel, &look ) );
-    panel_accent = accent_color();
     if (fonts_ready) fonts_free( &panel_fonts );
     fonts_make( &panel_fonts );
     fonts_ready = TRUE;
+    board_count = widgets_load( HOST_BOARD, board );
     layout();
     header_dirty = TRUE;
     scroll = 0;
     smooth_scroll_stop( &smooth, panel, TIMER_SMOOTH );
     panel_hover = !activate;
-    hot_target.kind = pressed_target.kind = K_NONE;
+    hot_spot.kind = pressed_spot.kind = SPOT_NONE;
     InvalidateRect( panel, NULL, FALSE );
     ShowWindow( panel, activate ? SW_SHOW : SW_SHOWNOACTIVATE );
     if (activate)
@@ -1669,145 +2233,196 @@ static void show_panel( BOOL activate )
     if (GetTickCount() - fetched_at > 10 * 60 * 1000) start_fetch();
 }
 
-static void open_link( const WCHAR *url )
+/* the lists changed (the widgets' thread posts it to the button's) */
+void widgets_board_reload(void)
 {
-    widgets_hide();
-    ShellExecuteW( NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL );
+    if (button) PostMessageW( button, WM_BOARD_RELOAD, 0, 0 );
 }
 
-/* Copilot has no interface to talk to from here, and its own page takes no
- * question from the address: without a sign-in it goes to the login and the
- * text is lost. Copilot Search runs what the address carries. */
-static void send_ask(void)
+void widgets_board_tick( BOOL minute )
 {
-    WCHAR *encoded, *url, lang[8], country[8], language[20];
-    int size = (MAX_ASK + 1) * 12;
-
-    if (!ask[0]) return;
-    encoded = malloc( size * sizeof(WCHAR) );
-    url = malloc( (size + 128) * sizeof(WCHAR) );
-    if (encoded && url)
-    {
-        user_locale( lang, country );
-        swprintf( language, ARRAY_SIZE(language), L"%s-%s", lang, country );
-        CharLowerW( language );
-        url_encode( ask, encoded, size );
-        swprintf( url, size + 128, L"https://www.bing.com/copilotsearch?q=%s&setlang=%s&cc=%s", encoded, language, country );
-        ask[0] = 0;
-        open_link( url );
-    }
-    free( encoded );
-    free( url );
+    if (panel) PostMessageW( panel, WM_BOARD_TICK, minute, 0 );
 }
 
-static void activate_target( const struct target *t )
+static void board_reload(void)
 {
-    WCHAR url[128], lang[8], country[8];
-
-    switch (t->kind)
-    {
-    case K_NEWS:
-        open_link( data->news[t->index].url );
-        break;
-    case K_WEATHER:
-        user_locale( lang, country );
-        swprintf( url, ARRAY_SIZE(url), L"https://www.msn.com/%s-%s/weather/forecast", lang, country );
-        open_link( url );
-        break;
-    case K_SEND:
-        send_ask();
-        break;
-    default:
-        break;
-    }
-}
-
-/* a point of the window, among what is drawn in the content */
-static struct target hit_test( POINT pt )
-{
-    struct target none = { K_NONE, -1 };
     RECT client;
-    int found = -1;
 
+    board_count = widgets_load( HOST_BOARD, board );
+    if (!panel_visible()) return;
+    hot_spot.kind = pressed_spot.kind = SPOT_NONE;
+    layout();
     GetClientRect( panel, &client );
-    if (pt.y < header_height()) return none;
+    scroll = min( scroll, max_scroll( &client ) );
+    InvalidateRect( panel, NULL, FALSE );
+}
+
+/* a point of the window: the header's button, a card, what is in it */
+static struct spot hit_test( POINT pt )
+{
+    struct spot spot = { SPOT_NONE, -1 };
+    RECT client, more;
+
+    if (PtInRect( &add_rect, pt ))
+    {
+        spot.kind = SPOT_ADD;
+        return spot;
+    }
+    GetClientRect( panel, &client );
+    if (pt.y < header_height()) return spot;
     pt.y += shown_scroll( &client ) - header_height();
-    /* the button is inside the field, and comes after it */
-    for (int i = 0; i < target_count; i++)
-        if (PtInRect( &targets[i].rect, pt )) found = i;
-    return found >= 0 ? targets[found] : none;
+    for (int i = 0; i < card_count; i++)
+    {
+        if (!PtInRect( &cards[i].rect, pt )) continue;
+        spot.kind = SPOT_CARD;
+        spot.card = i;
+        widget_more_rect( &cards[i].rect, &more );
+        if (PtInRect( &more, pt ))
+        {
+            spot.kind = SPOT_MORE;
+            return spot;
+        }
+        /* the last that has it: the button is inside the field, and comes after it */
+        for (int j = 0; j < target_count; j++)
+        {
+            if (targets[j].card != i || !PtInRect( &targets[j].target.rect, pt )) continue;
+            spot.kind = SPOT_TARGET;
+            spot.target = targets[j].target;
+        }
+        return spot;
+    }
+    return spot;
+}
+
+static BOOL same_spot( const struct spot *a, const struct spot *b )
+{
+    if (a->kind != b->kind || a->card != b->card) return FALSE;
+    return a->kind != SPOT_TARGET || (a->target.hit == b->target.hit && a->target.index == b->target.index);
 }
 
 static void update_hot(void)
 {
     POINT pt;
-    struct target t;
+    struct spot spot;
 
     GetCursorPos( &pt );
     ScreenToClient( panel, &pt );
-    t = hit_test( pt );
-    if (t.kind != hot_target.kind || t.index != hot_target.index)
+    spot = hit_test( pt );
+    if (!same_spot( &spot, &hot_spot ))
     {
-        hot_target = t;
+        hot_spot = spot;
         InvalidateRect( panel, NULL, FALSE );
     }
 }
 
 static void start_typing(void)
 {
-    ask_active = caret_on = TRUE;
+    board_ask.active = board_ask.caret = TRUE;
     SetTimer( panel, TIMER_CARET, 530, NULL );
     InvalidateRect( panel, NULL, FALSE );
 }
 
-static void paste_text(void)
+/* a menu of ours, over the panel: the panel stays while it is open */
+static void card_menu( int card, POINT pt )
 {
-    HANDLE handle;
-    const WCHAR *text;
-    int len = lstrlenW( ask );
+    if (card < 0 || card >= card_count) return;
+    in_popup = TRUE;
+    widget_menu( panel, pt, HOST_BOARD, board[cards[card].widget].kind );
+    in_popup = FALSE;
+    if (panel_visible() && GetForegroundWindow() != panel && !panel_hover) widgets_hide();
+}
 
-    if (!OpenClipboard( panel )) return;
-    if ((handle = GetClipboardData( CF_UNICODETEXT )) && (text = GlobalLock( handle )))
+static void add_menu(void)
+{
+    POINT pt = { add_rect.left, add_rect.bottom + px( 4 ) };
+
+    ClientToScreen( panel, &pt );
+    in_popup = TRUE;
+    widget_add_menu( panel, pt, HOST_BOARD );
+    in_popup = FALSE;
+    if (panel_visible() && GetForegroundWindow() != panel && !panel_hover) widgets_hide();
+}
+
+static void ask_result( enum ask_result result )
+{
+    struct widget_target send = { HIT_SEND };
+
+    switch (result)
     {
-        for (; *text && len < MAX_ASK; text++)
-            if (*text >= 0x20 && *text != 0x7f) ask[len++] = *text;
-        ask[len] = 0;
-        GlobalUnlock( handle );
+    case ASK_SEND:
+        widget_activate( W_COPILOT, &send, &board_ask );
+        widgets_hide();
+        break;
+    case ASK_LEAVE:
+        widgets_hide();
+        break;
+    case ASK_CHANGED:
+        start_typing();
+        break;
+    default:
+        break;
     }
-    CloseClipboard();
-    start_typing();
 }
 
 static LRESULT WINAPI panel_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
 {
     POINT pt = { (short)LOWORD( lparam ), (short)HIWORD( lparam ) };
-    struct target t;
+    struct spot spot;
 
     switch (msg)
     {
     case WM_MOUSEMOVE:
+        if (dragging)
+        {
+            drag_move( pt );
+            return 0;
+        }
+        /* a card taken by its body, not by a field or "...", and moved: carried */
+        if ((wparam & MK_LBUTTON) && pressed_spot.card >= 0 &&
+            (pressed_spot.kind == SPOT_CARD || (pressed_spot.kind == SPOT_TARGET && pressed_spot.target.hit != HIT_ASK)) &&
+            (abs( pt.x - drag_start.x ) > GetSystemMetrics( SM_CXDRAG ) ||
+             abs( pt.y - drag_start.y ) > GetSystemMetrics( SM_CYDRAG )))
+        {
+            drag_begin( cards[pressed_spot.card].widget, drag_start );
+            pressed_spot.kind = SPOT_NONE;
+            drag_move( pt );
+            return 0;
+        }
         /* no card lights up while the list goes by under the pointer */
         if (!smooth.offset) update_hot();
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        if (dragging && (HWND)lparam != hwnd) drag_end();
         return 0;
 
     case WM_SETCURSOR:
     {
         POINT cursor;
 
+        if (dragging)
+        {
+            SetCursor( LoadCursorW( NULL, (const WCHAR *)IDC_SIZEALL ) );
+            return TRUE;
+        }
         GetCursorPos( &cursor );
         ScreenToClient( hwnd, &cursor );
-        t = hit_test( cursor );
-        if (t.kind != K_NONE)
+        spot = hit_test( cursor );
+        if (spot.kind == SPOT_TARGET || spot.kind == SPOT_MORE || spot.kind == SPOT_ADD)
         {
-            SetCursor( LoadCursorW( NULL, (const WCHAR *)(t.kind == K_ASK ? IDC_IBEAM : IDC_HAND) ) );
+            BOOL text = spot.kind == SPOT_TARGET && spot.target.hit == HIT_ASK;
+
+            SetCursor( LoadCursorW( NULL, (const WCHAR *)(text ? IDC_IBEAM : IDC_HAND) ) );
             return TRUE;
         }
         break;
     }
 
     case WM_LBUTTONDOWN:
-        pressed_target = hit_test( pt );
-        if (pressed_target.kind == K_ASK)
+        drag_ended = FALSE;
+        drag_start = pt;
+        pressed_spot = hit_test( pt );
+        if (pressed_spot.kind == SPOT_TARGET && pressed_spot.target.hit == HIT_ASK)
         {
             SetFocus( hwnd );
             start_typing();
@@ -1815,10 +2430,50 @@ static LRESULT WINAPI panel_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         return 0;
 
     case WM_LBUTTONUP:
-        t = hit_test( pt );
-        if (t.kind != K_NONE && t.kind == pressed_target.kind && t.index == pressed_target.index)
-            activate_target( &t );
-        pressed_target.kind = K_NONE;
+        if (dragging || drag_ended)
+        {
+            /* where it was put is all the drop does */
+            drag_end();
+            drag_ended = FALSE;
+            pressed_spot.kind = SPOT_NONE;
+            return 0;
+        }
+        spot = hit_test( pt );
+        if (!same_spot( &spot, &pressed_spot ))
+        {
+            pressed_spot.kind = SPOT_NONE;
+            return 0;
+        }
+        pressed_spot.kind = SPOT_NONE;
+        if (spot.kind == SPOT_ADD) add_menu();
+        else if (spot.kind == SPOT_MORE)
+        {
+            RECT more = cards[spot.card].rect;
+            RECT client;
+            POINT at;
+
+            GetClientRect( hwnd, &client );
+            OffsetRect( &more, 0, header_height() - shown_scroll( &client ) );
+            widget_more_rect( &more, &more );
+            at.x = more.left;
+            at.y = more.bottom;
+            ClientToScreen( hwnd, &at );
+            card_menu( spot.card, at );
+        }
+        else if (spot.kind == SPOT_TARGET && spot.target.hit != HIT_ASK)
+        {
+            widget_activate( board[cards[spot.card].widget].kind, &spot.target, &board_ask );
+            widgets_hide();
+        }
+        return 0;
+
+    case WM_RBUTTONUP:
+        spot = hit_test( pt );
+        if (spot.card >= 0)
+        {
+            ClientToScreen( hwnd, &pt );
+            card_menu( spot.card, pt );
+        }
         return 0;
 
     case WM_MOUSEWHEEL:
@@ -1832,51 +2487,27 @@ static LRESULT WINAPI panel_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         {
             smooth_scroll_add( &smooth, hwnd, TIMER_SMOOTH, target - scroll, view_height( &client ) );
             scroll = target;
-            hot_target.kind = K_NONE;
+            hot_spot.kind = SPOT_NONE;
             InvalidateRect( hwnd, NULL, FALSE );
         }
         return 0;
     }
 
     case WM_KEYDOWN:
-        switch (wparam)
-        {
-        case VK_ESCAPE:
-            if (ask[0])
-            {
-                ask[0] = 0;
-                InvalidateRect( hwnd, NULL, FALSE );
-            }
-            else widgets_hide();
-            break;
-        case VK_RETURN:
-            send_ask();
-            break;
-        case VK_BACK:
-            if (ask[0])
-            {
-                ask[lstrlenW( ask ) - 1] = 0;
-                start_typing();
-            }
-            break;
-        case 'V':
-            if (GetKeyState( VK_CONTROL ) & 0x8000) paste_text();
-            break;
-        }
+        if (board_ask.active) ask_result( widget_ask_input( &board_ask, msg, wparam, hwnd ) );
+        else if (wparam == VK_ESCAPE) widgets_hide();
         return 0;
 
     case WM_CHAR:
-        if (wparam >= 0x20 && wparam != 0x7f)
-        {
-            int len = lstrlenW( ask );
+        /* typing goes to Copilot, where there is one */
+        if (!board_ask.active && board_index( W_COPILOT ) < 0) return 0;
+        ask_result( widget_ask_input( &board_ask, msg, wparam, hwnd ) );
+        return 0;
 
-            if (len < MAX_ASK)
-            {
-                ask[len] = (WCHAR)wparam;
-                ask[len + 1] = 0;
-                start_typing();
-            }
-        }
+    case WM_BOARD_TICK:
+        if (!panel_visible()) return 0;
+        render_live();
+        InvalidateRect( hwnd, NULL, FALSE );
         return 0;
 
     case WM_TIMER:
@@ -1887,7 +2518,7 @@ static LRESULT WINAPI panel_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         }
         else if (wparam == TIMER_CARET)
         {
-            caret_on = !caret_on;
+            board_ask.caret = !board_ask.caret;
             InvalidateRect( hwnd, NULL, FALSE );
         }
         else if (wparam == TIMER_PANEL)
@@ -1897,7 +2528,7 @@ static LRESULT WINAPI panel_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
             RECT p, b;
 
             /* what the pointer opened goes when the pointer has left it */
-            if (panel_hover)
+            if (panel_hover && !in_popup)
             {
                 GetCursorPos( &cursor );
                 GetWindowRect( hwnd, &p );
@@ -1921,7 +2552,7 @@ static LRESULT WINAPI panel_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         return 0;
 
     case WM_ACTIVATE:
-        if (LOWORD( wparam ) == WA_INACTIVE && !panel_hover) widgets_hide();
+        if (LOWORD( wparam ) == WA_INACTIVE && !panel_hover && !in_popup) widgets_hide();
         else if (LOWORD( wparam ) != WA_INACTIVE) panel_hover = FALSE;
         return 0;
 
@@ -1948,10 +2579,11 @@ static BOOL create_panel(void)
     cls.hCursor = LoadCursorW( NULL, (const WCHAR *)IDC_ARROW );
     cls.lpszClassName = L"ArcticWidgetsPanel";
     RegisterClassW( &cls );
-    panel = CreateWindowExW( WS_EX_TOOLWINDOW | WS_EX_TOPMOST, cls.lpszClassName, L"", WS_POPUP, 0, 0, PANEL_W, px( 400 ),
+    panel = CreateWindowExW( WS_EX_TOOLWINDOW | WS_EX_TOPMOST, cls.lpszClassName, L"", WS_POPUP, 0, 0, board_width(), px( 400 ),
                              NULL, NULL, startui_instance, NULL );
     return panel != NULL;
 }
+
 
 /**********************************************************************
  *          The town the user sets
@@ -2020,7 +2652,7 @@ static INT_PTR WINAPI city_proc( HWND dialog, UINT msg, WPARAM wparam, LPARAM lp
     return FALSE;
 }
 
-static void change_location(void)
+void widgets_change_location( HWND owner )
 {
     static const struct page_template template =
     {
@@ -2029,7 +2661,12 @@ static void change_location(void)
         0, 0, 0, 8, L"MS Shell Dlg",
     };
 
-    if (DialogBoxIndirectParamW( startui_instance, &template.header, tray, city_proc, 0 ) == 1) start_fetch();
+    if (DialogBoxIndirectParamW( startui_instance, &template.header, owner ? owner : tray, city_proc, 0 ) == 1) start_fetch();
+}
+
+void widgets_refresh(void)
+{
+    start_fetch();
 }
 
 /**********************************************************************
@@ -2076,7 +2713,7 @@ static void button_menu( POINT pt )
     case ID_SHOW_OFF:  ArcticWidgetSetShow( 0 ); changed_width(); break;
     case ID_HOVER:     set_dword( L"Hover", !hover ); break;
     case ID_REFRESH:   start_fetch(); break;
-    case ID_LOCATION:  change_location(); break;
+    case ID_LOCATION:  widgets_change_location( NULL ); break;
     }
 }
 
@@ -2106,41 +2743,43 @@ static void recall( struct data *d )
 /* what came from the network: what did not come stays as it was */
 static void take_data( struct data *d )
 {
-    if (data && !d->have_weather)
+    struct data *old = data;
+
+    if (old && !d->have_weather)
     {
-        d->have_weather = data->have_weather;
-        lstrcpyW( d->city, data->city );
-        d->temp = data->temp;
-        d->feels = data->feels;
-        d->humidity = data->humidity;
-        d->wind = data->wind;
-        d->code = data->code;
-        d->is_day = data->is_day;
-        d->imperial = data->imperial;
-        d->day_count = data->day_count;
-        memcpy( d->days, data->days, sizeof(d->days) );
+        d->have_weather = old->have_weather;
+        lstrcpyW( d->city, old->city );
+        d->temp = old->temp;
+        d->feels = old->feels;
+        d->humidity = old->humidity;
+        d->wind = old->wind;
+        d->code = old->code;
+        d->is_day = old->is_day;
+        d->imperial = old->imperial;
+        d->day_count = old->day_count;
+        memcpy( d->days, old->days, sizeof(d->days) );
         SetTimer( button, TIMER_RETRY, 60 * 1000, NULL );
     }
     else remember( d );
-    if (data && !d->news_count)
+    if (old && !d->news_count)
     {
-        d->news_count = data->news_count;
-        memcpy( d->news, data->news, sizeof(d->news) );
-        memset( data->news, 0, sizeof(data->news) );
+        d->news_count = old->news_count;
+        memcpy( d->news, old->news, sizeof(d->news) );
+        memset( old->news, 0, sizeof(old->news) );
     }
     if (d->have_weather && d->news_count) fetched_at = GetTickCount();
-    data_free( data );
+    /* the desktop's thread may be drawing the old */
+    AcquireSRWLockExclusive( &data_lock );
     data = d;
+    ReleaseSRWLockExclusive( &data_lock );
+    data_free( old );
     changed_width();
     InvalidateRect( button, NULL, FALSE );
+    widgets_desktop_data();
     if (panel_visible())
     {
-        RECT client;
-
-        hot_target.kind = K_NONE;
-        layout();
-        GetClientRect( panel, &client );
-        scroll = min( scroll, max_scroll( &client ) );
+        hot_spot.kind = SPOT_NONE;
+        content_dirty = TRUE;
         InvalidateRect( panel, NULL, FALSE );
     }
 }
@@ -2227,6 +2866,10 @@ static LRESULT WINAPI button_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
         take_data( (struct data *)lparam );
         return 0;
 
+    case WM_BOARD_RELOAD:
+        board_reload();
+        return 0;
+
     case WM_ERASEBKGND:
         return 1;
 
@@ -2250,6 +2893,7 @@ HWND WINAPI ArcticWidgetCreate( HWND tray_window )
     cls.lpszClassName = L"ArcticWidgetButton";
     RegisterClassW( &cls );
     if ((data = calloc( 1, sizeof(*data) ))) recall( data );
+    board_count = widgets_load( HOST_BOARD, board );
     button = CreateWindowExW( 0, cls.lpszClassName, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, tray, NULL,
                               startui_instance, NULL );
     if (button) SetTimer( button, TIMER_FIRST, 4000, NULL );

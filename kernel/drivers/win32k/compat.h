@@ -71,10 +71,15 @@ void remove_timeout_user(struct timeout_user *user);
 
 /* ------------------------------------------------------------- memory */
 
+/* The server's heap is malloc's: a block of any size. Here kvmalloc, small
+ * blocks from the slab as before, big ones (a clipboard's bitmap) from
+ * vmalloc, which kmalloc cannot give past 4 MB. All of it goes back with
+ * kvfree (free), never kfree. */
+
 /* as the server's: STATUS_NO_MEMORY when it fails */
 static inline void *mem_alloc(size_t size)
 {
-	void *ptr = kmalloc(size, GFP_KERNEL);
+	void *ptr = kvmalloc(size, GFP_KERNEL | __GFP_NOWARN);
 
 	if (!ptr)
 		set_error((NTSTATUS)0xC0000017 /* STATUS_NO_MEMORY */);
@@ -82,11 +87,11 @@ static inline void *mem_alloc(size_t size)
 }
 
 /* as wineserver's: nothing to copy still gives a pointer (malloc(0)), here
- * ZERO_SIZE_PTR, which kfree takes; NULL is a failure the server returns on
+ * ZERO_SIZE_PTR, which kvfree takes; NULL is a failure the server returns on
  * (an out-of-context WinEvent hook has no module and failed with no error) */
 static inline void *memdup(const void *data, size_t size)
 {
-	void *ptr = kmemdup(data, size, GFP_KERNEL);
+	void *ptr = kvmemdup(data, size, GFP_KERNEL | __GFP_NOWARN);
 
 	if (!ptr)
 		set_error((NTSTATUS)0xC0000017 /* STATUS_NO_MEMORY */);
@@ -96,18 +101,18 @@ static inline void *memdup(const void *data, size_t size)
 /* the C library's, which the server calls where it sets no error itself */
 static inline void *malloc(size_t size)
 {
-	return kmalloc(size, GFP_KERNEL);
+	return kvmalloc(size, GFP_KERNEL | __GFP_NOWARN);
 }
 
 static inline void free(void *ptr)
 {
-	kfree(ptr);
+	kvfree(ptr);
 }
 
 /* as realloc: NULL when it fails, the old block left as it was */
 static inline void *w32_realloc(void *ptr, size_t size)
 {
-	return krealloc(ptr, size, GFP_KERNEL);
+	return kvrealloc(ptr, size, GFP_KERNEL | __GFP_NOWARN);
 }
 
 /* ------------------------------------------------------------- the request's data */
@@ -150,7 +155,7 @@ static inline void set_reply_data(const void *data, data_size_t size)
 static inline void set_reply_data_ptr(void *data, data_size_t size)
 {
 	set_reply_data(data, size);
-	kfree(data);
+	kvfree(data);
 }
 
 /* ------------------------------------------------------------- time, in 100 ns as Windows counts it */

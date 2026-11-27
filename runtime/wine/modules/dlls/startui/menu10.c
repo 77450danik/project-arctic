@@ -1135,7 +1135,7 @@ static LRESULT WINAPI menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
 
     case WM_ACTIVATE:
-        if (LOWORD( wparam ) == WA_INACTIVE && !in_popup) menu10_hide();
+        if (LOWORD( wparam ) == WA_INACTIVE && !in_popup && !pins_start_dragging()) menu10_hide();
         return 0;
 
     case WM_MOUSEACTIVATE:

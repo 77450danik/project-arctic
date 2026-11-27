@@ -103,6 +103,7 @@ struct thread_input
     timeout_t              user_time;     /* time of last user input */
     unsigned char          desktop_keystate[256]; /* desktop keystate when keystate was synced */
     input_shm_t           *shared;        /* thread input in session shared memory */
+    int                    cursor_set;    /* Arctic: a thread of it called SetCursor */
 };
 
 struct msg_queue
@@ -322,6 +323,7 @@ static struct thread_input *create_thread_input( struct desktop *desktop )
         list_init( &input->attachments );
         input->user_time = 0;
         input->shared = NULL;
+        input->cursor_set = 0;
 
         memcpy( input->desktop_keystate, (const void *)input->desktop->shared->keystate,
                 sizeof(input->desktop_keystate) );
@@ -597,12 +599,16 @@ static struct thread_input *get_desktop_cursor_thread_input( struct desktop *des
 }
 
 /* whether the thread that owns the window under the cursor hides it, the way
- * win32k decides whether the pointer shows */
+ * win32k decides whether the pointer shows. No cursor at all is hiding it only
+ * once the thread said so (SetCursor(NULL)): one that never set a cursor, a
+ * program that hung before it took a single mouse message, leaves the pointer
+ * as it was, as in Windows, where the cursor is the last one set. It vanished
+ * over such a window before (Discord hung while starting). */
 int is_desktop_cursor_hidden( struct desktop *desktop )
 {
     struct thread_input *input = get_desktop_cursor_thread_input( desktop );
 
-    return input && (input->shared->cursor_count < 0 || !input->shared->cursor);
+    return input && (input->shared->cursor_count < 0 || (!input->shared->cursor && input->cursor_set));
 }
 
 static int update_desktop_cursor_window( struct desktop *desktop, user_handle_t win )
@@ -4161,7 +4167,10 @@ DECL_HANDLER(set_cursor)
     SHARED_WRITE_BEGIN( input_shm, input_shm_t )
     {
         if (req->flags & SET_CURSOR_HANDLE)
+        {
             shared->cursor = req->handle;
+            input->cursor_set = 1;
+        }
         if (req->flags & SET_CURSOR_COUNT)
         {
             queue->cursor_count += req->show_count;

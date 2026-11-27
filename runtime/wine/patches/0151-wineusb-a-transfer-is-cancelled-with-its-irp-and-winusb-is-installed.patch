@@ -1,0 +1,411 @@
+From: Project Arctic
+Subject: wineusb: a transfer is cancelled with its IRP, and WinUSB is installed.
+
+winusb.sys (Arctic's WinUSB driver) sends the program's own IRP down to the
+bus, so a cancelled read (CancelIoEx, a timed-out WinUsb_ReadPipe, a closed
+handle) must cancel its transfer: queued IRPs get a cancel routine.
+ABORT_PIPE stops only the transfers of its pipe, not every transfer of the
+device, so aborting a write leaves ADB's pending read alone. The end of a
+transfer and its cancel no longer race over the freed libusb transfer; a
+transfer libusb refuses completes its IRP at once instead of never; the IRPs
+of a removed device are let go of their transfers before they complete.
+Class requests (URB_FUNCTION_CLASS_*) go to the device like vendor ones.
+wine.inf copies winusb.inf, so ADB and fastboot interfaces get WinUSB.
+---
+diff --git a/dlls/wineusb.sys/unixlib.c b/dlls/wineusb.sys/unixlib.c
+index 1d6c646..1b91536 100644
+--- a/dlls/wineusb.sys/unixlib.c
++++ b/dlls/wineusb.sys/unixlib.c
+@@ -56,6 +56,9 @@ static struct usb_event *usb_events;
+ static size_t usb_event_count, usb_events_capacity;
+ 
+ static pthread_mutex_t device_mutex = PTHREAD_MUTEX_INITIALIZER;
++/* the link between an IRP and its transfer: the transfer is freed when it
++ * ends, so a cancel must not reach it after that */
++static pthread_mutex_t transfer_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+ static struct list device_list = LIST_INIT(device_list);
+ 
+@@ -335,14 +338,25 @@ struct transfer_ctx
+ static void LIBUSB_CALL transfer_cb(struct libusb_transfer *transfer)
+ {
+     struct transfer_ctx *transfer_ctx = transfer->user_data;
+-    IRP *irp = transfer_ctx->irp;
+-    URB *urb = IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1;
+     unsigned char *transfer_buffer = transfer_ctx->transfer_buffer;
+     struct usb_event event;
++    URB *urb;
++    IRP *irp;
++
++    pthread_mutex_lock(&transfer_mutex);
++    if ((irp = transfer_ctx->irp)) irp->Tail.Overlay.DriverContext[0] = NULL;
++    pthread_mutex_unlock(&transfer_mutex);
++    free(transfer_ctx);
++
++    if (!irp)
++    {
++        TRACE("Transfer %p of a completed IRP ended, status %#x.\n", transfer, transfer->status);
++        return;
++    }
++    urb = IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1;
+ 
+     TRACE("Completing IRP %p, status %#x.\n", irp, transfer->status);
+ 
+-    free(transfer_ctx);
+     urb->UrbHeader.Status = usbd_status_from_libusb(transfer->status);
+ 
+     if (transfer->status == LIBUSB_TRANSFER_COMPLETED)
+@@ -364,6 +378,9 @@ static void LIBUSB_CALL transfer_cb(struct libusb_transfer *transfer)
+             case URB_FUNCTION_VENDOR_DEVICE:
+             case URB_FUNCTION_VENDOR_INTERFACE:
+             case URB_FUNCTION_VENDOR_ENDPOINT:
++            case URB_FUNCTION_CLASS_DEVICE:
++            case URB_FUNCTION_CLASS_INTERFACE:
++            case URB_FUNCTION_CLASS_ENDPOINT:
+             {
+                 struct _URB_CONTROL_VENDOR_OR_CLASS_REQUEST *req = &urb->UrbControlVendorClassRequest;
+                 req->TransferBufferLength = transfer->actual_length;
+@@ -413,6 +430,17 @@ static struct pipe get_pipe(HANDLE handle)
+     return u.pipe;
+ }
+ 
++/* a transfer libusb refused never ends: the IRP is completed now */
++static NTSTATUS submit_failed(IRP *irp, URB *urb, struct libusb_transfer *transfer, int ret)
++{
++    ERR("Failed to submit transfer: %s\n", libusb_strerror(ret));
++    free(transfer->user_data);
++    irp->Tail.Overlay.DriverContext[0] = NULL;
++    libusb_free_transfer(transfer);
++    urb->UrbHeader.Status = ret == LIBUSB_ERROR_NO_DEVICE ? USBD_STATUS_DEVICE_GONE : USBD_STATUS_REQUEST_FAILED;
++    return ret == LIBUSB_ERROR_NO_DEVICE ? STATUS_DEVICE_NOT_CONNECTED : STATUS_UNSUCCESSFUL;
++}
++
+ static NTSTATUS usb_submit_urb(void *args)
+ {
+     const struct usb_submit_urb_params *params = args;
+@@ -477,7 +505,7 @@ static NTSTATUS usb_submit_urb(void *args)
+             transfer->flags = LIBUSB_TRANSFER_FREE_TRANSFER;
+             ret = libusb_submit_transfer(transfer);
+             if (ret < 0)
+-                ERR("Failed to submit bulk transfer: %s\n", libusb_strerror(ret));
++                return submit_failed(irp, urb, transfer, ret);
+ 
+             return STATUS_PENDING;
+         }
+@@ -515,7 +543,7 @@ static NTSTATUS usb_submit_urb(void *args)
+             transfer->flags = LIBUSB_TRANSFER_FREE_BUFFER | LIBUSB_TRANSFER_FREE_TRANSFER;
+             ret = libusb_submit_transfer(transfer);
+             if (ret < 0)
+-                ERR("Failed to submit GET_DESCRIPTOR transfer: %s\n", libusb_strerror(ret));
++                return submit_failed(irp, urb, transfer, ret);
+ 
+             return STATUS_PENDING;
+         }
+@@ -543,9 +571,12 @@ static NTSTATUS usb_submit_urb(void *args)
+         case URB_FUNCTION_VENDOR_DEVICE:
+         case URB_FUNCTION_VENDOR_INTERFACE:
+         case URB_FUNCTION_VENDOR_ENDPOINT:
++        case URB_FUNCTION_CLASS_DEVICE:
++        case URB_FUNCTION_CLASS_INTERFACE:
++        case URB_FUNCTION_CLASS_ENDPOINT:
+         {
+             struct _URB_CONTROL_VENDOR_OR_CLASS_REQUEST *req = &urb->UrbControlVendorClassRequest;
+-            uint8_t req_type = LIBUSB_REQUEST_TYPE_VENDOR;
++            uint8_t req_type;
+             struct transfer_ctx *transfer_ctx;
+             unsigned char *buffer;
+ 
+@@ -554,12 +585,27 @@ static NTSTATUS usb_submit_urb(void *args)
+             transfer_ctx->irp = irp;
+             transfer_ctx->transfer_buffer = params->transfer_buffer;
+ 
+-            if (urb->UrbHeader.Function == URB_FUNCTION_VENDOR_DEVICE)
+-                req_type |= LIBUSB_RECIPIENT_DEVICE;
+-            else if (urb->UrbHeader.Function == URB_FUNCTION_VENDOR_INTERFACE)
+-                req_type |= LIBUSB_RECIPIENT_INTERFACE;
+-            else
+-                req_type |= LIBUSB_RECIPIENT_ENDPOINT;
++            switch (urb->UrbHeader.Function)
++            {
++                case URB_FUNCTION_VENDOR_DEVICE:
++                    req_type = LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE;
++                    break;
++                case URB_FUNCTION_VENDOR_INTERFACE:
++                    req_type = LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_INTERFACE;
++                    break;
++                case URB_FUNCTION_VENDOR_ENDPOINT:
++                    req_type = LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_ENDPOINT;
++                    break;
++                case URB_FUNCTION_CLASS_DEVICE:
++                    req_type = LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_DEVICE;
++                    break;
++                case URB_FUNCTION_CLASS_INTERFACE:
++                    req_type = LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE;
++                    break;
++                default:
++                    req_type = LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_ENDPOINT;
++                    break;
++            }
+ 
+             if (req->TransferFlags & USBD_TRANSFER_DIRECTION_IN)
+                 req_type |= LIBUSB_ENDPOINT_IN;
+@@ -588,7 +634,7 @@ static NTSTATUS usb_submit_urb(void *args)
+             transfer->flags = LIBUSB_TRANSFER_FREE_BUFFER | LIBUSB_TRANSFER_FREE_TRANSFER;
+             ret = libusb_submit_transfer(transfer);
+             if (ret < 0)
+-                ERR("Failed to submit vendor-specific interface transfer: %s\n", libusb_strerror(ret));
++                return submit_failed(irp, urb, transfer, ret);
+ 
+             return STATUS_PENDING;
+         }
+@@ -603,10 +649,22 @@ static NTSTATUS usb_submit_urb(void *args)
+ static NTSTATUS usb_cancel_transfer(void *args)
+ {
+     const struct usb_cancel_transfer_params *params = args;
++    struct libusb_transfer *transfer;
+     int ret;
+ 
+-    if ((ret = libusb_cancel_transfer(params->transfer)) < 0)
+-        ERR("Failed to cancel transfer: %s\n", libusb_strerror(ret));
++    pthread_mutex_lock(&transfer_mutex);
++    if ((transfer = params->irp->Tail.Overlay.DriverContext[0]))
++    {
++        if (params->detach)
++        {
++            ((struct transfer_ctx *)transfer->user_data)->irp = NULL;
++            params->irp->Tail.Overlay.DriverContext[0] = NULL;
++        }
++        /* NOT_FOUND: it has just ended and its callback is on the way */
++        if ((ret = libusb_cancel_transfer(transfer)) < 0 && ret != LIBUSB_ERROR_NOT_FOUND)
++            ERR("Failed to cancel transfer: %s\n", libusb_strerror(ret));
++    }
++    pthread_mutex_unlock(&transfer_mutex);
+ 
+     return STATUS_SUCCESS;
+ }
+diff --git a/dlls/wineusb.sys/unixlib.h b/dlls/wineusb.sys/unixlib.h
+index 33469f5..97894d4 100644
+--- a/dlls/wineusb.sys/unixlib.h
++++ b/dlls/wineusb.sys/unixlib.h
+@@ -66,7 +66,9 @@ struct usb_submit_urb_params
+ 
+ struct usb_cancel_transfer_params
+ {
+-    void *transfer;
++    IRP *irp;
++    /* the IRP is completed without its transfer: its end must not touch it */
++    BOOL detach;
+ };
+ 
+ struct usb_destroy_device_params
+diff --git a/dlls/wineusb.sys/wineusb.c b/dlls/wineusb.sys/wineusb.c
+index 806c197..319241a 100644
+--- a/dlls/wineusb.sys/wineusb.c
++++ b/dlls/wineusb.sys/wineusb.c
+@@ -173,16 +173,54 @@ static void remove_unix_device(struct unix_device *unix_device)
+ 
+ static HANDLE event_thread;
+ 
++/* DriverContext[1] of a queued IRP is its device: the IRP is in its irp_list
++ * and its transfer may be cancelled. Cancelling takes the cancel lock, then
++ * wineusb_cs; completing takes wineusb_cs, then waits out a running cancel
++ * routine, so the IRP is never completed under it. */
++static void wait_for_cancel_routine(IRP *irp)
++{
++    KIRQL irql;
++
++    if (!IoSetCancelRoutine(irp, NULL))
++    {
++        IoAcquireCancelSpinLock(&irql);
++        IoReleaseCancelSpinLock(irql);
++    }
++}
++
+ static void complete_irp(IRP *irp)
+ {
+     EnterCriticalSection(&wineusb_cs);
+-    RemoveEntryList(&irp->Tail.Overlay.ListEntry);
++    if (irp->Tail.Overlay.DriverContext[1])
++    {
++        RemoveEntryList(&irp->Tail.Overlay.ListEntry);
++        irp->Tail.Overlay.DriverContext[1] = NULL;
++    }
+     LeaveCriticalSection(&wineusb_cs);
+ 
++    wait_for_cancel_routine(irp);
++    /* a cancelled transfer says so in its URB (USBD_STATUS_CANCELED); one
++     * that ended before the cancel keeps its data */
+     irp->IoStatus.Status = STATUS_SUCCESS;
+     IoCompleteRequest(irp, IO_NO_INCREMENT);
+ }
+ 
++static void WINAPI cancel_irp(DEVICE_OBJECT *device_obj, IRP *irp)
++{
++    struct usb_cancel_transfer_params params =
++    {
++        .irp = irp,
++    };
++
++    TRACE("Cancelling IRP %p.\n", irp);
++
++    EnterCriticalSection(&wineusb_cs);
++    if (irp->Tail.Overlay.DriverContext[1])
++        WINE_UNIX_CALL(unix_usb_cancel_transfer, &params);
++    LeaveCriticalSection(&wineusb_cs);
++    IoReleaseCancelSpinLock(irp->CancelIrql);
++}
++
+ static DWORD CALLBACK event_thread_proc(void *arg)
+ {
+     struct usb_event event;
+@@ -441,14 +479,38 @@ static NTSTATUS query_id(struct usb_device *device, IRP *irp, BUS_QUERY_ID_TYPE
+     return STATUS_SUCCESS;
+ }
+ 
+-static void remove_pending_irps(struct usb_device *device)
++/* under wineusb_cs: the IRPs leave the device, their transfers are let go
++ * (one may still end: it must not complete its IRP again) */
++static void remove_pending_irps(struct usb_device *device, LIST_ENTRY *removed)
+ {
+     LIST_ENTRY *entry;
+     IRP *irp;
+ 
+     while ((entry = RemoveHeadList(&device->irp_list)) != &device->irp_list)
++    {
++        struct usb_cancel_transfer_params params =
++        {
++            .detach = TRUE,
++        };
++
++        irp = CONTAINING_RECORD(entry, IRP, Tail.Overlay.ListEntry);
++        params.irp = irp;
++        WINE_UNIX_CALL(unix_usb_cancel_transfer, &params);
++        irp->Tail.Overlay.DriverContext[1] = NULL;
++        InsertTailList(removed, entry);
++    }
++}
++
++/* outside wineusb_cs, which a cancel routine may be waiting for */
++static void complete_removed_irps(LIST_ENTRY *removed)
++{
++    LIST_ENTRY *entry;
++    IRP *irp;
++
++    while ((entry = RemoveHeadList(removed)) != removed)
+     {
+         irp = CONTAINING_RECORD(entry, IRP, Tail.Overlay.ListEntry);
++        wait_for_cancel_routine(irp);
+         irp->IoStatus.Status = STATUS_DELETE_PENDING;
+         irp->IoStatus.Information = 0;
+         IoCompleteRequest(irp, IO_NO_INCREMENT);
+@@ -460,7 +522,9 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device_obj, IRP *irp)
+     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
+     struct usb_device *device = device_obj->DeviceExtension;
+     NTSTATUS ret = irp->IoStatus.Status;
++    LIST_ENTRY removed;
+ 
++    InitializeListHead(&removed);
+     TRACE("device_obj %p, irp %p, minor function %#x.\n", device_obj, irp, stack->MinorFunction);
+ 
+     switch (stack->MinorFunction)
+@@ -485,19 +549,23 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device_obj, IRP *irp)
+ 
+         case IRP_MN_SURPRISE_REMOVAL:
+             EnterCriticalSection(&wineusb_cs);
+-            remove_pending_irps(device);
++            remove_pending_irps(device, &removed);
+             if (!device->removed)
+             {
+                 device->removed = TRUE;
+                 list_remove(&device->entry);
+             }
+             LeaveCriticalSection(&wineusb_cs);
++            complete_removed_irps(&removed);
+             ret = STATUS_SUCCESS;
+             break;
+ 
+         case IRP_MN_REMOVE_DEVICE:
+             assert(device->removed);
+-            remove_pending_irps(device);
++            EnterCriticalSection(&wineusb_cs);
++            remove_pending_irps(device, &removed);
++            LeaveCriticalSection(&wineusb_cs);
++            complete_removed_irps(&removed);
+ 
+             destroy_unix_device(device->unix_device);
+ 
+@@ -540,17 +608,21 @@ static NTSTATUS usb_submit_urb(struct usb_device *device, IRP *irp)
+ 
+             /* The documentation states that URB_FUNCTION_ABORT_PIPE may
+              * complete before outstanding requests complete, so we don't need
+-             * to wait for them. */
++             * to wait for them. Only the transfers of that pipe go. */
+             EnterCriticalSection(&wineusb_cs);
+             mark = &device->irp_list;
+             for (entry = mark->Flink; entry != mark; entry = entry->Flink)
+             {
+                 IRP *queued_irp = CONTAINING_RECORD(entry, IRP, Tail.Overlay.ListEntry);
++                URB *queued_urb = IoGetCurrentIrpStackLocation(queued_irp)->Parameters.Others.Argument1;
+                 struct usb_cancel_transfer_params params =
+                 {
+-                    .transfer = queued_irp->Tail.Overlay.DriverContext[0],
++                    .irp = queued_irp,
+                 };
+ 
++                if (queued_urb->UrbHeader.Function != URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER
++                        || queued_urb->UrbBulkOrInterruptTransfer.PipeHandle != urb->UrbPipeRequest.PipeHandle)
++                    continue;
+                 WINE_UNIX_CALL(unix_usb_cancel_transfer, &params);
+             }
+             LeaveCriticalSection(&wineusb_cs);
+@@ -565,6 +637,9 @@ static NTSTATUS usb_submit_urb(struct usb_device *device, IRP *irp)
+         case URB_FUNCTION_VENDOR_DEVICE:
+         case URB_FUNCTION_VENDOR_INTERFACE:
+         case URB_FUNCTION_VENDOR_ENDPOINT:
++        case URB_FUNCTION_CLASS_DEVICE:
++        case URB_FUNCTION_CLASS_INTERFACE:
++        case URB_FUNCTION_CLASS_ENDPOINT:
+         {
+             struct usb_submit_urb_params params =
+             {
+@@ -597,6 +672,9 @@ static NTSTATUS usb_submit_urb(struct usb_device *device, IRP *irp)
+                 case URB_FUNCTION_VENDOR_DEVICE:
+                 case URB_FUNCTION_VENDOR_INTERFACE:
+                 case URB_FUNCTION_VENDOR_ENDPOINT:
++                case URB_FUNCTION_CLASS_DEVICE:
++                case URB_FUNCTION_CLASS_INTERFACE:
++                case URB_FUNCTION_CLASS_ENDPOINT:
+                 {
+                     struct _URB_CONTROL_VENDOR_OR_CLASS_REQUEST *req = &urb->UrbControlVendorClassRequest;
+                     if (req->TransferBufferMDL)
+@@ -617,6 +695,18 @@ static NTSTATUS usb_submit_urb(struct usb_device *device, IRP *irp)
+             {
+                 IoMarkIrpPending(irp);
+                 InsertTailList(&device->irp_list, &irp->Tail.Overlay.ListEntry);
++                irp->Tail.Overlay.DriverContext[1] = device;
++                /* the program cancels it with CancelIoEx or by closing its handle */
++                IoSetCancelRoutine(irp, cancel_irp);
++                if (irp->Cancel && IoSetCancelRoutine(irp, NULL))
++                {
++                    struct usb_cancel_transfer_params cancel_params =
++                    {
++                        .irp = irp,
++                    };
++
++                    WINE_UNIX_CALL(unix_usb_cancel_transfer, &cancel_params);
++                }
+             }
+             LeaveCriticalSection(&wineusb_cs);
+ 
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index 965d3b2..e0f75cd 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -1250,6 +1250,7 @@ winebus.inf,"@%12%\winebus.sys,-1"
+ winehid.inf,"@%12%\winehid.sys,-1"
+ wineusb.inf,"@%12%\wineusb.sys,-1"
+ winexinput.inf,"@%12%\winexinput.sys,-1"
++winusb.inf,"@%12%\winusb.sys,-1"
+ 
+ [NlsFiles]
+ c_037.nls

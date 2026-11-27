@@ -21,7 +21,7 @@ void user_process_exit(struct w32_process *process)
 	destroy_process_classes(process);
 	free_process_user_handles(process);
 	set_rawinput_process(process, 0);
-	kfree(process->rawinput_devices);
+	free(process->rawinput_devices);
 	process->rawinput_devices = NULL;
 	process->rawinput_device_count = 0;
 	process->rawinput_mouse = NULL;

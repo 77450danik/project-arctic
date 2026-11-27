@@ -145,7 +145,7 @@ static void atom_table_destroy(struct object *obj)
 	struct atom_table *table = (struct atom_table *)obj;
 
 	for (int i = 0; i < table->count; i++)
-		kfree(table->atoms[i]);
+		free(table->atoms[i]);
 }
 
 static atom_t get_int_atom_value(struct unicode_str name)
@@ -216,7 +216,7 @@ atom_t add_atom(struct atom_table *table, struct unicode_str str)
 			memcpy(entry->str, str.str, str.len);
 		} else {
 			set_error(STATUS_NO_MEMORY);
-			kfree(entry);
+			free(entry);
 		}
 	}
 	return atom;
@@ -237,7 +237,7 @@ static void delete_atom(struct atom_table *table, atom_t atom, int if_pinned)
 		else
 			table->entries[entry->hash] = entry->next;
 		table->atoms[atom - MIN_STR_ATOM] = NULL;
-		kfree(entry);
+		free(entry);
 	}
 }
 

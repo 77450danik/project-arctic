@@ -1,0 +1,7 @@
+MODULE    = mfsensorgroup.dll
+IMPORTS   = uuid
+
+VER_FILEDESCRIPTION_STR = "Media Foundation Sensor Group"
+
+SOURCES = \
+	main.c

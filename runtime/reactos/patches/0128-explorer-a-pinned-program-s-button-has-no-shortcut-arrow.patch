@@ -1,0 +1,49 @@
+From: Project Arctic
+Subject: explorer: a pinned program's button has no shortcut arrow.
+
+The button of a program pinned to the taskbar took the icon of its
+shortcut from SHGetFileInfo, and shell32 gives a shortcut's large icon
+with the arrow on it. As in Windows, the button shows the program's own
+icon: the one the shortcut's IExtractIcon names, without the arrow.
+---
+diff --git a/base/shell/explorer/taskswnd.cpp b/base/shell/explorer/taskswnd.cpp
+--- a/base/shell/explorer/taskswnd.cpp
++++ b/base/shell/explorer/taskswnd.cpp
+@@ -788,8 +788,37 @@
+         return TaskItem->hWnd == NULL && TaskItem->Group != NULL && TaskItem->Group->bPinned;
+     }
+ 
++    /* Arctic: the icon a shortcut has, without its arrow: shell32 puts the
++       arrow on the large icons SHGetFileInfo gives of a shortcut */
++    static HICON LinkIconWithoutArrow(IN LPCWSTR pszLink, IN INT cx)
++    {
++        CComPtr<IShellLinkW> psl;
++        CComPtr<IPersistFile> ppf;
++        CComPtr<IExtractIconW> pei;
++        WCHAR szFile[MAX_PATH] = L"";
++        INT iIndex = 0;
++        UINT uFlags = 0;
++        HICON hIcon = NULL;
++
++        if (FAILED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARG(IShellLinkW, &psl))) ||
++            FAILED(psl->QueryInterface(IID_PPV_ARG(IPersistFile, &ppf))) ||
++            FAILED(ppf->Load(pszLink, STGM_READ)) ||
++            FAILED(psl->QueryInterface(IID_PPV_ARG(IExtractIconW, &pei))) ||
++            pei->GetIconLocation(0, szFile, _countof(szFile), &iIndex, &uFlags) != S_OK || !szFile[0])
++            return NULL;
++        if (pei->Extract(szFile, iIndex, &hIcon, NULL, MAKELONG(cx, cx)) != S_OK)
++            hIcon = NULL;
++        return hIcon;
++    }
++
++    /* the program's icon, as Windows' taskbar shows a pin: no shortcut arrow */
+     HICON PinIcon(IN PTASK_GROUP TaskGroup)
+     {
++        if (!TaskGroup->hPinIcon && TaskGroup->szPinLink[0])
++        {
++            TaskGroup->hPinIcon = LinkIconWithoutArrow(TaskGroup->szPinLink,
++                GetSystemMetrics(g_TaskbarSettings.bSmallIcons ? SM_CXSMICON : SM_CXICON));
++        }
+         if (!TaskGroup->hPinIcon && TaskGroup->szPinLink[0])
+         {
+             SHFILEINFOW info = { 0 };

@@ -1,0 +1,40 @@
+[Version]
+Signature="$CHICAGO$"
+ClassGuid={88bae032-5a81-49f0-bc3d-a4ff138216d6}
+Class=USBDevice
+
+[Manufacturer]
+Android=android_section
+WinUSB=winusb_section
+
+[android_section]
+Android ADB Interface=adb_section,USB\Class_ff&SubClass_42&Prot_01
+Android Bootloader Interface=adb_section,USB\Class_ff&SubClass_42&Prot_03
+
+[winusb_section]
+WinUsb Device=winusb_device_section,USB\MS_COMP_WINUSB
+
+[adb_section]
+
+[adb_section.HW]
+AddReg=adb_hw_addreg
+
+[adb_hw_addreg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{F72FE0D4-CBCB-407d-8814-9ED673D0DD6B}"
+
+[adb_section.Services]
+AddService = WinUSB,0x2,svc_section
+
+[winusb_device_section]
+
+[winusb_device_section.Services]
+AddService = WinUSB,0x2,svc_section
+
+[svc_section]
+Description="Generic driver for USB devices"
+DisplayName="WinUsb Driver"
+ServiceBinary="%12%\winusb.sys"
+LoadOrderGroup="WinePlugPlay"
+ServiceType=1
+StartType=3
+ErrorControl=1

@@ -31,6 +31,7 @@
 #include <linux/vmalloc.h>
 #include <linux/xarray.h>
 #include <linux/win32k.h>
+#include <linux/ntos.h>
 #include "user.h"
 
 DEFINE_MUTEX(win32k_lock);
@@ -51,10 +52,10 @@ struct w32_thread *w32_task_thread(struct task_struct *tsk)
 	return xa_load(&w32_tasks, tsk->pid);
 }
 
-/* wineserver's thread group, once it registered (win32k_callout) */
+/* wineserver's thread group, once it registered (win32k_callout); or ntos,
+ * the object manager in the kernel itself (docs/ntos.md) */
 static struct pid *object_manager;
-
-#define W32_MAX_DATA (4u << 20)	/* the server's own limit of a request's data */
+static bool ntos_object_manager;
 
 static void w32_process_destroy(struct object *obj)
 {
@@ -257,7 +258,7 @@ SYSCALL_DEFINE1(win32k_hello, const struct win32k_hello __user *, arg)
 			ret = -EINVAL;
 		goto out;
 	}
-	if (!object_manager || !pid_task(object_manager, PIDTYPE_TGID)) {
+	if (!ntos_object_manager && (!object_manager || !pid_task(object_manager, PIDTYPE_TGID))) {
 		ret = -ENOENT;	/* no wineserver uses win32k: USER stays with wineserver */
 		goto out;
 	}
@@ -316,8 +317,9 @@ SYSCALL_DEFINE1(win32k_call, struct win32k_call __user *, arg)
 		return -ESRCH;	/* win32k_hello first */
 	if (copy_from_user(&args, arg, sizeof(args)))
 		return -EFAULT;
-	if (args.request_size > sizeof(req) || args.reply_size > sizeof(reply) ||
-	    args.request_data_size > W32_MAX_DATA || args.reply_data_max > W32_MAX_DATA)
+	/* the data of any size, as wineserver took it: a screenshot on the
+	 * clipboard is 8 MB at 1920x1080 */
+	if (args.request_size > sizeof(req) || args.reply_size > sizeof(reply))
 		return -EINVAL;
 	memset(&req, 0, sizeof(req));
 	memset(&reply, 0, sizeof(reply));
@@ -330,17 +332,15 @@ SYSCALL_DEFINE1(win32k_call, struct win32k_call __user *, arg)
 		return -ENOSYS;	/* not a request of USER */
 
 	if (args.request_data_size) {
-		if (!(req_data = kvmalloc(args.request_data_size, GFP_KERNEL)))
-			return -ENOMEM;
+		if (!(req_data = kvmalloc(args.request_data_size, GFP_KERNEL | __GFP_NOWARN)))
+			goto no_memory;
 		if (copy_from_user(req_data, u64_to_user_ptr(args.request_data), args.request_data_size)) {
 			ret = -EFAULT;
 			goto out;
 		}
 	}
-	if (args.reply_data_max && !(reply_data = kvzalloc(args.reply_data_max, GFP_KERNEL))) {
-		ret = -ENOMEM;
-		goto out;
-	}
+	if (args.reply_data_max && !(reply_data = kvzalloc(args.reply_data_max, GFP_KERNEL | __GFP_NOWARN)))
+		goto no_memory;
 
 	mutex_lock(&win32k_lock);
 	w32_enter(&call, thread);
@@ -369,6 +369,16 @@ out:
 	kvfree(req_data);
 	kvfree(reply_data);
 	return ret;
+
+no_memory:
+	/* the call fails with an error, as wineserver answered: not the thread */
+	reply.header.error = STATUS_NO_MEMORY;
+	args.status = STATUS_NO_MEMORY;
+	args.reply_data_size = 0;
+	if (copy_to_user(u64_to_user_ptr(args.reply), &reply, min_t(u32, args.reply_size, entry->reply_size)) ||
+	    copy_to_user(arg, &args, sizeof(args)))
+		ret = -EFAULT;
+	goto out;
 }
 
 /* what the object manager says: under win32k_lock */
@@ -481,6 +491,10 @@ SYSCALL_DEFINE1(win32k_callout, struct win32k_callout __user *, arg)
 		return -EFAULT;
 
 	mutex_lock(&win32k_lock);
+	if (ntos_object_manager) {
+		mutex_unlock(&win32k_lock);
+		return -EPERM;	/* ntos is the object manager: no wineserver */
+	}
 	if (co.code == W32_CALLOUT_REGISTER) {
 		if (co.value != SERVER_PROTOCOL_VERSION) {
 			ret = -EPROTO;
@@ -510,5 +524,34 @@ SYSCALL_DEFINE1(win32k_callout, struct win32k_callout __user *, arg)
 
 	if (copy_to_user(arg, &co, sizeof(co)))
 		return -EFAULT;
+	return 0;
+}
+
+/* ntos (docs/ntos.md): the object manager is in the kernel; what the last
+ * wineserver left, if one ran, goes */
+void win32k_ntos_register(void)
+{
+	mutex_lock(&win32k_lock);
+	if (object_manager)
+		w32_reset();
+	put_pid(object_manager);
+	object_manager = NULL;
+	ntos_object_manager = true;
+	mutex_unlock(&win32k_lock);
+	pr_info("win32k: USER served here, ntos is the object manager\n");
+}
+
+/* a callout of ntos, called under its executive lock (the order is the
+ * executive's lock, then win32k_lock) */
+long win32k_kernel_callout(struct win32k_callout *co)
+{
+	struct w32_call call;
+
+	mutex_lock(&win32k_lock);
+	w32_enter(&call, NULL);
+	w32_callout(co);
+	co->status = call.error;
+	w32_leave();
+	mutex_unlock(&win32k_lock);
 	return 0;
 }

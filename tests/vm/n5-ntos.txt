@@ -1,0 +1,10 @@
+# patch 0009 with its RCU fix and the worker's lock times (docs/ntos.md):
+# ntbench and the units that use names in another case (D:\n5.cmd) to
+# D:\nt\ntos5-*.txt; the lock's totals come in the serial log every half minute
+sleep 8
+key win-r
+sleep 2
+type cmd /c mkdir D:\nt & D:\n5.cmd
+key ret
+sleep 5
+shot n5-ntos

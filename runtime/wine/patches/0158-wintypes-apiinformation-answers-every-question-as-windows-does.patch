@@ -1,0 +1,202 @@
+From: Project Arctic
+Subject: wintypes: ApiInformation answers every question, as Windows does.
+
+IsTypePresent, IsApiContractPresent with a minor version and the questions
+about members of a type returned E_NOTIMPL. A program written with
+C++/WinRT throws on a failed call: Logitech G HUB's agent ended at its start
+with an unhandled winrt::hresult_not_implemented. A type is now present when
+its class is registered (WindowsRuntime\ActivatableClassId), a contract by
+its major version, as before; members cannot be known without the metadata
+and are answered as not present, as IsMethodPresent already was, so that a
+program takes the path it has for older systems. Verified: the agent runs.
+---
+diff --git a/dlls/wintypes/Makefile.in b/dlls/wintypes/Makefile.in
+index 3f6491e..c44e41b 100644
+--- a/dlls/wintypes/Makefile.in
++++ b/dlls/wintypes/Makefile.in
+@@ -1,6 +1,6 @@
+ MODULE    = wintypes.dll
+ IMPORTLIB = wintypes
+-IMPORTS   = combase
++IMPORTS   = combase advapi32
+ 
+ SOURCES = \
+ 	buffer.c \
+diff --git a/dlls/wintypes/main.c b/dlls/wintypes/main.c
+index c076a28..989ffe1 100644
+--- a/dlls/wintypes/main.c
++++ b/dlls/wintypes/main.c
+@@ -16,8 +16,11 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
++#include <stdio.h>
++
+ #include "initguid.h"
+ #include "private.h"
++#include "winreg.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(wintypes);
+ 
+@@ -142,103 +145,90 @@ static const struct IActivationFactoryVtbl api_information_statics_factory_vtbl
+ 
+ DEFINE_IINSPECTABLE(api_information_statics, IApiInformationStatics, struct api_information_statics, IActivationFactory_iface)
+ 
++/* Arctic: a type is present when the system can make it, as Windows answers
++ * from the metadata of the classes it registered. A program written with
++ * C++/WinRT throws on any failed call, and the E_NOTIMPL these returned ended
++ * Logitech G HUB's agent at its start. Members of types: the type's presence
++ * is all that is known here (no metadata), and the answer stays no, as for
++ * IsMethodPresent, so that a program takes the path for older systems. */
++static BOOLEAN is_type_present( HSTRING type_name )
++{
++    const WCHAR *name = WindowsGetStringRawBuffer( type_name, NULL );
++    WCHAR path[512];
++    HKEY key;
++
++    if (!name || !*name || wcslen( name ) > 400) return FALSE;
++    swprintf( path, ARRAY_SIZE(path), L"Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\%s", name );
++    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &key )) return FALSE;
++    RegCloseKey( key );
++    return TRUE;
++}
++
+ static HRESULT STDMETHODCALLTYPE api_information_statics_IsTypePresent(
+         IApiInformationStatics *iface, HSTRING type_name, BOOLEAN *value)
+ {
+-    FIXME("iface %p, type_name %s, value %p stub!\n", iface, debugstr_hstring(type_name), value);
++    TRACE("iface %p, type_name %s, value %p.\n", iface, debugstr_hstring(type_name), value);
+ 
+-    if (!type_name)
++    if (!type_name || !value)
+         return E_INVALIDARG;
+ 
+-    return E_NOTIMPL;
++    *value = is_type_present( type_name );
++    return S_OK;
+ }
+ 
+-static HRESULT STDMETHODCALLTYPE api_information_statics_IsMethodPresent(
+-        IApiInformationStatics *iface, HSTRING type_name, HSTRING method_name, BOOLEAN *value)
++static HRESULT member_present( HSTRING type_name, HSTRING member_name, BOOLEAN *value )
+ {
+-    FIXME("iface %p, type_name %s, method_name %s, value %p stub!\n", iface,
+-            debugstr_hstring(type_name), debugstr_hstring(method_name), value);
+-
+-    if (!type_name)
++    if (!type_name || !value)
+         return E_INVALIDARG;
+ 
++    FIXME("type %s, member %s: no metadata, answered as not present.\n",
++          debugstr_hstring(type_name), debugstr_hstring(member_name));
+     *value = FALSE;
+     return S_OK;
+ }
+ 
++static HRESULT STDMETHODCALLTYPE api_information_statics_IsMethodPresent(
++        IApiInformationStatics *iface, HSTRING type_name, HSTRING method_name, BOOLEAN *value)
++{
++    return member_present( type_name, method_name, value );
++}
++
+ static HRESULT STDMETHODCALLTYPE api_information_statics_IsMethodPresentWithArity(
+         IApiInformationStatics *iface, HSTRING type_name, HSTRING method_name,
+         UINT32 input_parameter_count, BOOLEAN *value)
+ {
+-    FIXME("iface %p, type_name %s, method_name %s, input_parameter_count %u, value %p stub!\n",
+-            iface, debugstr_hstring(type_name), debugstr_hstring(method_name),
+-            input_parameter_count, value);
+-
+-    if (!type_name)
+-        return E_INVALIDARG;
+-
+-    return E_NOTIMPL;
++    return member_present( type_name, method_name, value );
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE api_information_statics_IsEventPresent(
+         IApiInformationStatics *iface, HSTRING type_name, HSTRING event_name, BOOLEAN *value)
+ {
+-    FIXME("iface %p, type_name %s, event_name %s, value %p stub!\n", iface,
+-            debugstr_hstring(type_name), debugstr_hstring(event_name), value);
+-
+-    if (!type_name)
+-        return E_INVALIDARG;
+-
+-    return E_NOTIMPL;
++    return member_present( type_name, event_name, value );
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE api_information_statics_IsPropertyPresent(
+         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name, BOOLEAN *value)
+ {
+-    FIXME("iface %p, type_name %s, property_name %s, value %p stub!\n", iface,
+-            debugstr_hstring(type_name), debugstr_hstring(property_name), value);
+-
+-    if (!type_name)
+-        return E_INVALIDARG;
+-
+-    return E_NOTIMPL;
++    return member_present( type_name, property_name, value );
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE api_information_statics_IsReadOnlyPropertyPresent(
+         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name,
+         BOOLEAN *value)
+ {
+-    FIXME("iface %p, type_name %s, property_name %s, value %p stub!\n", iface,
+-            debugstr_hstring(type_name), debugstr_hstring(property_name), value);
+-
+-    if (!type_name)
+-        return E_INVALIDARG;
+-
+-    return E_NOTIMPL;
++    return member_present( type_name, property_name, value );
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE api_information_statics_IsWriteablePropertyPresent(
+         IApiInformationStatics *iface, HSTRING type_name, HSTRING property_name, BOOLEAN *value)
+ {
+-    FIXME("iface %p, type_name %s, property_name %s, value %p stub!\n", iface,
+-            debugstr_hstring(type_name), debugstr_hstring(property_name), value);
+-
+-    if (!type_name)
+-        return E_INVALIDARG;
+-
+-    return E_NOTIMPL;
++    return member_present( type_name, property_name, value );
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE api_information_statics_IsEnumNamedValuePresent(
+         IApiInformationStatics *iface, HSTRING enum_type_name, HSTRING value_name, BOOLEAN *value)
+ {
+-    FIXME("iface %p, enum_type_name %s, value_name %s, value %p stub!\n", iface,
+-            debugstr_hstring(enum_type_name), debugstr_hstring(value_name), value);
+-
+-    if (!enum_type_name)
+-        return E_INVALIDARG;
+-
+-    return E_NOTIMPL;
++    return member_present( enum_type_name, value_name, value );
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE api_information_statics_IsApiContractPresentByMajor(
+@@ -258,13 +248,15 @@ static HRESULT STDMETHODCALLTYPE api_information_statics_IsApiContractPresentByM
+         IApiInformationStatics *iface, HSTRING contract_name, UINT16 major_version,
+         UINT16 minor_version, BOOLEAN *value)
+ {
+-    FIXME("iface %p, contract_name %s, major_version %u, minor_version %u, value %p stub!\n", iface,
++    TRACE("iface %p, contract_name %s, major_version %u, minor_version %u, value %p.\n", iface,
+             debugstr_hstring(contract_name), major_version, minor_version, value);
+ 
+-    if (!contract_name)
++    if (!contract_name || !value)
+         return E_INVALIDARG;
+ 
+-    return E_NOTIMPL;
++    /* the minor versions of a contract come with its major one here */
++    *value = is_api_contract_present( contract_name, major_version );
++    return S_OK;
+ }
+ 
+ static const struct IApiInformationStaticsVtbl api_information_statics_vtbl =

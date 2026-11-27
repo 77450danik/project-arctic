@@ -36,7 +36,9 @@ parser.add_argument("commands", nargs="*")
 args = parser.parse_args()
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-cmd = [QEMU, "-accel", "whpx,kernel-irqchip=off", "-accel", "tcg", "-m", str(args.memory), "-smp", "4",
+# kernel-irqchip=on as vm-test.py: with off, WinHvPlatform on KVM stops the VM
+# at once ("WHPX: Unexpected VP exit code 5", 2026-11-22)
+cmd = [QEMU, "-accel", "whpx,kernel-irqchip=on", "-accel", "tcg", "-m", str(args.memory), "-smp", "4",
        "-drive", "if=none,id=cd,media=cdrom,format=raw,readonly=on,file=" + args.iso,
        "-device", "ide-cd,drive=cd,bootindex=1", "-display", "gtk", "-name", "Arctic",
        "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet", "-device", "usb-kbd",  # a USB keyboard, as real PCs have: the kernel repeats its keys

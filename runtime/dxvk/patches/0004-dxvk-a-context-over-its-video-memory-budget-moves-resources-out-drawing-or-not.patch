@@ -1,0 +1,250 @@
+From: Project Arctic
+Subject: dxvk: a context over its video memory budget moves resources out, drawing or not.
+
+Arctic gives a game in front the video memory of a discrete GPU as Windows
+does (Wine patch 0153): every other process sees a budget of a share of
+the heap, below what it may hold already. DXVK evicted only when an
+allocation of its own found the heap full, and ran its memory tasks only
+after a submission, so a program that draws nothing behind the game kept
+all it had. Now a device-local heap whose budget is below what is
+allocated turns eviction on and the tasks run every 100 ms instead of
+500; and on a GPU with video memory of its own an idle CS thread wakes up
+every 500 ms (20 ms while resources are queued) to run them and submits
+what moves the queued resources. Integrated GPUs are untouched.
+---
+diff --git a/src/dxvk/dxvk_cs.cpp b/src/dxvk/dxvk_cs.cpp
+index 06f6aa4..5f89b4c 100644
+--- a/src/dxvk/dxvk_cs.cpp
++++ b/src/dxvk/dxvk_cs.cpp
+@@ -198,8 +198,16 @@ namespace dxvk {
+     std::vector<DxvkCsQueuedChunk> ordered;
+     std::vector<DxvkCsQueuedChunk> highPrio;
+ 
++    // Arctic: on a GPU with video memory of its own, an idle thread still
++    // wakes up to keep the context's memory within its budget, which falls
++    // when a game comes in front; queued relocations need a submission.
++    bool idleMemoryTasks = m_device->needsIdleMemoryTasks();
++    bool relocationsQueued = false;
++
+     try {
+       while (!m_stopped.load()) {
++        bool idle = false;
++
+         { std::unique_lock<dxvk::mutex> lock(m_mutex);
+ 
+           auto pred = [this] { return
+@@ -211,20 +219,40 @@ namespace dxvk {
+           if (unlikely(!pred())) {
+             auto t0 = dxvk::high_resolution_clock::now();
+ 
+-            m_condOnAdd.wait(lock, [&] {
+-              return pred();
+-            });
++            if (idleMemoryTasks) {
++              auto timeout = std::chrono::milliseconds(relocationsQueued ? 20u : 500u);
++              idle = !m_condOnAdd.wait_for(lock, timeout, pred);
++            } else {
++              m_condOnAdd.wait(lock, [&] {
++                return pred();
++              });
++            }
+ 
+             auto t1 = dxvk::high_resolution_clock::now();
+             m_device->addStatCtr(DxvkStatCounter::CsIdleTicks, std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+           }
+ 
+-          std::swap(ordered, m_queueOrdered.queue);
+-          std::swap(highPrio, m_queueHighPrio.queue);
++          if (!idle) {
++            std::swap(ordered, m_queueOrdered.queue);
++            std::swap(highPrio, m_queueHighPrio.queue);
++
++            m_hasHighPrio.store(false);
++          }
++        }
++
++        if (unlikely(idle)) {
++          // Nothing queued in between: the context is ours here, as it is
++          // for any chunk. A submission carries the relocations out.
++          relocationsQueued = m_device->performIdleMemoryTasks();
+ 
+-          m_hasHighPrio.store(false);
++          if (relocationsQueued)
++            m_context->flushCommandList(nullptr, nullptr);
++
++          continue;
+         }
+ 
++        relocationsQueued = false;
++
+         size_t orderedIndex = 0u;
+         size_t highPrioIndex = 0u;
+ 
+diff --git a/src/dxvk/dxvk_device.h b/src/dxvk/dxvk_device.h
+index 55908f4..3ad292a 100644
+--- a/src/dxvk/dxvk_device.h
++++ b/src/dxvk/dxvk_device.h
+@@ -289,6 +289,24 @@ namespace dxvk {
+      */
+     bool isUnifiedMemoryArchitecture() const;
+ 
++    /**
++     * \brief Whether an idle CS thread does memory work
++     *
++     * Arctic: on a GPU with video memory of its own, see
++     * \c DxvkMemoryAllocator::performIdleTasks.
++     */
++    bool needsIdleMemoryTasks() {
++      return m_objects.memoryManager().hasDedicatedVideoMemory();
++    }
++
++    /**
++     * \brief Memory work of an idle CS thread
++     * \returns \c true if resources wait to be moved
++     */
++    bool performIdleMemoryTasks() {
++      return m_objects.memoryManager().performIdleTasks();
++    }
++
+     /**
+      * \brief Checks whether graphics pipeline libraries can be used
+      * \returns \c true if all required features are supported.
+diff --git a/src/dxvk/dxvk_memory.cpp b/src/dxvk/dxvk_memory.cpp
+index fc18044..8c5578d 100644
+--- a/src/dxvk/dxvk_memory.cpp
++++ b/src/dxvk/dxvk_memory.cpp
+@@ -753,6 +753,9 @@ namespace dxvk {
+       heap.properties = memInfo.memoryHeaps[i];
+       heap.enforceBudget = !m_device->isUnifiedMemoryArchitecture()
+         && m_device->properties().core.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
++
++      if (heap.enforceBudget && (heap.properties.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT))
++        m_hasDedicatedVram = true;
+     }
+ 
+     for (uint32_t i = 0; i < m_memTypeCount; i++) {
+@@ -2463,6 +2466,29 @@ namespace dxvk {
+         }
+       }
+     }
++
++    // Arctic: a budget can fall below what is already held, as it does for
++    // a process behind the game in front. Move resources out then, as when
++    // an allocation finds the heap full, and look again sooner.
++    bool overBudget = false;
++
++    for (uint32_t i = 0; i < m_memHeapCount; i++) {
++      auto& heap = m_memHeaps[i];
++
++      if (!heap.enforceBudget || !(heap.properties.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT))
++        continue;
++
++      if (getMemoryStats(i).memoryAllocated > heap.memoryBudget) {
++        heap.enableEviction = true;
++        overBudget = true;
++      }
++    }
++
++    if (m_overBudget.exchange(overBudget) != overBudget) {
++      Logger::info(str::format("DxvkMemoryAllocator: ", overBudget
++        ? "over the video memory budget, moving resources to system memory"
++        : "within the video memory budget again"));
++    }
+   }
+ 
+ 
+@@ -2729,24 +2755,36 @@ namespace dxvk {
+ 
+ 
+   void DxvkMemoryAllocator::performTimedTasks() {
+-    static constexpr auto Interval = std::chrono::milliseconds(500u);
++    // Over budget, resources move out a chunk per run: run more often then
++    auto interval = std::chrono::milliseconds(m_overBudget.load() ? 100u : 500u);
+ 
+-    // This function shouldn't be called concurrently, so checking and
+-    // updating the deadline is fine without taking the global lock
+-    auto currentTime = high_resolution_clock::now();
+-
+-    if (m_taskDeadline != high_resolution_clock::time_point()
+-     && m_taskDeadline > currentTime)
++    // The submission thread and an idle CS thread both call this: one at a
++    // time, so that eviction keeps an interval between demoting a resource
++    // and moving it out, and the deadline is not updated concurrently
++    if (m_tasksRunning.exchange(true, std::memory_order_acquire))
+       return;
+ 
++    auto currentTime = high_resolution_clock::now();
++
+     if (m_taskDeadline == high_resolution_clock::time_point()
+-     || m_taskDeadline + Interval <= currentTime)
+-      m_taskDeadline = currentTime + Interval;
+-    else
+-      m_taskDeadline = m_taskDeadline + Interval;
++     || m_taskDeadline <= currentTime) {
++      if (m_taskDeadline == high_resolution_clock::time_point()
++       || m_taskDeadline + interval <= currentTime)
++        m_taskDeadline = currentTime + interval;
++      else
++        m_taskDeadline = m_taskDeadline + interval;
+ 
+-    std::unique_lock lock(m_mutex);
+-    performTimedTasksLocked(currentTime);
++      std::unique_lock lock(m_mutex);
++      performTimedTasksLocked(currentTime);
++    }
++
++    m_tasksRunning.store(false, std::memory_order_release);
++  }
++
++
++  bool DxvkMemoryAllocator::performIdleTasks() {
++    performTimedTasks();
++    return !m_relocations.empty();
+   }
+ 
+ 
+diff --git a/src/dxvk/dxvk_memory.h b/src/dxvk/dxvk_memory.h
+index a8e4486..ace76a8 100644
+--- a/src/dxvk/dxvk_memory.h
++++ b/src/dxvk/dxvk_memory.h
+@@ -1364,6 +1364,27 @@ namespace dxvk {
+       return m_relocations.poll(count, size);
+     }
+ 
++    /**
++     * \brief Memory work while the CS thread is idle
++     *
++     * Arctic: the timed tasks otherwise run only after a submission, so
++     * a process that draws nothing would never see its budget fall below
++     * what it holds (a game came in front, see win32u's vulkan.c) and
++     * would never move its resources out of video memory.
++     * \returns \c true if resources are queued up for relocation,
++     *    which the next submission carries out
++     */
++    bool performIdleTasks();
++
++    /**
++     * \brief Whether the device has video memory of its own
++     *
++     * Only then is a budget enforced and idle work worth doing.
++     */
++    bool hasDedicatedVideoMemory() const {
++      return m_hasDedicatedVram;
++    }
++
+   private:
+ 
+     DxvkDevice* m_device;
+@@ -1389,8 +1410,12 @@ namespace dxvk {
+ 
+     uint64_t            m_nextCookie = 0u;
+ 
++    bool                m_hasDedicatedVram = false;
++
+     alignas(CACHE_LINE_SIZE)
+     high_resolution_clock::time_point m_taskDeadline = { };
++    std::atomic<bool>   m_tasksRunning = { false };
++    std::atomic<bool>   m_overBudget = { false };
+     std::array<DxvkMemoryStats, VK_MAX_MEMORY_HEAPS> m_adapterHeapStats = { };
+ 
+     alignas(CACHE_LINE_SIZE)

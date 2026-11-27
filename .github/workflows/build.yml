@@ -192,6 +192,9 @@ jobs:
       # Direct3D 12: the vkd3d-proton tag with Arctic's patches (widl from the Wine job)
       - name: Direct3D 12 (vkd3d-proton)
         run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/build-vkd3d-proton.sh
+      # Direct3D 8-11 and DXGI: the DXVK tag with Arctic's patches (video decoding)
+      - name: Direct3D 8-11 (DXVK)
+        run: docker run --rm -v "$PWD:/work" archlinux:latest bash /work/ci/build-dxvk.sh
       # the build's number and date for the About dialog: the container has no git
       - name: Host root filesystem and NT prefix
         run: |
@@ -227,18 +230,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # the stick's image is bigger than GitHub takes; Rufus and Etcher write the .xz as it is
+          # the stick's image is bigger than GitHub takes; Rufus and Etcher write the .xz as it is.
+          # GitHub Releases limits each asset to 2 GiB: any image at or above that is split into 1900 MiB parts.
           xz -T0 -6 -k -f out/arctic-usb.img
+          assets=()
+          split_note=""
           for f in out/arctic.iso out/arctic-usb.img.xz; do
-            [ "$(stat -c %s "$f")" -lt 2147483648 ] || { echo "$f is over the 2 GiB release asset limit"; exit 1; }
+            if [ "$(stat -c %s "$f")" -lt 2147483648 ]; then
+              assets+=("$f")
+            else
+              rm -f "$f".[0-9][0-9][0-9]
+              split -b 1900M -d -a 3 "$f" "$f."
+              for part in "$f".[0-9][0-9][0-9]; do
+                [ "$(stat -c %s "$part")" -lt 2147483648 ] || { echo "$part is over the 2 GiB release asset limit"; exit 1; }
+                assets+=("$part")
+              done
+              split_note="Assets larger than 2 GiB are split into .000/.001/... parts: join them with 'copy /b arctic.iso.* arctic.iso' (Windows) or 'cat arctic.iso.* > arctic.iso' (Linux), or run tools/get-iso.ps1."
+            fi
           done
           notes="Commit ${GITHUB_SHA::7}. Kernel $(cat out/kernel/release), $(cat out/wine/version).
 
           arctic-usb.img.xz goes to a stick as it is (Rufus, balenaEtcher, or xzcat | dd) and boots both from UEFI and from BIOS/CSM. The stick keeps what is written to it: C: is a partition on it, and on the first start it grows over the whole stick. Hold a key during the first second for the start that saves nothing. arctic.iso is for discs and virtual machines and saves nothing.
 
-          Secure Boot may stay on. The first time on each PC, shim opens MokManager: Enroll key from disk, ARCTIC.cer, Continue, Yes, Reboot (docs/boot.md)."
+          Secure Boot may stay on. The first time on each PC, shim opens MokManager: Enroll key from disk, ARCTIC.cer, Continue, Yes, Reboot (docs/boot.md).${split_note:+
+
+          $split_note}"
           gh release delete dev --cleanup-tag --yes || true
-          gh release create dev out/arctic.iso out/arctic-usb.img.xz --prerelease --target "$GITHUB_SHA" \
+          gh release create dev "${assets[@]}" --prerelease --target "$GITHUB_SHA" \
             --title "Arctic dev ${GITHUB_SHA::7}" --notes "$notes"
 
   # Old caches go, so that the compiler caches do not push the builds out of

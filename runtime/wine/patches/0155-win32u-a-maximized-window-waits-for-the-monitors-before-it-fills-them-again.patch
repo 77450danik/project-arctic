@@ -1,0 +1,54 @@
+From: Project Arctic
+Subject: win32u: a maximized window waits for the monitors before it fills them again.
+
+When the display changes (a game's mode, its end), every maximized window
+is told to fill its monitor's work area again (ARCTIC_SW_REMAXIMIZE, patch
+0112), each in its own thread. The display driver counts the monitors anew
+on each change, and for a moment there are none: a window that came to it
+then got an empty work area and the smallest size a frame has, 136x33 at
+the top left, and stayed so, still maximized. After CS2 the IDE was gone
+from the screen that way. Now a window waits for its place to be known
+again (a work area, and a maximized size at least half of it), 10 ms at a
+time for up to half a second, and leaves the window alone if it never is.
+---
+--- a/dlls/win32u/window.c	2026-11-23 19:23:48.340115400 +0100
++++ b/dlls/win32u/window.c	2026-11-23 19:23:57.747115100 +0100
+@@ -5046,12 +5046,38 @@
+                         info.ptMaxSize.y, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED );
+ }
+ 
++/* Arctic: where a maximized window goes is known only while the screen has
++ * its monitors: the display driver counts them again on each change of mode,
++ * and in between there is no monitor and no work area. A window remaximized
++ * then took the smallest size a frame has (136x33 at the top left, under
++ * the taskbar) and kept it: after CS2 changed the mode, the maximized IDE was
++ * out of sight, still maximized, and its taskbar button only minimized and
++ * restored the strip (2026-11-23). */
++static BOOL maximized_place_known( HWND hwnd, const MINMAXINFO *info )
++{
++    RECT rc_max;
++
++    if (!get_maximized_rect( hwnd, &rc_max )) return FALSE;
++    if (rc_max.right - rc_max.left <= 0 || rc_max.bottom - rc_max.top <= 0) return FALSE;
++    /* the work area is there, but the desktop the default comes from not yet */
++    return info->ptMaxSize.x * 2 >= rc_max.right - rc_max.left && info->ptMaxSize.y * 2 >= rc_max.bottom - rc_max.top;
++}
++
+ /* Arctic: ... and only if it is somewhere else now */
+ static void remaximize_if_moved( HWND hwnd )
+ {
+     MINMAXINFO info = get_min_max_info( hwnd );
+     RECT rect;
+ 
++    /* the monitors are being counted again: a moment later, up to half a second */
++    for (int tries = 0; !maximized_place_known( hwnd, &info ); tries++)
++    {
++        LARGE_INTEGER timeout = { .QuadPart = -100000 };   /* 10 ms */
++
++        if (tries == 50) return;   /* no monitor for good: the window stays as it is */
++        NtDelayExecution( FALSE, &timeout );
++        info = get_min_max_info( hwnd );
++    }
+     get_window_rect( hwnd, &rect, get_thread_dpi() );
+     if (rect.left == info.ptMaxPosition.x && rect.top == info.ptMaxPosition.y &&
+         rect.right - rect.left == info.ptMaxSize.x && rect.bottom - rect.top == info.ptMaxSize.y)

@@ -1,0 +1,2095 @@
+From: Project Arctic
+Subject: win32u: video memory is managed as Windows does: the program in front gets it.
+
+A browser open for hours held 1.4 GB of a 2 GB GeForce, and a game started
+next got 621 MB of it: its textures went over the bus and it ran at half
+its frame rate, bound by the GPU. Windows (VidMm) pages out the video
+memory of the processes behind the foreground one once that one runs short
+and pages it back in later. Linux drivers do not page the video memory of a
+Vulkan program (NVIDIA has no VK_EXT_pageable_device_local_memory nor
+memory priorities; amdgpu and xe page by recent use only). Now win32u does,
+on any discrete GPU:
+
+- Claims. The process that owns the foreground window, when a device-local
+  heap is nearly full for it (less than a sixteenth of the heap left in its
+  budget) or an allocation of its own finds no room, claims video memory in
+  a page every process shares (/dev/shm/arctic-vram) and renews the claim
+  on each present and budget query while it stays in front; a claim not
+  renewed for two seconds is over. A program in front that fits takes
+  nothing from anyone.
+- Budgets. Behind a claim, a process sees a share of the heap as its budget
+  (VK_EXT_memory_budget: a sixteenth, at least 64 MB; DXGI's budget and its
+  change events are built on it in DXVK and vkd3d), and a device-local
+  allocation past that share goes to system memory the way VRAM that is
+  full does (0135). vkGetPhysicalDeviceMemoryProperties2 goes through
+  win32u for it.
+- Paging. In a 64-bit process, images of 64 KB and more and buffers of 1 MB
+  and more are created with SPARSE_BINDING when that changes neither the
+  memory types they accept nor anything in their chain, and win32u binds
+  them with vkQueueBindSparse on a queue it adds to the device; their GPU
+  addresses stay when the memory behind them moves (no cost measured on a
+  GTX 1050: blits and clears equal). A thread per device moves the memory
+  objects of a process behind a claim to system memory, one allocation per
+  resource, copying their bytes on the GPU (render targets and depth
+  buffers with fast clears verified bit for bit both ways) and binding them
+  there, down to its share; they come back to VRAM when there is room and
+  no claim. The program's submissions wait meanwhile. A moved memory object
+  is a spilled one: what is bound to it later gets memory of its own.
+- Only memory whose every use win32u sees moves: something bound to it the
+  ordinary way, sharing (import, export), host-visible, lazily allocated,
+  protected or capture-replay memory stays; the thunks hand memory to the
+  driver through pinned_host_memory, which pins it (and brings it back
+  first): the program's own sparse binds, video sessions, priorities,
+  names. vkDestroyImage and vkDestroyBuffer go through win32u.
+
+Integrated GPUs and WoW64 processes are left alone.
+C:\ProgramData\Arctic\no-vidmm turns paging off for programs started
+after. Log: "vulkan: process ... in front is short of video memory", "...
+MB of video memory to system memory, ... MB back".
+---
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 30c6150..982d388 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -26,11 +26,14 @@
+ 
+ #include <dlfcn.h>
+ #include <errno.h>
++#include <fcntl.h>
+ #include <limits.h>
+ #include <pthread.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <sys/mman.h>
+ #include <sys/stat.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include "ntstatus.h"
+@@ -142,8 +145,26 @@ struct device_memory
+     pthread_mutex_t spill_lock;
+     UINT spill_count, spill_capacity;
+     VkDeviceMemory *spills;
++    BOOL spill_lock_ready;
++
++    /* video memory management (see vidmm): may move while every use is seen */
++    struct vidmm *vm;
++    struct list vidmm_entry;      /* in vm->memories while pageable */
++    struct list resources;        /* sparse resources bound to it */
++    BOOL pageable;
++    BOOL moved;                   /* out of VRAM: spilled by vidmm */
++    uint32_t type_index;          /* the device-local type it was asked with */
++    VkMemoryAllocateFlags alloc_flags;
++    uint32_t device_mask;
+ };
+ 
++/* video memory management, see vidmm below */
++static BOOL vidmm_choose_queue( struct vulkan_physical_device *physical_device, const VkDeviceCreateInfo *info,
++                                uint32_t *family, uint32_t *index );
++static VkResult vidmm_add_queue( VkDeviceCreateInfo *info, struct mempool *pool, uint32_t family );
++static void vidmm_create( struct vulkan_device *device, uint32_t family, uint32_t index );
++static void vidmm_destroy( struct vulkan_device *device );
++
+ static inline struct device_memory *device_memory_from_handle( VkDeviceMemory handle )
+ {
+     struct vulkan_device_memory *obj = vulkan_device_memory_from_handle( handle );
+@@ -490,10 +511,14 @@ static VkResult init_physical_device( struct vulkan_physical_device *physical_de
+     uint32_t count;
+     VkResult res;
+ 
++    VkPhysicalDeviceProperties device_properties;
++
+     vulkan_object_init_ptr( &physical_device->obj, (UINT_PTR)host_physical_device, &client_physical_device->obj );
+     physical_device->instance = instance;
+ 
+     instance->p_vkGetPhysicalDeviceMemoryProperties( host_physical_device, &physical_device->memory_properties );
++    instance->p_vkGetPhysicalDeviceProperties( host_physical_device, &device_properties );
++    physical_device->discrete = device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+ 
+     if ((res = instance->p_vkEnumerateDeviceExtensionProperties( host_physical_device, NULL, &count, NULL ))) return res;
+     if (!(properties = calloc( count, sizeof(*properties) ))) return res;
+@@ -782,9 +807,12 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device,
+     struct vulkan_physical_device *physical_device = vulkan_physical_device_from_handle( client_physical_device );
+     struct vulkan_instance *instance = physical_device->instance;
+     VkDevice host_device, client_device = *client_device_ptr;
++    const VkDeviceQueueCreateInfo *queue_infos = create_info->pQueueCreateInfos;
++    uint32_t queue_info_count = create_info->queueCreateInfoCount, vidmm_family, vidmm_index;
+     struct vulkan_device *device;
+     unsigned int queue_count, i;
+     struct mempool pool = {0};
++    BOOL vidmm = FALSE;
+     VkResult res;
+ 
+     if (TRACE_ON(vulkan))
+@@ -803,7 +831,19 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device,
+     device->extensions = client_device->extensions;
+ 
+     if ((res = convert_device_create_info( physical_device, create_info, &pool, device ))) goto failed;
+-    if ((res = instance->p_vkCreateDevice( physical_device->host.physical_device, create_info, NULL /* allocator */, &host_device ))) goto failed;
++    /* a queue of win32u's own and sparse binding for its video memory management;
++     * the program's queues stay what it asked for */
++    if (vidmm_choose_queue( physical_device, create_info, &vidmm_family, &vidmm_index ) &&
++        !vidmm_add_queue( create_info, &pool, vidmm_family ))
++        vidmm = TRUE;
++    if ((res = instance->p_vkCreateDevice( physical_device->host.physical_device, create_info, NULL /* allocator */, &host_device )) && vidmm)
++    {
++        create_info->pQueueCreateInfos = queue_infos;
++        create_info->queueCreateInfoCount = queue_info_count;
++        vidmm = FALSE;
++        res = instance->p_vkCreateDevice( physical_device->host.physical_device, create_info, NULL /* allocator */, &host_device );
++    }
++    if (res) goto failed;
+ 
+     vulkan_object_init_ptr( &device->obj, (UINT_PTR)host_device, &client_device->obj );
+     device->physical_device = physical_device;
+@@ -814,7 +854,8 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device,
+     ALL_VK_DEVICE_FUNCS
+ #undef USE_VK_FUNC
+ 
+-    for (i = 0; i < create_info->queueCreateInfoCount; i++) init_device_queues( device, create_info->pQueueCreateInfos + i, client_device );
++    for (i = 0; i < queue_info_count; i++) init_device_queues( device, queue_infos + i, client_device );
++    if (vidmm) vidmm_create( device, vidmm_family, vidmm_index );
+ 
+     TRACE( "Created device %p, host_device %p.\n", device, device->host.device );
+     for (struct vulkan_queue *queue = device->queues; queue < device->queues + device->queue_count; queue++)
+@@ -839,6 +880,7 @@ static void win32u_vkDestroyDevice( VkDevice client_device, const VkAllocationCa
+ 
+     if (!device) return;
+ 
++    vidmm_destroy( device );
+     device->p_vkDestroyDevice( device->host.device, NULL /* pAllocator */ );
+     for (i = 0; i < device->queue_count; i++)
+         instance->p_remove_object( instance, &device->queues[i].obj );
+@@ -944,6 +986,991 @@ static BOOL vram_tight( struct vulkan_device *device, uint32_t type_index, VkDev
+     return budget.heapUsage[heap] + size + props->memoryHeaps[heap].size / 4 > budget.heapBudget[heap];
+ }
+ 
++/* Video memory goes to the program in front when it needs it, as Windows
++ * gives it (docs/games.md). Windows (VidMm) pages out the video memory of
++ * the processes behind the foreground one once that one runs short. Here the
++ * process that owns the foreground window, when a device-local heap of a
++ * discrete GPU is nearly full for it (less than a sixteenth of the heap left
++ * in its budget) or an allocation of its own finds no room, claims video
++ * memory in a page every process shares (/dev/shm/arctic-vram), and renews
++ * the claim on each present and budget query while it stays in front; a
++ * claim not renewed for two seconds is over. Behind a claim, a process sees
++ * a share of the heap as its budget (VK_EXT_memory_budget, and DXGI's budget
++ * built on it), what it allocates beyond that share goes to system memory as
++ * when VRAM is full, and what it holds is paged out (vidmm, below). A program
++ * in front that fits takes nothing from anyone. Integrated GPUs are left
++ * alone: their memory is the system's anyway. */
++#define VRAM_SHARED_FILE "/dev/shm/arctic-vram"
++#define CLAIM_LIFETIME 2000  /* ms */
++
++struct vram_shared
++{
++    LONG claimed_by;  /* process in front that ran short, or 0 */
++    LONG claimed_at;  /* when it last said so, ms of CLOCK_MONOTONIC */
++};
++
++static LONG now_ms(void)
++{
++    struct timespec ts;
++    clock_gettime( CLOCK_MONOTONIC, &ts );
++    return (LONG)((ULONGLONG)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
++}
++
++static struct vram_shared *vram_shared_page;
++static LONG vram_shared_tried;
++
++static struct vram_shared *get_vram_shared(void)
++{
++    struct vram_shared *ret;
++    int fd;
++
++    if ((ret = ReadPointerAcquire( (void **)&vram_shared_page )) || ReadAcquire( &vram_shared_tried )) return ret;
++    if ((fd = open( VRAM_SHARED_FILE, O_RDWR | O_CREAT | O_CLOEXEC, 0666 )) >= 0)
++    {
++        fchmod( fd, 0666 );  /* whatever the umask: every process of every user */
++        if (!ftruncate( fd, 4096 ) &&
++            (ret = mmap( NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 )) == MAP_FAILED)
++            ret = NULL;
++        close( fd );
++    }
++    if (!ret) fprintf( stderr, "vulkan: no %s: video memory is not shared out\n", VRAM_SHARED_FILE );
++    if (ret && InterlockedCompareExchangePointer( (void **)&vram_shared_page, ret, NULL )) munmap( ret, 4096 );
++    WriteRelease( &vram_shared_tried, 1 );
++    return ReadPointerAcquire( (void **)&vram_shared_page );
++}
++
++/* this process (first asked on a thread of the program, which has a TEB) */
++static DWORD process_self(void)
++{
++    static LONG self;
++    if (!ReadAcquire( &self )) WriteRelease( &self, GetCurrentProcessId() );
++    return ReadAcquire( &self );
++}
++
++/* the process that owns the foreground window, looked up at most every 100 ms;
++ * only on threads of the program */
++static DWORD foreground_process(void)
++{
++    static LONG pid, checked;
++    LONG now = now_ms();
++    DWORD process = 0;
++    HWND hwnd;
++
++    if (ReadAcquire( &checked ) && now - ReadAcquire( &checked ) < 100) return ReadAcquire( &pid );
++    if ((hwnd = NtUserGetForegroundWindow())) NtUserGetWindowThread( hwnd, &process );
++    WriteRelease( &pid, process );
++    WriteRelease( &checked, now ? now : 1 );
++    return process;
++}
++
++/* whether another process in front has a live claim; any thread */
++static BOOL claim_active_for_other( DWORD self )
++{
++    struct vram_shared *shared = ReadPointerAcquire( (void **)&vram_shared_page );
++    LONG claimed;
++
++    if (!shared || !(claimed = ReadAcquire( &shared->claimed_by )) || claimed == self) return FALSE;
++    return now_ms() - ReadAcquire( &shared->claimed_at ) < CLAIM_LIFETIME;
++}
++
++/* the same on a thread of the program, with a line in the log when it changes */
++static BOOL behind_a_claim(void)
++{
++    static LONG logged;
++    DWORD self = process_self();
++    BOOL behind;
++
++    get_vram_shared();
++    behind = claim_active_for_other( self );
++    if (InterlockedExchange( &logged, behind ) != behind)
++    {
++        if (behind) MESSAGE( "vulkan: the program in front needs video memory: process %04x keeps a share\n", (int)self );
++        else MESSAGE( "vulkan: process %04x has its whole video memory budget again\n", (int)self );
++    }
++    return behind;
++}
++
++/* the process in front renews its claim; one no longer in front gives it up */
++static void renew_claim(void)
++{
++    struct vram_shared *shared = get_vram_shared();
++    DWORD self;
++
++    if (!shared || ReadAcquire( &shared->claimed_by ) != (self = process_self())) return;
++    if (foreground_process() == self) WriteRelease( &shared->claimed_at, now_ms() );
++    else InterlockedCompareExchange( &shared->claimed_by, 0, self );
++}
++
++/* The process in front notes that a device-local heap is short for it: its
++ * budget has less than a sixteenth of the heap left, or (size) does not fit. */
++static void claim_if_short( struct vulkan_physical_device *physical_device, uint32_t heap,
++                            const VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget, VkDeviceSize size )
++{
++    const VkMemoryHeap *props = &physical_device->memory_properties.memoryHeaps[heap];
++    struct vram_shared *shared;
++    DWORD self;
++
++    if (!physical_device->discrete || !(props->flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) return;
++    if (budget && budget->heapBudget[heap] &&
++        budget->heapUsage[heap] + size + props->size / 16 < budget->heapBudget[heap]) return;
++    if (!(shared = get_vram_shared())) return;
++    if ((self = process_self()) != foreground_process()) return;
++    WriteRelease( &shared->claimed_at, now_ms() );
++    if (InterlockedExchange( &shared->claimed_by, self ) != self)
++        MESSAGE( "vulkan: process %04x in front is short of video memory: the processes behind it give theirs back\n",
++                 (int)self );
++}
++
++/* what a process behind keeps of a heap: enough for its windows */
++static VkDeviceSize background_share( const VkMemoryHeap *heap )
++{
++    return max( heap->size / 16, (VkDeviceSize)64 << 20 );
++}
++
++/* Whether a device-local allocation of a process behind one that ran short
++ * would take it past its share: then it goes to system memory. In the
++ * process in front, a heap found short is claimed. */
++static BOOL front_takes_vram( struct vulkan_device *device, uint32_t type_index, VkDeviceSize size )
++{
++    struct vulkan_physical_device *physical_device = device->physical_device;
++    const VkPhysicalDeviceMemoryProperties *props = &physical_device->memory_properties;
++    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
++    VkPhysicalDeviceMemoryProperties2 props2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &budget};
++    uint32_t heap = props->memoryTypes[type_index].heapIndex;
++
++    if (!physical_device->discrete) return FALSE;
++    if (!(props->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) return FALSE;
++    if (!physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2) return FALSE;
++    physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2( physical_device->host.physical_device, &props2 );
++    if (!budget.heapBudget[heap]) return FALSE;  /* no VK_EXT_memory_budget: what it holds is not known */
++    if (!behind_a_claim())
++    {
++        claim_if_short( physical_device, heap, &budget, size );
++        return FALSE;
++    }
++    return budget.heapUsage[heap] + size > background_share( &props->memoryHeaps[heap] );
++}
++
++static void *find_vk_struct( void *s, VkStructureType t );
++
++/* Video memory management as Windows has it (VidMm), docs/games.md.
++ *
++ * When the program in front runs short of video memory (claim_if_short),
++ * Windows pages out the video memory of the programs behind it and pages it
++ * back in when it is free again. Linux drivers cannot page the video memory
++ * of a Vulkan program (NVIDIA: none of it; amdgpu, xe: by recent use only),
++ * so win32u does it: on a discrete GPU, the images and large buffers of a
++ * 64-bit process are created with VK_*_CREATE_SPARSE_BINDING_BIT and bound
++ * with vkQueueBindSparse on a queue of win32u's own, so that their GPU
++ * addresses stay when the memory behind them moves. A thread per device moves
++ * the memory objects of a process behind one that ran short to system memory,
++ * one allocation per resource (system memory types differ per kind of
++ * resource), copying their bytes on the GPU and binding them there; they come
++ * back to VRAM when nobody is short any more. Only a memory object whose
++ * every use win32u has seen moves: a resource bound to it the ordinary way,
++ * or its handle given to the driver by the thunks (pinned_host_memory: the
++ * program's own sparse binds, video sessions, priorities...), pins it in
++ * VRAM. A moved memory object is a spilled one (see win32u_vkAllocateMemory):
++ * what is bound to it meanwhile gets memory of its own.
++ * C:\ProgramData\Arctic\no-vidmm (or ARCTIC_VIDMM=0 in the environment) turns
++ * it off for programs started after. */
++
++struct vidmm_resource
++{
++    struct rb_entry rb;            /* in vidmm.resources, by host handle */
++    struct list entry;             /* in the memory object's list */
++    UINT64 handle;                 /* host VkImage or VkBuffer */
++    BOOL image;
++    VkDeviceSize size;             /* what a sparse bind of it covers */
++    uint32_t type_bits;
++    struct device_memory *memory;  /* bound to, or NULL */
++    VkDeviceSize offset;           /* in it */
++    VkDeviceMemory backing;        /* memory of its own while the object is spilled */
++};
++
++struct vidmm
++{
++    struct vulkan_device *device;
++    DWORD self;                    /* process id: the thread has no TEB */
++    pthread_mutex_t lock;          /* everything below and the queue */
++    pthread_rwlock_t submits;      /* the program's submissions: shared; moving memory: exclusive */
++    VkQueue queue;                 /* win32u's own: binds and copies */
++    VkCommandPool pool;
++    VkCommandBuffer cmd;
++    VkFence fence;
++    struct list memories;          /* pageable memory objects */
++    struct rb_tree resources;
++    pthread_t thread;
++    pthread_cond_t wake;
++    BOOL stop;
++    VkDeviceSize moved_out, moved_in;  /* since the last line in the log */
++};
++
++static int vidmm_resource_compare( const void *key, const struct rb_entry *entry )
++{
++    const struct vidmm_resource *res = RB_ENTRY_VALUE( entry, struct vidmm_resource, rb );
++    UINT64 handle = *(const UINT64 *)key;
++    return handle < res->handle ? -1 : handle > res->handle;
++}
++
++static struct vidmm_resource *vidmm_find( struct vidmm *vm, UINT64 handle )
++{
++    struct rb_entry *entry = rb_get( &vm->resources, &handle );
++    return entry ? RB_ENTRY_VALUE( entry, struct vidmm_resource, rb ) : NULL;
++}
++
++static BOOL vidmm_is_sparse( struct vidmm *vm, UINT64 handle )
++{
++    BOOL ret;
++    if (!vm || !handle) return FALSE;
++    pthread_mutex_lock( &vm->lock );
++    ret = vidmm_find( vm, handle ) != NULL;
++    pthread_mutex_unlock( &vm->lock );
++    return ret;
++}
++
++/* the queue win32u adds to a device for itself: a family that binds sparse
++ * memory and copies, with a queue the program did not take */
++static BOOL vidmm_choose_queue( struct vulkan_physical_device *physical_device, const VkDeviceCreateInfo *info,
++                                uint32_t *family, uint32_t *index )
++{
++    struct vulkan_instance *instance = physical_device->instance;
++    VkQueueFamilyProperties *props;
++    VkPhysicalDeviceFeatures features;
++    const char *env = getenv( "ARCTIC_VIDMM" ), *prefix = getenv( "NTPREFIX" );
++    uint32_t count = 0, f, i;
++    BOOL found = FALSE;
++    char off[PATH_MAX];
++
++    if (!physical_device->discrete || zero_bits || (env && *env == '0')) return FALSE;
++    /* C:\ProgramData\Arctic\no-vidmm turns it off for programs started after */
++    if (!prefix) prefix = getenv( "WINEPREFIX" );
++    if (prefix && snprintf( off, sizeof(off), "%s/dosdevices/c:/ProgramData/Arctic/no-vidmm", prefix ) < sizeof(off) &&
++        !access( off, F_OK ))
++        return FALSE;
++    instance->p_vkGetPhysicalDeviceFeatures( physical_device->host.physical_device, &features );
++    if (!features.sparseBinding) return FALSE;
++    instance->p_vkGetPhysicalDeviceQueueFamilyProperties( physical_device->host.physical_device, &count, NULL );
++    if (!count || !(props = calloc( count, sizeof(*props) ))) return FALSE;
++    instance->p_vkGetPhysicalDeviceQueueFamilyProperties( physical_device->host.physical_device, &count, props );
++
++    for (f = 0; f < count && !found; f++)
++    {
++        uint32_t used = 0;
++        BOOL flagged = FALSE;
++
++        if (!(props[f].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT)) continue;
++        if (!(props[f].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))) continue;
++        for (i = 0; i < info->queueCreateInfoCount; i++)
++        {
++            if (info->pQueueCreateInfos[i].queueFamilyIndex != f) continue;
++            used += info->pQueueCreateInfos[i].queueCount;
++            if (info->pQueueCreateInfos[i].flags) flagged = TRUE;
++        }
++        if (flagged || used >= props[f].queueCount) continue;
++        *family = f;
++        *index = used;
++        found = TRUE;
++    }
++    free( props );
++    return found;
++}
++
++/* the create info of the device with win32u's queue and sparse binding in it */
++static VkResult vidmm_add_queue( VkDeviceCreateInfo *info, struct mempool *pool, uint32_t family )
++{
++    static const float priority[64];  /* all 0: paging is background work */
++    VkDeviceQueueCreateInfo *queues;
++    VkPhysicalDeviceFeatures2 *features2;
++    VkPhysicalDeviceFeatures *features;
++    uint32_t i, count = info->queueCreateInfoCount;
++
++    if (!(queues = mem_alloc( pool, (count + 1) * sizeof(*queues) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    memcpy( queues, info->pQueueCreateInfos, count * sizeof(*queues) );
++    for (i = 0; i < count; i++) if (queues[i].queueFamilyIndex == family) break;
++    if (i < count)
++    {
++        float *priorities;
++        if (queues[i].queueCount >= ARRAY_SIZE(priority)) return VK_ERROR_INITIALIZATION_FAILED;
++        if (!(priorities = mem_alloc( pool, (queues[i].queueCount + 1) * sizeof(*priorities) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++        memcpy( priorities, queues[i].pQueuePriorities, queues[i].queueCount * sizeof(*priorities) );
++        priorities[queues[i].queueCount] = 0.0f;
++        queues[i].pQueuePriorities = priorities;
++        queues[i].queueCount++;
++    }
++    else
++    {
++        memset( &queues[count], 0, sizeof(queues[count]) );
++        queues[count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
++        queues[count].queueFamilyIndex = family;
++        queues[count].queueCount = 1;
++        queues[count].pQueuePriorities = priority;
++        count++;
++    }
++    info->pQueueCreateInfos = queues;
++    info->queueCreateInfoCount = count;
++
++    if ((features2 = find_vk_struct( info, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 )))
++        features2->features.sparseBinding = VK_TRUE;
++    else
++    {
++        if (!(features = mem_alloc( pool, sizeof(*features) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++        if (info->pEnabledFeatures) *features = *info->pEnabledFeatures;
++        else memset( features, 0, sizeof(*features) );
++        features->sparseBinding = VK_TRUE;
++        info->pEnabledFeatures = features;
++    }
++    return VK_SUCCESS;
++}
++
++static void *vidmm_thread( void *arg );
++
++static void vidmm_create( struct vulkan_device *device, uint32_t family, uint32_t index )
++{
++    VkCommandPoolCreateInfo pool_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
++    VkCommandBufferAllocateInfo cmd_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
++    VkFenceCreateInfo fence_info = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
++    struct vidmm *vm;
++
++    if (!(vm = calloc( 1, sizeof(*vm) ))) return;
++    vm->device = device;
++    vm->self = process_self();
++    get_vram_shared();  /* opened here, on a thread of the program */
++    pthread_mutex_init( &vm->lock, NULL );
++    {
++        /* moving memory must not wait behind a stream of submissions */
++        pthread_rwlockattr_t attr;
++        pthread_rwlockattr_init( &attr );
++        pthread_rwlockattr_setkind_np( &attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP );
++        pthread_rwlock_init( &vm->submits, &attr );
++        pthread_rwlockattr_destroy( &attr );
++    }
++    pthread_cond_init( &vm->wake, NULL );
++    list_init( &vm->memories );
++    rb_init( &vm->resources, vidmm_resource_compare );
++    device->p_vkGetDeviceQueue( device->host.device, family, index, &vm->queue );
++
++    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
++    pool_info.queueFamilyIndex = family;
++    cmd_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
++    cmd_info.commandBufferCount = 1;
++    if (device->p_vkCreateCommandPool( device->host.device, &pool_info, NULL, &vm->pool )) goto failed;
++    cmd_info.commandPool = vm->pool;
++    if (device->p_vkAllocateCommandBuffers( device->host.device, &cmd_info, &vm->cmd )) goto failed;
++    if (device->p_vkCreateFence( device->host.device, &fence_info, NULL, &vm->fence )) goto failed;
++    if (pthread_create( &vm->thread, NULL, vidmm_thread, vm )) goto failed;
++
++    TRACE( "device %p: video memory managed, queue %u/%u\n", device, family, index );
++    device->vidmm = vm;
++    return;
++
++failed:
++    WARN( "device %p: no video memory management\n", device );
++    if (vm->fence) device->p_vkDestroyFence( device->host.device, vm->fence, NULL );
++    if (vm->pool) device->p_vkDestroyCommandPool( device->host.device, vm->pool, NULL );
++    free( vm );
++}
++
++static void vidmm_free_resource( struct rb_entry *entry, void *context )
++{
++    struct vulkan_device *device = context;
++    struct vidmm_resource *res = RB_ENTRY_VALUE( entry, struct vidmm_resource, rb );
++    if (res->backing) device->p_vkFreeMemory( device->host.device, res->backing, NULL );
++    free( res );
++}
++
++static void vidmm_destroy( struct vulkan_device *device )
++{
++    struct vidmm *vm = device->vidmm;
++
++    if (!vm) return;
++    pthread_mutex_lock( &vm->lock );
++    vm->stop = TRUE;
++    pthread_cond_signal( &vm->wake );
++    pthread_mutex_unlock( &vm->lock );
++    pthread_join( vm->thread, NULL );
++
++    device->p_vkDestroyFence( device->host.device, vm->fence, NULL );
++    device->p_vkDestroyCommandPool( device->host.device, vm->pool, NULL );
++    rb_destroy( &vm->resources, vidmm_free_resource, device );
++    pthread_cond_destroy( &vm->wake );
++    pthread_rwlock_destroy( &vm->submits );
++    pthread_mutex_destroy( &vm->lock );
++    device->vidmm = NULL;
++    free( vm );
++}
++
++/* what the program submitted has finished; it submits nothing until unlocked */
++static void vidmm_hold_program( struct vidmm *vm )
++{
++    struct vulkan_device *device = vm->device;
++
++    pthread_rwlock_wrlock( &vm->submits );
++    for (uint64_t i = 0; i < device->queue_count; i++) device->p_vkQueueWaitIdle( device->queues[i].host.queue );
++}
++
++static VkResult vidmm_wait( struct vidmm *vm )
++{
++    struct vulkan_device *device = vm->device;
++    VkResult res = device->p_vkWaitForFences( device->host.device, 1, &vm->fence, VK_TRUE, ~(uint64_t)0 );
++    device->p_vkResetFences( device->host.device, 1, &vm->fence );
++    return res;
++}
++
++/* binds resources (whole: opaque binds) to memory, on win32u's queue */
++static VkResult vidmm_bind_sparse( struct vidmm *vm, struct vidmm_resource **resources, const VkDeviceMemory *memories,
++                                   const VkDeviceSize *offsets, UINT count )
++{
++    struct vulkan_device *device = vm->device;
++    VkBindSparseInfo info = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO};
++    VkSparseBufferMemoryBindInfo *buffers;
++    VkSparseImageOpaqueMemoryBindInfo *images;
++    VkSparseMemoryBind *binds;
++    VkResult res;
++    UINT i;
++
++    if (!count) return VK_SUCCESS;
++    binds = calloc( count, sizeof(*binds) );
++    buffers = calloc( count, sizeof(*buffers) );
++    images = calloc( count, sizeof(*images) );
++    if (!binds || !buffers || !images)
++    {
++        res = VK_ERROR_OUT_OF_HOST_MEMORY;
++        goto done;
++    }
++    for (i = 0; i < count; i++)
++    {
++        binds[i].size = resources[i]->size;
++        binds[i].memory = memories[i];
++        binds[i].memoryOffset = offsets[i];
++        if (resources[i]->image)
++        {
++            images[info.imageOpaqueBindCount].image = (VkImage)resources[i]->handle;
++            images[info.imageOpaqueBindCount].bindCount = 1;
++            images[info.imageOpaqueBindCount++].pBinds = &binds[i];
++        }
++        else
++        {
++            buffers[info.bufferBindCount].buffer = (VkBuffer)resources[i]->handle;
++            buffers[info.bufferBindCount].bindCount = 1;
++            buffers[info.bufferBindCount++].pBinds = &binds[i];
++        }
++    }
++    info.pBufferBinds = buffers;
++    info.pImageOpaqueBinds = images;
++    if (!(res = device->p_vkQueueBindSparse( vm->queue, 1, &info, vm->fence ))) res = vidmm_wait( vm );
++
++done:
++    free( binds );
++    free( buffers );
++    free( images );
++    return res;
++}
++
++/* a buffer over (part of) a memory object, to copy its bytes */
++static VkBuffer vidmm_buffer_on( struct vidmm *vm, VkDeviceMemory memory, VkDeviceSize offset, VkDeviceSize size )
++{
++    struct vulkan_device *device = vm->device;
++    VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
++    VkBuffer buffer;
++
++    VkMemoryRequirements requirements;
++
++    info.size = size;
++    info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
++    if (device->p_vkCreateBuffer( device->host.device, &info, NULL, &buffer )) return VK_NULL_HANDLE;
++    /* a buffer may need more than its size: then one a little smaller, within the memory */
++    device->p_vkGetBufferMemoryRequirements( device->host.device, buffer, &requirements );
++    if (requirements.size > size && requirements.alignment)
++    {
++        device->p_vkDestroyBuffer( device->host.device, buffer, NULL );
++        info.size = size & ~(requirements.alignment - 1);
++        if (!info.size || device->p_vkCreateBuffer( device->host.device, &info, NULL, &buffer )) return VK_NULL_HANDLE;
++    }
++    if (device->p_vkBindBufferMemory( device->host.device, buffer, memory, offset ))
++    {
++        device->p_vkDestroyBuffer( device->host.device, buffer, NULL );
++        return VK_NULL_HANDLE;
++    }
++    return buffer;
++}
++
++/* copies the bytes of each resource between its place in a memory object
++ * and its own memory, on the GPU (out: to its own memory) */
++static VkResult vidmm_copy( struct vidmm *vm, VkDeviceMemory block, VkDeviceSize block_size,
++                            struct vidmm_resource **resources, const VkDeviceMemory *own, UINT count, BOOL out )
++{
++    struct vulkan_device *device = vm->device;
++    VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
++    VkMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER};
++    VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
++    VkBuffer block_buffer, *pieces;
++    VkResult res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++    UINT i;
++
++    if (!(pieces = calloc( count, sizeof(*pieces) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    if (!(block_buffer = vidmm_buffer_on( vm, block, 0, block_size ))) goto done;
++    for (i = 0; i < count; i++) if (!(pieces[i] = vidmm_buffer_on( vm, own[i], 0, resources[i]->size ))) goto done;
++
++    device->p_vkResetCommandBuffer( vm->cmd, 0 );
++    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
++    device->p_vkBeginCommandBuffer( vm->cmd, &begin );
++    barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
++    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
++    device->p_vkCmdPipelineBarrier( vm->cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                                    0, 1, &barrier, 0, NULL, 0, NULL );
++    for (i = 0; i < count; i++)
++    {
++        VkBufferCopy region = {.size = resources[i]->size};
++        if (out) region.srcOffset = resources[i]->offset;
++        else region.dstOffset = resources[i]->offset;
++        device->p_vkCmdCopyBuffer( vm->cmd, out ? block_buffer : pieces[i], out ? pieces[i] : block_buffer, 1, &region );
++    }
++    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
++    device->p_vkCmdPipelineBarrier( vm->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++                                    0, 1, &barrier, 0, NULL, 0, NULL );
++    device->p_vkEndCommandBuffer( vm->cmd );
++    submit.commandBufferCount = 1;
++    submit.pCommandBuffers = &vm->cmd;
++    if (!(res = device->p_vkQueueSubmit( vm->queue, 1, &submit, vm->fence ))) res = vidmm_wait( vm );
++
++done:
++    for (i = 0; i < count; i++) if (pieces[i]) device->p_vkDestroyBuffer( device->host.device, pieces[i], NULL );
++    if (block_buffer) device->p_vkDestroyBuffer( device->host.device, block_buffer, NULL );
++    free( pieces );
++    return res;
++}
++
++static void vidmm_rekey( struct vulkan_device *device, struct device_memory *memory, VkDeviceMemory host )
++{
++    struct vulkan_instance *instance = device->physical_device->instance;
++    instance->p_remove_object( instance, &memory->obj.obj );
++    memory->obj.obj.host_handle = (UINT_PTR)host;
++    instance->p_insert_object( instance, &memory->obj.obj );
++}
++
++static VkResult vidmm_allocate( struct vulkan_device *device, struct device_memory *memory, uint32_t type,
++                                VkDeviceSize size, VkDeviceMemory *ret )
++{
++    VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
++    VkMemoryAllocateInfo info = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
++
++    flags.flags = memory->alloc_flags;
++    flags.deviceMask = memory->device_mask;
++    info.pNext = memory->alloc_flags ? &flags : NULL;
++    info.allocationSize = size;
++    info.memoryTypeIndex = type;
++    return device->p_vkAllocateMemory( device->host.device, &info, NULL, ret );
++}
++
++static void vidmm_init_spill( struct device_memory *memory )
++{
++    if (memory->spill_lock_ready) return;
++    pthread_mutex_init( &memory->spill_lock, NULL );
++    memory->spill_lock_ready = TRUE;
++}
++
++/* a memory object out of VRAM: each resource in it to system memory of its own */
++static BOOL vidmm_move_out( struct vidmm *vm, struct device_memory *memory )
++{
++    struct vulkan_device *device = vm->device;
++    struct vidmm_resource **resources = NULL, *res;
++    VkDeviceMemory *own = NULL;
++    VkDeviceSize *zero = NULL;
++    UINT count = 0, i;
++    BOOL ok = FALSE;
++
++    LIST_FOR_EACH_ENTRY( res, &memory->resources, struct vidmm_resource, entry ) count++;
++    if (count && (!(resources = calloc( count, sizeof(*resources) )) || !(own = calloc( count, sizeof(*own) )) ||
++                  !(zero = calloc( count, sizeof(*zero) ))))
++        goto done;
++    i = 0;
++    LIST_FOR_EACH_ENTRY( res, &memory->resources, struct vidmm_resource, entry )
++    {
++        uint32_t type = system_memory_type( device, res->type_bits );
++        resources[i] = res;
++        if (type == ~0u || vidmm_allocate( device, memory, type, res->size, &own[i] )) goto done;
++        i++;
++    }
++
++    vidmm_hold_program( vm );
++    if (!count || (!vidmm_copy( vm, memory->obj.host.device_memory, memory->size, resources, own, count, TRUE ) &&
++                   !vidmm_bind_sparse( vm, resources, own, zero, count )))
++    {
++        for (i = 0; i < count; i++)
++        {
++            resources[i]->backing = own[i];
++            own[i] = VK_NULL_HANDLE;
++        }
++        device->p_vkFreeMemory( device->host.device, memory->obj.host.device_memory, NULL );
++        vidmm_init_spill( memory );
++        memory->spill = TRUE;
++        memory->spill_type = memory->type_index;
++        memory->moved = TRUE;
++        vidmm_rekey( device, memory, (VkDeviceMemory)(UINT_PTR)memory );  /* a unique key, never given to the driver */
++        vm->moved_out += memory->size;
++        ok = TRUE;
++    }
++    pthread_rwlock_unlock( &vm->submits );
++
++done:
++    for (i = 0; i < count && own; i++) if (own[i]) device->p_vkFreeMemory( device->host.device, own[i], NULL );
++    free( resources );
++    free( own );
++    free( zero );
++    return ok;
++}
++
++/* a spilled memory object into VRAM: its resources back in their places */
++static BOOL vidmm_move_in( struct vidmm *vm, struct device_memory *memory )
++{
++    struct vulkan_device *device = vm->device;
++    struct vidmm_resource **resources = NULL, *res;
++    VkDeviceMemory host = VK_NULL_HANDLE, *own = NULL, *targets = NULL;
++    VkDeviceSize *offsets = NULL;
++    UINT count = 0, i;
++    BOOL ok = FALSE;
++
++    LIST_FOR_EACH_ENTRY( res, &memory->resources, struct vidmm_resource, entry ) count++;
++    if (count && (!(resources = calloc( count, sizeof(*resources) )) || !(own = calloc( count, sizeof(*own) )) ||
++                  !(targets = calloc( count, sizeof(*targets) )) || !(offsets = calloc( count, sizeof(*offsets) ))))
++        goto done;
++    if (vidmm_allocate( device, memory, memory->type_index, memory->size, &host )) goto done;
++    i = 0;
++    LIST_FOR_EACH_ENTRY( res, &memory->resources, struct vidmm_resource, entry )
++    {
++        resources[i] = res;
++        own[i] = res->backing;
++        targets[i] = host;
++        offsets[i] = res->offset;
++        i++;
++    }
++
++    vidmm_hold_program( vm );
++    if (!count || (!vidmm_copy( vm, host, memory->size, resources, own, count, FALSE ) &&
++                   !vidmm_bind_sparse( vm, resources, targets, offsets, count )))
++    {
++        for (i = 0; i < count; i++)
++        {
++            device->p_vkFreeMemory( device->host.device, resources[i]->backing, NULL );
++            resources[i]->backing = VK_NULL_HANDLE;
++        }
++        memory->spill = FALSE;
++        memory->moved = FALSE;
++        vidmm_rekey( device, memory, host );
++        host = VK_NULL_HANDLE;
++        vm->moved_in += memory->size;
++        ok = TRUE;
++    }
++    pthread_rwlock_unlock( &vm->submits );
++
++done:
++    if (host) device->p_vkFreeMemory( device->host.device, host, NULL );
++    free( resources );
++    free( own );
++    free( targets );
++    free( offsets );
++    return ok;
++}
++
++/* behind one that ran short: out of VRAM down to the share; else back in what fits */
++static void vidmm_balance( struct vidmm *vm, BOOL behind )
++{
++    struct vulkan_device *device = vm->device;
++    struct vulkan_physical_device *physical_device = device->physical_device;
++    const VkPhysicalDeviceMemoryProperties *props = &physical_device->memory_properties;
++    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
++    VkPhysicalDeviceMemoryProperties2 props2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &budget};
++    const VkDeviceSize step = (VkDeviceSize)256 << 20;  /* at most per round: the program waits meanwhile */
++    VkDeviceSize done = 0;
++
++    if (!physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2) return;
++    physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2( physical_device->host.physical_device, &props2 );
++
++    while (done < step)
++    {
++        struct device_memory *memory, *best = NULL;
++        uint32_t heap;
++
++        LIST_FOR_EACH_ENTRY( memory, &vm->memories, struct device_memory, vidmm_entry )
++        {
++            if (behind && memory->spill) continue;           /* out already */
++            if (!behind && !memory->spill) continue;         /* in already */
++            heap = props->memoryTypes[memory->type_index].heapIndex;
++            if (behind && budget.heapUsage[heap] <= background_share( &props->memoryHeaps[heap] )) continue;
++            if (!behind && budget.heapUsage[heap] + memory->size + props->memoryHeaps[heap].size / 16 > budget.heapBudget[heap]) continue;
++            if (!best || memory->size > best->size) best = memory;
++        }
++        if (!best) break;
++        heap = props->memoryTypes[best->type_index].heapIndex;
++        if (behind ? vidmm_move_out( vm, best ) : vidmm_move_in( vm, best ))
++        {
++            if (behind) budget.heapUsage[heap] -= min( best->size, budget.heapUsage[heap] );
++            else budget.heapUsage[heap] += best->size;
++        }
++        else
++        {
++            /* it will not move: leave it where it is from now on */
++            best->pageable = FALSE;
++            list_remove( &best->vidmm_entry );
++            list_init( &best->vidmm_entry );
++        }
++        done += best->size;
++    }
++
++    if (vm->moved_out || vm->moved_in)
++    {
++        fprintf( stderr, "vulkan: process %04x: %llu MB of video memory to system memory, %llu MB back, for the program in front\n",
++                 (int)vm->self, (unsigned long long)(vm->moved_out >> 20), (unsigned long long)(vm->moved_in >> 20) );
++        vm->moved_out = vm->moved_in = 0;
++    }
++}
++
++static void *vidmm_thread( void *arg )
++{
++    struct vidmm *vm = arg;
++
++    pthread_mutex_lock( &vm->lock );
++    while (!vm->stop)
++    {
++        struct timespec deadline;
++
++        clock_gettime( CLOCK_REALTIME, &deadline );
++        deadline.tv_nsec += 250 * 1000000;
++        if (deadline.tv_nsec >= 1000000000)
++        {
++            deadline.tv_sec++;
++            deadline.tv_nsec -= 1000000000;
++        }
++        pthread_cond_timedwait( &vm->wake, &vm->lock, &deadline );
++        if (vm->stop || list_empty( &vm->memories )) continue;
++        vidmm_balance( vm, claim_active_for_other( vm->self ) );
++    }
++    pthread_mutex_unlock( &vm->lock );
++    return NULL;
++}
++
++/* A memory object whose use win32u does not see stays in VRAM from now on;
++ * one moved out comes back first. */
++static void vidmm_pin_locked( struct vidmm *vm, struct device_memory *memory )
++{
++    WriteRelease( &memory->obj.pinned, 1 );
++    if (!memory->pageable) return;
++    memory->pageable = FALSE;
++    list_remove( &memory->vidmm_entry );
++    list_init( &memory->vidmm_entry );
++    if (memory->moved && !vidmm_move_in( vm, memory ))
++        ERR( "a memory object out of VRAM is used where it cannot be followed\n" );
++}
++
++static void win32u_pin_device_memory( VkDeviceMemory client_memory )
++{
++    struct device_memory *memory = device_memory_from_handle( client_memory );
++    struct vidmm *vm = memory->vm;
++
++    if (!vm)
++    {
++        WriteRelease( &memory->obj.pinned, 1 );
++        return;
++    }
++    pthread_mutex_lock( &vm->lock );
++    vidmm_pin_locked( vm, memory );
++    pthread_mutex_unlock( &vm->lock );
++}
++
++/* whether nothing in a create info's chain keeps the resource from being sparse;
++ * vkCreateImage and vkCreateBuffer decide the same way */
++static BOOL vidmm_chain_ok( const void *chain, BOOL image )
++{
++    for (const VkBaseInStructure *next = chain; next; next = next->pNext)
++    {
++        switch (next->sType)
++        {
++        case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO:
++        case VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO:
++        case VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT:
++        case VK_STRUCTURE_TYPE_IMAGE_ALIGNMENT_CONTROL_CREATE_INFO_MESA:
++            if (!image) return FALSE;
++            break;
++        case VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO:
++            if (image) return FALSE;
++            break;
++        default:
++            return FALSE;
++        }
++    }
++    return TRUE;
++}
++
++/* whether a resource of these properties is made sparse: one that can be,
++ * large enough, and that accepts the same memory types as it would otherwise
++ * (a program picks memory by them) */
++static BOOL vidmm_image_wanted( struct vulkan_device *device, VkImageCreateInfo *info, BOOL chain_ok )
++{
++    struct vulkan_physical_device *physical_device = device->physical_device;
++    VkDeviceImageMemoryRequirements query = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS};
++    VkMemoryRequirements2 plain = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
++    VkMemoryRequirements2 sparse = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
++    VkImageFormatProperties format;
++    VkImageCreateFlags flags = info->flags;
++
++    if (!device->vidmm || !chain_ok || !device->p_vkGetDeviceImageMemoryRequirements) return FALSE;
++    if (info->tiling != VK_IMAGE_TILING_OPTIMAL) return FALSE;
++    if (flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT | VK_IMAGE_CREATE_SPARSE_ALIASED_BIT |
++                 VK_IMAGE_CREATE_PROTECTED_BIT | VK_IMAGE_CREATE_DISJOINT_BIT | VK_IMAGE_CREATE_SUBSAMPLED_BIT_EXT |
++                 VK_IMAGE_CREATE_DESCRIPTOR_BUFFER_CAPTURE_REPLAY_BIT_EXT | VK_IMAGE_CREATE_ALIAS_BIT))
++        return FALSE;
++    if (info->usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) return FALSE;
++    if (physical_device->instance->p_vkGetPhysicalDeviceImageFormatProperties( physical_device->host.physical_device,
++            info->format, info->imageType, info->tiling, info->usage, flags | VK_IMAGE_CREATE_SPARSE_BINDING_BIT, &format ))
++        return FALSE;
++
++    query.pCreateInfo = info;
++    device->p_vkGetDeviceImageMemoryRequirements( device->host.device, &query, &plain );
++    if (plain.memoryRequirements.size < 64 * 1024) return FALSE;
++    info->flags = flags | VK_IMAGE_CREATE_SPARSE_BINDING_BIT;
++    device->p_vkGetDeviceImageMemoryRequirements( device->host.device, &query, &sparse );
++    info->flags = flags;
++    return sparse.memoryRequirements.memoryTypeBits == plain.memoryRequirements.memoryTypeBits;
++}
++
++static BOOL vidmm_buffer_wanted( struct vulkan_device *device, VkBufferCreateInfo *info, BOOL chain_ok )
++{
++    VkDeviceBufferMemoryRequirements query = {.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS};
++    VkMemoryRequirements2 plain = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
++    VkMemoryRequirements2 sparse = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
++    VkBufferCreateFlags flags = info->flags;
++
++    if (!device->vidmm || !chain_ok || !device->p_vkGetDeviceBufferMemoryRequirements) return FALSE;
++    if (info->size < 1024 * 1024) return FALSE;
++    if (flags & (VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT | VK_BUFFER_CREATE_SPARSE_ALIASED_BIT |
++                 VK_BUFFER_CREATE_PROTECTED_BIT | VK_BUFFER_CREATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT |
++                 VK_BUFFER_CREATE_DESCRIPTOR_BUFFER_CAPTURE_REPLAY_BIT_EXT))
++        return FALSE;
++
++    query.pCreateInfo = info;
++    device->p_vkGetDeviceBufferMemoryRequirements( device->host.device, &query, &plain );
++    info->flags = flags | VK_BUFFER_CREATE_SPARSE_BINDING_BIT;
++    device->p_vkGetDeviceBufferMemoryRequirements( device->host.device, &query, &sparse );
++    info->flags = flags;
++    return sparse.memoryRequirements.memoryTypeBits == plain.memoryRequirements.memoryTypeBits;
++}
++
++static void vidmm_add_resource( struct vulkan_device *device, UINT64 handle, BOOL image )
++{
++    struct vidmm *vm = device->vidmm;
++    VkMemoryRequirements requirements;
++    struct vidmm_resource *res;
++
++    if (image) device->p_vkGetImageMemoryRequirements( device->host.device, (VkImage)handle, &requirements );
++    else device->p_vkGetBufferMemoryRequirements( device->host.device, (VkBuffer)handle, &requirements );
++    if (!(res = calloc( 1, sizeof(*res) ))) return;  /* never bound then: the program fails on it as on a full VRAM */
++    res->handle = handle;
++    res->image = image;
++    res->size = requirements.size;
++    res->type_bits = requirements.memoryTypeBits;
++    list_init( &res->entry );
++    pthread_mutex_lock( &vm->lock );
++    rb_put( &vm->resources, &res->handle, &res->rb );
++    pthread_mutex_unlock( &vm->lock );
++}
++
++static void vidmm_remove_resource( struct vulkan_device *device, UINT64 handle, VkDeviceMemory *backing )
++{
++    struct vidmm *vm = device->vidmm;
++    struct vidmm_resource *res;
++
++    *backing = VK_NULL_HANDLE;
++    if (!vm) return;
++    pthread_mutex_lock( &vm->lock );
++    if ((res = vidmm_find( vm, handle )))
++    {
++        rb_remove( &vm->resources, &res->rb );
++        list_remove( &res->entry );
++        *backing = res->backing;
++        free( res );
++    }
++    pthread_mutex_unlock( &vm->lock );
++}
++
++/* Binds a resource to memory: a sparse one on win32u's queue (TRUE, *res set);
++ * an ordinary one pins the memory object it is bound to in VRAM (FALSE). */
++static BOOL vidmm_bind( struct vulkan_device *device, UINT64 handle, VkDeviceMemory client_memory, VkDeviceSize offset,
++                        VkResult *ret )
++{
++    struct vidmm *vm = device->vidmm;
++    struct device_memory *memory;
++    struct vidmm_resource *res;
++    VkDeviceMemory target;
++    VkDeviceSize target_offset = offset;
++
++    if (!vm || !client_memory) return FALSE;
++    memory = device_memory_from_handle( client_memory );
++    pthread_mutex_lock( &vm->lock );
++    if (!(res = vidmm_find( vm, handle )))
++    {
++        /* in a spilled object it gets memory of its own; in VRAM it holds the object there */
++        if (!memory->spill && memory->vm == vm) vidmm_pin_locked( vm, memory );
++        pthread_mutex_unlock( &vm->lock );
++        return FALSE;
++    }
++
++    *ret = VK_SUCCESS;
++    if (memory->spill)
++    {
++        uint32_t type = ~0u;
++
++        res->backing = VK_NULL_HANDLE;
++        /* what draws keeps VRAM unless the program in front needs it */
++        if (res->image && (res->type_bits & (1u << memory->spill_type)) && is_drawing_image( (VkImage)handle ) &&
++            !claim_active_for_other( vm->self ))
++            vidmm_allocate( device, memory, memory->spill_type, res->size, &res->backing );
++        if (!res->backing && ((type = system_memory_type( device, res->type_bits )) == ~0u ||
++                              vidmm_allocate( device, memory, type, res->size, &res->backing )))
++            *ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++        target = res->backing;
++        target_offset = 0;
++    }
++    else target = memory->obj.host.device_memory;
++
++    if (!*ret && !(*ret = vidmm_bind_sparse( vm, &res, &target, &target_offset, 1 )))
++    {
++        list_remove( &res->entry );
++        res->memory = memory;
++        res->offset = offset;
++        list_add_tail( &memory->resources, &res->entry );
++    }
++    else if (res->backing)
++    {
++        device->p_vkFreeMemory( device->host.device, res->backing, NULL );
++        res->backing = VK_NULL_HANDLE;
++    }
++    pthread_mutex_unlock( &vm->lock );
++    return TRUE;
++}
++
++/* a memory object freed: what was bound to it is bound to nothing */
++static void vidmm_forget_memory( struct vulkan_device *device, struct device_memory *memory )
++{
++    struct vidmm *vm = device->vidmm;  /* sparse resources may be bound to memory it does not page */
++    struct vidmm_resource *res, *next;
++
++    if (!vm) return;
++    pthread_mutex_lock( &vm->lock );
++    LIST_FOR_EACH_ENTRY_SAFE( res, next, &memory->resources, struct vidmm_resource, entry )
++    {
++        if (res->backing) device->p_vkFreeMemory( device->host.device, res->backing, NULL );
++        res->backing = VK_NULL_HANDLE;
++        res->memory = NULL;
++        list_remove( &res->entry );
++        list_init( &res->entry );
++    }
++    list_remove( &memory->vidmm_entry );
++    list_init( &memory->vidmm_entry );
++    pthread_mutex_unlock( &vm->lock );
++}
++
+ static uint32_t system_memory_type_for( struct vulkan_device *device, const VkMemoryAllocateInfo *alloc_info,
+                                         const VkMemoryDedicatedAllocateInfo *dedicated )
+ {
+@@ -1051,6 +2078,7 @@ static VkResult win32u_vkBindImageMemory( VkDevice client_device, VkImage image,
+     VkDeviceMemory host_memory;
+     VkResult res;
+ 
++    if (vidmm_bind( device, (UINT64)image, client_memory, offset, &res )) return res;
+     if ((res = bind_target( device, client_memory, image, VK_NULL_HANDLE, &host_memory, &offset ))) return res;
+     return device->p_vkBindImageMemory( device->host.device, image, host_memory, offset );
+ }
+@@ -1061,6 +2089,7 @@ static VkResult win32u_vkBindBufferMemory( VkDevice client_device, VkBuffer buff
+     VkDeviceMemory host_memory;
+     VkResult res;
+ 
++    if (vidmm_bind( device, (UINT64)buffer, client_memory, offset, &res )) return res;
+     if ((res = bind_target( device, client_memory, VK_NULL_HANDLE, buffer, &host_memory, &offset ))) return res;
+     return device->p_vkBindBufferMemory( device->host.device, buffer, host_memory, offset );
+ }
+@@ -1070,14 +2099,20 @@ static VkResult bind_image_memory2( VkDevice client_device, uint32_t count, cons
+     struct vulkan_device *device = vulkan_device_from_handle( client_device );
+     VkBindImageMemoryInfo *infos;
+     VkResult res = VK_SUCCESS;
+-    uint32_t i;
++    uint32_t i, j;
+ 
+     /* the thunk converted the chain (a swap chain in it is the host's), the memory is still the client's */
+     if (!(infos = malloc( count * sizeof(*infos) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+-    memcpy( infos, client_infos, count * sizeof(*infos) );
+-    for (i = 0; i < count && !res; i++)
+-        res = bind_target( device, infos[i].memory, infos[i].image, VK_NULL_HANDLE, &infos[i].memory, &infos[i].memoryOffset );
+-    if (!res)
++    for (i = j = 0; i < count && !res; i++)
++    {
++        /* a sparse image is bound by win32u itself */
++        if (vidmm_bind( device, (UINT64)client_infos[i].image, client_infos[i].memory, client_infos[i].memoryOffset, &res )) continue;
++        infos[j] = client_infos[i];
++        res = bind_target( device, infos[j].memory, infos[j].image, VK_NULL_HANDLE, &infos[j].memory, &infos[j].memoryOffset );
++        j++;
++    }
++    count = j;
++    if (!res && count)
+         res = khr ? device->p_vkBindImageMemory2KHR( device->host.device, count, infos )
+                   : device->p_vkBindImageMemory2( device->host.device, count, infos );
+     free( infos );
+@@ -1099,13 +2134,19 @@ static VkResult bind_buffer_memory2( VkDevice client_device, uint32_t count, con
+     struct vulkan_device *device = vulkan_device_from_handle( client_device );
+     VkBindBufferMemoryInfo *infos;
+     VkResult res = VK_SUCCESS;
+-    uint32_t i;
++    uint32_t i, j;
+ 
+     if (!(infos = malloc( count * sizeof(*infos) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+-    memcpy( infos, client_infos, count * sizeof(*infos) );
+-    for (i = 0; i < count && !res; i++)
+-        res = bind_target( device, infos[i].memory, VK_NULL_HANDLE, infos[i].buffer, &infos[i].memory, &infos[i].memoryOffset );
+-    if (!res)
++    for (i = j = 0; i < count && !res; i++)
++    {
++        /* a sparse buffer is bound by win32u itself */
++        if (vidmm_bind( device, (UINT64)client_infos[i].buffer, client_infos[i].memory, client_infos[i].memoryOffset, &res )) continue;
++        infos[j] = client_infos[i];
++        res = bind_target( device, infos[j].memory, VK_NULL_HANDLE, infos[j].buffer, &infos[j].memory, &infos[j].memoryOffset );
++        j++;
++    }
++    count = j;
++    if (!res && count)
+         res = khr ? device->p_vkBindBufferMemory2KHR( device->host.device, count, infos )
+                   : device->p_vkBindBufferMemory2( device->host.device, count, infos );
+     free( infos );
+@@ -1138,7 +2179,9 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+     VkDeviceMemory host_device_memory = VK_NULL_HANDLE;
+     VkExportMemoryAllocateInfo *export_info = NULL;
+     struct device_memory *memory;
+-    BOOL nt_shared = FALSE, plain_block;
++    BOOL nt_shared = FALSE, plain_block, pageable = FALSE, capture = FALSE;
++    const VkMemoryAllocateFlagsInfo *flags_info = NULL;
++    struct vidmm *vm = device->vidmm;
+     uint32_t mem_flags;
+     void *mapping = NULL;
+     VkResult res;
+@@ -1170,12 +2213,15 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+             import_win32 = (VkImportMemoryWin32HandleInfoKHR *)*next;
+             *next = (*next)->pNext; next = &prev;
+             break;
+-        case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO: break;
++        case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO:
++            flags_info = (const VkMemoryAllocateFlagsInfo *)*next;
++            if (flags_info->flags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT) capture = TRUE;
++            break;
+         case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO:
+             dedicated = (const VkMemoryDedicatedAllocateInfo *)*next;
+             break;
+-        case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_TENSOR_ARM: break;
+-        case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO: break;
++        case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_TENSOR_ARM: capture = TRUE; break;
++        case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO: capture = TRUE; break;
+         case VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT: break;
+         default: FIXME( "Unhandled sType %u.\n", (*next)->sType ); break;
+         }
+@@ -1183,6 +2229,23 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+ 
+     /* For host visible memory, we try to use VK_EXT_external_memory_host on wow64 to ensure that mapped pointer is 32-bit. */
+     mem_flags = physical_device->memory_properties.memoryTypes[alloc_info->memoryTypeIndex].propertyFlags;
++
++    /* video memory win32u can page (see vidmm): plain VRAM nobody else shares; a
++     * resource it is dedicated to is sparse then, and sparse resources take no
++     * dedicated memory */
++    if (vm && !import_win32 && !export_info && !pointer_info && !capture &&
++        (physical_device->memory_properties.memoryHeaps[physical_device->memory_properties.memoryTypes[alloc_info->memoryTypeIndex].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
++        !(mem_flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT | VK_MEMORY_PROPERTY_PROTECTED_BIT)))
++    {
++        if (!dedicated) pageable = TRUE;
++        else if (vidmm_is_sparse( vm, dedicated->image ? (UINT64)dedicated->image : (UINT64)dedicated->buffer ))
++        {
++            for (next = &((VkBaseOutStructure *)alloc_info)->pNext; *next; next = &(*next)->pNext)
++                if (*next == (VkBaseOutStructure *)dedicated) { *next = (*next)->pNext; break; }
++            dedicated = NULL;
++            pageable = TRUE;
++        }
++    }
+     if (physical_device->external_memory_align && (mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !pointer_info &&
+         (res = allocate_external_host_memory( device, alloc_info, mem_flags, &host_pointer_info )))
+         return res;
+@@ -1254,6 +2317,9 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+ 
+     if (plain_block && vram_tight( device, alloc_info->memoryTypeIndex, alloc_info->allocationSize ))
+         res = VK_ERROR_OUT_OF_DEVICE_MEMORY;  /* not asked: the last quarter stays for what draws */
++    else if (!import_win32 && !export_info && !(mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
++             front_takes_vram( device, alloc_info->memoryTypeIndex, alloc_info->allocationSize ))
++        res = VK_ERROR_OUT_OF_DEVICE_MEMORY;  /* behind the program in front: system memory, as Windows pages it */
+     else
+         res = device->p_vkAllocateMemory( device->host.device, alloc_info, NULL, &host_device_memory );
+ 
+@@ -1263,6 +2329,8 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+         static LONG once, once_block;
+ 
+         if (res != VK_ERROR_OUT_OF_DEVICE_MEMORY || import_win32 || export_info) goto failed;
++        /* in front, VRAM that is full is claimed from the processes behind */
++        claim_if_short( physical_device, physical_device->memory_properties.memoryTypes[vram_type].heapIndex, NULL, 0 );
+         if ((type = system_memory_type_for( device, alloc_info, dedicated )) != ~0u)
+         {
+             alloc_info->memoryTypeIndex = type;
+@@ -1275,11 +2343,12 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+         }
+         /* nothing behind the block yet: each resource bound to it gets memory
+          * of its own, VRAM for what draws, system memory for the rest */
+-        else if (plain_block)
++        else if (plain_block || pageable)
+         {
+             memory->spill = TRUE;
+             memory->spill_type = vram_type;
+             pthread_mutex_init( &memory->spill_lock, NULL );
++            memory->spill_lock_ready = TRUE;
+             host_device_memory = (VkDeviceMemory)(UINT_PTR)memory;  /* a unique key for the object table, never given to the driver */
+             res = VK_SUCCESS;
+             if (!InterlockedExchange( &once_block, 1 ))
+@@ -1318,6 +2387,23 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+     vulkan_object_init( &memory->obj.obj, host_device_memory );
+     memory->size = alloc_info->allocationSize;
+     memory->vm_map = mapping;
++    memory->type_index = alloc_info->memoryTypeIndex;
++    if (flags_info)
++    {
++        memory->alloc_flags = flags_info->flags;
++        memory->device_mask = flags_info->deviceMask;
++    }
++    list_init( &memory->resources );
++    list_init( &memory->vidmm_entry );
++    if (pageable)
++    {
++        memory->vm = vm;
++        memory->pageable = TRUE;
++        pthread_mutex_lock( &vm->lock );
++        list_add_tail( &vm->memories, &memory->vidmm_entry );
++        pthread_mutex_unlock( &vm->lock );
++    }
++    else memory->obj.pinned = 1;
+     instance->p_insert_object( instance, &memory->obj.obj );
+ 
+     *ret = memory->obj.client.device_memory;
+@@ -1356,14 +2442,11 @@ static void win32u_vkFreeMemory( VkDevice client_device, VkDeviceMemory client_m
+         device->p_vkUnmapMemory2KHR( device->host.device, &info );
+     }
+ 
+-    if (memory->spill)
+-    {
+-        UINT i;
+-        for (i = 0; i < memory->spill_count; i++) device->p_vkFreeMemory( device->host.device, memory->spills[i], NULL );
+-        free( memory->spills );
+-        pthread_mutex_destroy( &memory->spill_lock );
+-    }
+-    else device->p_vkFreeMemory( device->host.device, memory->obj.host.device_memory, NULL );
++    vidmm_forget_memory( device, memory );
++    for (UINT i = 0; i < memory->spill_count; i++) device->p_vkFreeMemory( device->host.device, memory->spills[i], NULL );
++    free( memory->spills );
++    if (memory->spill_lock_ready) pthread_mutex_destroy( &memory->spill_lock );
++    if (!memory->spill) device->p_vkFreeMemory( device->host.device, memory->obj.host.device_memory, NULL );
+     instance->p_remove_object( instance, &memory->obj.obj );
+ 
+     if (memory->vm_map)
+@@ -1566,25 +2649,28 @@ static VkResult win32u_vkCreateBuffer( VkDevice client_device, const VkBufferCre
+     struct vulkan_device *device = vulkan_device_from_handle( client_device );
+     struct vulkan_physical_device *physical_device = device->physical_device;
+     VkExternalMemoryBufferCreateInfo host_external_info, *external_info = NULL;
++    BOOL sparse_ok = TRUE;
++    VkResult res;
+ 
+     for (next = &prev->pNext; *next; prev = *next, next = &(*next)->pNext)
+     {
+         switch ((*next)->sType)
+         {
+-        case VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_CREATE_INFO_EXT: break;
+-        case VK_STRUCTURE_TYPE_BUFFER_OPAQUE_CAPTURE_ADDRESS_CREATE_INFO: break;
++        case VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_CREATE_INFO_EXT: sparse_ok = FALSE; break;
++        case VK_STRUCTURE_TYPE_BUFFER_OPAQUE_CAPTURE_ADDRESS_CREATE_INFO: sparse_ok = FALSE; break;
+         case VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO: break;
+-        case VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_BUFFER_CREATE_INFO_NV: break;
++        case VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_BUFFER_CREATE_INFO_NV: sparse_ok = FALSE; break;
+         case VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO:
++            sparse_ok = FALSE;
+             external_info = (VkExternalMemoryBufferCreateInfo *)*next;
+             if (!(external_info->handleTypes & EXTERNAL_MEMORY_WIN32_BITS))
+                 FIXME( "Unsupported handle types %#x\n", external_info->handleTypes );
+             else
+                 external_info->handleTypes = get_host_external_memory_type();
+             break;
+-        case VK_STRUCTURE_TYPE_OPAQUE_CAPTURE_DESCRIPTOR_DATA_CREATE_INFO_EXT: break;
+-        case VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR: break;
+-        default: FIXME( "Unhandled sType %u.\n", (*next)->sType ); break;
++        case VK_STRUCTURE_TYPE_OPAQUE_CAPTURE_DESCRIPTOR_DATA_CREATE_INFO_EXT: sparse_ok = FALSE; break;
++        case VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR: sparse_ok = FALSE; break;
++        default: FIXME( "Unhandled sType %u.\n", (*next)->sType ); sparse_ok = FALSE; break;
+         }
+     }
+ 
+@@ -1596,9 +2682,31 @@ static VkResult win32u_vkCreateBuffer( VkDevice client_device, const VkBufferCre
+         ((VkBufferCreateInfo *)create_info)->pNext = &host_external_info; /* cast away const, it has been copied in the thunks */
+     }
+ 
++    /* pageable (see vidmm): sparse, bound by win32u */
++    if (vidmm_buffer_wanted( device, (VkBufferCreateInfo *)create_info, sparse_ok && !physical_device->external_memory_align ))
++    {
++        VkBufferCreateFlags flags = create_info->flags;
++        ((VkBufferCreateInfo *)create_info)->flags |= VK_BUFFER_CREATE_SPARSE_BINDING_BIT;
++        if (!(res = device->p_vkCreateBuffer( device->host.device, create_info, NULL, buffer )))
++        {
++            vidmm_add_resource( device, (UINT64)*buffer, FALSE );
++            return res;
++        }
++        ((VkBufferCreateInfo *)create_info)->flags = flags;
++    }
+     return device->p_vkCreateBuffer( device->host.device, create_info, NULL, buffer );
+ }
+ 
++static void win32u_vkDestroyBuffer( VkDevice client_device, VkBuffer buffer, const VkAllocationCallbacks *allocator )
++{
++    struct vulkan_device *device = vulkan_device_from_handle( client_device );
++    VkDeviceMemory backing;
++
++    vidmm_remove_resource( device, (UINT64)buffer, &backing );
++    device->p_vkDestroyBuffer( device->host.device, buffer, NULL );
++    if (backing) device->p_vkFreeMemory( device->host.device, backing, NULL );
++}
++
+ static void win32u_vkGetDeviceBufferMemoryRequirements( VkDevice client_device, const VkDeviceBufferMemoryRequirements *buffer_requirements,
+                                                         VkMemoryRequirements2 *memory_requirements )
+ {
+@@ -1629,6 +2737,10 @@ static void win32u_vkGetDeviceBufferMemoryRequirements( VkDevice client_device,
+         }
+     }
+ 
++    /* what vkCreateBuffer will make of it */
++    if (vidmm_buffer_wanted( device, (VkBufferCreateInfo *)buffer_requirements->pCreateInfo,
++                             vidmm_chain_ok( buffer_requirements->pCreateInfo->pNext, FALSE ) ))
++        ((VkBufferCreateInfo *)buffer_requirements->pCreateInfo)->flags |= VK_BUFFER_CREATE_SPARSE_BINDING_BIT;
+     device->p_vkGetDeviceBufferMemoryRequirements( device->host.device, buffer_requirements, memory_requirements );
+ }
+ 
+@@ -1675,14 +2787,16 @@ static VkResult win32u_vkCreateImage( VkDevice client_device, const VkImageCreat
+     struct vulkan_device *device = vulkan_device_from_handle( client_device );
+     struct vulkan_physical_device *physical_device = device->physical_device;
+     VkExternalMemoryImageCreateInfo host_external_info, *external_info = NULL;
++    BOOL sparse_ok = TRUE;
+     VkResult res;
+ 
+     for (next = &prev->pNext; *next; prev = *next, next = &(*next)->pNext)
+     {
+         switch ((*next)->sType)
+         {
+-        case VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_IMAGE_CREATE_INFO_NV: break;
++        case VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_IMAGE_CREATE_INFO_NV: sparse_ok = FALSE; break;
+         case VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO:
++            sparse_ok = FALSE;
+             external_info = (VkExternalMemoryImageCreateInfo *)*next;
+             if (!(external_info->handleTypes & EXTERNAL_MEMORY_WIN32_BITS))
+                 FIXME( "Unsupported handle types %#x\n", external_info->handleTypes );
+@@ -1693,11 +2807,11 @@ static VkResult win32u_vkCreateImage( VkDevice client_device, const VkImageCreat
+         case VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT: break;
+         case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO: break;
+         case VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO: break;
+-        case VK_STRUCTURE_TYPE_IMAGE_SWAPCHAIN_CREATE_INFO_KHR: break;
+-        case VK_STRUCTURE_TYPE_OPAQUE_CAPTURE_DESCRIPTOR_DATA_CREATE_INFO_EXT: break;
+-        case VK_STRUCTURE_TYPE_OPTICAL_FLOW_IMAGE_FORMAT_INFO_NV: break;
+-        case VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR: break;
+-        default: FIXME( "Unhandled sType %u.\n", (*next)->sType ); break;
++        case VK_STRUCTURE_TYPE_IMAGE_SWAPCHAIN_CREATE_INFO_KHR: sparse_ok = FALSE; break;
++        case VK_STRUCTURE_TYPE_OPAQUE_CAPTURE_DESCRIPTOR_DATA_CREATE_INFO_EXT: sparse_ok = FALSE; break;
++        case VK_STRUCTURE_TYPE_OPTICAL_FLOW_IMAGE_FORMAT_INFO_NV: sparse_ok = FALSE; break;
++        case VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR: sparse_ok = FALSE; break;
++        default: FIXME( "Unhandled sType %u.\n", (*next)->sType ); sparse_ok = FALSE; break;
+         }
+     }
+ 
+@@ -1709,13 +2823,33 @@ static VkResult win32u_vkCreateImage( VkDevice client_device, const VkImageCreat
+         ((VkImageCreateInfo *)create_info)->pNext = &host_external_info; /* cast away const, it has been copied in the thunks */
+     }
+ 
+-    res = device->p_vkCreateImage( device->host.device, create_info, NULL, image );
++    /* pageable (see vidmm): sparse, bound by win32u */
++    res = VK_ERROR_UNKNOWN;
++    if (vidmm_image_wanted( device, (VkImageCreateInfo *)create_info, sparse_ok && !physical_device->external_memory_align ))
++    {
++        VkImageCreateFlags flags = create_info->flags;
++        ((VkImageCreateInfo *)create_info)->flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT;
++        if (!(res = device->p_vkCreateImage( device->host.device, create_info, NULL, image )))
++            vidmm_add_resource( device, (UINT64)*image, TRUE );
++        else ((VkImageCreateInfo *)create_info)->flags = flags;
++    }
++    if (res) res = device->p_vkCreateImage( device->host.device, create_info, NULL, image );
+     if (!res && (create_info->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                                        VK_IMAGE_USAGE_STORAGE_BIT)))
+         add_drawing_image( *image );
+     return res;
+ }
+ 
++static void win32u_vkDestroyImage( VkDevice client_device, VkImage image, const VkAllocationCallbacks *allocator )
++{
++    struct vulkan_device *device = vulkan_device_from_handle( client_device );
++    VkDeviceMemory backing;
++
++    vidmm_remove_resource( device, (UINT64)image, &backing );
++    device->p_vkDestroyImage( device->host.device, image, NULL );
++    if (backing) device->p_vkFreeMemory( device->host.device, backing, NULL );
++}
++
+ static void win32u_vkGetDeviceImageMemoryRequirements( VkDevice client_device, const VkDeviceImageMemoryRequirements *image_requirements,
+                                                        VkMemoryRequirements2 *memory_requirements )
+ {
+@@ -1749,6 +2883,10 @@ static void win32u_vkGetDeviceImageMemoryRequirements( VkDevice client_device, c
+         }
+     }
+ 
++    /* what vkCreateImage will make of it */
++    if (vidmm_image_wanted( device, (VkImageCreateInfo *)image_requirements->pCreateInfo,
++                            vidmm_chain_ok( image_requirements->pCreateInfo->pNext, TRUE ) ))
++        ((VkImageCreateInfo *)image_requirements->pCreateInfo)->flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT;
+     device->p_vkGetDeviceImageMemoryRequirements( device->host.device, image_requirements, memory_requirements );
+ }
+ 
+@@ -2092,6 +3230,50 @@ static void win32u_vkGetPhysicalDeviceProperties2KHR( VkPhysicalDevice client_ph
+     get_physical_device_properties2( physical_device, properties2, physical_device->instance->p_vkGetPhysicalDeviceProperties2KHR );
+ }
+ 
++/* The budget of a process behind the one in front that ran short is its
++ * share of the VRAM (see behind_a_claim); what it uses stays what it uses,
++ * so DXVK and vkd3d see that they are over it and move resources out. In
++ * the process in front, a heap nearly full is claimed. */
++static void get_physical_device_memory_properties2( struct vulkan_physical_device *physical_device,
++                                                    VkPhysicalDeviceMemoryProperties2 *properties2,
++                                                    PFN_vkGetPhysicalDeviceMemoryProperties2 p_vkGetPhysicalDeviceMemoryProperties2 )
++{
++    const VkPhysicalDeviceMemoryProperties *props = &properties2->memoryProperties;
++    VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget;
++    uint32_t i;
++
++    p_vkGetPhysicalDeviceMemoryProperties2( physical_device->host.physical_device, properties2 );
++
++    if (!physical_device->discrete) return;
++    if (!(budget = find_vk_struct( properties2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT ))) return;
++    if (!behind_a_claim())
++    {
++        renew_claim();
++        for (i = 0; i < props->memoryHeapCount; i++) claim_if_short( physical_device, i, budget, 0 );
++        return;
++    }
++
++    for (i = 0; i < props->memoryHeapCount; i++)
++    {
++        if (!(props->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) || !budget->heapBudget[i]) continue;
++        budget->heapBudget[i] = min( budget->heapBudget[i], background_share( &props->memoryHeaps[i] ) );
++    }
++}
++
++static void win32u_vkGetPhysicalDeviceMemoryProperties2( VkPhysicalDevice client_physical_device, VkPhysicalDeviceMemoryProperties2 *properties2 )
++{
++    struct vulkan_physical_device *physical_device = vulkan_physical_device_from_handle( client_physical_device );
++
++    get_physical_device_memory_properties2( physical_device, properties2, physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2 );
++}
++
++static void win32u_vkGetPhysicalDeviceMemoryProperties2KHR( VkPhysicalDevice client_physical_device, VkPhysicalDeviceMemoryProperties2 *properties2 )
++{
++    struct vulkan_physical_device *physical_device = vulkan_physical_device_from_handle( client_physical_device );
++
++    get_physical_device_memory_properties2( physical_device, properties2, physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties2KHR );
++}
++
+ static VkResult win32u_vkGetPhysicalDeviceSurfaceFormatsKHR( VkPhysicalDevice client_physical_device, VkSurfaceKHR client_surface,
+                                                              uint32_t *format_count, VkSurfaceFormatKHR *formats )
+ {
+@@ -2319,7 +3501,10 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
+         client_surface_update( surface->client );
+     }
+ 
++    if (device->physical_device->discrete) renew_claim();
++    if (device->vidmm) pthread_rwlock_rdlock( &((struct vidmm *)device->vidmm)->submits );
+     res = device->p_vkQueuePresentKHR( queue->host.queue, present_info );
++    if (device->vidmm) pthread_rwlock_unlock( &((struct vidmm *)device->vidmm)->submits );
+ 
+     for (uint32_t i = 0; i < present_info->swapchainCount; i++)
+     {
+@@ -2636,7 +3821,9 @@ static VkResult win32u_vkQueueSubmit( VkQueue client_queue, uint32_t count, cons
+         }
+     }
+ 
++    if (device->vidmm) pthread_rwlock_rdlock( &((struct vidmm *)device->vidmm)->submits );
+     res = device->p_vkQueueSubmit( queue->host.queue, count, submits, fence ? fence->host.fence : 0 );
++    if (device->vidmm) pthread_rwlock_unlock( &((struct vidmm *)device->vidmm)->submits );
+ 
+ failed:
+     mem_free( &pool );
+@@ -2699,7 +3886,9 @@ static VkResult queue_submit( struct vulkan_queue *queue, uint32_t count, const
+         }
+     }
+ 
++    if (queue->device->vidmm) pthread_rwlock_rdlock( &((struct vidmm *)queue->device->vidmm)->submits );
+     res = p_vkQueueSubmit2( queue->host.queue, count, submits, fence ? fence->host.fence : 0 );
++    if (queue->device->vidmm) pthread_rwlock_unlock( &((struct vidmm *)queue->device->vidmm)->submits );
+ 
+ failed:
+     mem_free( &pool );
+@@ -3263,8 +4452,10 @@ static struct vulkan_funcs vulkan_funcs =
+     .p_vkCreateSemaphore = win32u_vkCreateSemaphore,
+     .p_vkCreateSwapchainKHR = win32u_vkCreateSwapchainKHR,
+     .p_vkCreateWin32SurfaceKHR = win32u_vkCreateWin32SurfaceKHR,
++    .p_vkDestroyBuffer = win32u_vkDestroyBuffer,
+     .p_vkDestroyDevice = win32u_vkDestroyDevice,
+     .p_vkDestroyFence = win32u_vkDestroyFence,
++    .p_vkDestroyImage = win32u_vkDestroyImage,
+     .p_vkDestroyInstance = win32u_vkDestroyInstance,
+     .p_vkDestroySemaphore = win32u_vkDestroySemaphore,
+     .p_vkDestroySurfaceKHR = win32u_vkDestroySurfaceKHR,
+@@ -3286,6 +4477,8 @@ static struct vulkan_funcs vulkan_funcs =
+     .p_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR = win32u_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR,
+     .p_vkGetPhysicalDeviceImageFormatProperties2 = win32u_vkGetPhysicalDeviceImageFormatProperties2,
+     .p_vkGetPhysicalDeviceImageFormatProperties2KHR = win32u_vkGetPhysicalDeviceImageFormatProperties2KHR,
++    .p_vkGetPhysicalDeviceMemoryProperties2 = win32u_vkGetPhysicalDeviceMemoryProperties2,
++    .p_vkGetPhysicalDeviceMemoryProperties2KHR = win32u_vkGetPhysicalDeviceMemoryProperties2KHR,
+     .p_vkGetPhysicalDevicePresentRectanglesKHR = win32u_vkGetPhysicalDevicePresentRectanglesKHR,
+     .p_vkGetPhysicalDeviceProperties = win32u_vkGetPhysicalDeviceProperties,
+     .p_vkGetPhysicalDeviceProperties2 = win32u_vkGetPhysicalDeviceProperties2,
+@@ -3306,6 +4499,7 @@ static struct vulkan_funcs vulkan_funcs =
+     .p_vkQueueSubmit2KHR = win32u_vkQueueSubmit2KHR,
+     .p_vkUnmapMemory = win32u_vkUnmapMemory,
+     .p_vkUnmapMemory2KHR = win32u_vkUnmapMemory2KHR,
++    .p_pin_device_memory = win32u_pin_device_memory,
+ };
+ 
+ static VkResult nulldrv_vulkan_surface_create( struct client_surface *client, const struct vulkan_instance *instance, VkSurfaceKHR *surface )
+diff --git a/dlls/winevulkan/make_vulkan b/dlls/winevulkan/make_vulkan
+index 338f4b3..6f33c13 100755
+--- a/dlls/winevulkan/make_vulkan
++++ b/dlls/winevulkan/make_vulkan
+@@ -202,8 +202,10 @@ USER_DRIVER_FUNCS = {
+     "vkCreateSemaphore",
+     "vkCreateSwapchainKHR",
+     "vkCreateWin32SurfaceKHR",
++    "vkDestroyBuffer",
+     "vkDestroyDevice",
+     "vkDestroyFence",
++    "vkDestroyImage",
+     "vkDestroyInstance",
+     "vkDestroySemaphore",
+     "vkDestroySurfaceKHR",
+@@ -227,6 +229,8 @@ USER_DRIVER_FUNCS = {
+     "vkGetPhysicalDeviceExternalSemaphorePropertiesKHR",
+     "vkGetPhysicalDeviceImageFormatProperties2",
+     "vkGetPhysicalDeviceImageFormatProperties2KHR",
++    "vkGetPhysicalDeviceMemoryProperties2",
++    "vkGetPhysicalDeviceMemoryProperties2KHR",
+     "vkGetPhysicalDevicePresentRectanglesKHR",
+     "vkGetPhysicalDeviceProperties",
+     "vkGetPhysicalDeviceProperties2",
+@@ -1015,7 +1019,7 @@ class Handle(Type):
+         if self.name == "VkInstance":
+             return "vulkan_instance_from_handle({0})->host.instance".format(name)
+         if self.name == "VkDeviceMemory":
+-            return "vulkan_device_memory_from_handle({0})->host.device_memory".format(name)
++            return "pinned_host_memory({0})".format(name)
+         if self.name == "VkPhysicalDevice":
+             return "vulkan_physical_device_from_handle({0})->host.physical_device".format(name)
+         if self.name == "VkQueue":
+diff --git a/dlls/winevulkan/vulkan_private.h b/dlls/winevulkan/vulkan_private.h
+index bc8fe30..113d823 100644
+--- a/dlls/winevulkan/vulkan_private.h
++++ b/dlls/winevulkan/vulkan_private.h
+@@ -29,6 +29,16 @@
+ 
+ extern const struct vulkan_funcs *vk_funcs;
+ 
++/* A memory object the thunks hand to the driver (the program's own sparse
++ * binds, video sessions, priorities, names...) is used where win32u's video
++ * memory management does not follow it: it stays in VRAM from then on. */
++static inline VkDeviceMemory pinned_host_memory( VkDeviceMemory handle )
++{
++    struct vulkan_device_memory *memory = vulkan_device_memory_from_handle( handle );
++    if (!ReadAcquire( &memory->pinned )) vk_funcs->p_pin_device_memory( handle );
++    return memory->host.device_memory;
++}
++
+ struct wine_instance
+ {
+     struct vulkan_instance obj;
+diff --git a/dlls/winevulkan/vulkan_thunks.c b/dlls/winevulkan/vulkan_thunks.c
+index dabdef4..3af874c 100644
+--- a/dlls/winevulkan/vulkan_thunks.c
++++ b/dlls/winevulkan/vulkan_thunks.c
+@@ -11111,7 +11111,7 @@ static uint64_t wine_vk_unwrap_handle(uint32_t type, uint64_t handle)
+     case VK_OBJECT_TYPE_DEVICE:
+         return (uint64_t) (uintptr_t) vulkan_device_from_handle(((VkDevice) (uintptr_t) handle))->host.device;
+     case VK_OBJECT_TYPE_DEVICE_MEMORY:
+-        return (uint64_t) vulkan_device_memory_from_handle(handle)->host.device_memory;
++        return (uint64_t) pinned_host_memory(handle);
+     case VK_OBJECT_TYPE_FENCE:
+         return (uint64_t) vulkan_fence_from_handle(handle)->host.fence;
+     case VK_OBJECT_TYPE_INSTANCE:
+@@ -11768,7 +11768,7 @@ static void convert_VkCommandBufferInheritanceInfo_win64_to_host(struct conversi
+             const VkTileMemoryBindInfoQCOM *in_ext = (const VkTileMemoryBindInfoQCOM *)in_header;
+             out_ext->sType = VK_STRUCTURE_TYPE_TILE_MEMORY_BIND_INFO_QCOM;
+             out_ext->pNext = NULL;
+-            out_ext->memory = vulkan_device_memory_from_handle(in_ext->memory)->host.device_memory;
++            out_ext->memory = pinned_host_memory(in_ext->memory);
+             out_header->pNext = (void *)out_ext;
+             out_header = (void *)out_ext;
+             break;
+@@ -12005,7 +12005,7 @@ static void convert_VkCommandBufferInheritanceInfo_win32_to_host(struct conversi
+             const VkTileMemoryBindInfoQCOM32 *in_ext = (const VkTileMemoryBindInfoQCOM32 *)in_header;
+             out_ext->sType = VK_STRUCTURE_TYPE_TILE_MEMORY_BIND_INFO_QCOM;
+             out_ext->pNext = NULL;
+-            out_ext->memory = vulkan_device_memory_from_handle(in_ext->memory)->host.device_memory;
++            out_ext->memory = pinned_host_memory(in_ext->memory);
+             out_header->pNext = (void *)out_ext;
+             out_header = (void *)out_ext;
+             break;
+@@ -12075,7 +12075,7 @@ static void convert_VkBindAccelerationStructureMemoryInfoNV_win64_to_host(const
+     out->sType = in->sType;
+     out->pNext = in->pNext;
+     out->accelerationStructure = in->accelerationStructure;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->memoryOffset = in->memoryOffset;
+     out->deviceIndexCount = in->deviceIndexCount;
+     out->pDeviceIndices = in->pDeviceIndices;
+@@ -12107,7 +12107,7 @@ static void convert_VkBindAccelerationStructureMemoryInfoNV_win32_to_host(const
+     out->sType = in->sType;
+     out->pNext = NULL;
+     out->accelerationStructure = in->accelerationStructure;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->memoryOffset = in->memoryOffset;
+     out->deviceIndexCount = in->deviceIndexCount;
+     out->pDeviceIndices = UlongToPtr(in->pDeviceIndices);
+@@ -12204,7 +12204,7 @@ static void convert_VkBindDataGraphPipelineSessionMemoryInfoARM_win64_to_host(co
+     out->session = in->session;
+     out->bindPoint = in->bindPoint;
+     out->objectIndex = in->objectIndex;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->memoryOffset = in->memoryOffset;
+ }
+ #endif /* _WIN64 */
+@@ -12236,7 +12236,7 @@ static void convert_VkBindDataGraphPipelineSessionMemoryInfoARM_win32_to_host(co
+     out->session = in->session;
+     out->bindPoint = in->bindPoint;
+     out->objectIndex = in->objectIndex;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->memoryOffset = in->memoryOffset;
+     if (in->pNext)
+         FIXME("Unexpected pNext\n");
+@@ -12446,7 +12446,7 @@ static void convert_VkBindTensorMemoryInfoARM_win64_to_host(const VkBindTensorMe
+     out->sType = in->sType;
+     out->pNext = in->pNext;
+     out->tensor = in->tensor;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->memoryOffset = in->memoryOffset;
+ }
+ #endif /* _WIN64 */
+@@ -12476,7 +12476,7 @@ static void convert_VkBindTensorMemoryInfoARM_win32_to_host(const VkBindTensorMe
+     out->sType = in->sType;
+     out->pNext = NULL;
+     out->tensor = in->tensor;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->memoryOffset = in->memoryOffset;
+     if (in->pNext)
+         FIXME("Unexpected pNext\n");
+@@ -12506,7 +12506,7 @@ static void convert_VkBindVideoSessionMemoryInfoKHR_win64_to_host(const VkBindVi
+     out->sType = in->sType;
+     out->pNext = in->pNext;
+     out->memoryBindIndex = in->memoryBindIndex;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->memoryOffset = in->memoryOffset;
+     out->memorySize = in->memorySize;
+ }
+@@ -12537,7 +12537,7 @@ static void convert_VkBindVideoSessionMemoryInfoKHR_win32_to_host(const VkBindVi
+     out->sType = in->sType;
+     out->pNext = NULL;
+     out->memoryBindIndex = in->memoryBindIndex;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->memoryOffset = in->memoryOffset;
+     out->memorySize = in->memorySize;
+     if (in->pNext)
+@@ -13927,7 +13927,7 @@ static void convert_VkTileMemoryBindInfoQCOM_win64_to_host(const VkTileMemoryBin
+ 
+     out->sType = in->sType;
+     out->pNext = in->pNext;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+ }
+ #endif /* _WIN64 */
+ 
+@@ -13937,7 +13937,7 @@ static void convert_VkTileMemoryBindInfoQCOM_win32_to_host(const VkTileMemoryBin
+ 
+     out->sType = in->sType;
+     out->pNext = NULL;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     if (in->pNext)
+         FIXME("Unexpected pNext\n");
+ }
+@@ -30942,7 +30942,7 @@ static void convert_VkMappedMemoryRange_win64_to_host(const VkMappedMemoryRange
+ 
+     out->sType = in->sType;
+     out->pNext = in->pNext;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->offset = in->offset;
+     out->size = in->size;
+ }
+@@ -30972,7 +30972,7 @@ static void convert_VkMappedMemoryRange_win32_to_host(const VkMappedMemoryRange3
+ 
+     out->sType = in->sType;
+     out->pNext = NULL;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->offset = in->offset;
+     out->size = in->size;
+     if (in->pNext)
+@@ -32158,7 +32158,7 @@ static void convert_VkDeviceMemoryOpaqueCaptureAddressInfo_win64_to_host(const V
+ 
+     out->sType = in->sType;
+     out->pNext = in->pNext;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+ }
+ #endif /* _WIN64 */
+ 
+@@ -32168,7 +32168,7 @@ static void convert_VkDeviceMemoryOpaqueCaptureAddressInfo_win32_to_host(const V
+ 
+     out->sType = in->sType;
+     out->pNext = NULL;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     if (in->pNext)
+         FIXME("Unexpected pNext\n");
+ }
+@@ -48054,7 +48054,7 @@ static void convert_VkMemoryMapInfo_win64_to_host(const VkMemoryMapInfo *in, VkM
+     out->sType = in->sType;
+     out->pNext = in->pNext;
+     out->flags = in->flags;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->offset = in->offset;
+     out->size = in->size;
+ }
+@@ -48067,7 +48067,7 @@ static void convert_VkMemoryMapInfo_win32_to_host(const VkMemoryMapInfo32 *in, V
+     out->sType = in->sType;
+     out->pNext = NULL;
+     out->flags = in->flags;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     out->offset = in->offset;
+     out->size = in->size;
+     if (in->pNext)
+@@ -48113,7 +48113,7 @@ static void convert_VkSparseMemoryBind_win64_to_host(const VkSparseMemoryBind *i
+ 
+     out->resourceOffset = in->resourceOffset;
+     out->size = in->size;
+-    out->memory = in->memory ? vulkan_device_memory_from_handle(in->memory)->host.device_memory : 0;
++    out->memory = in->memory ? pinned_host_memory(in->memory) : 0;
+     out->memoryOffset = in->memoryOffset;
+     out->flags = in->flags;
+ }
+@@ -48203,7 +48203,7 @@ static void convert_VkSparseImageMemoryBind_win64_to_host(const VkSparseImageMem
+     out->subresource = in->subresource;
+     out->offset = in->offset;
+     out->extent = in->extent;
+-    out->memory = in->memory ? vulkan_device_memory_from_handle(in->memory)->host.device_memory : 0;
++    out->memory = in->memory ? pinned_host_memory(in->memory) : 0;
+     out->memoryOffset = in->memoryOffset;
+     out->flags = in->flags;
+ }
+@@ -48316,7 +48316,7 @@ static void convert_VkSparseMemoryBind_win32_to_host(const VkSparseMemoryBind32
+ 
+     out->resourceOffset = in->resourceOffset;
+     out->size = in->size;
+-    out->memory = in->memory ? vulkan_device_memory_from_handle(in->memory)->host.device_memory : 0;
++    out->memory = in->memory ? pinned_host_memory(in->memory) : 0;
+     out->memoryOffset = in->memoryOffset;
+     out->flags = in->flags;
+ }
+@@ -48394,7 +48394,7 @@ static void convert_VkSparseImageMemoryBind_win32_to_host(const VkSparseImageMem
+     out->subresource = in->subresource;
+     out->offset = in->offset;
+     out->extent = in->extent;
+-    out->memory = in->memory ? vulkan_device_memory_from_handle(in->memory)->host.device_memory : 0;
++    out->memory = in->memory ? pinned_host_memory(in->memory) : 0;
+     out->memoryOffset = in->memoryOffset;
+     out->flags = in->flags;
+ }
+@@ -49065,7 +49065,7 @@ static const VkDeviceMemory *convert_VkDeviceMemory_array_win64_to_host(struct c
+     out = conversion_context_alloc(ctx, count * sizeof(*out));
+     for (i = 0; i < count; i++)
+     {
+-        out[i] = vulkan_device_memory_from_handle(in[i])->host.device_memory;
++        out[i] = pinned_host_memory(in[i]);
+     }
+ 
+     return out;
+@@ -49266,7 +49266,7 @@ static const VkDeviceMemory *convert_VkDeviceMemory_array_win32_to_host(struct c
+     out = conversion_context_alloc(ctx, count * sizeof(*out));
+     for (i = 0; i < count; i++)
+     {
+-        out[i] = vulkan_device_memory_from_handle(in[i])->host.device_memory;
++        out[i] = pinned_host_memory(in[i]);
+     }
+ 
+     return out;
+@@ -50334,7 +50334,7 @@ static void convert_VkMemoryUnmapInfo_win64_to_host(const VkMemoryUnmapInfo *in,
+     out->sType = in->sType;
+     out->pNext = in->pNext;
+     out->flags = in->flags;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+ }
+ #endif /* _WIN64 */
+ 
+@@ -50345,7 +50345,7 @@ static void convert_VkMemoryUnmapInfo_win32_to_host(const VkMemoryUnmapInfo32 *i
+     out->sType = in->sType;
+     out->pNext = NULL;
+     out->flags = in->flags;
+-    out->memory = vulkan_device_memory_from_handle(in->memory)->host.device_memory;
++    out->memory = pinned_host_memory(in->memory);
+     if (in->pNext)
+         FIXME("Unexpected pNext\n");
+ }
+@@ -61480,7 +61480,7 @@ static NTSTATUS thunk64_vkDestroyBuffer(void *args)
+ 
+     TRACE("%p, 0x%s, %p\n", params->device, wine_dbgstr_longlong(params->buffer), params->pAllocator);
+ 
+-    vulkan_device_from_handle(params->device)->p_vkDestroyBuffer(vulkan_device_from_handle(params->device)->host.device, params->buffer, NULL);
++    vk_funcs->p_vkDestroyBuffer(params->device, params->buffer, params->pAllocator);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -61496,7 +61496,7 @@ static NTSTATUS thunk32_vkDestroyBuffer(void *args)
+ 
+     TRACE("%#x, 0x%s, %#x\n", params->device, wine_dbgstr_longlong(params->buffer), params->pAllocator);
+ 
+-    vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkDestroyBuffer(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->buffer, NULL);
++    vk_funcs->p_vkDestroyBuffer((VkDevice)UlongToPtr(params->device), params->buffer, (const VkAllocationCallbacks *)UlongToPtr(params->pAllocator));
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -61971,7 +61971,7 @@ static NTSTATUS thunk64_vkDestroyImage(void *args)
+ 
+     TRACE("%p, 0x%s, %p\n", params->device, wine_dbgstr_longlong(params->image), params->pAllocator);
+ 
+-    vulkan_device_from_handle(params->device)->p_vkDestroyImage(vulkan_device_from_handle(params->device)->host.device, params->image, NULL);
++    vk_funcs->p_vkDestroyImage(params->device, params->image, params->pAllocator);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -61987,7 +61987,7 @@ static NTSTATUS thunk32_vkDestroyImage(void *args)
+ 
+     TRACE("%#x, 0x%s, %#x\n", params->device, wine_dbgstr_longlong(params->image), params->pAllocator);
+ 
+-    vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkDestroyImage(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->image, NULL);
++    vk_funcs->p_vkDestroyImage((VkDevice)UlongToPtr(params->device), params->image, (const VkAllocationCallbacks *)UlongToPtr(params->pAllocator));
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -64894,7 +64894,7 @@ static NTSTATUS thunk64_vkGetDeviceMemoryCommitment(void *args)
+ 
+     TRACE("%p, 0x%s, %p\n", params->device, wine_dbgstr_longlong(params->memory), params->pCommittedMemoryInBytes);
+ 
+-    vulkan_device_from_handle(params->device)->p_vkGetDeviceMemoryCommitment(vulkan_device_from_handle(params->device)->host.device, vulkan_device_memory_from_handle(params->memory)->host.device_memory, params->pCommittedMemoryInBytes);
++    vulkan_device_from_handle(params->device)->p_vkGetDeviceMemoryCommitment(vulkan_device_from_handle(params->device)->host.device, pinned_host_memory(params->memory), params->pCommittedMemoryInBytes);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -64910,7 +64910,7 @@ static NTSTATUS thunk32_vkGetDeviceMemoryCommitment(void *args)
+ 
+     TRACE("%#x, 0x%s, %#x\n", params->device, wine_dbgstr_longlong(params->memory), params->pCommittedMemoryInBytes);
+ 
+-    vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkGetDeviceMemoryCommitment(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, vulkan_device_memory_from_handle(params->memory)->host.device_memory, (VkDeviceSize *)UlongToPtr(params->pCommittedMemoryInBytes));
++    vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkGetDeviceMemoryCommitment(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, pinned_host_memory(params->memory), (VkDeviceSize *)UlongToPtr(params->pCommittedMemoryInBytes));
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -67231,7 +67231,7 @@ static NTSTATUS thunk64_vkGetPhysicalDeviceMemoryProperties2(void *args)
+ 
+     TRACE("%p, %p\n", params->physicalDevice, params->pMemoryProperties);
+ 
+-    vulkan_physical_device_from_handle(params->physicalDevice)->instance->p_vkGetPhysicalDeviceMemoryProperties2(vulkan_physical_device_from_handle(params->physicalDevice)->host.physical_device, params->pMemoryProperties);
++    vk_funcs->p_vkGetPhysicalDeviceMemoryProperties2(params->physicalDevice, params->pMemoryProperties);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -67251,7 +67251,7 @@ static NTSTATUS thunk32_vkGetPhysicalDeviceMemoryProperties2(void *args)
+ 
+     init_conversion_context(ctx);
+     convert_VkPhysicalDeviceMemoryProperties2_win32_to_host(ctx, (VkPhysicalDeviceMemoryProperties232 *)UlongToPtr(params->pMemoryProperties), &pMemoryProperties_host);
+-    vulkan_physical_device_from_handle((VkPhysicalDevice)UlongToPtr(params->physicalDevice))->instance->p_vkGetPhysicalDeviceMemoryProperties2(vulkan_physical_device_from_handle((VkPhysicalDevice)UlongToPtr(params->physicalDevice))->host.physical_device, &pMemoryProperties_host);
++    vk_funcs->p_vkGetPhysicalDeviceMemoryProperties2((VkPhysicalDevice)UlongToPtr(params->physicalDevice), &pMemoryProperties_host);
+     convert_VkPhysicalDeviceMemoryProperties2_host_to_win32(&pMemoryProperties_host, (VkPhysicalDeviceMemoryProperties232 *)UlongToPtr(params->pMemoryProperties));
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+@@ -67264,7 +67264,7 @@ static NTSTATUS thunk64_vkGetPhysicalDeviceMemoryProperties2KHR(void *args)
+ 
+     TRACE("%p, %p\n", params->physicalDevice, params->pMemoryProperties);
+ 
+-    vulkan_physical_device_from_handle(params->physicalDevice)->instance->p_vkGetPhysicalDeviceMemoryProperties2KHR(vulkan_physical_device_from_handle(params->physicalDevice)->host.physical_device, params->pMemoryProperties);
++    vk_funcs->p_vkGetPhysicalDeviceMemoryProperties2KHR(params->physicalDevice, params->pMemoryProperties);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -67284,7 +67284,7 @@ static NTSTATUS thunk32_vkGetPhysicalDeviceMemoryProperties2KHR(void *args)
+ 
+     init_conversion_context(ctx);
+     convert_VkPhysicalDeviceMemoryProperties2_win32_to_host(ctx, (VkPhysicalDeviceMemoryProperties232 *)UlongToPtr(params->pMemoryProperties), &pMemoryProperties_host);
+-    vulkan_physical_device_from_handle((VkPhysicalDevice)UlongToPtr(params->physicalDevice))->instance->p_vkGetPhysicalDeviceMemoryProperties2KHR(vulkan_physical_device_from_handle((VkPhysicalDevice)UlongToPtr(params->physicalDevice))->host.physical_device, &pMemoryProperties_host);
++    vk_funcs->p_vkGetPhysicalDeviceMemoryProperties2KHR((VkPhysicalDevice)UlongToPtr(params->physicalDevice), &pMemoryProperties_host);
+     convert_VkPhysicalDeviceMemoryProperties2_host_to_win32(&pMemoryProperties_host, (VkPhysicalDeviceMemoryProperties232 *)UlongToPtr(params->pMemoryProperties));
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+@@ -70830,7 +70830,7 @@ static NTSTATUS thunk64_vkSetDeviceMemoryPriorityEXT(void *args)
+ 
+     TRACE("%p, 0x%s, %f\n", params->device, wine_dbgstr_longlong(params->memory), params->priority);
+ 
+-    vulkan_device_from_handle(params->device)->p_vkSetDeviceMemoryPriorityEXT(vulkan_device_from_handle(params->device)->host.device, vulkan_device_memory_from_handle(params->memory)->host.device_memory, params->priority);
++    vulkan_device_from_handle(params->device)->p_vkSetDeviceMemoryPriorityEXT(vulkan_device_from_handle(params->device)->host.device, pinned_host_memory(params->memory), params->priority);
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -70846,7 +70846,7 @@ static NTSTATUS thunk32_vkSetDeviceMemoryPriorityEXT(void *args)
+ 
+     TRACE("%#x, 0x%s, %f\n", params->device, wine_dbgstr_longlong(params->memory), params->priority);
+ 
+-    vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkSetDeviceMemoryPriorityEXT(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, vulkan_device_memory_from_handle(params->memory)->host.device_memory, params->priority);
++    vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkSetDeviceMemoryPriorityEXT(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, pinned_host_memory(params->memory), params->priority);
+     return STATUS_SUCCESS;
+ }
+ 
+diff --git a/include/wine/vulkan_driver.h b/include/wine/vulkan_driver.h
+index 9472648..7ea80ad 100644
+--- a/include/wine/vulkan_driver.h
++++ b/include/wine/vulkan_driver.h
+@@ -89,7 +89,7 @@ struct VkDevice_T
+ #include "wine/list.h"
+ 
+ /* Wine internal vulkan driver version, needs to be bumped upon vulkan_funcs changes. */
+-#define WINE_VULKAN_DRIVER_VERSION 48
++#define WINE_VULKAN_DRIVER_VERSION 49
+ 
+ struct vulkan_object
+ {
+@@ -181,6 +181,7 @@ struct vulkan_physical_device
+     VkPhysicalDeviceMemoryProperties memory_properties;
+     uint32_t external_memory_align;
+     uint32_t map_placed_align;
++    BOOL discrete;  /* VRAM of its own: shared with the game in front by budget */
+ };
+ 
+ static inline struct vulkan_physical_device *vulkan_physical_device_from_handle( VkPhysicalDevice handle )
+@@ -212,6 +213,7 @@ struct vulkan_device
+     ALL_VK_DEVICE_FUNCS
+ #undef USE_VK_FUNC
+ 
++    void *vidmm;  /* win32u's video memory management, or NULL */
+     uint64_t queue_count;
+     struct vulkan_queue queues[];
+ };
+@@ -239,6 +241,7 @@ static inline struct vulkan_command_buffer *vulkan_command_buffer_from_handle( V
+ struct vulkan_device_memory
+ {
+     VULKAN_OBJECT_HEADER( VkDeviceMemory, device_memory );
++    LONG pinned;  /* stays in VRAM: used where win32u's paging does not follow it */
+ };
+ 
+ static inline struct vulkan_device_memory *vulkan_device_memory_from_handle( VkDeviceMemory handle )
+@@ -315,6 +318,8 @@ struct vulkan_funcs
+     PFN_vkCreateWin32SurfaceKHR p_vkCreateWin32SurfaceKHR;
+     PFN_vkDestroyDevice p_vkDestroyDevice;
+     PFN_vkDestroyFence p_vkDestroyFence;
++    PFN_vkDestroyBuffer p_vkDestroyBuffer;
++    PFN_vkDestroyImage p_vkDestroyImage;
+     PFN_vkDestroyInstance p_vkDestroyInstance;
+     PFN_vkDestroySemaphore p_vkDestroySemaphore;
+     PFN_vkDestroySurfaceKHR p_vkDestroySurfaceKHR;
+@@ -338,6 +343,8 @@ struct vulkan_funcs
+     PFN_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR p_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR;
+     PFN_vkGetPhysicalDeviceImageFormatProperties2 p_vkGetPhysicalDeviceImageFormatProperties2;
+     PFN_vkGetPhysicalDeviceImageFormatProperties2KHR p_vkGetPhysicalDeviceImageFormatProperties2KHR;
++    PFN_vkGetPhysicalDeviceMemoryProperties2 p_vkGetPhysicalDeviceMemoryProperties2;
++    PFN_vkGetPhysicalDeviceMemoryProperties2KHR p_vkGetPhysicalDeviceMemoryProperties2KHR;
+     PFN_vkGetPhysicalDevicePresentRectanglesKHR p_vkGetPhysicalDevicePresentRectanglesKHR;
+     PFN_vkGetPhysicalDeviceProperties p_vkGetPhysicalDeviceProperties;
+     PFN_vkGetPhysicalDeviceProperties2 p_vkGetPhysicalDeviceProperties2;
+@@ -358,6 +365,9 @@ struct vulkan_funcs
+     PFN_vkQueueSubmit2KHR p_vkQueueSubmit2KHR;
+     PFN_vkUnmapMemory p_vkUnmapMemory;
+     PFN_vkUnmapMemory2KHR p_vkUnmapMemory2KHR;
++
++    /* a memory object the thunks give the driver: win32u keeps it in VRAM from then on */
++    void (*p_pin_device_memory)( VkDeviceMemory memory );
+ };
+ 
+ /* interface between win32u and the user drivers */

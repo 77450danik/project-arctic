@@ -1,0 +1,49 @@
+REGEDIT4
+
+; Pin to Start and Pin to taskbar in the context menu of programs, shortcuts,
+; folders and drives, as Windows has them: startui.dll (shellext.c)
+[HKEY_CLASSES_ROOT\CLSID\{5B4F2C1E-8D3A-4E7B-9C61-2A7D0E4F9B13}]
+@="Pin to Start and to the taskbar"
+
+[HKEY_CLASSES_ROOT\CLSID\{5B4F2C1E-8D3A-4E7B-9C61-2A7D0E4F9B13}\InProcServer32]
+@="C:\\Windows\\System32\\startui.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\exefile\shellex\ContextMenuHandlers\PintoStartScreen]
+@="{5B4F2C1E-8D3A-4E7B-9C61-2A7D0E4F9B13}"
+
+[HKEY_CLASSES_ROOT\lnkfile\shellex\ContextMenuHandlers\PintoStartScreen]
+@="{5B4F2C1E-8D3A-4E7B-9C61-2A7D0E4F9B13}"
+
+[HKEY_CLASSES_ROOT\Directory\shellex\ContextMenuHandlers\PintoStartScreen]
+@="{5B4F2C1E-8D3A-4E7B-9C61-2A7D0E4F9B13}"
+
+[HKEY_CLASSES_ROOT\Drive\shellex\ContextMenuHandlers\PintoStartScreen]
+@="{5B4F2C1E-8D3A-4E7B-9C61-2A7D0E4F9B13}"
+
+; Send to's "Desktop (create shortcut)": the class of .DeskLink files, a drop
+; handler that makes a shortcut on the desktop (startui.dll, shellext.c);
+; Send to's folder gets the file once (sendto_defaults)
+[HKEY_CLASSES_ROOT\.DeskLink]
+@="CLSID\\{9E56BE61-C50F-11CF-9A2C-00A0C90A90CE}"
+
+[HKEY_CLASSES_ROOT\CLSID\{9E56BE61-C50F-11CF-9A2C-00A0C90A90CE}]
+@="Desktop (create shortcut)"
+"EditFlags"=dword:00000001
+"NeverShowExt"=""
+"NoOpen"=""
+
+[HKEY_CLASSES_ROOT\CLSID\{9E56BE61-C50F-11CF-9A2C-00A0C90A90CE}\DefaultIcon]
+@="C:\\Windows\\System32\\shell32.dll,-35"
+
+[HKEY_CLASSES_ROOT\CLSID\{9E56BE61-C50F-11CF-9A2C-00A0C90A90CE}\InProcServer32]
+@="C:\\Windows\\System32\\startui.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CLASSES_ROOT\CLSID\{9E56BE61-C50F-11CF-9A2C-00A0C90A90CE}\ShellEx\DropHandler]
+@="{9E56BE61-C50F-11CF-9A2C-00A0C90A90CE}"
+
+; Copy to folder and Move to folder are in no context menu of Windows 10 or
+; 11 (shell32 registers them for every file): the ribbon has them
+[-HKEY_CLASSES_ROOT\AllFilesystemObjects\shellex\ContextMenuHandlers\CopyTo]
+[-HKEY_CLASSES_ROOT\AllFilesystemObjects\shellex\ContextMenuHandlers\MoveTo]

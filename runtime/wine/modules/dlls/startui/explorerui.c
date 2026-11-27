@@ -413,6 +413,61 @@ static void draw_icon( HDC hdc, int icon, int x, int y, int size, COLORREF color
     if (!kept) free( pixels );   /* the cache is full: drawn once */
 }
 
+/* the buttons of the command bar have the two-tone pictures of Windows 11's
+ * context menus: grey lines, blue where the command acts. shell32 paints
+ * them for a light or a dark background (menuicons.cpp) */
+typedef HBITMAP (WINAPI *get_menu_picture_fn)( const char *name, UINT size, BOOL dark );
+
+static const char *picture_of( int kind, int icon )
+{
+    if (kind != Z_COMMAND && kind != Z_NEW_MENU && kind != Z_SORT_MENU && kind != Z_VIEW_MENU) return NULL;
+    switch (icon)
+    {
+    case I_PLUS:   return "new";
+    case I_CUT:    return "cut";
+    case I_COPY:   return "copy";
+    case I_PASTE:  return "paste";
+    case I_RENAME: return "rename";
+    case I_SHARE:  return "share";
+    case I_DELETE: return "delete";
+    case I_SORT:   return "sort";
+    case I_VIEW:   return "view";
+    }
+    return NULL;
+}
+
+static BOOL draw_picture( HDC hdc, const char *name, int x, int y, int size, BOOL dark, BOOL enabled )
+{
+    static get_menu_picture_fn get_picture;
+    static BOOL looked;
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, enabled ? 255 : 0x60, AC_SRC_ALPHA };
+    HBITMAP bitmap;
+    BITMAP info;
+    HGDIOBJ old;
+    HDC mem;
+    int draw;
+
+    if (!looked)
+    {
+        HMODULE shell32 = GetModuleHandleW( L"shell32.dll" );
+
+        if (shell32) get_picture = (get_menu_picture_fn)GetProcAddress( shell32, "ArcticGetMenuPicture" );
+        looked = TRUE;
+    }
+    if (!name || !get_picture || !(bitmap = get_picture( name, size, dark ))) return FALSE;
+    if (GetObjectW( bitmap, sizeof(info), &info ) != sizeof(info) || info.bmWidth <= 0) return FALSE;
+    /* at its own size, drawn for it; stretched only when much smaller */
+    draw = info.bmWidth >= size * 3 / 4 ? info.bmWidth : size;
+    x += (size - draw) / 2;
+    y += (size - draw) / 2;
+    if (!(mem = CreateCompatibleDC( hdc ))) return FALSE;
+    old = SelectObject( mem, bitmap );
+    GdiAlphaBlend( hdc, x, y, draw, draw, mem, 0, 0, info.bmWidth, abs( info.bmHeight ), blend );
+    SelectObject( mem, old );
+    DeleteDC( mem );
+    return TRUE;
+}
+
 /**********************************************************************
  *          Tabs and the places
  */
@@ -982,21 +1037,27 @@ static void fill( HDC hdc, const RECT *r, COLORREF color )
 static void paint_button( struct chrome *c, HDC hdc, const struct colors *col, RECT r, int kind, int index, int icon,
                           COLORREF ink, const WCHAR *label, HFONT font, BOOL enabled, BOOL chevron )
 {
-    int size = px( 20 ), x;
+    int size = px( 20 ), pic = px( 16 ), x;
+    const char *picture = picture_of( kind, icon );
 
     zone_add( c, kind, index, &r, enabled );
     if (enabled && is_hot( c, kind, index ))
         fill_round_rect( hdc, &r, (float)px( 4 ), c->down_kind == kind && c->down_index == index ? col->down : col->hover, 255 );
-    if (!enabled) ink = col->dark ? RGB( 0x70, 0x70, 0x70 ) : RGB( 0xb0, 0xb0, 0xb0 );
     if (!label)
     {
-        draw_icon( hdc, icon, (r.left + r.right - size) / 2, (r.top + r.bottom - size) / 2, size, ink );
+        if (!draw_picture( hdc, picture, (r.left + r.right - pic) / 2, (r.top + r.bottom - pic) / 2, pic, col->dark, enabled ))
+        {
+            if (!enabled) ink = col->dark ? RGB( 0x70, 0x70, 0x70 ) : RGB( 0xb0, 0xb0, 0xb0 );
+            draw_icon( hdc, icon, (r.left + r.right - size) / 2, (r.top + r.bottom - size) / 2, size, ink );
+        }
         return;
     }
+    if (!enabled) ink = col->dark ? RGB( 0x70, 0x70, 0x70 ) : RGB( 0xb0, 0xb0, 0xb0 );
     x = r.left + px( 8 );
     if (icon != I_NONE)
     {
-        draw_icon( hdc, icon, x, (r.top + r.bottom - size) / 2, size, ink );
+        if (!draw_picture( hdc, picture, x + (size - pic) / 2, (r.top + r.bottom - pic) / 2, pic, col->dark, enabled ))
+            draw_icon( hdc, icon, x, (r.top + r.bottom - size) / 2, size, ink );
         x += size + px( 6 );
     }
     {

@@ -265,6 +265,7 @@ BOOL WINAPI ArcticApplyTaskbarLookEx( HWND tray )
 {
     /* the taskbar came: the programs' mode is set again after an update */
     personalize_sync();
+    sendto_defaults();
     gadgets_start();
     taskbar_can_be_light = TRUE;
     ArcticApplyTaskbarLook( tray );

@@ -53,6 +53,15 @@ done
 # Wine's name off the registry, the versions of files and the Device Manager
 perl "$ROOT/ci/wine-names.pl" .
 perl tools/make_requests
+# NT's executive in the kernel (kernel/drivers/ntos) is built with a copy of
+# these headers (tools/ntos/vendor-headers.sh): the protocol and its requests
+# must be the ones ntdll speaks, or every program would fail to start on it
+NTOS_INC="$ROOT/kernel/drivers/ntos/wine-include/wine/server_protocol.h"
+if [ -f "$NTOS_INC" ] && ! cmp -s include/wine/server_protocol.h "$NTOS_INC"; then
+    echo "build-wine: kernel/drivers/ntos/wine-include is not this Wine's (run tools/ntos/vendor-headers.sh):" >&2
+    diff include/wine/server_protocol.h "$NTOS_INC" | head -20 >&2
+    exit 1
+fi
 if [ -n "$(find "$ROOT/runtime/wine/modules" -mindepth 1 ! -name .keep -print -quit)" ]; then
     git add -A . # make_makefiles only sees files git knows about
     perl tools/make_makefiles

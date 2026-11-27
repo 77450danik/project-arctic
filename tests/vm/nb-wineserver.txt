@@ -1,0 +1,8 @@
+# nb-ntos.txt's pair under wineserver (vm-test.py --append arctic.ntos=0)
+sleep 8
+key win-r
+sleep 2
+type cmd /c mkdir D:\nt & D:\nb.cmd wsrv6 shell32:shlfileop kernel32:path
+key ret
+sleep 5
+shot nb-wineserver

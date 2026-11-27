@@ -1,0 +1,47 @@
+From: Project Arctic
+Subject: dxvk: an image can carry the video profiles it is decoded with.
+
+A decoder's picture array is created with its VkVideoProfileListInfoKHR
+and is shared by the graphics and the video queue families (concurrent
+sharing), so that pictures the video queue writes are read by graphics
+without ownership transfers.
+---
+diff --git a/src/dxvk/dxvk_image.h b/src/dxvk/dxvk_image.h
+index 5dac215..da52827 100644
+--- a/src/dxvk/dxvk_image.h
++++ b/src/dxvk/dxvk_image.h
+@@ -75,6 +75,12 @@ namespace dxvk {
+     // Shared handle info
+     DxvkSharedHandleInfo sharing = { };
+ 
++    // Video profiles the image is decoded with (VkVideoProfileListInfoKHR),
++    // and the queue families it is used on, concurrently: the graphics
++    // queue and the video queue. The list must outlive the image.
++    const void* videoProfileList = nullptr;
++    std::array<uint32_t, 2> videoQueueFamilies = { };
++
+     // Debug name
+     const char* debugName = nullptr;
+   };
+diff --git a/src/dxvk/dxvk_image.cpp b/src/dxvk/dxvk_image.cpp
+index 3b5b739..d4ecf53 100644
+--- a/src/dxvk/dxvk_image.cpp
++++ b/src/dxvk/dxvk_image.cpp
+@@ -590,6 +590,17 @@ namespace dxvk {
+     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+     info.initialLayout = m_info.initialLayout;
+ 
++    // A decoder's picture: written by the video queue, read by graphics
++    if (m_info.videoProfileList) {
++      info.pNext = m_info.videoProfileList;
++
++      if (m_info.videoQueueFamilies[0] != m_info.videoQueueFamilies[1]) {
++        info.sharingMode = VK_SHARING_MODE_CONCURRENT;
++        info.queueFamilyIndexCount = m_info.videoQueueFamilies.size();
++        info.pQueueFamilyIndices = m_info.videoQueueFamilies.data();
++      }
++    }
++
+     return info;
+   }
+ 

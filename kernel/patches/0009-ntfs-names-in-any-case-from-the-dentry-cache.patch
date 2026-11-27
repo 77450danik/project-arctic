@@ -1,0 +1,184 @@
+From: Arctic
+Subject: [PATCH] ntfs: names in any case from the dentry cache on a nocase volume
+
+As NTFS in Windows, a volume mounted nocase finds a file by its name in any
+case. The driver looked it up in the directory's index case-insensitively,
+but the dcache kept a dentry per spelling: every other case missed it and
+read the index again (GetFileAttributes of a name in another case took 2.6
+times as long as in its own). The dentries of such a volume are now hashed
+and compared by the volume's upcase table; a negative one is dropped for a
+creation or a rename target, so a new name keeps its caller's case.
+
+diff -ruN a/fs/ntfs/namei.c b/fs/ntfs/namei.c
+--- a/fs/ntfs/namei.c	2026-11-23 00:52:49.713410600 +0100
++++ b/fs/ntfs/namei.c	2026-11-23 16:08:31.607665500 +0100
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <linux/exportfs.h>
++#include <linux/namei.h>
+ #include <linux/iversion.h>
+ 
+ #include "ntfs.h"
+@@ -16,6 +17,106 @@
+ #include "object_id.h"
+ #include "ea.h"
+ 
++/*
++ * Arctic: names in any case from the dentry cache, as NTFS in Windows finds
++ * them (docs/ntos.md, "Імена без урахування регістру"). On a volume mounted
++ * nocase the dcache hashes and compares names by the volume's own upcase
++ * table, so "Program Files" and "PROGRAM FILES" are one dentry: a name in
++ * another case is found without a lookup in the directory's index. A
++ * character the NLS table cannot decode, or one outside the BMP, is taken
++ * byte by byte in both, so hash and compare agree.
++ */
++static inline int ntfs_ci_char(const struct ntfs_volume *vol, const unsigned char *s,
++		unsigned int len, unsigned int *c)
++{
++	wchar_t uc;
++	int n;
++
++	/* ASCII is itself in every NLS table: no call through it per letter
++	 * (an indirect call each, retpolined, made every lookup on the
++	 * volume 11-20 us slower than without these dentry operations) */
++	if (*s < 0x80) {
++		*c = *s < vol->upcase_len ? le16_to_cpu(vol->upcase[*s]) : *s;
++		return 1;
++	}
++	n = vol->nls_map->char2uni(s, len, &uc);
++
++	if (n <= 0 || n > 3) {
++		*c = 0x10000 | *s;	/* apart from every BMP character */
++		return 1;
++	}
++	*c = uc < vol->upcase_len ? le16_to_cpu(vol->upcase[uc]) : uc;
++	return n;
++}
++
++static int ntfs_ci_hash(const struct dentry *dentry, struct qstr *qstr)
++{
++	const struct ntfs_volume *vol = NTFS_SB(dentry->d_sb);
++	const unsigned char *s = qstr->name;
++	unsigned int len = qstr->len, c;
++	unsigned long hash = init_name_hash(dentry);
++
++	while (len) {
++		int n = ntfs_ci_char(vol, s, len, &c);
++
++		hash = partial_name_hash(c, hash);
++		s += n;
++		len -= n;
++	}
++	qstr->hash = end_name_hash(hash);
++	return 0;
++}
++
++static int ntfs_ci_compare(const struct dentry *dentry, unsigned int len,
++		const char *str, const struct qstr *name)
++{
++	const struct ntfs_volume *vol = NTFS_SB(dentry->d_sb);
++	const unsigned char *a = name->name, *b = (const unsigned char *)str;
++	unsigned int alen = name->len, blen = len, ca, cb;
++
++	while (alen && blen) {
++		int na = ntfs_ci_char(vol, a, alen, &ca);
++		int nb = ntfs_ci_char(vol, b, blen, &cb);
++
++		if (ca != cb)
++			return 1;
++		a += na;
++		alen -= na;
++		b += nb;
++		blen -= nb;
++	}
++	return alen || blen;
++}
++
++/*
++ * A positive dentry stays, under RCU too. A negative one found by another
++ * case is dropped for a creation or the target of a rename, so the new name
++ * gets the case its caller gave (as vfat does); otherwise it stands for the
++ * name in every case, which is what a nocase volume means. That is decided
++ * by the flags alone, so only those two leave the RCU walk: with every
++ * negative one leaving it, a missing name (and Wine looks for "name?" of
++ * each file, a reparse point's) took twice as long.
++ */
++static int ntfs_ci_revalidate(struct inode *dir, const struct qstr *name,
++		struct dentry *dentry, unsigned int flags)
++{
++	if (d_really_is_positive(dentry))
++		return 1;
++	if (flags & (LOOKUP_CREATE | LOOKUP_RENAME_TARGET))
++		return (flags & LOOKUP_RCU) ? -ECHILD : 0;
++	if (!(flags & ~LOOKUP_RCU))	/* no intent said (nfsd): could be a creation */
++		return (flags & LOOKUP_RCU) ? -ECHILD : 0;
++	return 1;
++}
++
++bool ntfs_ci_dcache = true;
++
++const struct dentry_operations ntfs_ci_dentry_ops = {
++	.d_revalidate	= ntfs_ci_revalidate,
++	.d_hash		= ntfs_ci_hash,
++	.d_compare	= ntfs_ci_compare,
++};
++
+ static const __le16 aux_name_le[3] = {
+ 	cpu_to_le16('A'), cpu_to_le16('U'), cpu_to_le16('X')
+ };
+@@ -309,6 +410,18 @@
+ 		}
+ 		nls_name.hash = full_name_hash(dent, nls_name.name, nls_name.len);
+ 
++		/*
++		 * Arctic: with the volume's case-insensitive dentries the name
++		 * looked up stands for the one on the disk (another case of it);
++		 * d_add_ci would look for that same name among the dentries being
++		 * looked up, find this one, and wait for itself. A DOS name is
++		 * another name and goes through d_add_ci as before.
++		 */
++		if (dent->d_op == &ntfs_ci_dentry_ops &&
++		    ntfs_ci_compare(dent, nls_name.len, nls_name.name, &dent->d_name) == 0) {
++			kfree(nls_name.name);
++			return d_splice_alias(dent_inode, dent);
++		}
+ 		dent = d_add_ci(dent, dent_inode, &nls_name);
+ 		kfree(nls_name.name);
+ 		return dent;
+diff -ruN a/fs/ntfs/ntfs.h b/fs/ntfs/ntfs.h
+--- a/fs/ntfs/ntfs.h	2026-11-23 00:52:49.717410600 +0100
++++ b/fs/ntfs/ntfs.h	2026-11-23 14:56:38.909774200 +0100
+@@ -179,6 +179,8 @@
+ 
+ extern const struct  file_operations ntfs_dir_ops;
+ extern const struct inode_operations ntfs_dir_inode_ops;
++extern const struct dentry_operations ntfs_ci_dentry_ops;
++extern bool ntfs_ci_dcache;
+ 
+ extern const struct  file_operations ntfs_empty_file_ops;
+ extern const struct inode_operations ntfs_empty_inode_ops;
+diff -ruN a/fs/ntfs/super.c b/fs/ntfs/super.c
+--- a/fs/ntfs/super.c	2026-11-23 00:52:49.715410600 +0100
++++ b/fs/ntfs/super.c	2026-11-23 14:56:33.854774400 +0100
+@@ -2374,6 +2374,11 @@
+ 		goto unl_upcase_iput_tmp_ino_err_out_now;
+ 	}
+ 
++	/* Arctic: names in any case from the dcache on a nocase volume
++	 * (ntfs.ci_dcache=0 at boot: the dcache as before, to compare) */
++	if (!NVolCaseSensitive(vol) && ntfs_ci_dcache)
++		set_default_d_op(sb, &ntfs_ci_dentry_ops);
++
+ 	/* We grab a reference, simulating an ntfs_iget(). */
+ 	ihold(vol->root_ino);
+ 	sb->s_root = d_make_root(vol->root_ino);
+@@ -2708,6 +2713,8 @@
+ MODULE_AUTHOR("Namjae Jeon <linkinjeon@kernel.org>"); /* Add write, iomap and various features */
+ MODULE_DESCRIPTION("NTFS read-write filesystem driver");
+ MODULE_LICENSE("GPL");
++module_param_named(ci_dcache, ntfs_ci_dcache, bool, 0444);
++MODULE_PARM_DESC(ci_dcache, "Arctic: names in any case from the dentry cache on a nocase volume.");
+ #ifdef DEBUG
+ module_param(debug_msgs, uint, 0);
+ MODULE_PARM_DESC(debug_msgs, "Enable debug messages.");

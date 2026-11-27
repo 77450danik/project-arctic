@@ -1,0 +1,458 @@
+From: Project Arctic
+Subject: services: a user's own services, as Windows 10 and 11 have them.
+
+A service of type SERVICE_USER_OWN_PROCESS or SERVICE_USER_SHARE_PROCESS
+(0x50, 0x60) is a template: each logon gets an instance of it,
+<name>_<logon id>, which runs in the user's session, on the user's desktop.
+Wine refused the type (ERROR_INVALID_PARAMETER): Logitech G HUB makes its
+agent such a service, so the agent never ran and the installer waited for
+it for ever. Now the template is taken and never runs itself; this logon's
+instance is made at the start of the SCM (the ones of earlier logons are
+dropped) and when a template is made, and an automatic one runs then;
+StartService of a template starts the instance, DeleteService takes it
+along. Instances run on the user's desktop (WinSta0\Default), not the services'
+window station. A service has Windows' 30 s, not Wine's 10, to reach its
+dispatcher: G HUB's agent took longer (ERROR_SERVICE_REQUEST_TIMEOUT).
+
+A program's service (outside Windows' directory) of LocalSystem runs as
+SYSTEM, with a token made by NtCreateToken (S-1-5-18, Administrators,
+its privileges), as in Windows; every process of Arctic ran as its one
+user, and G HUB's updater starts its agent in the user's session only as
+SYSTEM. The system's own services keep running as before.
+---
+diff --git a/programs/services/rpc.c b/programs/services/rpc.c
+index 2f4d4a5..8fcb761 100644
+--- a/programs/services/rpc.c
++++ b/programs/services/rpc.c
+@@ -662,6 +662,22 @@ static DWORD create_serviceW(
+     }
+     scmdatabase_unlock(manager->db);
+ 
++    /* Arctic: a user service made while its user is logged on has its
++     * instance at once, and an automatic one runs, as the logon would have
++     * started it (G HUB's updater makes its agent so and waits for it) */
++    if (is_user_service_template(entry))
++    {
++        struct service_entry *instance;
++
++        if (!user_service_instance(manager->db, entry, &instance))
++        {
++            if (instance->config.dwStartType == SERVICE_AUTO_START)
++                user_service_start_async(instance);
++            else
++                release_service(instance);
++        }
++    }
++
+     return create_handle_for_service(entry, dwDesiredAccess, phService);
+ }
+ 
+@@ -707,6 +723,20 @@ DWORD __cdecl svcctl_DeleteService(
+ 
+     service_unlock(service->service_entry);
+ 
++    /* Arctic: a user service's instance goes with its template */
++    if (!err && is_user_service_template(service->service_entry))
++    {
++        struct service_entry *instance;
++
++        if (!user_service_instance(service->service_entry->db, service->service_entry, &instance))
++        {
++            service_lock(instance);
++            if (!is_marked_for_delete(instance)) mark_for_delete(instance);
++            service_unlock(instance);
++            release_service(instance);
++        }
++    }
++
+     return err;
+ }
+ 
+@@ -1292,7 +1322,19 @@ DWORD __cdecl svcctl_StartServiceW(
+     if (!scmdatabase_lock_startup(service->service_entry->db, 3000))
+         return ERROR_SERVICE_DATABASE_LOCKED;
+ 
+-    err = service_start(service->service_entry, dwNumServiceArgs, lpServiceArgVectors);
++    /* Arctic: a user service's template does not run; this logon's instance does */
++    if (is_user_service_template(service->service_entry))
++    {
++        struct service_entry *instance;
++
++        if (!(err = user_service_instance(service->service_entry->db, service->service_entry, &instance)))
++        {
++            err = service_start(instance, dwNumServiceArgs, lpServiceArgVectors);
++            release_service(instance);
++        }
++    }
++    else
++        err = service_start(service->service_entry, dwNumServiceArgs, lpServiceArgVectors);
+ 
+     scmdatabase_unlock_startup(service->service_entry->db);
+     return err;
+diff --git a/programs/services/services.c b/programs/services/services.c
+index d2ac1d1..aeaae0d 100644
+--- a/programs/services/services.c
++++ b/programs/services/services.c
+@@ -41,7 +41,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(service);
+ 
+ struct scmdatabase *active_database;
+ 
+-DWORD service_pipe_timeout = 10000;
++/* Arctic: Windows' default (ServicesPipeTimeout): a big service such as
++ * G HUB's agent reaches its dispatcher after more than Wine's 10 s */
++DWORD service_pipe_timeout = 30000;
+ DWORD service_kill_timeout = 60000;
+ static DWORD default_preshutdown_timeout = 180000;
+ static DWORD autostart_delay = 120000;
+@@ -427,6 +429,101 @@ static BOOL is_third_party_service(const struct service_entry *service)
+     return wcsnicmp(path, windir, len) || path[len] != '\\';
+ }
+ 
++/* Arctic: every process of Arctic runs as its one user; in Windows a service
++ * of LocalSystem runs as SYSTEM, elevated, and programs rely on it: G HUB's
++ * updater starts its agent in the user's session (WTSQueryUserToken,
++ * CreateProcessAsUser) only when it runs as SYSTEM, and the installer waited
++ * for the agent for ever. A program's service (outside Windows' directory) of
++ * LocalSystem gets SYSTEM's token; the system's own keep running as before. */
++static HANDLE make_system_token(void)
++{
++    static const WCHAR *names[] =
++    {
++        L"SeTcbPrivilege", L"SeAssignPrimaryTokenPrivilege", L"SeImpersonatePrivilege", L"SeDebugPrivilege",
++        L"SeCreateGlobalPrivilege", L"SeIncreaseQuotaPrivilege", L"SeBackupPrivilege", L"SeRestorePrivilege",
++        L"SeShutdownPrivilege", L"SeLoadDriverPrivilege", L"SeSecurityPrivilege", L"SeTakeOwnershipPrivilege",
++        L"SeChangeNotifyPrivilege", L"SeManageVolumePrivilege", L"SeSystemEnvironmentPrivilege",
++        L"SeIncreaseBasePriorityPrivilege", L"SeCreatePagefilePrivilege", L"SeSystemtimePrivilege",
++        L"SeAuditPrivilege", L"SeCreatePermanentPrivilege", L"SeLockMemoryPrivilege", L"SeProfileSingleProcessPrivilege",
++    };
++    SID_IDENTIFIER_AUTHORITY nt_auth = {SECURITY_NT_AUTHORITY}, world_auth = {SECURITY_WORLD_SID_AUTHORITY};
++    struct { TOKEN_GROUPS g; SID_AND_ATTRIBUTES more[3]; } groups;
++    struct { TOKEN_PRIVILEGES p; LUID_AND_ATTRIBUTES more[ARRAY_SIZE(names)]; } privs;
++    PSID system_sid = NULL, admins_sid = NULL, world_sid = NULL, auth_sid = NULL;
++    const DWORD attrs = SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_MANDATORY;
++    TOKEN_SOURCE source = { "*SYSTEM*", {0, 0} };
++    OBJECT_ATTRIBUTES attr;
++    TOKEN_PRIMARY_GROUP group;
++    LARGE_INTEGER expire;
++    TOKEN_OWNER owner;
++    TOKEN_USER user;
++    HANDLE token = NULL;
++    NTSTATUS status;
++    unsigned int i;
++    LUID id;
++
++    if (!AllocateAndInitializeSid(&nt_auth, 1, SECURITY_LOCAL_SYSTEM_RID, 0, 0, 0, 0, 0, 0, 0, &system_sid) ||
++        !AllocateAndInitializeSid(&nt_auth, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins_sid) ||
++        !AllocateAndInitializeSid(&world_auth, 1, SECURITY_WORLD_RID, 0, 0, 0, 0, 0, 0, 0, &world_sid) ||
++        !AllocateAndInitializeSid(&nt_auth, 1, SECURITY_AUTHENTICATED_USER_RID, 0, 0, 0, 0, 0, 0, 0, &auth_sid))
++        goto done;
++
++    groups.g.GroupCount = 4;
++    groups.g.Groups[0].Sid = admins_sid;
++    groups.g.Groups[0].Attributes = attrs | SE_GROUP_OWNER;
++    groups.more[0].Sid = world_sid;
++    groups.more[0].Attributes = attrs;
++    groups.more[1].Sid = auth_sid;
++    groups.more[1].Attributes = attrs;
++    groups.more[2].Sid = system_sid;
++    groups.more[2].Attributes = attrs;
++
++    privs.p.PrivilegeCount = 0;
++    for (i = 0; i < ARRAY_SIZE(names); i++)
++    {
++        LUID_AND_ATTRIBUTES *priv = &privs.p.Privileges[privs.p.PrivilegeCount];
++        if (!LookupPrivilegeValueW(NULL, names[i], &priv->Luid)) continue;
++        priv->Attributes = SE_PRIVILEGE_ENABLED | SE_PRIVILEGE_ENABLED_BY_DEFAULT;
++        privs.p.PrivilegeCount++;
++    }
++
++    user.User.Sid = system_sid;
++    user.User.Attributes = 0;
++    owner.Owner = admins_sid;
++    group.PrimaryGroup = system_sid;
++    InitializeObjectAttributes(&attr, NULL, 0, NULL, NULL);
++    NtAllocateLocallyUniqueId(&id);
++    expire.QuadPart = 0x7fffffffffffffff;
++    status = NtCreateToken(&token, TOKEN_ALL_ACCESS, &attr, TokenPrimary, &id, &expire, &user, &groups.g,
++                           &privs.p, &owner, &group, NULL, &source);
++    if (status)
++    {
++        WINE_ERR("no token of SYSTEM: %#lx\n", status);
++        token = NULL;
++    }
++done:
++    if (system_sid) FreeSid(system_sid);
++    if (admins_sid) FreeSid(admins_sid);
++    if (world_sid) FreeSid(world_sid);
++    if (auth_sid) FreeSid(auth_sid);
++    return token;
++}
++
++static BOOL is_third_party_service(const struct service_entry *service);
++
++/* SYSTEM's token for a program's service of LocalSystem, NULL for the others */
++static HANDLE service_system_token(const struct service_entry *service)
++{
++    static HANDLE token;
++    const WCHAR *account = service->config.lpServiceStartName;
++
++    if (service->config.dwServiceType & SERVICE_USER_SERVICE) return NULL;  /* runs as its user */
++    if (account && wcsicmp(account, L"LocalSystem") && wcsicmp(account, L".\\LocalSystem")) return NULL;
++    if (!is_third_party_service(service)) return NULL;
++    if (!token) token = make_system_token();
++    return token;
++}
++
+ struct background_autostart
+ {
+     struct scmdatabase *db;
+@@ -494,6 +591,9 @@ static void scmdatabase_autostart_services(struct scmdatabase *db)
+ 
+     LIST_FOR_EACH_ENTRY(service, &db->services, struct service_entry, entry)
+     {
++        /* Arctic: a user service's template never runs, its instance does */
++        if (is_user_service_template(service))
++            continue;
+         if (service->config.dwStartType == SERVICE_BOOT_START ||
+             service->config.dwStartType == SERVICE_SYSTEM_START ||
+             service->config.dwStartType == SERVICE_AUTO_START ||
+@@ -624,6 +724,12 @@ BOOL validate_service_config(struct service_entry *entry)
+     case SERVICE_WIN32_SHARE_PROCESS:
+         /* No problem */
+         break;
++    case SERVICE_WIN32_OWN_PROCESS | SERVICE_USER_SERVICE:
++    case SERVICE_WIN32_SHARE_PROCESS | SERVICE_USER_SERVICE:
++    case SERVICE_WIN32_OWN_PROCESS | SERVICE_USER_SERVICE | SERVICE_USERSERVICE_INSTANCE:
++    case SERVICE_WIN32_SHARE_PROCESS | SERVICE_USER_SERVICE | SERVICE_USERSERVICE_INSTANCE:
++        /* Arctic: a user service's template, and its instance of a logon */
++        break;
+     case SERVICE_WIN32_OWN_PROCESS | SERVICE_INTERACTIVE_PROCESS:
+     case SERVICE_WIN32_SHARE_PROCESS | SERVICE_INTERACTIVE_PROCESS:
+         /* These can be only run as LocalSystem */
+@@ -816,6 +922,16 @@ static DWORD scmdatabase_load_services(struct scmdatabase *db)
+             continue;
+         }
+ 
++        if (entry->config.dwServiceType & SERVICE_USERSERVICE_INSTANCE)
++        {
++            /* Arctic: an instance of an earlier logon; this logon's is made anew */
++            WINE_TRACE("Dropping the user service instance %s of an earlier logon\n", wine_dbgstr_w(szName));
++            RegDeleteTreeW(db->root_key, szName);
++            free_service_entry(entry);
++            i--;  /* the keys after it moved up */
++            continue;
++        }
++
+         entry->status.dwServiceType = entry->config.dwServiceType;
+         entry->db = db;
+ 
+@@ -1133,7 +1249,12 @@ found:
+ 
+     ZeroMemory(&si, sizeof(STARTUPINFOW));
+     si.cb = sizeof(STARTUPINFOW);
+-    if (!(service_entry->config.dwServiceType & SERVICE_INTERACTIVE_PROCESS))
++    /* Arctic: a user service runs on the user's desktop, as in Windows */
++    if (service_entry->config.dwServiceType & SERVICE_USER_SERVICE)
++    {
++        si.lpDesktop = (WCHAR *)L"WinSta0\\Default";
++    }
++    else if (!(service_entry->config.dwServiceType & SERVICE_INTERACTIVE_PROCESS))
+     {
+         si.lpDesktop = (WCHAR *)L"__wineservice_winstation\\Default";
+     }
+@@ -1163,7 +1284,12 @@ found:
+     process->use_count++;
+     service_unlock(service_entry);
+ 
+-    r = CreateProcessW(NULL, path, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS, environment, NULL, &si, &pi);
++    /* Arctic: a program's service of LocalSystem runs as SYSTEM */
++    if ((token = service_system_token(service_entry)))
++        r = CreateProcessAsUserW(token, NULL, path, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS,
++                                 environment, NULL, &si, &pi);
++    else
++        r = CreateProcessW(NULL, path, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS, environment, NULL, &si, &pi);
+     free(path);
+     if (!r)
+     {
+@@ -1383,6 +1509,145 @@ static DWORD WINAPI process_monitor_thread_proc( void *arg )
+     return 0;
+ }
+ 
++/* Arctic: the logon's own part of a user service instance's name, as Windows
++ * gives it: the logon session's id, in hexadecimal */
++static const WCHAR *user_service_suffix(void)
++{
++    static WCHAR suffix[16];
++
++    if (!suffix[0])
++    {
++        TOKEN_STATISTICS stats;
++        LUID luid = { 0x5a3b1, 0 };
++        HANDLE token;
++        DWORD len;
++
++        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
++        {
++            if (GetTokenInformation(token, TokenStatistics, &stats, sizeof(stats), &len) &&
++                stats.AuthenticationId.LowPart)
++                luid = stats.AuthenticationId;
++            CloseHandle(token);
++        }
++        swprintf(suffix, ARRAY_SIZE(suffix), L"_%x", luid.LowPart);
++    }
++    return suffix;
++}
++
++/* the instance of a user service's template for this logon, made when it is
++ * not there yet; returned with a reference */
++DWORD user_service_instance(struct scmdatabase *db, struct service_entry *template, struct service_entry **instance)
++{
++    const WCHAR *suffix = user_service_suffix();
++    WCHAR name[MAX_SERVICE_NAME], *display = NULL;
++    struct service_entry *entry;
++    DWORD err;
++
++    if (wcslen(template->name) + wcslen(suffix) >= MAX_SERVICE_NAME)
++        return ERROR_INVALID_NAME;
++    swprintf(name, ARRAY_SIZE(name), L"%s%s", template->name, suffix);
++
++    scmdatabase_lock(db);
++    if ((entry = scmdatabase_find_service(db, name)))
++    {
++        *instance = grab_service(entry);
++        scmdatabase_unlock(db);
++        return ERROR_SUCCESS;
++    }
++    if ((err = service_create(name, &entry)))
++    {
++        scmdatabase_unlock(db);
++        return err;
++    }
++    if (template->config.lpDisplayName &&
++        (display = malloc((wcslen(template->config.lpDisplayName) + wcslen(suffix) + 1) * sizeof(WCHAR))))
++    {
++        wcscpy(display, template->config.lpDisplayName);
++        wcscat(display, suffix);
++    }
++    entry->is_wow64 = template->is_wow64;
++    entry->delayed_autostart = template->delayed_autostart;
++    entry->preshutdown_timeout = template->preshutdown_timeout;
++    entry->config.dwServiceType = entry->status.dwServiceType =
++        template->config.dwServiceType | SERVICE_USERSERVICE_INSTANCE;
++    entry->config.dwStartType = template->config.dwStartType;
++    entry->config.dwErrorControl = template->config.dwErrorControl;
++    entry->config.lpBinaryPathName = wcsdup(template->config.lpBinaryPathName);
++    entry->config.lpLoadOrderGroup = template->config.lpLoadOrderGroup ? wcsdup(template->config.lpLoadOrderGroup) : NULL;
++    entry->config.lpServiceStartName = template->config.lpServiceStartName ? wcsdup(template->config.lpServiceStartName) : NULL;
++    entry->config.lpDisplayName = display;
++    entry->description = template->description ? wcsdup(template->description) : NULL;
++
++    if (!validate_service_config(entry) || (err = scmdatabase_add_service(db, entry)))
++    {
++        scmdatabase_unlock(db);
++        free_service_entry(entry);
++        return err ? err : ERROR_INVALID_PARAMETER;
++    }
++    WINE_TRACE("user service %s: instance %s\n", wine_dbgstr_w(template->name), wine_dbgstr_w(name));
++    *instance = entry;  /* service_create's reference */
++    scmdatabase_unlock(db);
++    return ERROR_SUCCESS;
++}
++
++static DWORD WINAPI user_service_start_proc(void *arg)
++{
++    struct service_entry *instance = arg;
++    DWORD err;
++
++    scmdatabase_lock_startup(instance->db, INFINITE);
++    err = service_start(instance, 0, NULL);
++    scmdatabase_unlock_startup(instance->db);
++    if (err != ERROR_SUCCESS && err != ERROR_SERVICE_ALREADY_RUNNING)
++        WINE_FIXME("user service %s failed to start: %ld\n", wine_dbgstr_w(instance->name), err);
++    release_service(instance);
++    return 0;
++}
++
++/* starts an instance that was just made, as its logon would have; takes the reference */
++void user_service_start_async(struct service_entry *instance)
++{
++    HANDLE thread;
++
++    if ((thread = CreateThread(NULL, 0, user_service_start_proc, instance, 0, NULL)))
++        CloseHandle(thread);
++    else
++        release_service(instance);
++}
++
++/* this logon's instance of each user service; the automatic ones start with the others */
++static void scmdatabase_create_user_services(struct scmdatabase *db)
++{
++    struct service_entry *service, **templates;
++    unsigned int count = 0, i;
++
++    scmdatabase_lock(db);
++    LIST_FOR_EACH_ENTRY(service, &db->services, struct service_entry, entry)
++        if (is_user_service_template(service)) count++;
++    if (!count || !(templates = malloc(count * sizeof(*templates))))
++    {
++        scmdatabase_unlock(db);
++        return;
++    }
++    count = 0;
++    LIST_FOR_EACH_ENTRY(service, &db->services, struct service_entry, entry)
++        if (is_user_service_template(service)) templates[count++] = grab_service(service);
++    scmdatabase_unlock(db);
++
++    for (i = 0; i < count; i++)
++    {
++        struct service_entry *instance;
++        DWORD err;
++
++        if (!(err = user_service_instance(db, templates[i], &instance)))
++            release_service(instance);
++        else
++            WINE_ERR("no instance of the user service %s: %lu\n", wine_dbgstr_w(templates[i]->name), err);
++        release_service(templates[i]);
++    }
++    free(templates);
++}
++
+ int __cdecl main(int argc, char *argv[])
+ {
+     static const WCHAR svcctl_started_event[] = SVCCTL_STARTED_EVENT;
+@@ -1422,6 +1687,7 @@ int __cdecl main(int argc, char *argv[])
+         return err;
+     if ((err = scmdatabase_load_services(active_database)) != ERROR_SUCCESS)
+         return err;
++    scmdatabase_create_user_services(active_database);
+     if ((err = RPC_Init()) == ERROR_SUCCESS)
+     {
+         scmdatabase_autostart_services(active_database);
+diff --git a/programs/services/services.h b/programs/services/services.h
+index 1d9dbfd..a7f2df1 100644
+--- a/programs/services/services.h
++++ b/programs/services/services.h
+@@ -69,6 +69,23 @@ struct service_entry
+ 
+ extern struct scmdatabase *active_database;
+ 
++/* Arctic: a user's own services (Windows 10 1703 and later). A service of
++ * type SERVICE_USER_OWN_PROCESS or SERVICE_USER_SHARE_PROCESS is a template:
++ * it never runs itself; each logon has an instance of it, <name>_<logon id>,
++ * which runs in the user's session, on the user's desktop. */
++#ifndef SERVICE_USER_SERVICE
++#define SERVICE_USER_SERVICE         0x00000040
++#define SERVICE_USERSERVICE_INSTANCE 0x00000080
++#endif
++
++static inline BOOL is_user_service_template(const struct service_entry *service)
++{
++    return (service->config.dwServiceType & (SERVICE_USER_SERVICE | SERVICE_USERSERVICE_INSTANCE)) == SERVICE_USER_SERVICE;
++}
++
++DWORD user_service_instance(struct scmdatabase *db, struct service_entry *template, struct service_entry **instance);
++void user_service_start_async(struct service_entry *instance);
++
+ /* SCM database functions */
+ 
+ struct service_entry *scmdatabase_find_service(struct scmdatabase *db, LPCWSTR name);

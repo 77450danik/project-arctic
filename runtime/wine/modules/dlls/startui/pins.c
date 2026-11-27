@@ -495,7 +495,7 @@ static BOOL can_pin( const WCHAR *path, DWORD where )
 }
 
 /* the files dragged: CF_HDROP, or the shell's list of items */
-static UINT dragged_files( IDataObject *data, WCHAR (*files)[MAX_PATH], UINT max )
+UINT dragged_files( IDataObject *data, WCHAR (*files)[MAX_PATH], UINT max )
 {
     FORMATETC format = { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
     STGMEDIUM medium;
@@ -560,6 +560,26 @@ static DWORD drop_effect( const struct drop *drop, DWORD allowed )
     return allowed & DROPEFFECT_COPY;
 }
 
+/* something is dragged over Start or a Start menu: the menu opened for it
+ * stays open and inactive (the program dragged from keeps the focus) until
+ * it is dropped or taken away */
+static BOOL start_dragging;
+
+BOOL pins_start_dragging(void)
+{
+    return start_dragging;
+}
+
+static void start_drag_over( struct drop *drop )
+{
+    HWND menu = drop->where == PIN_START ? drop->hwnd : NULL;
+
+    start_dragging = FALSE;
+    if (!menu || !IsWindowVisible( menu ) || GetForegroundWindow() == menu) return;
+    /* now a click elsewhere closes it, as always */
+    SetForegroundWindow( menu );
+}
+
 static void hover( struct drop *drop, POINTL pt, BOOL over )
 {
     if (drop->where == PIN_TASKBAR)
@@ -610,6 +630,7 @@ static HRESULT WINAPI drop_DragEnter( IDropTarget *iface, IDataObject *data, DWO
     drop->pinnable = any_pinnable( data, drop->where == PIN_TASKBAR ? PIN_TASKBAR : PIN_START );
     drop->came = GetTickCount();
     drop->opened = FALSE;
+    if (drop->where != PIN_TASKBAR && drop->pinnable) start_dragging = TRUE;
     *effect = drop_effect( drop, *effect );
     hover( drop, pt, TRUE );
     return S_OK;
@@ -630,6 +651,8 @@ static HRESULT WINAPI drop_DragLeave( IDropTarget *iface )
     POINTL pt = { 0, 0 };
 
     hover( drop, pt, FALSE );
+    /* from the Start button the pointer goes on into the menu it opened */
+    if (drop->where == PIN_START) start_drag_over( drop );
     return S_OK;
 }
 
@@ -659,9 +682,53 @@ static BOOL pin_dropped( struct drop_job *job )
     return pinned;
 }
 
+#define WM_PIN_FILE (WM_APP + 2)
+
+/* a file pinned or unpinned from its context menu (shellext.c), or what can
+ * be done with it there */
+static DWORD pin_file_now( UINT action, const WCHAR *path )
+{
+    WCHAR target[MAX_PATH], link[MAX_PATH];
+    DWORD state = 0;
+
+    switch (action)
+    {
+    case PINS_QUERY:
+        if (can_pin( path, PIN_START )) state |= items_file_pinned( path ) ? PINS_ON_START : PINS_START_CAN;
+        if (program_of( path, target, ARRAY_SIZE(target) ))
+            state |= taskbar_pin_of( target, link ) ? PINS_ON_TASKBAR : PINS_TASKBAR_CAN;
+        return state;
+    case PINS_START_ADD:
+        return can_pin( path, PIN_START ) && items_pin_file( path );
+    case PINS_START_REMOVE:
+        return items_unpin_file( path );
+    case PINS_TASKBAR_ADD:
+        return taskbar_pin( path, NULL );
+    case PINS_TASKBAR_REMOVE:
+        return program_of( path, target, ARRAY_SIZE(target) ) && taskbar_pin_of( target, link ) &&
+               ArcticTaskbarUnpinFile( link );
+    }
+    return 0;
+}
+
+/* in explorer, in the thread of the Start menus, which own the items: the
+ * worker of a window that takes drops; elsewhere at once */
+DWORD pins_file( UINT action, const WCHAR *path )
+{
+    HWND worker = NULL;
+    DWORD pid;
+
+    while ((worker = FindWindowExW( HWND_MESSAGE, worker, L"ArcticPinDrop", NULL )))
+        if (GetWindowThreadProcessId( worker, &pid ) && pid == GetCurrentProcessId()) break;
+    if (worker && GetWindowThreadProcessId( worker, NULL ) != GetCurrentThreadId())
+        return SendMessageW( worker, WM_PIN_FILE, action, (LPARAM)path );
+    return pin_file_now( action, path );
+}
+
 static LRESULT WINAPI worker_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
 {
     if (msg == WM_PIN_DROPPED) return pin_dropped( (struct drop_job *)lparam );
+    if (msg == WM_PIN_FILE) return pin_file_now( wparam, (const WCHAR *)lparam );
     return DefWindowProcW( hwnd, msg, wparam, lparam );
 }
 
@@ -682,6 +749,7 @@ static HRESULT WINAPI drop_Drop( IDropTarget *iface, IDataObject *data, DWORD ke
     }
     free( job.files );
     if (!pinned) *effect = DROPEFFECT_NONE;
+    if (drop->where != PIN_TASKBAR) start_drag_over( drop );
     return S_OK;
 }
 

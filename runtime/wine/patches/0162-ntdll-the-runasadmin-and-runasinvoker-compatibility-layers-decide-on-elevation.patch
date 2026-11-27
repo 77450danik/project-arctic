@@ -1,0 +1,54 @@
+From: Project Arctic
+Subject: ntdll: the RunAsAdmin and RunAsInvoker compatibility layers decide on elevation, as in Windows.
+
+A process started with __COMPAT_LAYER=RunAsAdmin (or RunAsHighest) asks
+for elevation as if its manifest required the administrator; one with
+RunAsInvoker runs as its parent even when its manifest asks for more. The
+shell's "runas" verb starts its program with RunAsAdmin (ReactOS patch
+0129), so "Run as administrator" and the installers that elevate through
+ShellExecute("runas") (WiX Burn, NSIS) get User Account Control.
+---
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 84a0707..a61a484 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4223,9 +4223,39 @@ static void load_global_options(void)
+     }
+ }
+ 
++/* Arctic: the compatibility layer a process was started with, as Windows reads
++ * it from __COMPAT_LAYER: RunAsAdmin and RunAsHighest ask for elevation (what
++ * the shell's "runas" verb gives the program it starts), RunAsInvoker drops
++ * the elevation a manifest asks for. -1: no word on it. */
++static int compat_layer_elevation(void)
++{
++    UNICODE_STRING name = RTL_CONSTANT_STRING( L"__COMPAT_LAYER" ), value;
++    WCHAR buffer[256];
++    int ret = -1;
++    WCHAR *p;
++
++    value.Buffer = buffer;
++    value.Length = 0;
++    value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
++    if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return -1;
++    buffer[value.Length / sizeof(WCHAR)] = 0;
++    for (p = buffer; *p; )
++    {
++        WCHAR *word = p;
++        while (*p && *p != ' ' && *p != ';') p++;
++        if (*p) *p++ = 0;
++        if (!wcsicmp( word, L"RunAsInvoker" )) ret = 0;
++        else if (!wcsicmp( word, L"RunAsAdmin" ) || !wcsicmp( word, L"RunAsHighest" )) ret = 1;
++    }
++    return ret;
++}
++
+ static BOOL needs_elevation(void)
+ {
+     ACTIVATION_CONTEXT_RUN_LEVEL_INFORMATION run_level;
++    int layer = compat_layer_elevation();
++
++    if (layer != -1) return layer;
+ 
+     if (!RtlQueryInformationActivationContext( 0, NULL, NULL, RunlevelInformationInActivationContext,
+                                                &run_level, sizeof(run_level), NULL ))

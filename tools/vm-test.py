@@ -24,7 +24,11 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QEMU = os.path.join(ROOT, "tools", "qemu", "qemu-system-x86_64.exe")
 RES = os.path.join(ROOT, "out", "test-local")
-MARKER = re.compile(r"ARCTIC: (NT ready|dwm ready|STOP)")
+# the start of each marker only: the kernel's own lines can cut into one on the
+# serial console ("ARCTIC: dwm read[   10.56] ARCTIC: ..."), and csrss naming its
+# desktop says the same as dwm ready
+MARKER = re.compile(r"ARCTIC: (NT re|dwm re|STOP)|(csrss: desktop )")
+MARKER_NAME = {"NT re": "NT ready", "dwm re": "dwm ready", "STOP": "STOP"}
 
 parser = argparse.ArgumentParser()
 parser.add_argument("iso", nargs="?", default=os.path.join(ROOT, "out", "arctic-local.iso"))
@@ -44,6 +48,9 @@ parser.add_argument("--tcg", action="store_true",
                          "xHCI reads 0xffffffff and the USB keyboard and mouse of the test never appear)")
 parser.add_argument("--keep", action="store_true", help="leave the VM running after the test")
 parser.add_argument("--script", help="input steps to run once the desktop is up (tools/vmscript.py)")
+parser.add_argument("--until-off", type=int, default=0,
+                    help="after the script, wait until the first --disk has NTDONE.TXT (a new one) in its root "
+                         "or the guest is off, at most this many seconds from the start; then the power button")
 parser.add_argument("--usb", action="store_true",
                     help="the image is a USB stick, not a CD; what it writes stays for the next start")
 parser.add_argument("--stick-size", default="8G", help="how big the stick is (--usb)")
@@ -187,6 +194,41 @@ if args.append:
             "-initrd", os.path.abspath(args.initrd) if args.initrd else os.path.join(kernel_dir, "initrd.img"),
             "-append", "console=ttyS0,115200 loglevel=6 arctic.dev=1 " + root + args.append]
 
+def fat_root_entry(image, name):
+    """The 32-byte root directory entry of an 8.3 NAME ("NTDONE  TXT") on the first
+    (FAT32) partition of a raw disk image, or None: how --until-off sees a test
+    disk say it is done while the VM runs."""
+    try:
+        with open(image, "rb") as f:
+            f.seek(0x1C6)
+            part = int.from_bytes(f.read(4), "little") * 512
+            f.seek(part)
+            bpb = f.read(64)
+            sector = int.from_bytes(bpb[11:13], "little")
+            per_cluster = bpb[13] * sector
+            fat = part + int.from_bytes(bpb[14:16], "little") * sector
+            data = fat + bpb[16] * int.from_bytes(bpb[36:40], "little") * sector
+            cluster = int.from_bytes(bpb[44:48], "little")
+            for _ in range(4096):
+                f.seek(data + (cluster - 2) * per_cluster)
+                block = f.read(per_cluster)
+                for i in range(0, per_cluster, 32):
+                    entry = block[i:i + 32]
+                    if entry[0] == 0:
+                        return None
+                    if entry[0] != 0xE5 and entry[11] != 0x0F and entry[:11] == name.encode():
+                        return entry
+                f.seek(fat + cluster * 4)
+                cluster = int.from_bytes(f.read(4), "little") & 0x0FFFFFFF
+                if cluster < 2 or cluster >= 0x0FFFFFF8:
+                    return None
+    except OSError:
+        return None
+    return None
+
+
+done_mark = fat_root_entry(args.disk[0], "NTDONE  TXT") if args.until_off and args.disk else None
+start_mark = fat_root_entry(args.disk[0], "NTSTART TXT") if args.until_off and args.disk else None
 start = time.time()
 qemu_log = open(os.path.join(RES, "qemu.log"), "w")
 vm = subprocess.Popen(cmd, stdout=qemu_log, stderr=subprocess.STDOUT)
@@ -258,7 +300,7 @@ try:
         if os.path.exists(serial):
             text = open(serial, encoding="utf-8", errors="replace").read()
             for m in MARKER.finditer(text):
-                seen.add(m.group(1))
+                seen.add(MARKER_NAME[m.group(1)] if m.group(1) else "dwm ready")
             if "STOP" in seen or "dwm ready" in seen:
                 break
             if "NT ready" in seen:
@@ -273,9 +315,45 @@ try:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
         import vmscript
         size = tuple(int(n) for n in args.resolution.lower().split("x")) if args.resolution else None
-        vmscript.run(vmscript.Qmp(heads=args.monitors, size=size), open(args.script, encoding="utf-8").read().splitlines())
+        steps = open(args.script, encoding="utf-8").read().splitlines()
+        for attempt in range(3):
+            qmp = vmscript.Qmp(heads=args.monitors, size=size)
+            vmscript.run(qmp, steps if not attempt else ["key esc", "sleep 1"] + steps)
+            qmp.stream.close()  # QMP takes one client: the stream holds the socket open too
+            qmp.sock.close()
+            # a test run says it started (D:\NTSTART.TXT, tests/vm/nt.cmd): a
+            # command typed before the Run box was there is lost, and the VM
+            # would sit on the desktop until --until-off; typed again instead
+            if not (args.until_off and args.disk):
+                break
+            waited = time.time()
+            while (vm.poll() is None and time.time() - waited < 60 and
+                   fat_root_entry(args.disk[0], "NTSTART TXT") == start_mark):
+                time.sleep(3)
+            if vm.poll() is not None or fat_root_entry(args.disk[0], "NTSTART TXT") != start_mark:
+                print(f"the tests started {time.time() - start:.0f} s after the start")
+                break
+            print("the tests did not start in a minute: the script again")
     subprocess.run([sys.executable, os.path.join(ROOT, "ci", "qmp-shot.py"), "tcp:127.0.0.1:4455",
                     os.path.join(RES, "screen.ppm"), shot], check=False)
+    # a test run says it is done by writing D:\NTDONE.TXT (tests/vm/nt.cmd,
+    # ntall.cmd), then the power button below shuts the machine down; waited
+    # for no longer than --until-off seconds from the start
+    if args.until_off and vm.poll() is None:
+        done = False
+        while vm.poll() is None and time.time() - start < args.until_off:
+            time.sleep(3)
+            entry = fat_root_entry(args.disk[0], "NTDONE  TXT") if args.disk else None
+            if entry and entry != done_mark:
+                done = True
+                time.sleep(3)  # the rest of the results reach the disk
+                break
+        if done:
+            print(f"the tests were done {time.time() - start:.0f} s after the start")
+        elif vm.poll() is not None:
+            print(f"shut itself down {time.time() - start:.0f} s after the start")
+        else:
+            print(f"still running after {args.until_off} s: the power button")
     # A stick or an installed disk is left the way a person leaves it: the
     # power button, then the machine shuts down by itself. Killing QEMU is
     # pulling the plug. A press in the first seconds of the desktop gets lost

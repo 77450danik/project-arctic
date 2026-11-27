@@ -9,6 +9,7 @@
  * messages go to host.log, the kernel log and, in development builds, the
  * serial console. */
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -51,6 +52,7 @@
 #include <sys/swap.h>
 #include <sys/xattr.h>
 #include <sys/sysinfo.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <sys/time.h>
@@ -94,6 +96,27 @@ static int fast_startup(int restart);
 static uid_t nt_uid;
 static gid_t nt_gid;
 static pid_t udevd_pid, wineserver_pid, wininit_pid, shell_pid, lxss_pid, smb_pid, smbd_pid;
+
+/* NT's executive in the kernel (kernel/drivers/ntos, docs/ntos.md): started
+ * with nt_boot in place of wineserver (ntexec), which stays for a kernel
+ * without it, an executive that could not start, and arctic.ntos=0 */
+#define __NR_nt_boot 0x0f04
+#define __NR_nt_admin 0x0f05
+#define NT_ADMIN_FLUSH_REGISTRY 1
+#define NT_ADMIN_SHUTDOWN 4
+#define NT_ADMIN_LOCK_STATS 5
+#ifndef NT_PROTOCOL
+#define NT_PROTOCOL 0 /* ci/build-rootfs.sh gives it: 0 is refused (EPROTO), wineserver serves */
+#endif
+struct nt_boot {
+    uint64_t config_dir;
+    uint64_t environ;
+    uint32_t environ_size;
+    uint32_t uid, gid;
+    uint32_t protocol;
+};
+static int ntos_on;
+static char cmdline_buf[4096]; /* the kernel's command line (read_cmdline) */
 
 static double uptime(void)
 {
@@ -1586,6 +1609,69 @@ static void kill_nt_programs(void)
     usleep(500000); /* they are reaped by the waits that follow (child_exited) */
 }
 
+/* NT's executive: in the kernel (nt_boot), else wineserver as before. The
+ * kernel's runs as nt with the environment wineserver had, from the prefix. */
+static void start_executive(void)
+{
+    /* ntos has no USER of its own: with arctic.win32k=0 wineserver serves */
+    if (!strstr(cmdline_buf, "arctic.ntos=0") && !strstr(cmdline_buf, "arctic.win32k=0")) {
+        static char env[8192];
+        size_t len = 0;
+
+        for (int i = 0; nt_env[i]; i++) {
+            size_t n = strlen(nt_env[i]) + 1;
+
+            if (len + n >= sizeof(env))
+                break;
+            memcpy(env + len, nt_env[i], n);
+            len += n;
+        }
+        env[len++] = 0;
+        struct nt_boot boot = {
+            .config_dir = (uintptr_t)PREFIX,
+            .environ = (uintptr_t)env,
+            .environ_size = (uint32_t)len,
+            .uid = nt_uid,
+            .gid = nt_gid,
+            .protocol = NT_PROTOCOL,
+        };
+        double at = uptime();
+        if (!syscall(__NR_nt_boot, &boot)) {
+            ntos_on = 1;
+            say("NT's executive is in the kernel (%.0f ms)", (uptime() - at) * 1000);
+            return;
+        }
+        /* ENOSYS: a kernel without it; EIO: it could not start (kernel.log says why) */
+        say("NT's executive in the kernel: %s, wineserver serves", strerror(errno));
+    }
+    char *wineserver[] = {"/usr/bin/ntexec", "-f", "-p", NULL};
+    wineserver_pid = spawn(wineserver, 1, ntlog);
+    say("ntexec pid %d", wineserver_pid);
+}
+
+/* the registry on the disk before the power goes, and every file of the
+ * executive let go so that C: can go read-only: what wineserver did when it
+ * got SIGTERM and ended */
+static void flush_executive(void)
+{
+    double at = uptime();
+
+    if (!ntos_on)
+        return;
+    /* how the executive's lock was used this session (docs/ntos.md, «Замки») */
+    static char stats[8192];
+    long n = syscall(__NR_nt_admin, NT_ADMIN_LOCK_STATS, 0, stats, sizeof(stats) - 1);
+    if (n > 0) {
+        stats[n] = 0;
+        for (char *line = strtok(stats, "\n"); line; line = strtok(NULL, "\n"))
+            say("ntos lock: %s", line);
+    }
+    if (syscall(__NR_nt_admin, NT_ADMIN_SHUTDOWN, 0, NULL, 0))
+        say("registry: not written: %s", strerror(errno));
+    else
+        say("registry: written, NT's executive stopped in %.1f s", uptime() - at);
+}
+
 /* The session asked for it (winlogon.exe): every process goes, then the machine */
 /* every process but this one and the shutdown screen */
 static void kill_all_but(pid_t keep, int signal)
@@ -1640,6 +1726,7 @@ static void power_off(int restart)
     if (wineserver_pid)
         say("ntexec did not end in %.0f s", wait_s);
     kill_all_but(screen, SIGKILL);
+    flush_executive();
     stop_paging_file();
     sync();
     save_logs();
@@ -1672,9 +1759,46 @@ static void power_off(int restart)
     /* the session ended cleanly: the next start needs no check (initrd) */
     unlink(HOST_STATE "/session");
     sync();
-    if (mount(NULL, C_DRIVE, NULL, MS_REMOUNT | MS_RDONLY, NULL))
+    if (mount(NULL, C_DRIVE, NULL, MS_REMOUNT | MS_RDONLY, NULL)) {
         say("C: stays writable: %s", strerror(errno));
-    else
+        /* who still has a file of C: open: the next shutdown is fixed by it */
+        DIR *proc = opendir("/proc");
+        int shown = 0;
+        for (struct dirent *de; proc && shown < 12 && (de = readdir(proc));) {
+            char dir[64], link[64], target[PATH_MAX], comm[64] = "";
+            DIR *fds;
+
+            if (!isdigit((unsigned char)de->d_name[0]))
+                continue;
+            snprintf(dir, sizeof(dir), "/proc/%s/fd", de->d_name);
+            if (!(fds = opendir(dir)))
+                continue;
+            snprintf(link, sizeof(link), "/proc/%s/comm", de->d_name);
+            read_line(link, comm, sizeof(comm));
+            for (struct dirent *fe; shown < 12 && (fe = readdir(fds));) {
+                ssize_t n;
+
+                snprintf(link, sizeof(link), "/proc/%s/fd/%.20s", de->d_name, fe->d_name);
+                if ((n = readlink(link, target, sizeof(target) - 1)) <= 0)
+                    continue;
+                target[n] = 0;
+                if (!strncmp(target, C_DRIVE "/", strlen(C_DRIVE) + 1)) {
+                    say("C: still open: %s(%s) %s", comm, de->d_name, target);
+                    shown++;
+                }
+            }
+            closedir(fds);
+        }
+        if (proc)
+            closedir(proc);
+        FILE *swaps = fopen("/proc/swaps", "re");
+        char line[256];
+        while (swaps && fgets(line, sizeof(line), swaps))
+            if (strstr(line, C_DRIVE "/"))
+                say("C: still a swap file: %.*s", (int)strcspn(line, " \t"), line);
+        if (swaps)
+            fclose(swaps);
+    } else
         say("C: read-only");
     if (!c_on_disk)
         umount2(C_DRIVE, MNT_DETACH);
@@ -3566,7 +3690,7 @@ out:
 
 static int fast_startup(int restart)
 {
-    if (!c_installed || stopped || !wineserver_pid)
+    if (!c_installed || stopped || (!wineserver_pid && !ntos_on))
         return 0;
     if (!registry_flag("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", "HiberbootEnabled"))
         return 0;
@@ -4142,9 +4266,7 @@ int main(void)
     /* The NT world */
     prepare_nt();
     start_image_cache_sweep();
-    char *wineserver[] = {"/usr/bin/ntexec", "-f", "-p", NULL};
-    wineserver_pid = spawn(wineserver, 1, ntlog);
-    say("ntexec pid %d", wineserver_pid);
+    start_executive();
 
     /* WSL: wsl.exe and bash.exe run commands in the distributions of
      * C:\ProgramData\Arctic\Lxss\distros through it (docs/updates.md) */
@@ -4297,6 +4419,14 @@ int main(void)
         if (tick % 150 == 75) {
             save_logs();
             log_memory();
+            if (ntos_on) { /* the executive's lock, its totals (docs/ntos.md, «Замки») */
+                static char stats[8192];
+                long n = syscall(__NR_nt_admin, NT_ADMIN_LOCK_STATS, 0, stats, sizeof(stats) - 1);
+                if (n > 0) {
+                    stats[n] = 0;
+                    say("ntos lock: %.*s", (int)strcspn(stats, "\n"), stats);
+                }
+            }
             if (c_on_disk) {
                 static int hardware_written, hives_backed_up;
                 if (!hardware_written++)

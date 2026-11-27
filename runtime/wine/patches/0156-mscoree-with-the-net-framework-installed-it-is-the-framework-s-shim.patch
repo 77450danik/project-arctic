@@ -1,0 +1,561 @@
+From: Project Arctic
+Subject: mscoree: with the .NET Framework installed, it is the Framework's shim, as in Windows 8 and later.
+
+Since Windows 8 mscoree.dll belongs to the system: a shim whose exports go
+on to mscoreei.dll of the installed .NET Framework, which picks and starts
+the runtime. The Framework's installer for these systems brings mscoreei,
+clr and the rest, but no mscoree, so a .NET program in Arctic found Wine's,
+which runs only Mono, which Arctic has not got: the G HUB installer (WPF,
+.NET 4.7.2) ended at once after User Account Control, with no window.
+
+Now, when InstallRoot\v4.0.30319\mscoreei.dll is there, every export of
+mscoree jumps to mscoreei's (the arguments as the caller left them, so one
+jump fits every signature), and DllMain tells mscoreei of each call
+(OnShimDllMainCalled). The ordinals are mscoreei's: the runtime asks
+mscoree for 24 by its number, with no name, and mscoreei asks it, from its
+own DllMain, for 142, the version of the system as it is (an
+OSVERSIONINFOW). Without the Framework every export is Wine's own, as
+before. Verified: RegAsm.exe and the G HUB installer on .NET 4.8.
+---
+diff --git a/dlls/mscoree/Makefile.in b/dlls/mscoree/Makefile.in
+index 0e97e78..2772739 100644
+--- a/dlls/mscoree/Makefile.in
++++ b/dlls/mscoree/Makefile.in
+@@ -11,6 +11,7 @@ SOURCES = \
+ 	metadata.c \
+ 	metahost.c \
+ 	mscoree_classes.idl \
+-	mscoree_main.c
++	mscoree_main.c \
++	shim.c
+ 
+ metahost_EXTRADEFS = -DINSTALL_DATADIR="\"${datadir}\""
+diff --git a/dlls/mscoree/mscoree.spec b/dlls/mscoree/mscoree.spec
+index 92e0f60..b7158dd 100644
+--- a/dlls/mscoree/mscoree.spec
++++ b/dlls/mscoree/mscoree.spec
+@@ -1,119 +1,131 @@
+-17 stub InitErrors
+-18 stub PostError
+-19 stub InitSSAutoEnterThread
+-20 stub UpdateError
+-22 stdcall LoadStringRC(long ptr long long)
+-23 stub ReOpenMetaDataWithMemory
+-
+-@ stub CallFunctionShim
+-@ stub CloseCtrs
+-@ stdcall CLRCreateInstance(ptr ptr ptr)
+-@ stdcall ClrCreateManagedInstance(wstr ptr ptr)
+-@ stdcall CoEEShutDownCOM()
+-@ stdcall CoInitializeCor(long)
+-@ stub CoInitializeEE
+-@ stub CoUninitializeCor
+-@ stub CoUninitializeEE
+-@ stub CollectCtrs
+-@ stdcall CorBindToCurrentRuntime(wstr ptr ptr ptr)
+-@ stub CorBindToRuntime
+-@ stub CorBindToRuntimeByCfg
+-@ stub CorBindToRuntimeByPath
+-@ stub CorBindToRuntimeByPathEx
+-@ stdcall CorBindToRuntimeEx(wstr wstr long ptr ptr ptr)
+-@ stdcall CorBindToRuntimeHost(wstr wstr wstr ptr long ptr ptr ptr)
+-@ stub CorDllMainWorker
+-@ stdcall CorExitProcess(long)
+-@ stdcall CorGetSvc(ptr)
+-@ stdcall CorIsLatestSvc(ptr ptr)
+-@ stub CorMarkThreadInThreadPool
+-@ stub CorTickleSvc
+-@ stdcall CreateConfigStream(wstr ptr)
+-@ stdcall CreateDebuggingInterfaceFromVersion(long wstr ptr)
+-@ stdcall CreateInterface(ptr ptr ptr)
+-@ stdcall -private DllCanUnloadNow()
+-@ stdcall -private DllGetClassObject(ptr ptr ptr)
+-@ stdcall -private DllRegisterServer()
+-@ stdcall -private DllUnregisterServer()
+-@ stub EEDllGetClassObjectFromClass
+-@ stub EEDllRegisterServer
+-@ stub EEDllUnregisterServer
+-@ stdcall GetAssemblyMDImport(wstr ptr ptr)
+-@ stub GetCORRequiredVersion
+-@ stub GetCORRootDirectory
+-@ stdcall GetCORSystemDirectory(ptr long ptr)
+-@ stdcall GetCORVersion(ptr long ptr)
+-@ stub GetCompileInfo
+-@ stdcall GetFileVersion(wstr ptr long ptr)
+-@ stub GetHashFromAssemblyFile
+-@ stub GetHashFromAssemblyFileW
+-@ stub GetHashFromBlob
+-@ stub GetHashFromFile
+-@ stub GetHashFromFileW
+-@ stub GetHashFromHandle
+-@ stub GetHostConfigurationFile
+-@ stub GetMetaDataInternalInterface
+-@ stub GetMetaDataInternalInterfaceFromPublic
+-@ stub GetMetaDataPublicInterfaceFromInternal
+-@ stub GetPermissionRequests
+-@ stub GetPrivateContextsPerfCounters
+-@ stub GetProcessExecutableHeap
+-@ stdcall GetRealProcAddress(str ptr)
+-@ stdcall GetRequestedRuntimeInfo(wstr wstr wstr long long ptr long ptr ptr long ptr)
+-@ stdcall GetRequestedRuntimeVersion(wstr ptr long ptr)
+-@ stub GetRequestedRuntimeVersionForCLSID
+-@ stub GetStartupFlags
+-@ stub GetTargetForVTableEntry
+-@ stdcall GetTokenForVTableEntry(ptr ptr)
+-@ stdcall GetVersionFromProcess(ptr ptr long ptr)
+-@ stub GetXMLElement
+-@ stub GetXMLElementAttribute
+-@ stub GetXMLObject
+-@ stdcall LoadLibraryShim(wstr wstr ptr ptr)
+-@ stub LoadLibraryWithPolicyShim
+-@ stdcall LoadStringRCEx(long long ptr long long ptr)
+-@ stdcall LockClrVersion(ptr ptr ptr)
+-@ stub MetaDataGetDispenser
+-@ stdcall ND_CopyObjDst(ptr ptr long long)
+-@ stdcall ND_CopyObjSrc(ptr long ptr long)
+-@ stdcall ND_RI2(ptr long)
+-@ stdcall ND_RI4(ptr long)
+-@ stdcall -ret64 ND_RI8(ptr long)
+-@ stdcall ND_RU1(ptr long)
+-@ stdcall ND_WI2(ptr long long)
+-@ stdcall ND_WI4(ptr long long)
+-@ stdcall ND_WI8(ptr long int64)
+-@ stdcall ND_WU1(ptr long long)
+-@ stub OpenCtrs
+-@ stub ReOpenMetaDataWithMemoryEx
+-@ stub RunDll@ShimW
+-@ stub RuntimeOSHandle
+-@ stub RuntimeOpenImage
+-@ stub RuntimeReleaseHandle
+-@ stub SetTargetForVTableEntry
+-@ stub StrongNameCompareAssemblies
+-@ stub StrongNameErrorInfo
+-@ stub StrongNameFreeBuffer
+-@ stub StrongNameGetBlob
+-@ stub StrongNameGetBlobFromImage
+-@ stub StrongNameGetPublicKey
+-@ stub StrongNameHashSize
+-@ stub StrongNameKeyDelete
+-@ stub StrongNameKeyGen
+-@ stub StrongNameKeyGenEx
+-@ stub StrongNameKeyInstall
+-@ stub StrongNameSignatureGeneration
+-@ stub StrongNameSignatureGenerationEx
+-@ stub StrongNameSignatureSize
+-@ stdcall StrongNameSignatureVerification(wstr long ptr)
+-@ stdcall StrongNameSignatureVerificationEx(wstr long ptr)
+-@ stub StrongNameSignatureVerificationFromImage
+-@ stdcall StrongNameTokenFromAssembly(wstr ptr ptr)
+-@ stub StrongNameTokenFromAssemblyEx
+-@ stub StrongNameTokenFromPublicKey
+-@ stub TranslateSecurityAttributes
+-@ stdcall _CorDllMain(long long ptr)
+-@ stdcall _CorExeMain2(ptr long ptr ptr ptr)
+-@ stdcall _CorExeMain()
++# Every export but the two of the registration is a jump to mscoreei.dll of
++# the installed .NET Framework, or to Wine's own without one (shim.c).
++# The ordinals are mscoreei's, as Windows' mscoree has them: the runtime
++# asks for 24 and mscoreei for 142, which have no name, by their numbers.
++17 extern InitErrors shim_InitErrors
++18 extern PostError shim_PostError
++19 extern InitSSAutoEnterThread shim_InitSSAutoEnterThread
++20 extern UpdateError shim_UpdateError
++21 extern CloseCtrs shim_CloseCtrs
++22 extern LoadStringRC shim_LoadStringRC
++23 extern ReOpenMetaDataWithMemory shim_ReOpenMetaDataWithMemory
++24 extern -noname ordinal24 shim_ordinal24
++25 extern CollectCtrs shim_CollectCtrs
++26 extern CorDllMainWorker shim_CorDllMainWorker
++27 extern CorDllMainWorkerForThunk shim_CorDllMainWorkerForThunk
++28 extern EEDllGetClassObjectFromClass shim_EEDllGetClassObjectFromClass
++29 extern GetPrivateContextsPerfCounters shim_GetPrivateContextsPerfCounters
++30 extern GetProcessExecutableHeap shim_GetProcessExecutableHeap
++31 extern GetStartupFlags shim_GetStartupFlags
++32 extern GetTargetForVTableEntry shim_GetTargetForVTableEntry
++33 extern GetTokenForVTableEntry shim_GetTokenForVTableEntry
++34 extern LogHelp_LogAssert shim_LogHelp_LogAssert
++35 extern LogHelp_NoGuiOnAssert shim_LogHelp_NoGuiOnAssert
++36 extern LogHelp_TerminateOnAssert shim_LogHelp_TerminateOnAssert
++38 extern OpenCtrs shim_OpenCtrs
++39 extern PostErrorVA shim_PostErrorVA
++41 extern SetTargetForVTableEntry shim_SetTargetForVTableEntry
++42 extern CLRCreateInstance shim_CLRCreateInstance
++43 extern CallFunctionShim shim_CallFunctionShim
++44 extern ClrCreateManagedInstance shim_ClrCreateManagedInstance
++45 extern CoEEShutDownCOM shim_CoEEShutDownCOM
++46 extern CoInitializeCor shim_CoInitializeCor
++47 extern CoInitializeEE shim_CoInitializeEE
++48 extern CoUninitializeCor shim_CoUninitializeCor
++49 extern CoUninitializeEE shim_CoUninitializeEE
++50 extern CorBindToCurrentRuntime shim_CorBindToCurrentRuntime
++51 extern CorBindToRuntime shim_CorBindToRuntime
++52 extern CorBindToRuntimeByCfg shim_CorBindToRuntimeByCfg
++53 extern CorBindToRuntimeByPath shim_CorBindToRuntimeByPath
++54 extern CorBindToRuntimeByPathEx shim_CorBindToRuntimeByPathEx
++55 extern CorBindToRuntimeEx shim_CorBindToRuntimeEx
++56 extern CorBindToRuntimeHost shim_CorBindToRuntimeHost
++57 extern CorExitProcess shim_CorExitProcess
++58 extern CorGetSvc shim_CorGetSvc
++59 extern CorIsLatestSvc shim_CorIsLatestSvc
++60 extern CorMarkThreadInThreadPool shim_CorMarkThreadInThreadPool
++61 extern CorTickleSvc shim_CorTickleSvc
++62 extern CreateConfigStream shim_CreateConfigStream
++63 extern CreateDebuggingInterfaceFromVersion shim_CreateDebuggingInterfaceFromVersion
++64 extern CreateInterface shim_CreateInterface
++65 extern -private DllCanUnloadNow shim_DllCanUnloadNow
++66 extern -private DllGetClassObject shim_DllGetClassObject
++67 stdcall -private DllRegisterServer()
++68 stdcall -private DllUnregisterServer()
++69 extern EEDllRegisterServer shim_EEDllRegisterServer
++70 extern EEDllUnregisterServer shim_EEDllUnregisterServer
++71 extern GetAssemblyMDImport shim_GetAssemblyMDImport
++72 extern GetCORRequiredVersion shim_GetCORRequiredVersion
++73 extern GetCORRootDirectory shim_GetCORRootDirectory
++74 extern GetCORSystemDirectory shim_GetCORSystemDirectory
++75 extern GetCORSystemDirectory_RetAddr shim_GetCORSystemDirectory_RetAddr
++76 extern GetCORVersion shim_GetCORVersion
++77 extern GetCompileInfo shim_GetCompileInfo
++78 extern GetFileVersion shim_GetFileVersion
++79 extern GetHashFromAssemblyFile shim_GetHashFromAssemblyFile
++80 extern GetHashFromAssemblyFileW shim_GetHashFromAssemblyFileW
++81 extern GetHashFromBlob shim_GetHashFromBlob
++82 extern GetHashFromFile shim_GetHashFromFile
++83 extern GetHashFromFileW shim_GetHashFromFileW
++84 extern GetHashFromHandle shim_GetHashFromHandle
++85 extern GetHostConfigurationFile shim_GetHostConfigurationFile
++86 extern GetMetaDataInternalInterface shim_GetMetaDataInternalInterface
++87 extern GetMetaDataInternalInterfaceFromPublic shim_GetMetaDataInternalInterfaceFromPublic
++88 extern GetMetaDataPublicInterfaceFromInternal shim_GetMetaDataPublicInterfaceFromInternal
++89 extern GetPermissionRequests shim_GetPermissionRequests
++90 extern GetRealProcAddress shim_GetRealProcAddress
++91 extern GetRequestedRuntimeInfo shim_GetRequestedRuntimeInfo
++92 extern GetRequestedRuntimeVersion shim_GetRequestedRuntimeVersion
++93 extern GetRequestedRuntimeVersionForCLSID shim_GetRequestedRuntimeVersionForCLSID
++94 extern GetVersionFromProcess shim_GetVersionFromProcess
++95 extern GetXMLElement shim_GetXMLElement
++96 extern GetXMLElementAttribute shim_GetXMLElementAttribute
++97 extern GetXMLObject shim_GetXMLObject
++98 extern IEE shim_IEE
++99 extern LoadLibraryShim shim_LoadLibraryShim
++100 extern LoadLibraryWithPolicyShim shim_LoadLibraryWithPolicyShim
++101 extern LoadStringRCEx shim_LoadStringRCEx
++102 extern LockClrVersion shim_LockClrVersion
++103 extern MetaDataGetDispenser shim_MetaDataGetDispenser
++104 extern ND_CopyObjDst shim_ND_CopyObjDst
++105 extern ND_CopyObjSrc shim_ND_CopyObjSrc
++106 extern ND_RI2 shim_ND_RI2
++107 extern ND_RI4 shim_ND_RI4
++108 extern ND_RI8 shim_ND_RI8
++109 extern ND_RU1 shim_ND_RU1
++110 extern ND_WI2 shim_ND_WI2
++111 extern ND_WI4 shim_ND_WI4
++112 extern ND_WI8 shim_ND_WI8
++113 extern ND_WU1 shim_ND_WU1
++114 extern ReOpenMetaDataWithMemoryEx shim_ReOpenMetaDataWithMemoryEx
++115 extern RunDll32ShimW shim_RunDll32ShimW
++116 extern RuntimeOSHandle shim_RuntimeOSHandle
++117 extern RuntimeOpenImage shim_RuntimeOpenImage
++118 extern RuntimeReleaseHandle shim_RuntimeReleaseHandle
++119 extern StrongNameCompareAssemblies shim_StrongNameCompareAssemblies
++120 extern StrongNameErrorInfo shim_StrongNameErrorInfo
++121 extern StrongNameFreeBuffer shim_StrongNameFreeBuffer
++122 extern StrongNameGetBlob shim_StrongNameGetBlob
++123 extern StrongNameGetBlobFromImage shim_StrongNameGetBlobFromImage
++124 extern StrongNameGetPublicKey shim_StrongNameGetPublicKey
++125 extern StrongNameHashSize shim_StrongNameHashSize
++126 extern StrongNameKeyDelete shim_StrongNameKeyDelete
++127 extern StrongNameKeyGen shim_StrongNameKeyGen
++128 extern StrongNameKeyGenEx shim_StrongNameKeyGenEx
++129 extern StrongNameKeyInstall shim_StrongNameKeyInstall
++130 extern StrongNameSignatureGeneration shim_StrongNameSignatureGeneration
++131 extern StrongNameSignatureGenerationEx shim_StrongNameSignatureGenerationEx
++132 extern StrongNameSignatureSize shim_StrongNameSignatureSize
++133 extern StrongNameSignatureVerification shim_StrongNameSignatureVerification
++134 extern StrongNameSignatureVerificationEx shim_StrongNameSignatureVerificationEx
++135 extern StrongNameSignatureVerificationFromImage shim_StrongNameSignatureVerificationFromImage
++136 extern StrongNameTokenFromAssembly shim_StrongNameTokenFromAssembly
++137 extern StrongNameTokenFromAssemblyEx shim_StrongNameTokenFromAssemblyEx
++138 extern StrongNameTokenFromPublicKey shim_StrongNameTokenFromPublicKey
++139 extern TranslateSecurityAttributes shim_TranslateSecurityAttributes
++140 extern _CorDllMain shim__CorDllMain
++141 extern _CorExeMain shim__CorExeMain
++142 stdcall -noname shim_os_version(ptr)
++@ extern _CorExeMain2 shim__CorExeMain2
+ @ stdcall _CorImageUnloading(ptr)
+ @ stdcall _CorValidateImage(ptr wstr)
+diff --git a/dlls/mscoree/mscoree_main.c b/dlls/mscoree/mscoree_main.c
+index d65cc25..93f184a 100644
+--- a/dlls/mscoree/mscoree_main.c
++++ b/dlls/mscoree/mscoree_main.c
+@@ -280,10 +280,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+ {
+     TRACE("(%p, %ld, %p)\n", hinstDLL, fdwReason, lpvReserved);
+ 
++    /* the .NET Framework's shim hears of each call, as from Windows' mscoree */
++    if (fdwReason != DLL_PROCESS_ATTACH) shim_dll_main(hinstDLL, fdwReason, lpvReserved);
++
+     switch (fdwReason)
+     {
+     case DLL_PROCESS_ATTACH:
+         runtimehost_init();
++        shim_dll_main(hinstDLL, fdwReason, lpvReserved);
+ 
+         print_tls_index = TlsAlloc();
+ 
+diff --git a/dlls/mscoree/mscoree_private.h b/dlls/mscoree/mscoree_private.h
+index f4638b9..b14ec23 100644
+--- a/dlls/mscoree/mscoree_private.h
++++ b/dlls/mscoree/mscoree_private.h
+@@ -224,6 +224,7 @@ extern HRESULT create_monodata(REFCLSID clsid, LPVOID *ppObj);
+ extern HRESULT get_file_from_strongname(WCHAR* stringnameW, WCHAR* assemblies_path, int path_length);
+ 
+ extern void runtimehost_init(void);
++extern void shim_dll_main(HINSTANCE instance, DWORD reason, void *reserved);
+ extern void runtimehost_uninit(void);
+ 
+ extern void CDECL mono_print_handler_fn(const char *string, INT is_stdout);
+diff --git b/dlls/mscoree/shim.c b/dlls/mscoree/shim.c
+new file mode 100644
+index 0000000..b139b75
+--- /dev/null
++++ b/dlls/mscoree/shim.c
+@@ -0,0 +1,239 @@
++/*
++ * mscoree as the shim of the .NET Framework
++ *
++ * Since Windows 8 mscoree.dll is a file of the system, not of the .NET
++ * Framework: a shim whose every export goes on to mscoreei.dll of the
++ * installed Framework (InstallRoot\v4.0.30319), which picks and starts the
++ * runtime. The Framework's installer, made for Windows 8 and later, brings
++ * mscoreei.dll and the runtime but no mscoree.dll, so this is the one a
++ * .NET program finds. With the Framework installed, each export below jumps
++ * to mscoreei's; without it, to Wine's own (Mono), as before. Exports
++ * mscoreei has not got (_CorValidateImage, _CorImageUnloading, and Wine's
++ * registration) are always Wine's.
++ *
++ * Copyright 2026 Arctic contributors
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++#include <wchar.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winbase.h"
++#include "winreg.h"
++#include "winternl.h"
++#include "wine/asm.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(mscoree);
++
++/* Wine's implementations. Only their names matter here (the arguments set
++ * the stdcall decoration of the i386 symbols): they are never called from
++ * this file, only jumped to with the caller's arguments untouched. */
++#define P void *
++HRESULT WINAPI LoadStringRC(UINT, P, INT, INT);
++HRESULT WINAPI CLRCreateInstance(P, P, P);
++HRESULT WINAPI ClrCreateManagedInstance(P, P, P);
++void    WINAPI CoEEShutDownCOM(void);
++HRESULT WINAPI CoInitializeCor(DWORD);
++HRESULT WINAPI CorBindToCurrentRuntime(P, P, P, P);
++HRESULT WINAPI CorBindToRuntimeEx(P, P, DWORD, P, P, P);
++HRESULT WINAPI CorBindToRuntimeHost(P, P, P, P, DWORD, P, P, P);
++void    WINAPI CorExitProcess(INT);
++HRESULT WINAPI CorGetSvc(P);
++HRESULT WINAPI CorIsLatestSvc(P, P);
++HRESULT WINAPI CreateConfigStream(P, P);
++HRESULT WINAPI CreateDebuggingInterfaceFromVersion(INT, P, P);
++HRESULT WINAPI CreateInterface(P, P, P);
++HRESULT WINAPI DllCanUnloadNow(void);
++HRESULT WINAPI DllGetClassObject(P, P, P);
++HRESULT WINAPI GetAssemblyMDImport(P, P, P);
++HRESULT WINAPI GetCORSystemDirectory(P, DWORD, P);
++HRESULT WINAPI GetCORVersion(P, DWORD, P);
++HRESULT WINAPI GetFileVersion(P, P, DWORD, P);
++HRESULT WINAPI GetRealProcAddress(P, P);
++HRESULT WINAPI GetRequestedRuntimeInfo(P, P, P, DWORD, DWORD, P, DWORD, P, P, DWORD, P);
++HRESULT WINAPI GetRequestedRuntimeVersion(P, P, DWORD, P);
++HRESULT WINAPI GetTokenForVTableEntry(P, P);
++HRESULT WINAPI GetVersionFromProcess(P, P, DWORD, P);
++HRESULT WINAPI LoadLibraryShim(P, P, P, P);
++HRESULT WINAPI LoadStringRCEx(DWORD, UINT, P, INT, INT, P);
++HRESULT WINAPI LockClrVersion(P, P, P);
++void    WINAPI ND_CopyObjDst(P, P, INT, INT);
++void    WINAPI ND_CopyObjSrc(P, INT, P, INT);
++SHORT   WINAPI ND_RI2(P, INT);
++INT     WINAPI ND_RI4(P, INT);
++INT64   WINAPI ND_RI8(P, INT);
++BYTE    WINAPI ND_RU1(P, INT);
++void    WINAPI ND_WI2(P, INT, SHORT);
++void    WINAPI ND_WI4(P, INT, INT);
++void    WINAPI ND_WI8(P, INT, INT64);
++void    WINAPI ND_WU1(P, INT, BYTE);
++BOOL    WINAPI StrongNameSignatureVerification(P, DWORD, P);
++BOOL    WINAPI StrongNameSignatureVerificationEx(P, BOOL, P);
++BOOL    WINAPI StrongNameTokenFromAssembly(P, P, P);
++BOOL    WINAPI _CorDllMain(P, DWORD, P);
++__int32 WINAPI _CorExeMain2(P, DWORD, P, P, P);
++__int32 WINAPI _CorExeMain(void);
++#undef P
++
++/* exports Wine has an implementation of */
++#define SHIM_WINE(X) \
++    X(LoadStringRC) X(CLRCreateInstance) X(ClrCreateManagedInstance) X(CoEEShutDownCOM) \
++    X(CoInitializeCor) X(CorBindToCurrentRuntime) X(CorBindToRuntimeEx) X(CorBindToRuntimeHost) \
++    X(CorExitProcess) X(CorGetSvc) X(CorIsLatestSvc) X(CreateConfigStream) \
++    X(CreateDebuggingInterfaceFromVersion) X(CreateInterface) X(DllCanUnloadNow) \
++    X(DllGetClassObject) X(GetAssemblyMDImport) X(GetCORSystemDirectory) X(GetCORVersion) \
++    X(GetFileVersion) X(GetRealProcAddress) X(GetRequestedRuntimeInfo) \
++    X(GetRequestedRuntimeVersion) X(GetTokenForVTableEntry) X(GetVersionFromProcess) \
++    X(LoadLibraryShim) X(LoadStringRCEx) X(LockClrVersion) X(ND_CopyObjDst) X(ND_CopyObjSrc) \
++    X(ND_RI2) X(ND_RI4) X(ND_RI8) X(ND_RU1) X(ND_WI2) X(ND_WI4) X(ND_WI8) X(ND_WU1) \
++    X(StrongNameSignatureVerification) X(StrongNameSignatureVerificationEx) \
++    X(StrongNameTokenFromAssembly) X(_CorDllMain) X(_CorExeMain2) X(_CorExeMain)
++
++/* exports only the Framework has (Wine's were stubs) */
++#define SHIM_FRAMEWORK(X) \
++    X(InitErrors) X(PostError) X(InitSSAutoEnterThread) X(UpdateError) X(ReOpenMetaDataWithMemory) \
++    X(CallFunctionShim) X(CloseCtrs) X(CoInitializeEE) X(CoUninitializeCor) X(CoUninitializeEE) \
++    X(CollectCtrs) X(CorBindToRuntime) X(CorBindToRuntimeByCfg) X(CorBindToRuntimeByPath) \
++    X(CorBindToRuntimeByPathEx) X(CorDllMainWorker) X(CorMarkThreadInThreadPool) X(CorTickleSvc) \
++    X(EEDllGetClassObjectFromClass) X(EEDllRegisterServer) X(EEDllUnregisterServer) \
++    X(GetCORRequiredVersion) X(GetCORRootDirectory) X(GetCompileInfo) X(GetHashFromAssemblyFile) \
++    X(GetHashFromAssemblyFileW) X(GetHashFromBlob) X(GetHashFromFile) X(GetHashFromFileW) \
++    X(GetHashFromHandle) X(GetHostConfigurationFile) X(GetMetaDataInternalInterface) \
++    X(GetMetaDataInternalInterfaceFromPublic) X(GetMetaDataPublicInterfaceFromInternal) \
++    X(GetPermissionRequests) X(GetPrivateContextsPerfCounters) X(GetProcessExecutableHeap) \
++    X(GetRequestedRuntimeVersionForCLSID) X(GetStartupFlags) X(GetTargetForVTableEntry) \
++    X(GetXMLElement) X(GetXMLElementAttribute) X(GetXMLObject) X(LoadLibraryWithPolicyShim) \
++    X(MetaDataGetDispenser) X(OpenCtrs) X(ReOpenMetaDataWithMemoryEx) X(RunDll32ShimW) \
++    X(RuntimeOSHandle) X(RuntimeOpenImage) X(RuntimeReleaseHandle) X(SetTargetForVTableEntry) \
++    X(StrongNameCompareAssemblies) X(StrongNameErrorInfo) X(StrongNameFreeBuffer) \
++    X(StrongNameGetBlob) X(StrongNameGetBlobFromImage) X(StrongNameGetPublicKey) \
++    X(StrongNameHashSize) X(StrongNameKeyDelete) X(StrongNameKeyGen) X(StrongNameKeyGenEx) \
++    X(StrongNameKeyInstall) X(StrongNameSignatureGeneration) X(StrongNameSignatureGenerationEx) \
++    X(StrongNameSignatureSize) X(StrongNameSignatureVerificationFromImage) \
++    X(StrongNameTokenFromAssemblyEx) X(StrongNameTokenFromPublicKey) X(TranslateSecurityAttributes) \
++    X(CorDllMainWorkerForThunk) X(GetCORSystemDirectory_RetAddr) X(IEE) X(LogHelp_LogAssert) \
++    X(LogHelp_NoGuiOnAssert) X(LogHelp_TerminateOnAssert) X(PostErrorVA)
++
++/* where each export jumps: mscoreei's function, or Wine's */
++#define SHIM_POINTER(name) void *shim_to_##name = NULL;
++SHIM_WINE(SHIM_POINTER)
++SHIM_FRAMEWORK(SHIM_POINTER)
++/* Ordinal 24 has no name: the runtime (clr.dll) asks mscoree for it and
++ * calls it as (REFIID, void **) for its interface to the shim. The
++ * ordinals of mscoree.spec are mscoreei's, as Windows' mscoree has them. */
++void *shim_to_ordinal24 = NULL;
++
++/* The exports themselves (mscoree.spec): a jump through the pointer, which
++ * leaves the arguments, the stack and the return address as the caller made
++ * them, whatever the function's signature. */
++#if defined(__x86_64__)
++#define SHIM_THUNK(name) \
++    __ASM_GLOBAL_FUNC( shim_##name, "jmp *" __ASM_NAME("shim_to_" #name) "(%rip)" )
++#elif defined(__i386__)
++#define SHIM_THUNK(name) \
++    __ASM_GLOBAL_FUNC( shim_##name, "jmp *" __ASM_NAME("shim_to_" #name) )
++#else
++#error "mscoree shim: no jump for this architecture"
++#endif
++SHIM_WINE(SHIM_THUNK)
++SHIM_FRAMEWORK(SHIM_THUNK)
++SHIM_THUNK(ordinal24)
++
++/* An export of the Framework called without the Framework: what Wine's
++ * stub did (a program that calls it ends there either way) */
++static void WINAPI shim_missing(void)
++{
++    ERR( "a .NET Framework function was called, but the .NET Framework is not installed\n" );
++    RaiseException( EXCEPTION_WINE_STUB, EXCEPTION_NONCONTINUABLE, 0, NULL );
++}
++
++static HRESULT WINAPI shim_no_ordinal24( REFIID riid, void **obj )
++{
++    *obj = NULL;
++    return E_NOINTERFACE;
++}
++
++/* Ordinal 142, which has no name either: mscoreei asks the shim, from its
++ * own DllMain, for the version of the system as it is, not as the program's
++ * compatibility settings would tell it (an OSVERSIONINFOW). */
++BOOL WINAPI shim_os_version( OSVERSIONINFOW *info )
++{
++    if (!info || info->dwOSVersionInfoSize < sizeof(*info)) return FALSE;
++    return !RtlGetVersion( (RTL_OSVERSIONINFOEXW *)info );
++}
++
++/* what Windows' mscoree tells mscoreei of its DllMain */
++static BOOL (WINAPI *framework_dll_main)( HINSTANCE, DWORD, void * );
++
++/* InstallRoot\v4.0.30319\mscoreei.dll, as Windows' shim finds it: the
++ * registry's own view gives a 32-bit process Framework, a 64-bit one
++ * Framework64. Without the value, where Windows has it. */
++static HMODULE load_framework_shim(void)
++{
++    WCHAR path[MAX_PATH];
++    DWORD size = sizeof(path) - sizeof(L"v4.0.30319\\mscoreei.dll");
++    HMODULE module;
++    HKEY key;
++    LONG ret = ERROR_FILE_NOT_FOUND;
++
++    if (!RegOpenKeyExW( HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\.NETFramework", 0, KEY_READ, &key ))
++    {
++        ret = RegQueryValueExW( key, L"InstallRoot", NULL, NULL, (BYTE *)path, &size );
++        RegCloseKey( key );
++    }
++    if (!ret && size >= 2 * sizeof(WCHAR))
++        path[size / sizeof(WCHAR) - 1] = 0;
++    else
++    {
++        UINT len = GetSystemWindowsDirectoryW( path, MAX_PATH - 64 );
++        if (!len || len >= MAX_PATH - 64) return NULL;
++        wcscat( path, sizeof(void *) == 8 ? L"\\Microsoft.NET\\Framework64\\" : L"\\Microsoft.NET\\Framework\\" );
++    }
++    if (path[0] && path[wcslen( path ) - 1] != '\\') wcscat( path, L"\\" );
++    wcscat( path, L"v4.0.30319\\mscoreei.dll" );
++    if (GetFileAttributesW( path ) == INVALID_FILE_ATTRIBUTES) return NULL;
++    if (!(module = LoadLibraryExW( path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH )))
++    {
++        ERR( "%s: error %lu, .NET programs run on Wine's runtime\n", debugstr_w(path), GetLastError() );
++        return NULL;
++    }
++    TRACE( "the .NET Framework's shim is %s\n", debugstr_w(path) );
++    return module;
++}
++
++void shim_dll_main( HINSTANCE instance, DWORD reason, void *reserved )
++{
++    if (reason == DLL_PROCESS_ATTACH)
++    {
++        HMODULE framework = load_framework_shim();
++        void *proc;
++
++#define SHIM_SET_WINE(name) \
++        shim_to_##name = framework && (proc = GetProcAddress( framework, #name )) ? proc : (void *)name;
++#define SHIM_SET_FRAMEWORK(name) \
++        shim_to_##name = framework && (proc = GetProcAddress( framework, #name )) ? proc : (void *)shim_missing;
++        SHIM_WINE(SHIM_SET_WINE)
++        SHIM_FRAMEWORK(SHIM_SET_FRAMEWORK)
++        shim_to_ordinal24 = framework && (proc = GetProcAddress( framework, (const char *)(ULONG_PTR)24 ))
++                            ? proc : (void *)shim_no_ordinal24;
++        if (framework) framework_dll_main = (void *)GetProcAddress( framework, "OnShimDllMainCalled" );
++    }
++    if (framework_dll_main) framework_dll_main( instance, reason, reserved );
++}

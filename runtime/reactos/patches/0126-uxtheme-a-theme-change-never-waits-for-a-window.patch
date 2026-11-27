@@ -1,0 +1,24 @@
+From: Project Arctic
+Subject: uxtheme: a theme change never waits for a window.
+
+WM_THEMECHANGED went to every window of every program with SendMessageW:
+one window that did not answer held the thread that changed the visual
+style for good. In explorer that was the thread of Personalization, and
+every later change waited behind it, so the style of Windows 11 could not
+be chosen again after Windows 10's (2026-11-21). The message is sent with
+SendNotifyMessageW: the windows of the calling thread still get it at once,
+the others when their thread reads its messages. The sender keeps nothing
+the receivers need: each of them loads the active theme itself.
+---
+diff --git a/dll/win32/uxtheme/system.c b/dll/win32/uxtheme/system.c
+--- a/dll/win32/uxtheme/system.c
++++ b/dll/win32/uxtheme/system.c
+@@ -62,7 +62,7 @@
+
+ static BOOL CALLBACK UXTHEME_send_theme_changed (HWND hWnd, LPARAM enable)
+ {
+-    SendMessageW(hWnd, WM_THEMECHANGED, enable, 0);
++    SendNotifyMessageW(hWnd, WM_THEMECHANGED, enable, 0);
+     return TRUE;
+ }
+

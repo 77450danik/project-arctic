@@ -1,0 +1,34 @@
+@ stdcall WinUsb_AbortPipe(ptr long)
+@ stdcall WinUsb_ControlTransfer(ptr int64 ptr long ptr ptr)
+@ stdcall WinUsb_FlushPipe(ptr long)
+@ stdcall WinUsb_Free(ptr)
+@ stub WinUsb_GetAdjustedFrameNumber
+@ stdcall WinUsb_GetAssociatedInterface(ptr long ptr)
+@ stdcall WinUsb_GetCurrentAlternateSetting(ptr ptr)
+@ stub WinUsb_GetCurrentFrameNumber
+@ stub WinUsb_GetCurrentFrameNumberAndQpc
+@ stdcall WinUsb_GetDescriptor(ptr long long long ptr long ptr)
+@ stdcall WinUsb_GetOverlappedResult(ptr ptr ptr long)
+@ stdcall WinUsb_GetPipePolicy(ptr long long ptr ptr)
+@ stdcall WinUsb_GetPowerPolicy(ptr long ptr ptr)
+@ stdcall WinUsb_Initialize(ptr ptr)
+@ stdcall WinUsb_ParseConfigurationDescriptor(ptr ptr long long long long long)
+@ stdcall WinUsb_ParseDescriptors(ptr long ptr long)
+@ stdcall WinUsb_QueryDeviceInformation(ptr long ptr ptr)
+@ stdcall WinUsb_QueryInterfaceSettings(ptr long ptr)
+@ stdcall WinUsb_QueryPipe(ptr long long ptr)
+@ stdcall WinUsb_QueryPipeEx(ptr long long ptr)
+@ stub WinUsb_ReadIsochPipe
+@ stub WinUsb_ReadIsochPipeAsap
+@ stdcall WinUsb_ReadPipe(ptr long ptr long ptr ptr)
+@ stub WinUsb_RegisterIsochBuffer
+@ stdcall WinUsb_ResetPipe(ptr long)
+@ stdcall WinUsb_SetCurrentAlternateSetting(ptr long)
+@ stdcall WinUsb_SetPipePolicy(ptr long long long ptr)
+@ stdcall WinUsb_SetPowerPolicy(ptr long long ptr)
+@ stub WinUsb_StartTrackingForTimeSync
+@ stub WinUsb_StopTrackingForTimeSync
+@ stub WinUsb_UnregisterIsochBuffer
+@ stub WinUsb_WriteIsochPipe
+@ stub WinUsb_WriteIsochPipeAsap
+@ stdcall WinUsb_WritePipe(ptr long ptr long ptr ptr)

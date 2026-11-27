@@ -1,0 +1,16 @@
+From: Project Arctic
+Subject: shell32: explorer's command bar takes the pictures of the menus.
+
+The buttons of Windows 11's command bar in File Explorer (cut, copy,
+paste, rename, share, delete, sort, view, new) have the same two-tone
+pictures as its context menus. ArcticGetMenuPicture gives one of them for
+a light or dark background at a size (menuicons.cpp).
+---
+diff --git a/dll/win32/shell32/shell32.spec b/dll/win32/shell32/shell32.spec
+--- a/dll/win32/shell32/shell32.spec
++++ b/dll/win32/shell32/shell32.spec
+@@ -666,3 +666,4 @@
+
+ ; Arctic: the pictures of Windows 11's menus (menuicons.cpp)
+ @ stdcall ArcticSetMenuIcon(ptr long long str)
++@ stdcall ArcticGetMenuPicture(str long long)

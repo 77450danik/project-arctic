@@ -1,0 +1,71 @@
+From: Project Arctic
+Subject: shell32: the "runas" verb is elevation through User Account Control.
+
+ShellExecute with "runas" showed the dialog of another user's name and
+password (Run as a different user) and started the program with
+CreateProcessWithLogon; in Windows it is elevation: the consent prompt,
+then the program as the administrator. The program now starts with the
+RunAsAdmin compatibility layer and its loader asks for consent (Wine patch
+0162). The dialog stays for "runasuser", as in Windows.
+---
+diff --git a/dll/win32/shell32/shlexec.cpp b/dll/win32/shell32/shlexec.cpp
+index 44b68c1..cd0ca2d 100644
+--- a/dll/win32/shell32/shlexec.cpp
++++ b/dll/win32/shell32/shlexec.cpp
+@@ -718,6 +718,45 @@ again:
+     return HRESULT_FROM_WIN32(error);
+ }
+ 
++/* Arctic: "runas" is elevation, as in Windows: the program starts with the
++ * RunAsAdmin compatibility layer (__COMPAT_LAYER), and its loader asks User
++ * Account Control as for a manifest that requires the administrator. The
++ * dialog of another user's name and password is "runasuser"'s. */
++static BOOL RunProcessElevated(LPWSTR Cmd, DWORD CreationFlags, LPWSTR Env, LPCWSTR Dir,
++                               STARTUPINFOW *pSI, PROCESS_INFORMATION *pPI)
++{
++    static const WCHAR layer[] = L"__COMPAT_LAYER=RunAsAdmin";
++    LPWSTR src = Env ? Env : GetEnvironmentStringsW(), dst, p, block;
++    SIZE_T size = 0;
++    BOOL ret;
++
++    if (!src) return FALSE;
++    for (p = src; *p; p += wcslen(p) + 1)
++        if (_wcsnicmp(p, L"__COMPAT_LAYER=", 15)) size += wcslen(p) + 1;
++    block = (LPWSTR)HeapAlloc(GetProcessHeap(), 0, (size + ARRAY_SIZE(layer) + 1) * sizeof(WCHAR));
++    if (!block)
++    {
++        if (!Env) FreeEnvironmentStringsW(src);
++        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
++        return FALSE;
++    }
++    dst = block;
++    for (p = src; *p; p += wcslen(p) + 1)
++    {
++        if (!_wcsnicmp(p, L"__COMPAT_LAYER=", 15)) continue;
++        wcscpy(dst, p);
++        dst += wcslen(p) + 1;
++    }
++    wcscpy(dst, layer);
++    dst += ARRAY_SIZE(layer);
++    *dst = 0;
++    if (!Env) FreeEnvironmentStringsW(src);
++
++    ret = CreateProcessW(NULL, Cmd, NULL, NULL, FALSE, CreationFlags | CREATE_UNICODE_ENVIRONMENT, block, Dir, pSI, pPI);
++    HeapFree(GetProcessHeap(), 0, block);
++    return ret;
++}
++
+ /*************************************************************************
+  *    SHELL_ExecuteW [Internal]
+  *
+@@ -787,6 +826,10 @@ static UINT_PTR SHELL_ExecuteW(const WCHAR *lpCmd, WCHAR *env, BOOL shWait,
+ 
+     BOOL createdProcess;
+     if (psei->lpVerb && !StrCmpIW(L"runas", psei->lpVerb))
++    {
++        createdProcess = RunProcessElevated((LPWSTR)lpCmd, dwCreationFlags, env, lpDirectory, &startup, &info);
++    }
++    else if (psei->lpVerb && !StrCmpIW(L"runasuser", psei->lpVerb))
+     {
+         HRESULT hr = PromptAndRunProcessAs(psei->hwnd, (LPWSTR)lpCmd, dwCreationFlags,
+                                                  env, lpDirectory, &startup, &info);

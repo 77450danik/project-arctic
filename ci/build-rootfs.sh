@@ -82,7 +82,12 @@ if [ -d "$RFS/usr/share/nt/fonts" ]; then
 fi
 
 INIT_SRC=("$ROOT"/host/init/{bootanim,screen,stop,hiberfil,tuning}.c)
-gcc -O2 -Wall -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}" \
+# nt_boot names the protocol of the executive in the kernel (kernel/drivers/ntos):
+# the one of the Wine headers it was built with, which ci/build-wine.sh
+# checks against Wine's own
+NT_PROTOCOL=$(sed -n 's/^#define SERVER_PROTOCOL_VERSION \([0-9]*\).*/\1/p' \
+    "$ROOT/kernel/drivers/ntos/wine-include/wine/server_protocol.h")
+gcc -O2 -Wall -DNT_PROTOCOL="$NT_PROTOCOL" -o "$RFS/usr/bin/arctic-init" "$ROOT/host/init/arctic-init.c" "${INIT_SRC[@]}" \
     "$ROOT/host/init/gate.c" "$ROOT/host/init/hang.c" -lcrypt
 gcc -O2 -Wall -o "$RFS/usr/bin/arctic-volume" "$ROOT/host/init/arctic-volume.c"
 # What a program of Windows that writes a USB disk needs root for (docs/disks.md)
@@ -249,6 +254,12 @@ VKD3D="$OUT/vkd3d-proton"
 [ -f "$VKD3D/x64/d3d12core.dll" ] || { echo "no $VKD3D: run ci/build-vkd3d-proton.sh first"; exit 1; }
 cp "$VKD3D"/x64/*.dll "$PFX/drive_c/windows/system32/"
 cp "$VKD3D"/x86/*.dll "$PFX/drive_c/windows/syswow64/"
+# Direct3D 8-11 and DXGI: DXVK built with Arctic's patches (ci/build-dxvk.sh:
+# H.264 video decoding on Vulkan Video), in place of the manifest's release
+DXVK="$OUT/dxvk"
+[ -f "$DXVK/x64/d3d11.dll" ] && [ -f "$DXVK/x32/d3d11.dll" ] || { echo "no $DXVK: run ci/build-dxvk.sh first"; exit 1; }
+cp "$DXVK"/x64/*.dll "$PFX/drive_c/windows/system32/"
+cp "$DXVK"/x32/*.dll "$PFX/drive_c/windows/syswow64/"
 ls -l "$PFX"/drive_c/windows/system32/{d3d9,d3d11,dxgi,d3d12,d3d12core,nvapi64}.dll
 cp "$RFS"/usr/lib/nvidia/wine/*.dll "$PFX/drive_c/windows/system32/" 2>/dev/null || true
 
@@ -257,6 +268,8 @@ bash "$ROOT/ci/install-chrome.sh" "$PFX"
 # PowerShell 7, Git for Windows and GitHub CLI: the shells and tools are
 # Windows programs, Linux is only behind wsl.exe (docs/linux-gate.md)
 bash "$ROOT/ci/install-windows-tools.sh" "$PFX"
+# The .NET Framework 4.8, as Windows 11 has it (docs/dotnet.md)
+bash "$ROOT/ci/install-dotnet.sh" "$RFS"
 
 # Add-AppxPackage for the packages installers made for Windows 11 add beside
 # a program: their File Explorer menu (runtime/powershell/Appx). pwsh looks

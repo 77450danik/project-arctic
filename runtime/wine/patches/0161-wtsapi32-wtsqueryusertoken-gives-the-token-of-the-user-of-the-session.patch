@@ -1,0 +1,69 @@
+From: Project Arctic
+Subject: wtsapi32: WTSQueryUserToken gives the token of the user of the session.
+
+It gave the caller's own token. A service asks for the session's user to
+start a program there as that user: G HUB's updater, which runs as SYSTEM,
+its agent. Now the token is the one the session's shell (explorer.exe)
+runs with, duplicated as a primary token; the caller's only when there is
+no shell in the session.
+---
+diff --git a/dlls/wtsapi32/wtsapi32.c b/dlls/wtsapi32/wtsapi32.c
+index 5a7e799..cab5471 100644
+--- a/dlls/wtsapi32/wtsapi32.c
++++ b/dlls/wtsapi32/wtsapi32.c
+@@ -23,6 +23,7 @@
+ #include "winternl.h"
+ #include "winnls.h"
+ #include "lmcons.h"
++#include "tlhelp32.h"
+ #include "wtsapi32.h"
+ #include "wine/debug.h"
+ 
+@@ -642,9 +643,37 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
+ /************************************************************
+  *                WTSQueryUserToken (WTSAPI32.@)
+  */
++/* Arctic: the token of the user logged on to a session is the one its shell
++ * runs with. A service (SYSTEM since Arctic runs programs' services so) asks
++ * for it to start a program in the user's session: G HUB's updater its agent.
++ * Its own token would have started that program as SYSTEM. */
++static HANDLE session_shell_token(ULONG session_id)
++{
++    PROCESSENTRY32W entry = { sizeof(entry) };
++    HANDLE snapshot, process, token, ret = NULL;
++    DWORD session;
++
++    if ((snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)) == INVALID_HANDLE_VALUE) return NULL;
++    if (Process32FirstW(snapshot, &entry)) do
++    {
++        if (lstrcmpiW(entry.szExeFile, L"explorer.exe")) continue;
++        if (!ProcessIdToSessionId(entry.th32ProcessID, &session) || session != session_id) continue;
++        if (!(process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID))) continue;
++        if (OpenProcessToken(process, TOKEN_DUPLICATE | TOKEN_QUERY, &token))
++        {
++            if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenPrimary, &ret))
++                ret = NULL;
++            CloseHandle(token);
++        }
++        CloseHandle(process);
++    } while (!ret && Process32NextW(snapshot, &entry));
++    CloseHandle(snapshot);
++    return ret;
++}
++
+ BOOL WINAPI WTSQueryUserToken(ULONG session_id, PHANDLE token)
+ {
+-    FIXME("%lu %p semi-stub!\n", session_id, token);
++    TRACE("%lu %p\n", session_id, token);
+ 
+     if (!token)
+     {
+@@ -652,6 +681,8 @@ BOOL WINAPI WTSQueryUserToken(ULONG session_id, PHANDLE token)
+         return FALSE;
+     }
+ 
++    if ((*token = session_shell_token(session_id))) return TRUE;
++
+     return DuplicateHandle(GetCurrentProcess(), GetCurrentProcessToken(),
+                            GetCurrentProcess(), token,
+                            0, FALSE, DUPLICATE_SAME_ACCESS);

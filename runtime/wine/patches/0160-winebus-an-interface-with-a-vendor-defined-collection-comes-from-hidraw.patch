@@ -1,0 +1,36 @@
+From: Project Arctic
+Subject: winebus: an interface with a vendor-defined collection beside a mouse's or keyboard's comes from hidraw.
+
+Wine takes mice and keyboards from evdev and drops their hidraw nodes,
+judging by the first top-level collection only. A G102's second interface
+has a keyboard collection first and Logitech's HID++ channel (usage page
+0xFF00) after it; through evdev that channel was gone, and G HUB showed no
+device ("Connect Your Logitech Gear"). Windows shows every collection. An
+interface with a vendor-defined collection is now taken from hidraw; plain
+mice and keyboards stay on evdev. Verified: a HID++ 2.0 ping on the
+collection is answered (protocol 4.2), G HUB shows the G102 and its DPI.
+---
+diff --git a/dlls/winebus.sys/main.c b/dlls/winebus.sys/main.c
+index 5f46932..0de9f1e 100644
+--- a/dlls/winebus.sys/main.c
++++ b/dlls/winebus.sys/main.c
+@@ -931,6 +931,19 @@ static USAGE_AND_PAGE get_device_usages(UINT64 unix_device, UINT *buttons)
+         usages.UsagePage = device_desc.CollectionDesc[0].UsagePage;
+         usages.Usage = device_desc.CollectionDesc[0].Usage;
+ 
++        /* Arctic: an interface whose first collection is a mouse's or a
++         * keyboard's can have a vendor-defined one beside it: the channel
++         * a mouse's software talks to it through (Logitech's HID++ on a G102's
++         * second interface). Windows shows each collection; through evdev
++         * that one is lost, so such an interface is taken from hidraw. */
++        for (i = 1; i < device_desc.CollectionDescLength; i++)
++        {
++            if (device_desc.CollectionDesc[i].UsagePage < 0xff00) continue;
++            usages.UsagePage = device_desc.CollectionDesc[i].UsagePage;
++            usages.Usage = device_desc.CollectionDesc[i].Usage;
++            break;
++        }
++
+         if ((status = HidP_GetCaps(preparsed, &caps)) == HIDP_STATUS_SUCCESS &&
+             (button_caps = malloc(sizeof(*button_caps) * caps.NumberInputButtonCaps)))
+         {

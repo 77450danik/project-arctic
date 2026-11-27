@@ -1,0 +1,8 @@
+# n2-ntbench-wineserver.txt's commands alone, for a VM already at the desktop
+# (python tools/vmscript.py tests/vm/n2-ntbench-wineserver-run.txt)
+key win-r
+sleep 2
+type cmd /c mkdir D:\nt & D:\nw.cmd
+key ret
+sleep 5
+shot n2-wineserver

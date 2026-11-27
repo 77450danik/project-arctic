@@ -1,0 +1,12 @@
+REGEDIT4
+
+; Where the .NET Framework is, as Windows' own mscoree.dll registers it: the
+; Framework's installer, made for Windows 8 and later, takes that part as the
+; system's and leaves it out. Arctic's mscoree (Wine patch 0156) finds
+; mscoreei.dll of the Framework here (docs/dotnet.md).
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\.NETFramework]
+"InstallRoot"="C:\\Windows\\Microsoft.NET\\Framework64\\"
+
+[HKEY_LOCAL_MACHINE\Software\Wow6432Node\Microsoft\.NETFramework]
+"InstallRoot"="C:\\Windows\\Microsoft.NET\\Framework\\"

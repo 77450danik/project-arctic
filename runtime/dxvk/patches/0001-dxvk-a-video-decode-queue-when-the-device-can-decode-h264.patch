@@ -1,0 +1,169 @@
+From: Project Arctic
+Subject: dxvk: a video decode queue when the device can decode H.264.
+
+With VK_KHR_video_queue, VK_KHR_video_decode_queue and
+VK_KHR_video_decode_h264 and a queue family that decodes, the device gets
+those extensions and one video decode queue, for the D3D11 video decoder.
+The loader knows the video functions. Without them nothing changes.
+---
+diff --git a/src/dxvk/dxvk_device_info.h b/src/dxvk/dxvk_device_info.h
+index 54deab3..57ddb3c 100644
+--- a/src/dxvk/dxvk_device_info.h
++++ b/src/dxvk/dxvk_device_info.h
+@@ -112,6 +112,9 @@ namespace dxvk {
+     VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR          khrSwapchainMaintenance1        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
+     VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR            khrUnifiedImageLayouts          = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR };
+     VkBool32                                                  khrSwapchainMutableFormat       = VK_FALSE;
++    VkBool32                                                  khrVideoQueue                   = VK_FALSE;
++    VkBool32                                                  khrVideoDecodeQueue             = VK_FALSE;
++    VkBool32                                                  khrVideoDecodeH264              = VK_FALSE;
+     VkBool32                                                  khrWin32KeyedMutex              = VK_FALSE;
+     VkBool32                                                  amdBufferMarker                 = VK_FALSE;
+     VkBool32                                                  nvDeviceDiagnosticCheckpoints   = VK_FALSE;
+@@ -188,6 +191,9 @@ namespace dxvk {
+     VkExtensionProperties khrSwapchainMaintenance1          = vk::makeExtension(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+     VkExtensionProperties khrSwapchainMutableFormat         = vk::makeExtension(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME);
+     VkExtensionProperties khrUnifiedImageLayouts            = vk::makeExtension(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
++    VkExtensionProperties khrVideoQueue                     = vk::makeExtension(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
++    VkExtensionProperties khrVideoDecodeQueue               = vk::makeExtension(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
++    VkExtensionProperties khrVideoDecodeH264                = vk::makeExtension(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
+     VkExtensionProperties khrWin32KeyedMutex                = vk::makeExtension(VK_KHR_WIN32_KEYED_MUTEX_EXTENSION_NAME);
+     VkExtensionProperties amdBufferMarker                   = vk::makeExtension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
+     VkExtensionProperties nvDeviceDiagnosticCheckpoints     = vk::makeExtension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+@@ -223,6 +229,8 @@ namespace dxvk {
+     DxvkDeviceQueueIndex graphics;
+     DxvkDeviceQueueIndex transfer;
+     DxvkDeviceQueueIndex sparse;
++    /// Video decode queue, for the D3D11 video decoder (Arctic)
++    DxvkDeviceQueueIndex video;
+   };
+ 
+ 
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index 63d89d9..2c169e0 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -69,6 +69,9 @@ namespace dxvk {
+     HANDLE_EXT(khrSwapchainMaintenance1);          \
+     HANDLE_EXT(khrSwapchainMutableFormat);         \
+     HANDLE_EXT(khrUnifiedImageLayouts);            \
++    HANDLE_EXT(khrVideoQueue);                     \
++    HANDLE_EXT(khrVideoDecodeQueue);               \
++    HANDLE_EXT(khrVideoDecodeH264);                \
+     HANDLE_EXT(khrWin32KeyedMutex);                \
+     HANDLE_EXT(amdBufferMarker);                   \
+     HANDLE_EXT(nvDeviceDiagnosticCheckpoints);     \
+@@ -560,6 +563,16 @@ namespace dxvk {
+     if (m_properties.vk12.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY)
+       m_featuresSupported.extMultiDraw.multiDraw = VK_FALSE;
+ 
++    // Video decoding needs all three extensions and a queue to decode on
++    if (!m_featuresSupported.khrVideoQueue
++     || !m_featuresSupported.khrVideoDecodeQueue
++     || !m_featuresSupported.khrVideoDecodeH264
++     || findQueueFamily(VK_QUEUE_VIDEO_DECODE_BIT_KHR, VK_QUEUE_VIDEO_DECODE_BIT_KHR) == VK_QUEUE_FAMILY_IGNORED) {
++      m_featuresSupported.khrVideoQueue = VK_FALSE;
++      m_featuresSupported.khrVideoDecodeQueue = VK_FALSE;
++      m_featuresSupported.khrVideoDecodeH264 = VK_FALSE;
++    }
++
+     // If we're running off a device without a sparse binding queue,
+     // disable all the sparse binding features as well
+     uint32_t sparseQueue = findQueueFamily(VK_QUEUE_SPARSE_BINDING_BIT, VK_QUEUE_SPARSE_BINDING_BIT);
+@@ -693,10 +706,18 @@ namespace dxvk {
+         VK_QUEUE_SPARSE_BINDING_BIT);
+     }
+ 
++    // A queue of its own for video decoding, when the device can decode
++    if (m_featuresEnabled.khrVideoDecodeH264) {
++      m_queueMapping.video.family = findQueueFamily(
++        VK_QUEUE_VIDEO_DECODE_BIT_KHR,
++        VK_QUEUE_VIDEO_DECODE_BIT_KHR);
++    }
++
+     // Actually enable all the queues
+     enableQueue(m_queueMapping.graphics);
+     enableQueue(m_queueMapping.transfer);
+     enableQueue(m_queueMapping.sparse);
++    enableQueue(m_queueMapping.video);
+ 
+     // Fix up queue priority pointers
+     uint32_t maxQueueCount = 0u;
+@@ -1071,6 +1092,11 @@ namespace dxvk {
+       /* Use GENERAL layout for everything */
+       ENABLE_EXT_FEATURE(khrUnifiedImageLayouts, unifiedImageLayouts, false),
+ 
++      /* Hardware video decoding for D3D11 video decoders */
++      ENABLE_EXT(khrVideoQueue, false),
++      ENABLE_EXT(khrVideoDecodeQueue, false),
++      ENABLE_EXT(khrVideoDecodeH264, false),
++
+       /* Keyed mutex support in wine */
+       ENABLE_EXT(khrWin32KeyedMutex, false),
+ 
+diff --git a/src/dxvk/dxvk_device.h b/src/dxvk/dxvk_device.h
+index 7fb070d..55908f4 100644
+--- a/src/dxvk/dxvk_device.h
++++ b/src/dxvk/dxvk_device.h
+@@ -69,6 +69,9 @@ namespace dxvk {
+     DxvkDeviceQueue graphics;
+     DxvkDeviceQueue transfer;
+     DxvkDeviceQueue sparse;
++    /// Video decode queue, if any (queueHandle is null otherwise).
++    /// Only the D3D11 video decoder submits to it, under its own lock.
++    DxvkDeviceQueue video;
+   };
+   
+   /**
+diff --git a/src/dxvk/dxvk_adapter.cpp b/src/dxvk/dxvk_adapter.cpp
+index 96dfa5d..f5d6d2c 100644
+--- a/src/dxvk/dxvk_adapter.cpp
++++ b/src/dxvk/dxvk_adapter.cpp
+@@ -301,6 +301,7 @@ namespace dxvk {
+     deviceQueues.graphics = getDeviceQueue(vkd, caps, queueMapping.graphics);
+     deviceQueues.transfer = getDeviceQueue(vkd, caps, queueMapping.transfer);
+     deviceQueues.sparse   = getDeviceQueue(vkd, caps, queueMapping.sparse);
++    deviceQueues.video    = getDeviceQueue(vkd, caps, queueMapping.video);
+ 
+     return new DxvkDevice(m_instance, this, vkd, caps, deviceQueues, DxvkQueueCallback());
+   }
+diff --git a/src/vulkan/vulkan_loader.h b/src/vulkan/vulkan_loader.h
+index 8ad6478..73fd832 100644
+--- a/src/vulkan/vulkan_loader.h
++++ b/src/vulkan/vulkan_loader.h
+@@ -168,6 +168,11 @@ namespace dxvk::vk {
+     VULKAN_FN(vkGetPhysicalDeviceSurfacePresentModes2EXT);
+     #endif
+ 
++    #ifdef VK_KHR_video_queue
++    VULKAN_FN(vkGetPhysicalDeviceVideoCapabilitiesKHR);
++    VULKAN_FN(vkGetPhysicalDeviceVideoFormatPropertiesKHR);
++    #endif
++
+     #ifdef VK_EXT_swapchain_maintenance1
+     VULKAN_FN(vkReleaseSwapchainImagesEXT);
+     #endif
+@@ -519,6 +524,23 @@ namespace dxvk::vk {
+     VULKAN_FN(vkGetDeviceFaultDebugInfoKHR);
+     #endif
+ 
++    #ifdef VK_KHR_video_queue
++    VULKAN_FN(vkCreateVideoSessionKHR);
++    VULKAN_FN(vkDestroyVideoSessionKHR);
++    VULKAN_FN(vkGetVideoSessionMemoryRequirementsKHR);
++    VULKAN_FN(vkBindVideoSessionMemoryKHR);
++    VULKAN_FN(vkCreateVideoSessionParametersKHR);
++    VULKAN_FN(vkUpdateVideoSessionParametersKHR);
++    VULKAN_FN(vkDestroyVideoSessionParametersKHR);
++    VULKAN_FN(vkCmdBeginVideoCodingKHR);
++    VULKAN_FN(vkCmdEndVideoCodingKHR);
++    VULKAN_FN(vkCmdControlVideoCodingKHR);
++    #endif
++
++    #ifdef VK_KHR_video_decode_queue
++    VULKAN_FN(vkCmdDecodeVideoKHR);
++    #endif
++
+     #ifdef VK_AMD_buffer_marker
+     VULKAN_FN(vkCmdWriteBufferMarkerAMD);
+     VULKAN_FN(vkCmdWriteBufferMarker2AMD);
