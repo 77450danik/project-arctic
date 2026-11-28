@@ -1,0 +1,9 @@
+{
+  "name": "Arctic dev",
+  "date": "2026-11-26",
+  "iso": {
+    "url": "https://huggingface.co/blastforce/arctic/resolve/main/arctic.iso?download=true",
+    "size": 2641315840,
+    "sha256": "91267fa2199d7c1b7164039205e6c29eea6180525bf7420181078fa2c824643c"
+  }
+}

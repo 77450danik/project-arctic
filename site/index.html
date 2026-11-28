@@ -4,38 +4,42 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="google-site-verification" content="XQLcw6NDsa4Nk3ea7O2YFdpyuEm3hZ1eEAYeIb7Dwmc" />
-  <meta name="color-scheme" content="light dark" />
-  <title>Project Arctic — Гібридна ОС нового покоління для x86</title>
-  <meta name="description" content="Project Arctic — унікальна гібридна операційна система для x86: швидка, ефективна, для роботи та ігор, з усіма драйверами з коробки й широкою кастомізацією." />
-  <meta property="og:title" content="Project Arctic — Next-generation hybrid OS for x86" />
-  <meta property="og:description" content="Fast, efficient, built for work and gaming with drivers out of the box and deep Windows 11-style customization." />
-  <meta property="og:image" content="assets/hero-start-dark.webp" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Project Arctic — Next-Gen Universal Hybrid Operating System for PC</title>
+  <meta name="description" content="Project Arctic — гібридна ОС для ПК з інтерфейсом у стилі Windows 11. Готова до роботи одразу: драйвери, Chrome і все потрібне вже встановлені. Windows-програми й ігри, Live CD." />
+  <link rel="canonical" href="https://77450danik.github.io/project-arctic/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://77450danik.github.io/project-arctic/" />
+  <meta property="og:site_name" content="Project Arctic" />
+  <meta property="og:locale" content="uk_UA" />
+  <meta property="og:locale:alternate" content="en_US" />
+  <meta property="og:title" content="Project Arctic — Next-Gen Universal Hybrid Operating System for PC" />
+  <meta property="og:description" content="Стабільність, комфорт і універсальність в одному. Готова до роботи одразу: не треба встановлювати драйвери й програми." />
+  <meta property="og:image" content="https://77450danik.github.io/project-arctic/assets/og.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://77450danik.github.io/project-arctic/assets/og.jpg" />
+  <meta name="theme-color" content="#0b0f17" />
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <!-- Sticky Microsoft Fluent Acrylic Header -->
-  <header class="site-header">
-    <div class="container header-inner">
-      <a href="#top" class="brand" aria-label="Project Arctic">
-        <span class="brand-mark" aria-hidden="true">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2V22M3.34 7L20.66 17M20.66 7L3.34 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-            <path d="M9.5 4.5L12 7L14.5 4.5M9.5 19.5L12 17L14.5 19.5M4.6 9.8L8 9.3L6.8 6.1M17.2 17.9L16 14.7L19.4 14.2M19.4 9.8L16 9.3L17.2 6.1M6.8 17.9L8 14.7L4.6 14.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </span>
-        <span class="brand-name">Project Arctic</span>
+
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a href="#top" class="logo" aria-label="Project Arctic">
+        <img src="assets/favicon.svg" alt="" width="26" height="26" />
       </a>
 
-      <nav class="nav-links" aria-label="Primary navigation">
-        <a href="#highlights" data-i18n="nav.highlights">Переваги</a>
-        <a href="#experience" data-i18n="nav.experience">Можливості</a>
-        <a href="#capabilities" data-i18n="nav.capabilities">Особливості</a>
+      <nav class="nav" aria-label="Навігація">
+        <a href="#features" data-i18n="nav.features">Особливості</a>
+        <a href="#screens" data-i18n="nav.screens">Знімки</a>
         <a href="#download" data-i18n="nav.download">Завантажити</a>
       </nav>
 
-      <div class="header-actions">
-        <button type="button" class="theme-toggle-btn" id="theme-toggle" aria-label="Перемкнути тему" title="Перемкнути тему">
+      <div class="topbar-actions">
+        <button type="button" class="icon-btn" id="theme-toggle" aria-label="Тема" title="Тема">
           <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8"/>
             <path d="M12 2V4.5M12 19.5V22M4.93 4.93L6.7 6.7M17.3 17.3L19.07 19.07M2 12H4.5M19.5 12H22M4.93 19.07L6.7 17.3M17.3 6.7L19.07 4.93" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
@@ -44,338 +48,242 @@
             <path d="M20.35 14.95A8.5 8.5 0 0 1 9.05 3.65a8.5 8.5 0 1 0 11.3 11.3Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
-        <div class="lang-switch" role="group" aria-label="Language switcher">
-          <button type="button" class="lang-btn is-active" data-lang="uk">UA</button>
-          <button type="button" class="lang-btn" data-lang="en">EN</button>
+        <div class="segmented segmented-sm" role="group" aria-label="Мова">
+          <button type="button" class="seg-btn is-active" data-lang="uk">UA</button>
+          <button type="button" class="seg-btn" data-lang="en">EN</button>
         </div>
-        <a href="https://github.com/77450danik/project-arctic/releases/download/dev/arctic.iso"
-           class="btn btn-primary btn-sm js-iso-link"
-           data-i18n="nav.cta">Завантажити ISO</a>
       </div>
     </div>
   </header>
 
   <main id="top">
-    <!-- Hero Section: Windows 11 Marketing Centered Composition -->
-    <section class="hero-section">
-      <div class="hero-glow" aria-hidden="true"></div>
-      <div class="container hero-inner">
-        <div class="hero-copy">
-          <h1 class="hero-title" data-i18n="hero.title">Знайомий комфорт.<br/>Нова швидкість.</h1>
-          <p class="hero-subtitle" data-i18n="hero.subtitle">
-            Унікальна гібридна операційна система нового покоління для x86: максимальна продуктивність, усі драйвери з коробки та бездоганна зручність щоденного користування.
-          </p>
-          <div class="hero-cta">
-            <a href="https://github.com/77450danik/project-arctic/releases/download/dev/arctic.iso"
-               class="btn btn-primary btn-lg js-iso-link">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <!-- Hero: an acrylic window over the Arctic wallpaper -->
+    <section class="hero container">
+      <div class="win hero-win">
+        <div class="win-bar">
+          <span class="win-caption">
+            <img src="assets/favicon.svg" alt="" width="16" height="16" />
+            Project Arctic
+          </span>
+          <span class="win-controls" aria-hidden="true">
+            <svg viewBox="0 0 10 10"><path d="M0 5.5H10"/></svg>
+            <svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" rx="1.5"/></svg>
+            <svg viewBox="0 0 10 10"><path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5"/></svg>
+          </span>
+        </div>
+
+        <div class="win-body hero-body">
+          <div class="hero-copy">
+            <h1 class="hero-title" data-i18n-html="hero.title">Стабільність, комфорт і&nbsp;універсальність в&nbsp;одному — це&nbsp;Arctic.</h1>
+            <p class="hero-tagline" data-i18n="hero.tagline">Універсальна гібридна операційна система нового покоління для ПК</p>
+            <p class="hero-lead" data-i18n="hero.lead">Готова до роботи одразу: не треба встановлювати драйвери й програми.</p>
+            <div class="actions">
+              <a href="https://github.com/77450danik/project-arctic/releases/tag/dev" class="btn btn-accent js-iso-link">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M12 3V15M12 15L7 10M12 15L17 10M4 19H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span data-i18n="hero.download">Завантажити ISO</span>
+              </a>
+              <a href="https://github.com/77450danik/project-arctic" target="_blank" rel="noopener" class="btn btn-plain">GitHub</a>
+            </div>
+            <p class="release-line js-release-line" aria-live="polite"></p>
+          </div>
+
+          <div class="hero-screen">
+            <div class="screen">
+              <img id="hero-img" src="assets/hero-start-dark.webp"
+                   alt="Робочий стіл Project Arctic і меню «Пуск»"
+                   class="zoomable" width="1920" height="1080" />
+            </div>
+            <div class="segmented" role="group" aria-label="Знімок">
+              <button type="button" class="seg-btn is-active" data-hero-src="assets/hero-start-dark.webp" data-i18n="hero.dark">Темна</button>
+              <button type="button" class="seg-btn" data-hero-src="assets/start-light.webp" data-i18n="hero.light">Світла</button>
+              <button type="button" class="seg-btn" data-hero-src="assets/desktop-light.webp" data-i18n="hero.desktop">Робочий стіл</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="section container">
+      <h2 class="section-title" data-i18n="features.title">Особливості</h2>
+
+      <div class="tiles">
+        <article class="win tile">
+          <img src="assets/icons/fast.svg" alt="" width="40" height="40" />
+          <h3 data-i18n="f.fast">Швидка</h3>
+          <p data-i18n="f.fastDesc">Виклики NT і вікна обробляє ядро, композитор працює на Vulkan.</p>
+        </article>
+        <article class="win tile">
+          <img src="assets/icons/efficient.png" alt="" width="40" height="40" />
+          <h3 class="stat"><span class="num" data-i18n="f.ramNum">0,8 ГБ</span></h3>
+          <p data-i18n="f.ramDesc">ОЗП зайнято після старту (ВМ, 6 ГБ).</p>
+        </article>
+        <article class="win tile">
+          <img src="assets/icons/work.svg" alt="" width="40" height="40" />
+          <h3 data-i18n="f.work">Для роботи</h3>
+          <p data-i18n="f.workDesc">Провідник із вкладками, Chrome, PowerShell 7, Git, WSL, KVM.</p>
+        </article>
+        <article class="win tile">
+          <img src="assets/icons/gaming.png" alt="" width="40" height="40" />
+          <h3 data-i18n="f.games">Для ігор</h3>
+          <p data-i18n="f.gamesDesc">DXVK і vkd3d-proton, оверлей FPS, андервольт ЦП і розгін ГП.</p>
+        </article>
+        <article class="win tile">
+          <img src="assets/icons/drivers.png" alt="" width="40" height="40" />
+          <h3 data-i18n="f.drivers">Драйвери</h3>
+          <p data-i18n="f.driversDesc">Intel, AMD і NVIDIA, Wi-Fi, звук і мережа працюють одразу з Live USB.</p>
+        </article>
+        <article class="win tile">
+          <img src="assets/icons/security.png" alt="" width="40" height="40" />
+          <h3 data-i18n="f.core">Ядро</h3>
+          <p data-i18n="f.coreDesc">NT-модулі в ядрі Linux, WinHvPlatform на KVM, Secure Boot, диск C: на NTFS.</p>
+        </article>
+        <article class="win tile tile-wide">
+          <img src="assets/apps/chrome.svg" alt="" width="40" height="40" />
+          <div>
+            <h3 data-i18n="f.chrome">Chrome замість Edge</h3>
+            <p data-i18n="f.chromeDesc">Замість непотрібного Edge — Google Chrome, оптимізований для Arctic з коробки. Браузер, яким користується більшість і який зручний для всіх.</p>
+          </div>
+        </article>
+      </div>
+
+      <div class="apps">
+        <span class="apps-label" data-i18n="apps.label">Перевірено:</span>
+        <span class="app"><img src="assets/apps/steam.svg" alt="" width="18" height="18" />Steam</span>
+        <span class="app"><img src="assets/apps/cs2.svg" alt="" width="18" height="18" />Counter-Strike 2</span>
+        <span class="app"><img src="assets/apps/discord.svg" alt="" width="18" height="18" />Discord</span>
+        <span class="app"><img src="assets/apps/spotify.svg" alt="" width="18" height="18" />Spotify</span>
+        <span class="app"><img src="assets/apps/chrome.svg" alt="" width="18" height="18" />Chrome</span>
+        <span class="app"><img src="assets/apps/vscode.svg" alt="" width="18" height="18" />VS Code</span>
+        <span class="app"><img src="assets/apps/logitechg.svg" alt="" width="18" height="18" />G HUB</span>
+      </div>
+    </section>
+
+    <!-- Screenshots: a window with Explorer-style tabs -->
+    <section id="screens" class="section container">
+      <h2 class="section-title" data-i18n="screens.title">Знімки</h2>
+
+      <div class="win shots-win">
+        <div class="win-bar win-bar-tabs">
+          <div class="tabs" role="tablist" aria-label="Знімки">
+            <button type="button" class="tab is-active" role="tab" aria-selected="true" data-img="assets/explorer-tabs.webp" data-cap="s.explorerCap" data-i18n="s.explorer">Провідник</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-img="assets/multitask-dark.webp" data-cap="s.snapCap" data-i18n="s.snap">Snap</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-img="assets/chrome-browser.webp" data-cap="s.chromeCap">Chrome</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-img="assets/arctic-wordpad.webp" data-cap="s.wordpadCap">WordPad</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-img="assets/personalize-light.webp" data-cap="s.themesCap" data-i18n="s.themes">Персоналізація</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-img="assets/pwsh-winver.webp" data-cap="s.pwshCap">PowerShell</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-img="assets/taskmgr-perf.webp" data-cap="s.taskmgrCap" data-i18n="s.taskmgr">Диспетчер задач</button>
+          </div>
+          <span class="win-controls" aria-hidden="true">
+            <svg viewBox="0 0 10 10"><path d="M0 5.5H10"/></svg>
+            <svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" rx="1.5"/></svg>
+            <svg viewBox="0 0 10 10"><path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5"/></svg>
+          </span>
+        </div>
+        <div class="win-body shots-body">
+          <div class="screen">
+            <img id="shot-img" src="assets/explorer-tabs.webp" alt="Знімок Project Arctic"
+                 class="zoomable" loading="lazy" width="1920" height="1080" />
+          </div>
+          <p class="shot-cap" id="shot-cap" data-i18n="s.explorerCap">Вкладки, швидкий доступ, диск C: на NTFS.</p>
+        </div>
+      </div>
+      <p class="footnote" data-i18n="screens.note">Знімки з QEMU, 1920×1080.</p>
+    </section>
+
+    <!-- Download -->
+    <section id="download" class="section container">
+      <div class="win download-win">
+        <div class="win-bar">
+          <span class="win-caption">
+            <img src="assets/favicon.svg" alt="" width="16" height="16" />
+            <span data-i18n="dl.caption">Завантаження</span>
+          </span>
+          <span class="win-controls" aria-hidden="true">
+            <svg viewBox="0 0 10 10"><path d="M0 5.5H10"/></svg>
+            <svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" rx="1.5"/></svg>
+            <svg viewBox="0 0 10 10"><path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5"/></svg>
+          </span>
+        </div>
+        <div class="win-body download-body">
+          <h2 class="download-title" data-i18n="dl.title">Завантажити Arctic</h2>
+          <p class="release-line js-release-line"></p>
+          <div class="actions">
+            <a href="https://github.com/77450danik/project-arctic/releases/tag/dev" class="btn btn-accent js-iso-link">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M12 3V15M12 15L7 10M12 15L17 10M4 19H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
-              <span data-i18n="hero.download">Завантажити Live CD (ISO)</span>
+              <span>arctic.iso</span>
             </a>
-            <a href="https://github.com/77450danik/project-arctic" target="_blank" rel="noopener" class="btn btn-secondary btn-lg">
-              <span data-i18n="hero.github">Відкрити на GitHub</span>
-            </a>
+            <a href="https://github.com/77450danik/project-arctic/releases" target="_blank" rel="noopener" class="btn btn-plain" data-i18n="dl.all">Усі релізи</a>
           </div>
-          <p class="hero-meta">
-            <span class="js-release-badge" data-i18n="hero.meta">Останній реліз Live CD · x86-64 · UEFI Secure Boot та BIOS</span>
-          </p>
-        </div>
-
-        <!-- Framed Real VM Screenshot with Light/Dark Toggle -->
-        <div class="hero-stage">
-          <div class="screen-frame hero-frame">
-            <img id="hero-preview-img"
-                 src="assets/hero-start-dark.webp"
-                 alt="Project Arctic — робочий стіл і меню «Пуск» у стилі Windows 11 (реальний скріншот з ВМ)"
-                 class="screen-img zoomable"
-                 width="1920" height="1080" />
-          </div>
-          <div class="theme-pills" role="tablist" aria-label="Theme preview">
-            <button type="button" class="pill-btn is-active" data-hero-src="assets/hero-start-dark.webp" data-i18n="hero.modeDark">Темний режим</button>
-            <button type="button" class="pill-btn" data-hero-src="assets/start-light.webp" data-i18n="hero.modeLight">Світлий режим</button>
-            <button type="button" class="pill-btn" data-hero-src="assets/desktop-light.webp" data-i18n="hero.modeDesktop">Робочий стіл</button>
-          </div>
-          <p class="vm-caption" data-i18n="common.vmNote">Реальний знімок екрана з віртуальної машини QEMU (1920×1080)</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- 4 Core Pillars with Win11-icon-theme Icons -->
-    <section id="highlights" class="pillars-section">
-      <div class="container">
-        <div class="section-head">
-          <h2 class="section-title" data-i18n="pillars.title">Створена для всього, що ви робите</h2>
-          <p class="section-subtitle" data-i18n="pillars.subtitle">
-            Мінімум зайвого — максимум результату в щоденній роботі та найвимогливіших іграх.
-          </p>
-        </div>
-
-        <div class="pillars-grid">
-          <article class="pillar-card">
-            <div class="pillar-icon-wrap">
-              <img src="assets/icons/fast.svg" alt="" width="48" height="48" />
-            </div>
-            <h3 class="pillar-title" data-i18n="pillars.fastTitle">Швидка</h3>
-            <p class="pillar-desc" data-i18n="pillars.fastDesc">Миттєвий старт, нативні виклики NT у ядрі та прямий композитор без затримок.</p>
-          </article>
-
-          <article class="pillar-card">
-            <div class="pillar-icon-wrap">
-              <img src="assets/icons/efficient.png" alt="" width="48" height="48" />
-            </div>
-            <h3 class="pillar-title" data-i18n="pillars.effTitle">Ефективна</h3>
-            <p class="pillar-desc" data-i18n="pillars.effDesc">Удвічі менше споживання ОЗП у спокої й легке навантаження на систему.</p>
-          </article>
-
-          <article class="pillar-card">
-            <div class="pillar-icon-wrap">
-              <img src="assets/icons/work.svg" alt="" width="48" height="48" />
-            </div>
-            <h3 class="pillar-title" data-i18n="pillars.workTitle">Для роботи</h3>
-            <p class="pillar-desc" data-i18n="pillars.workDesc">Провідник із вкладками, Chrome, PowerShell 7, Git, WSL і віртуалізація KVM.</p>
-          </article>
-
-          <article class="pillar-card">
-            <div class="pillar-icon-wrap">
-              <img src="assets/icons/gaming.png" alt="" width="48" height="48" />
-            </div>
-            <h3 class="pillar-title" data-i18n="pillars.gameTitle">Для ігор</h3>
-            <p class="pillar-desc" data-i18n="pillars.gameDesc">Багато ігор працюють швидше й стабільніше, ніж на Windows — DXVK, vkd3d і Vulkan.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- Interactive Windows 11-Style Feature Showcase -->
-    <section id="experience" class="showcase-section">
-      <div class="container">
-        <div class="section-head">
-          <h2 class="section-title" data-i18n="showcase.title">Зручність, яку відчуваєш одразу</h2>
-          <p class="section-subtitle" data-i18n="showcase.subtitle">
-            Знайомий дизайн у стандартах Windows 11: закруглені вікна, вкладки, ефект Acrylic і миттєвий відгук.
-          </p>
-        </div>
-
-        <div class="showcase-tabs" role="tablist" aria-label="System highlights">
-          <button type="button" class="tab-btn is-active" role="tab" aria-selected="true"
-                  data-img="assets/explorer-tabs.webp"
-                  data-caption-key="showcase.tab1Desc">
-            <span class="tab-title" data-i18n="showcase.tab1">Провідник із вкладками</span>
-          </button>
-          <button type="button" class="tab-btn" role="tab" aria-selected="false"
-                  data-img="assets/multitask-dark.webp"
-                  data-caption-key="showcase.tab2Desc">
-            <span class="tab-title" data-i18n="hero.snapTab">Багатовіконність і Snap</span>
-          </button>
-          <button type="button" class="tab-btn" role="tab" aria-selected="false"
-                  data-img="assets/chrome-browser.webp"
-                  data-caption-key="showcase.tab3Desc">
-            <span class="tab-title" data-i18n="showcase.tab3">Google Chrome</span>
-          </button>
-          <button type="button" class="tab-btn" role="tab" aria-selected="false"
-                  data-img="assets/personalize-dark.webp"
-                  data-caption-key="showcase.tab4Desc">
-            <span class="tab-title" data-i18n="showcase.tab4">Персоналізація та теми</span>
-          </button>
-        </div>
-
-        <div class="showcase-viewport">
-          <div class="screen-frame">
-            <img id="showcase-img"
-                 src="assets/explorer-tabs.webp"
-                 alt="Project Arctic — скріншот системи у ВМ"
-                 class="screen-img zoomable"
-                 width="1920" height="1080" />
-          </div>
-          <p id="showcase-caption" class="showcase-caption" data-i18n="showcase.tab1Desc">
-            Провідник у стилі Windows 11 із вкладками, швидким доступом і нативним диском C: на NTFS.
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <!-- VM Gallery Section (Adapts automatically to Light / Dark system theme) -->
-    <section class="gallery-section">
-      <div class="gallery-glow" aria-hidden="true"></div>
-      <div class="container">
-        <div class="section-head">
-          <h2 class="section-title" data-i18n="gallery.title">Світла й темна гармонія</h2>
-          <p class="section-subtitle" data-i18n="gallery.subtitle">
-            Реальні кадри роботи системи у віртуальній машині — від системних діалогів до PowerShell 7 і календаря.
-          </p>
-        </div>
-
-        <div class="gallery-grid">
-          <figure class="gallery-card">
-            <div class="screen-frame">
-              <img src="assets/pwsh-winver.webp"
-                   alt="PowerShell 7 та діалог Про Arctic (winver) у темному режимі"
-                   class="screen-img zoomable"
-                   loading="lazy" width="1920" height="1080" />
-            </div>
-            <figcaption>
-              <strong data-i18n="gallery.card1Title">PowerShell 7 і «Про Arctic»</strong>
-              <span data-i18n="gallery.card1Desc">Нативні інструменти розробника та системний діалог версії в темному оформленні.</span>
-            </figcaption>
-          </figure>
-
-          <figure class="gallery-card">
-            <div class="screen-frame">
-              <img src="assets/arctic-wordpad.webp"
-                   alt="Arctic WordPad — вбудований аналог Word із підтримкою DOCX"
-                   class="screen-img zoomable"
-                   loading="lazy" width="1920" height="1080" />
-            </div>
-            <figcaption>
-              <strong data-i18n="gallery.card2Title">Arctic WordPad — аналог Word</strong>
-              <span data-i18n="gallery.card2Desc">Власний текстовий процесор зі стрічкою у стилі Word та підтримкою DOCX, RTF, ODT і TXT з коробки.</span>
-            </figcaption>
-          </figure>
-
-          <figure class="gallery-card">
-            <div class="screen-frame">
-              <img src="assets/personalize-light.webp"
-                   alt="Сторінка Персоналізації у світлій темі"
-                   class="screen-img zoomable"
-                   loading="lazy" width="1920" height="1080" />
-            </div>
-            <figcaption>
-              <strong data-i18n="gallery.card3Title">Гнучка персоналізація</strong>
-              <span data-i18n="gallery.card3Desc">Миттєве перемикання світлого, темного й комбінованого режимів, ефектів заголовків і значків.</span>
-            </figcaption>
-          </figure>
-        </div>
-      </div>
-    </section>
-
-    <!-- Bento Capabilities Section with Win11-icon-theme Icons -->
-    <section id="capabilities" class="bento-section">
-      <div class="container">
-        <div class="section-head">
-          <h2 class="section-title" data-i18n="bento.title">Справжній гібрид без компромісів</h2>
-          <p class="section-subtitle" data-i18n="bento.subtitle">
-            Усе необхідне працює одразу після запуску та налаштовується під ваші вподобання.
-          </p>
-        </div>
-
-        <div class="bento-grid">
-          <article class="bento-card">
-            <div class="bento-icon-wrap">
-              <img src="assets/icons/speedometer.svg" alt="" width="44" height="44" />
-            </div>
-            <h3 data-i18n="bento.c1Title">Зручно для ігрового ПК</h3>
-            <p data-i18n="bento.c1Desc">
-              Вбудовані інструменти тюнінгу, моніторингу та оптимізації вже з коробки: андервольт і ліміти потужності ЦП, розгін і частоти ГП, ігровий оверлей (FPS, час кадру, температури), обмежувач кадрів і автоматичний ігровий режим.
-            </p>
-          </article>
-
-          <article class="bento-card">
-            <div class="bento-icon-wrap">
-              <img src="assets/icons/drivers.png" alt="" width="44" height="44" />
-            </div>
-            <h3 data-i18n="bento.c2Title">Усі драйвери вже з коробки</h3>
-            <p data-i18n="bento.c2Desc">
-              Відеокарти Intel, AMD і NVIDIA, Wi-Fi, звук, мережа й периферія запрацюють одразу з Live CD або Live USB — без ручного пошуку й зайвих інсталяторів.
-            </p>
-          </article>
-
-          <article class="bento-card">
-            <div class="bento-icon-wrap">
-              <img src="assets/icons/customize.png" alt="" width="44" height="44" />
-            </div>
-            <h3 data-i18n="bento.c3Title">Великі можливості кастомізації</h3>
-            <p data-i18n="bento.c3Desc">
-              Світла, темна й змішана теми, налаштування прозорості та розмиття Acrylic/Mica, стилі меню «Пуск», панелі задач, Провідника та набори значків.
-            </p>
-          </article>
-
-          <article class="bento-card">
-            <div class="bento-icon-wrap">
-              <img src="assets/icons/security.png" alt="" width="44" height="44" />
-            </div>
-            <h3 data-i18n="bento.c4Title">Гібридне ядро, WSL та Secure Boot</h3>
-            <p data-i18n="bento.c4Desc">
-              Модулі NT у ядрі Linux, нативний WinHvPlatform на KVM, контейнери WSL, підтримка UEFI Secure Boot та збереження даних на реальний диск C: (NTFS).
-            </p>
-          </article>
-        </div>
-
-        <div class="tested-apps-bar" aria-label="Tested applications">
-          <span class="tested-label" data-i18n="bento.testedLabel">Протестовано на Project Arctic:</span>
-          <div class="tested-list">
-            <span class="app-chip"><img src="assets/apps/steam.svg" alt="Steam" width="18" height="18" />Steam</span>
-            <span class="app-chip"><img src="assets/apps/discord.svg" alt="Discord" width="18" height="18" />Discord</span>
-            <span class="app-chip"><img src="assets/apps/spotify.svg" alt="Spotify" width="18" height="18" />Spotify</span>
-            <span class="app-chip"><img src="assets/apps/chrome.svg" alt="Chrome" width="18" height="18" />Chrome</span>
-            <span class="app-chip"><img src="assets/apps/logitechg.svg" alt="Logitech G HUB" width="18" height="18" />Logitech G HUB</span>
-            <span class="app-chip"><img src="assets/apps/vscode.svg" alt="Visual Studio Code" width="18" height="18" />Visual Studio Code</span>
-            <span class="app-chip"><img src="assets/apps/cs2.svg" alt="Counter-Strike 2" width="18" height="18" />Counter-Strike 2</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Download Section -->
-    <section id="download" class="download-section">
-      <div class="download-glow" aria-hidden="true"></div>
-      <div class="container">
-        <div class="download-card">
-          <div class="download-badge" id="release-pill">
-            <span class="js-release-name">Arctic dev · Live CD ISO</span>
-          </div>
-          <h2 class="download-title" data-i18n="download.title">Спробуйте Project Arctic вже зараз</h2>
-          <p class="download-subtitle" data-i18n="download.subtitle">
-            Завантажте найновіший Live CD образ для віртуальної машини або сучасного ПК x86-64.
-          </p>
-
-          <div class="download-actions">
-            <a href="https://github.com/77450danik/project-arctic/releases/download/dev/arctic.iso"
-               class="btn btn-primary btn-lg js-iso-link" id="primary-iso-btn">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M12 3V15M12 15L7 10M12 15L17 10M4 19H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <span class="js-iso-btn-text" data-i18n="download.isoBtn">Завантажити arctic.iso</span>
-            </a>
-
-            <a href="https://github.com/77450danik/project-arctic/releases/download/dev/arctic-usb.img.xz"
-               class="btn btn-secondary btn-lg js-usb-link">
-              <span data-i18n="download.usbBtn">Образ для USB (.img.xz)</span>
-            </a>
-
-            <a href="https://github.com/77450danik/project-arctic/releases/tag/dev"
-               target="_blank" rel="noopener" class="btn btn-ghost btn-lg js-release-url">
-              <span data-i18n="download.releaseBtn">Сторінка релізу</span>
-            </a>
-          </div>
-
-          <p class="download-note" data-i18n="download.note">
-            Статус: pre-alpha · Підтримка UEFI (Secure Boot із ARCTIC.cer) та BIOS/CSM · Рекомендовано від 4 ГБ ОЗП.
-          </p>
+          <dl class="specs">
+            <div><dt data-i18n="dl.status">Стан</dt><dd>pre-alpha</dd></div>
+            <div><dt data-i18n="dl.boot">Завантаження</dt><dd data-i18n="dl.bootVal">UEFI (Secure Boot з ARCTIC.cer), BIOS</dd></div>
+            <div><dt data-i18n="dl.usbKey">Флешка</dt><dd data-i18n="dl.usbVal">запис ISO через Rufus</dd></div>
+            <div><dt data-i18n="dl.ram">ОЗП</dt><dd data-i18n="dl.ramVal">від 4 ГБ</dd></div>
+            <div class="js-sha-row" hidden><dt>SHA-256</dt><dd class="mono js-sha"></dd></div>
+          </dl>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- Minimal Microsoft-style Footer -->
-  <footer class="site-footer">
-    <div class="container footer-inner">
+  <footer class="footer">
+    <div class="container footer-main">
       <div class="footer-brand">
-        <span class="brand-name">Project Arctic</span>
-        <span class="footer-copy" data-i18n="footer.copy">Гібридна операційна система для x86-64</span>
+        <a href="#top" class="logo" aria-label="Project Arctic">
+          <img src="assets/favicon.svg" alt="" width="34" height="34" />
+        </a>
+        <p data-i18n="footer.about">Гібридна операційна система для ПК: Windows-програми й ігри на ядрі NT усередині Linux.</p>
+        <div class="footer-social">
+          <a href="https://github.com/77450danik/project-arctic" target="_blank" rel="noopener" aria-label="GitHub" class="social-btn">
+            <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          </a>
+        </div>
       </div>
-      <div class="footer-links">
+
+      <nav class="footer-col" aria-labelledby="fc-system">
+        <h4 id="fc-system" data-i18n="footer.system">Система</h4>
+        <a href="#features" data-i18n="nav.features">Особливості</a>
+        <a href="#screens" data-i18n="nav.screens">Знімки</a>
+        <a href="#download" data-i18n="nav.download">Завантажити</a>
+      </nav>
+
+      <nav class="footer-col" aria-labelledby="fc-dev">
+        <h4 id="fc-dev" data-i18n="footer.dev">Розробка</h4>
         <a href="https://github.com/77450danik/project-arctic" target="_blank" rel="noopener">GitHub</a>
         <a href="https://github.com/77450danik/project-arctic/tree/main/docs" target="_blank" rel="noopener" data-i18n="footer.docs">Документація</a>
         <a href="https://github.com/77450danik/project-arctic/releases" target="_blank" rel="noopener" data-i18n="footer.releases">Релізи</a>
-        <button type="button" class="footer-lang-toggle js-lang-cycle">UA / EN</button>
+        <a href="https://huggingface.co/blastforce/arctic" target="_blank" rel="noopener" data-i18n="footer.images">Образи</a>
+      </nav>
+
+      <nav class="footer-col" aria-labelledby="fc-help">
+        <h4 id="fc-help" data-i18n="footer.help">Допомога</h4>
+        <a href="https://github.com/77450danik/project-arctic/blob/main/docs/install.md" target="_blank" rel="noopener" data-i18n="footer.install">Встановлення</a>
+        <a href="https://github.com/77450danik/project-arctic/blob/main/docs/build.md" target="_blank" rel="noopener" data-i18n="footer.build">Збірка з джерел</a>
+        <a href="https://github.com/77450danik/project-arctic/issues" target="_blank" rel="noopener" data-i18n="footer.bug">Повідомити про помилку</a>
+      </nav>
+    </div>
+
+    <div class="container footer-bottom">
+      <span data-i18n="footer.copy">© 2026 Project Arctic. Не пов'язано з Microsoft.</span>
+      <a class="footer-credit" href="https://commons.wikimedia.org/wiki/File:Matterhorn_by_Moonlight_(26657356427).jpg" target="_blank" rel="noopener" data-i18n="footer.credit">Фото гір: Willi Winzig, CC BY 2.0</a>
+      <div class="segmented segmented-sm" role="group" aria-label="Мова">
+        <button type="button" class="seg-btn is-active" data-lang="uk">UA</button>
+        <button type="button" class="seg-btn" data-lang="en">EN</button>
       </div>
     </div>
+
+    <div class="footer-art" aria-hidden="true"></div>
   </footer>
 
-  <!-- Full-screen Screenshot Lightbox -->
-  <div id="lightbox" class="lightbox" hidden aria-modal="true" role="dialog" aria-label="Screenshot preview">
-    <button type="button" class="lightbox-close" id="lightbox-close" aria-label="Close">×</button>
+  <div id="lightbox" class="lightbox" hidden role="dialog" aria-modal="true">
+    <button type="button" class="lightbox-close" id="lightbox-close" aria-label="Закрити">
+      <svg viewBox="0 0 10 10" width="12" height="12" aria-hidden="true"><path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5"/></svg>
+    </button>
     <img id="lightbox-img" src="" alt="" />
   </div>
 

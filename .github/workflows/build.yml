@@ -3,6 +3,11 @@ name: build
 on:
   push:
     branches: [main]
+    # the site has its own workflow (pages.yml)
+    paths-ignore:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+      - "README.md"
   workflow_dispatch:
 
 # Each kind of job waits for the same job of an earlier push instead of
